@@ -1,126 +1,175 @@
-import React, { useState } from 'react';
-import { View, Text, Pressable, Alert } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, Pressable } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+  Easing,
+  FadeIn,
+  FadeOut,
+} from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import { Copy } from 'lucide-react-native';
 import type { SoapNote } from '../types';
 
 const SECTIONS = [
-  { key: 'subjective' as const, label: 'Subjective', color: '#0d8775' },
-  { key: 'objective' as const, label: 'Objective', color: '#2563eb' },
-  { key: 'assessment' as const, label: 'Assessment', color: '#d97706' },
-  { key: 'plan' as const, label: 'Plan', color: '#7c3aed' },
+  { key: 'subjective' as const, label: 'Subjective', colorClass: 'bg-soap-subjective' },
+  { key: 'objective' as const, label: 'Objective', colorClass: 'bg-soap-objective' },
+  { key: 'assessment' as const, label: 'Assessment', colorClass: 'bg-soap-assessment' },
+  { key: 'plan' as const, label: 'Plan', colorClass: 'bg-soap-plan' },
 ];
 
 interface SoapNoteViewProps {
   soapNote: SoapNote;
 }
 
-export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
-  const [expandedSection, setExpandedSection] = useState<string | null>('subjective');
+function CopiedToast() {
+  return (
+    <Animated.View
+      entering={FadeIn.duration(200)}
+      exiting={FadeOut.duration(200)}
+      className="absolute top-0 right-0 bg-stone-800 px-3 py-1.5 rounded-btn z-10"
+    >
+      <Text className="text-caption text-white font-medium">Copied!</Text>
+    </Animated.View>
+  );
+}
 
-  const copySection = async (label: string, content: string) => {
+function AccordionSection({
+  sectionKey,
+  label,
+  colorClass,
+  content,
+  isExpanded,
+  onToggle,
+}: {
+  sectionKey: string;
+  label: string;
+  colorClass: string;
+  content: string;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const [showCopied, setShowCopied] = useState(false);
+  const rotation = useSharedValue(isExpanded ? 1 : 0);
+
+  React.useEffect(() => {
+    rotation.value = withTiming(isExpanded ? 1 : 0, { duration: 200 });
+  }, [isExpanded]);
+
+  const indicatorStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value * 90}deg` }],
+  }));
+
+  const copySection = async () => {
     await Clipboard.setStringAsync(content);
-    Alert.alert('Copied', `${label} section copied to clipboard`);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setShowCopied(true);
+    setTimeout(() => setShowCopied(false), 1500);
   };
 
-  const copyAll = async () => {
+  return (
+    <View className="border border-stone-200 rounded-input mb-2 overflow-hidden">
+      <Pressable
+        onPress={onToggle}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: isExpanded }}
+        accessibilityLabel={`${label} section`}
+        className="flex-row justify-between items-center p-3 bg-stone-50"
+      >
+        <View className="flex-row items-center">
+          <View className={`w-1 h-5 rounded-sm mr-2.5 ${colorClass}`} />
+          <Text className="text-body font-semibold text-stone-900">{label}</Text>
+        </View>
+        <Animated.Text
+          className="text-heading text-stone-400"
+          style={indicatorStyle}
+        >
+          ›
+        </Animated.Text>
+      </Pressable>
+
+      {isExpanded && (
+        <Animated.View
+          entering={FadeIn.duration(200)}
+          className="p-3 pt-0 relative"
+        >
+          {showCopied && <CopiedToast />}
+          <Text
+            className="text-body text-stone-700 mt-2 leading-relaxed"
+            selectable
+          >
+            {content}
+          </Text>
+          <Pressable
+            onPress={copySection}
+            accessibilityRole="button"
+            accessibilityLabel={`Copy ${label} section`}
+            className="self-end mt-2.5 flex-row items-center gap-1 px-2.5 py-1 rounded border border-stone-300 min-h-[44px]"
+          >
+            <Copy color="#57534e" size={12} />
+            <Text className="text-caption text-stone-600">Copy</Text>
+          </Pressable>
+        </Animated.View>
+      )}
+    </View>
+  );
+}
+
+export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
+  const [expandedSection, setExpandedSection] = useState<string | null>('subjective');
+  const [showCopiedAll, setShowCopiedAll] = useState(false);
+
+  const copyAll = useCallback(async () => {
     const fullNote = SECTIONS.map(({ key, label }) => {
       const section = soapNote[key];
       return `${label.toUpperCase()}:\n${section?.content ?? ''}`;
     }).join('\n\n');
 
     await Clipboard.setStringAsync(fullNote);
-    Alert.alert('Copied', 'Full SOAP note copied to clipboard');
-  };
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setShowCopiedAll(true);
+    setTimeout(() => setShowCopiedAll(false), 1500);
+  }, [soapNote]);
 
   return (
     <View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <Text style={{ fontSize: 18, fontWeight: '700', color: '#1c1917' }}>
+      <View className="flex-row justify-between items-center mb-3 relative">
+        <Text
+          className="text-heading font-bold text-stone-900"
+          accessibilityRole="header"
+        >
           SOAP Note
         </Text>
+        {showCopiedAll && <CopiedToast />}
         <Pressable
           onPress={copyAll}
-          style={{
-            backgroundColor: '#0d8775',
-            paddingHorizontal: 12,
-            paddingVertical: 6,
-            borderRadius: 6,
-          }}
+          accessibilityRole="button"
+          accessibilityLabel="Copy full SOAP note"
+          className="bg-brand-500 px-3 py-1.5 rounded-md flex-row items-center gap-1.5 min-h-[44px]"
         >
-          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>Copy All</Text>
+          <Copy color="#fff" size={14} />
+          <Text className="text-body-sm text-white font-semibold">Copy All</Text>
         </Pressable>
       </View>
 
-      {SECTIONS.map(({ key, label, color }) => {
+      {SECTIONS.map(({ key, label, colorClass }) => {
         const section = soapNote[key];
         if (!section) return null;
-        const isExpanded = expandedSection === key;
 
         return (
-          <View
+          <AccordionSection
             key={key}
-            style={{
-              borderWidth: 1,
-              borderColor: '#e7e5e4',
-              borderRadius: 10,
-              marginBottom: 8,
-              overflow: 'hidden',
-            }}
-          >
-            <Pressable
-              onPress={() => setExpandedSection(isExpanded ? null : key)}
-              style={{
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: 12,
-                backgroundColor: '#fafaf9',
-              }}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <View
-                  style={{
-                    width: 4,
-                    height: 20,
-                    backgroundColor: color,
-                    borderRadius: 2,
-                    marginRight: 10,
-                  }}
-                />
-                <Text style={{ fontSize: 15, fontWeight: '600', color: '#1c1917' }}>
-                  {label}
-                </Text>
-              </View>
-              <Text style={{ fontSize: 18, color: '#a8a29e' }}>
-                {isExpanded ? '−' : '+'}
-              </Text>
-            </Pressable>
-
-            {isExpanded && (
-              <View style={{ padding: 12, paddingTop: 0 }}>
-                <Text
-                  style={{ fontSize: 14, lineHeight: 22, color: '#44403c', marginTop: 8 }}
-                  selectable
-                >
-                  {section.content}
-                </Text>
-                <Pressable
-                  onPress={() => copySection(label, section.content)}
-                  style={{
-                    marginTop: 10,
-                    alignSelf: 'flex-end',
-                    paddingHorizontal: 10,
-                    paddingVertical: 4,
-                    borderRadius: 4,
-                    borderWidth: 1,
-                    borderColor: '#d6d3d1',
-                  }}
-                >
-                  <Text style={{ fontSize: 12, color: '#57534e' }}>Copy</Text>
-                </Pressable>
-              </View>
-            )}
-          </View>
+            sectionKey={key}
+            label={label}
+            colorClass={colorClass}
+            content={section.content}
+            isExpanded={expandedSection === key}
+            onToggle={() =>
+              setExpandedSection((prev) => (prev === key ? null : key))
+            }
+          />
         );
       })}
     </View>

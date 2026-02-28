@@ -1,8 +1,16 @@
 import React from 'react';
 import { View, Text, Pressable } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
+import { ChevronRight } from 'lucide-react-native';
 import { StatusBadge } from './StatusBadge';
 import type { Recording } from '../types';
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 interface RecordingCardProps {
   recording: Recording;
@@ -10,6 +18,11 @@ interface RecordingCardProps {
 
 export function RecordingCard({ recording }: RecordingCardProps) {
   const router = useRouter();
+  const scale = useSharedValue(1);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
 
   const formattedDate = new Date(recording.createdAt).toLocaleDateString('en-US', {
     month: 'short',
@@ -18,35 +31,46 @@ export function RecordingCard({ recording }: RecordingCardProps) {
     minute: '2-digit',
   });
 
+  const description = [
+    recording.species,
+    recording.breed ? `${recording.breed}` : null,
+  ]
+    .filter(Boolean)
+    .join(' \u00B7 ');
+
   return (
-    <Pressable
+    <AnimatedPressable
       onPress={() => router.push(`/(app)/recordings/${recording.id}` as any)}
-      style={({ pressed }) => ({
-        backgroundColor: pressed ? '#f5f5f4' : '#ffffff',
-        borderRadius: 12,
-        padding: 16,
-        borderWidth: 1,
-        borderColor: '#e7e5e4',
-        marginBottom: 8,
-      })}
+      onPressIn={() => {
+        scale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
+      }}
+      onPressOut={() => {
+        scale.value = withSpring(1, { damping: 15, stiffness: 300 });
+      }}
+      accessibilityRole="button"
+      accessibilityLabel={`${recording.patientName}, ${description || 'no species'}, ${formattedDate}, status ${recording.status}`}
+      className="card mb-2"
+      style={animatedStyle}
     >
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <View style={{ flex: 1, marginRight: 12 }}>
-          <Text style={{ fontSize: 16, fontWeight: '600', color: '#1c1917' }}>
+      <View className="flex-row justify-between items-center">
+        <View className="flex-1 mr-3">
+          <Text className="text-body-lg font-semibold text-stone-900">
             {recording.patientName}
           </Text>
-          {recording.species && (
-            <Text style={{ fontSize: 13, color: '#78716c', marginTop: 2 }}>
-              {recording.species}
-              {recording.breed ? ` · ${recording.breed}` : ''}
+          {description ? (
+            <Text className="text-body-sm text-stone-500 mt-0.5">
+              {description}
             </Text>
-          )}
-          <Text style={{ fontSize: 12, color: '#a8a29e', marginTop: 4 }}>
+          ) : null}
+          <Text className="text-caption text-stone-400 mt-1">
             {formattedDate}
           </Text>
         </View>
-        <StatusBadge status={recording.status} />
+        <View className="flex-row items-center gap-2">
+          <StatusBadge status={recording.status} />
+          <ChevronRight color="#a8a29e" size={18} />
+        </View>
       </View>
-    </Pressable>
+    </AnimatedPressable>
   );
 }

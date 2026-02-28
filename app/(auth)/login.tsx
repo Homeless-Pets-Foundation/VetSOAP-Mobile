@@ -1,15 +1,11 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-} from 'react-native';
+import { View, Text, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
+import { AlertCircle } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
+import { TextInputField } from '../../src/components/ui/TextInputField';
+import { Button } from '../../src/components/ui/Button';
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
@@ -36,119 +32,74 @@ export default function LoginScreen() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#fafaf9' }}>
+    <SafeAreaView className="screen">
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1, justifyContent: 'center', paddingHorizontal: 24 }}
+        className="flex-1 justify-center px-6"
       >
         {/* Logo / Brand */}
-        <View style={{ alignItems: 'center', marginBottom: 40 }}>
-          <View
-            style={{
-              width: 64,
-              height: 64,
-              borderRadius: 16,
-              backgroundColor: '#0d8775',
-              justifyContent: 'center',
-              alignItems: 'center',
-              marginBottom: 16,
-            }}
-          >
-            <Text style={{ fontSize: 28, color: '#fff', fontWeight: '700' }}>V</Text>
+        <Animated.View entering={FadeInDown.duration(500)} className="items-center mb-10">
+          <View className="w-16 h-16 rounded-2xl bg-brand-500 justify-center items-center mb-4 shadow-card-md">
+            <Text className="text-[28px] text-white font-bold">V</Text>
           </View>
-          <Text style={{ fontSize: 24, fontWeight: '700', color: '#1c1917' }}>
+          <Text
+            className="text-display font-bold text-stone-900"
+            accessibilityRole="header"
+          >
             VetSOAP Mobile
           </Text>
-          <Text style={{ fontSize: 14, color: '#78716c', marginTop: 4 }}>
+          <Text className="text-body text-stone-500 mt-1">
             Sign in to your account
           </Text>
-        </View>
+        </Animated.View>
 
         {/* Form */}
-        <View
-          style={{
-            backgroundColor: '#fff',
-            borderRadius: 16,
-            padding: 24,
-            borderWidth: 1,
-            borderColor: '#e7e5e4',
-          }}
+        <Animated.View
+          entering={FadeInUp.duration(500).delay(200)}
+          className="card p-6"
         >
           {error && (
-            <View
-              style={{
-                backgroundColor: '#fee2e2',
-                padding: 12,
-                borderRadius: 8,
-                marginBottom: 16,
-              }}
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              className="bg-danger-100 p-3 rounded-input mb-4 flex-row items-center gap-2"
+              accessibilityRole="alert"
+              accessibilityLiveRegion="assertive"
             >
-              <Text style={{ color: '#991b1b', fontSize: 13 }}>{error}</Text>
-            </View>
+              <AlertCircle color="#b91c1c" size={16} />
+              <Text className="text-body-sm text-danger-700 flex-1">{error}</Text>
+            </Animated.View>
           )}
 
-          <View style={{ marginBottom: 16 }}>
-            <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403c', marginBottom: 6 }}>
-              Email
-            </Text>
-            <TextInput
-              value={email}
-              onChangeText={setEmail}
-              placeholder="you@example.com"
-              placeholderTextColor="#a8a29e"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={{
-                borderWidth: 1,
-                borderColor: '#d6d3d1',
-                borderRadius: 8,
-                padding: 12,
-                fontSize: 15,
-                color: '#1c1917',
-              }}
-            />
-          </View>
+          <TextInputField
+            label="Email"
+            value={email}
+            onChangeText={setEmail}
+            placeholder="you@example.com"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
 
-          <View style={{ marginBottom: 24 }}>
-            <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403c', marginBottom: 6 }}>
-              Password
-            </Text>
-            <TextInput
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Enter your password"
-              placeholderTextColor="#a8a29e"
-              secureTextEntry
-              style={{
-                borderWidth: 1,
-                borderColor: '#d6d3d1',
-                borderRadius: 8,
-                padding: 12,
-                fontSize: 15,
-                color: '#1c1917',
-              }}
-            />
-          </View>
+          <TextInputField
+            label="Password"
+            value={password}
+            onChangeText={setPassword}
+            placeholder="Enter your password"
+            secureTextEntry
+          />
 
-          <Pressable
-            onPress={handleSignIn}
-            disabled={isLoading}
-            style={({ pressed }) => ({
-              backgroundColor: pressed ? '#0bb89a' : '#0d8775',
-              padding: 14,
-              borderRadius: 10,
-              alignItems: 'center',
-              opacity: isLoading ? 0.7 : 1,
-            })}
-          >
-            {isLoading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={{ color: '#fff', fontSize: 16, fontWeight: '600' }}>Sign In</Text>
-            )}
-          </Pressable>
-        </View>
+          <View className="mt-2">
+            <Button
+              variant="primary"
+              size="lg"
+              onPress={handleSignIn}
+              loading={isLoading}
+              accessibilityLabel="Sign in to your account"
+            >
+              Sign In
+            </Button>
+          </View>
+        </Animated.View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

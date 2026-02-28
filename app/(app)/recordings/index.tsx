@@ -1,14 +1,20 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, FlatList, RefreshControl } from 'react-native';
+import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
+import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
 import { recordingsApi } from '../../../src/api/recordings';
 import { RecordingCard } from '../../../src/components/RecordingCard';
+import { SkeletonCard } from '../../../src/components/ui/Skeleton';
+import { Button } from '../../../src/components/ui/Button';
 
 export default function RecordingsListScreen() {
+  const router = useRouter();
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [isFocused, setIsFocused] = useState(false);
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['recordings', 'list', search, page],
@@ -26,24 +32,20 @@ export default function RecordingsListScreen() {
   const hasMore = data?.pagination ? page < data.pagination.totalPages : false;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#fafaf9' }}>
-      <View style={{ padding: 20, paddingBottom: 0 }}>
-        <Text style={{ fontSize: 24, fontWeight: '700', color: '#1c1917', marginBottom: 16 }}>
+    <SafeAreaView className="screen">
+      <View className="px-5 pt-5 pb-0">
+        <Text
+          className="text-display font-bold text-stone-900 mb-4"
+          accessibilityRole="header"
+        >
           Recordings
         </Text>
 
         {/* Search */}
         <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            backgroundColor: '#fff',
-            borderWidth: 1,
-            borderColor: '#d6d3d1',
-            borderRadius: 10,
-            paddingHorizontal: 12,
-            marginBottom: 16,
-          }}
+          className={`flex-row items-center bg-white border rounded-input px-3 mb-4 ${
+            isFocused ? 'border-brand-500' : 'border-stone-300'
+          }`}
         >
           <Search color="#a8a29e" size={18} />
           <TextInput
@@ -52,14 +54,12 @@ export default function RecordingsListScreen() {
               setSearch(v);
               setPage(1);
             }}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
             placeholder="Search by patient name..."
             placeholderTextColor="#a8a29e"
-            style={{
-              flex: 1,
-              padding: 12,
-              fontSize: 15,
-              color: '#1c1917',
-            }}
+            accessibilityLabel="Search recordings by patient name"
+            className="flex-1 p-3 text-body text-stone-900"
           />
         </View>
       </View>
@@ -67,23 +67,55 @@ export default function RecordingsListScreen() {
       <FlatList
         data={recordings}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => <RecordingCard recording={item} />}
+        renderItem={({ item, index }) => {
+          if (index < 10) {
+            return (
+              <Animated.View entering={FadeInRight.delay(index * 50).duration(300)}>
+                <RecordingCard recording={item} />
+              </Animated.View>
+            );
+          }
+          return <RecordingCard recording={item} />;
+        }}
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
         onEndReached={() => {
           if (hasMore) setPage((p) => p + 1);
         }}
         onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          hasMore ? (
+            <View className="py-4 items-center">
+              <ActivityIndicator size="small" color="#0d8775" />
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
           isLoading ? (
-            <View style={{ padding: 40, alignItems: 'center' }}>
-              <Text style={{ color: '#a8a29e' }}>Loading recordings...</Text>
+            <View>
+              <SkeletonCard />
+              <SkeletonCard />
+              <SkeletonCard />
+              <SkeletonCard />
+              <SkeletonCard />
             </View>
           ) : (
-            <View style={{ padding: 40, alignItems: 'center' }}>
-              <Text style={{ color: '#78716c', fontSize: 14 }}>
+            <View className="py-10 items-center">
+              <Search color="#a8a29e" size={48} />
+              <Text className="text-body text-stone-500 mt-3 text-center">
                 {search ? 'No recordings match your search.' : 'No recordings yet.'}
               </Text>
+              {!search && (
+                <View className="mt-4">
+                  <Button
+                    variant="primary"
+                    onPress={() => router.push('/(app)/record')}
+                    accessibilityLabel="Start recording an appointment"
+                  >
+                    Record Appointment
+                  </Button>
+                </View>
+              )}
             </View>
           )
         }

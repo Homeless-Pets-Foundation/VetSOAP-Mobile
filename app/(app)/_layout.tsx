@@ -3,13 +3,14 @@ import { Redirect, Tabs } from 'expo-router';
 import { useAuth } from '../../src/hooks/useAuth';
 import { View, ActivityIndicator } from 'react-native';
 import { Home, Mic, FileText } from 'lucide-react-native';
+import * as Haptics from 'expo-haptics';
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading } = useAuth();
 
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fafaf9' }}>
+      <View className="flex-1 justify-center items-center bg-stone-50">
         <ActivityIndicator size="large" color="#0d8775" />
       </View>
     );
@@ -28,12 +29,23 @@ export default function AppLayout() {
         tabBarStyle: {
           backgroundColor: '#fafaf9',
           borderTopColor: '#e7e5e4',
-          paddingBottom: 4,
-          height: 56,
+          paddingBottom: 8,
+          paddingTop: 8,
+          height: 64,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -2 },
+          shadowOpacity: 0.04,
+          shadowRadius: 4,
+          elevation: 4,
         },
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: '600',
+        },
+      }}
+      screenListeners={{
+        tabPress: () => {
+          Haptics.selectionAsync();
         },
       }}
     >
@@ -42,6 +54,7 @@ export default function AppLayout() {
         options={{
           title: 'Home',
           tabBarIcon: ({ color, size }) => <Home color={color} size={size} />,
+          tabBarAccessibilityLabel: 'Home dashboard',
         }}
       />
       <Tabs.Screen
@@ -49,6 +62,7 @@ export default function AppLayout() {
         options={{
           title: 'Record',
           tabBarIcon: ({ color, size }) => <Mic color={color} size={size} />,
+          tabBarAccessibilityLabel: 'Record new appointment',
         }}
       />
       <Tabs.Screen
@@ -56,6 +70,7 @@ export default function AppLayout() {
         options={{
           title: 'Records',
           tabBarIcon: ({ color, size }) => <FileText color={color} size={size} />,
+          tabBarAccessibilityLabel: 'View all recordings',
         }}
       />
       {/* Hide settings from tab bar */}

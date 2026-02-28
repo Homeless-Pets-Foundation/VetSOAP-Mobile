@@ -1,3 +1,21 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer components {
+  .screen {
+    @apply flex-1 bg-stone-50;
+  }
+
+  .card {
+    @apply bg-white rounded-card border border-stone-200 p-4 shadow-card;
+  }
+
+  .input-base {
+    @apply border border-stone-300 rounded-input p-3 text-body text-stone-900 bg-white;
+  }
+
+  .section-title {
+    @apply text-heading font-semibold text-stone-900;
+  }
+}

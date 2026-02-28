@@ -1,5 +1,7 @@
 import React from 'react';
-import { View, Text, TextInput, Pressable, ScrollView } from 'react-native';
+import { View, Text, Pressable, ScrollView } from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { TextInputField } from './ui/TextInputField';
 import type { CreateRecording } from '../types';
 
 const SPECIES_OPTIONS = ['Canine', 'Feline', 'Equine', 'Bovine', 'Avian', 'Exotic', 'Other'];
@@ -12,127 +14,84 @@ interface PatientFormProps {
 export function PatientForm({ formData, onUpdate }: PatientFormProps) {
   return (
     <View>
-      <Text style={{ fontSize: 16, fontWeight: '600', color: '#1c1917', marginBottom: 16 }}>
+      <Text
+        className="text-body-lg font-semibold text-stone-900 mb-4"
+        accessibilityRole="header"
+      >
         Patient Information
       </Text>
 
-      <View style={{ marginBottom: 14 }}>
-        <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403c', marginBottom: 6 }}>
-          Patient Name *
-        </Text>
-        <TextInput
-          value={formData.patientName}
-          onChangeText={(v) => onUpdate('patientName', v)}
-          placeholder="e.g., Buddy"
-          placeholderTextColor="#a8a29e"
-          style={{
-            borderWidth: 1,
-            borderColor: '#d6d3d1',
-            borderRadius: 8,
-            padding: 12,
-            fontSize: 15,
-            color: '#1c1917',
-            backgroundColor: '#fff',
-          }}
-        />
-      </View>
+      <TextInputField
+        label="Patient Name"
+        required
+        value={formData.patientName}
+        onChangeText={(v) => onUpdate('patientName', v)}
+        placeholder="e.g., Buddy"
+      />
 
-      <View style={{ marginBottom: 14 }}>
-        <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403c', marginBottom: 6 }}>
-          Client Name
-        </Text>
-        <TextInput
-          value={formData.clientName || ''}
-          onChangeText={(v) => onUpdate('clientName', v)}
-          placeholder="e.g., John Smith"
-          placeholderTextColor="#a8a29e"
-          style={{
-            borderWidth: 1,
-            borderColor: '#d6d3d1',
-            borderRadius: 8,
-            padding: 12,
-            fontSize: 15,
-            color: '#1c1917',
-            backgroundColor: '#fff',
-          }}
-        />
-      </View>
+      <TextInputField
+        label="Client Name"
+        value={formData.clientName || ''}
+        onChangeText={(v) => onUpdate('clientName', v)}
+        placeholder="e.g., John Smith"
+      />
 
-      <View style={{ marginBottom: 14 }}>
-        <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403c', marginBottom: 6 }}>
+      <View className="mb-3.5">
+        <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
           Species
         </Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View style={{ flexDirection: 'row', gap: 6 }}>
-            {SPECIES_OPTIONS.map((species) => (
-              <Pressable
-                key={species}
-                onPress={() => onUpdate('species', formData.species === species ? '' : species)}
-                style={{
-                  paddingHorizontal: 14,
-                  paddingVertical: 7,
-                  borderRadius: 20,
-                  borderWidth: 1,
-                  borderColor: formData.species === species ? '#0d8775' : '#d6d3d1',
-                  backgroundColor: formData.species === species ? '#0d8775' : '#fff',
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: '500',
-                    color: formData.species === species ? '#fff' : '#44403c',
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          accessibilityRole="radiogroup"
+          accessibilityLabel="Species selection"
+        >
+          <View className="flex-row gap-1.5">
+            {SPECIES_OPTIONS.map((species) => {
+              const isSelected = formData.species === species;
+              return (
+                <Pressable
+                  key={species}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    onUpdate('species', isSelected ? '' : species);
                   }}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isSelected }}
+                  accessibilityLabel={species}
+                  className={`px-3.5 min-h-[44px] justify-center rounded-pill border ${
+                    isSelected
+                      ? 'border-brand-500 bg-brand-500'
+                      : 'border-stone-300 bg-white'
+                  }`}
                 >
-                  {species}
-                </Text>
-              </Pressable>
-            ))}
+                  <Text
+                    className={`text-body-sm font-medium ${
+                      isSelected ? 'text-white' : 'text-stone-700'
+                    }`}
+                  >
+                    {species}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </ScrollView>
       </View>
 
-      <View style={{ marginBottom: 14 }}>
-        <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403c', marginBottom: 6 }}>
-          Breed
-        </Text>
-        <TextInput
-          value={formData.breed || ''}
-          onChangeText={(v) => onUpdate('breed', v)}
-          placeholder="e.g., Golden Retriever"
-          placeholderTextColor="#a8a29e"
-          style={{
-            borderWidth: 1,
-            borderColor: '#d6d3d1',
-            borderRadius: 8,
-            padding: 12,
-            fontSize: 15,
-            color: '#1c1917',
-            backgroundColor: '#fff',
-          }}
-        />
-      </View>
+      <TextInputField
+        label="Breed"
+        value={formData.breed || ''}
+        onChangeText={(v) => onUpdate('breed', v)}
+        placeholder="e.g., Golden Retriever"
+      />
 
-      <View style={{ marginBottom: 14 }}>
-        <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403c', marginBottom: 6 }}>
-          Appointment Type
-        </Text>
-        <TextInput
-          value={formData.appointmentType || ''}
-          onChangeText={(v) => onUpdate('appointmentType', v)}
-          placeholder="e.g., Wellness Exam, Sick Visit"
-          placeholderTextColor="#a8a29e"
-          style={{
-            borderWidth: 1,
-            borderColor: '#d6d3d1',
-            borderRadius: 8,
-            padding: 12,
-            fontSize: 15,
-            color: '#1c1917',
-            backgroundColor: '#fff',
-          }}
-        />
-      </View>
+      <TextInputField
+        label="Appointment Type"
+        value={formData.appointmentType || ''}
+        onChangeText={(v) => onUpdate('appointmentType', v)}
+        placeholder="e.g., Wellness Exam, Sick Visit"
+      />
     </View>
   );
 }

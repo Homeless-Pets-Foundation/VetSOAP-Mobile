@@ -1,12 +1,16 @@
 import React from 'react';
-import { View, Text, ScrollView, Pressable, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, ScrollView, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, RotateCcw } from 'lucide-react-native';
+import { ChevronLeft, RotateCcw, Check } from 'lucide-react-native';
 import { recordingsApi } from '../../../src/api/recordings';
 import { StatusBadge } from '../../../src/components/StatusBadge';
 import { SoapNoteView } from '../../../src/components/SoapNoteView';
+import { Button } from '../../../src/components/ui/Button';
+import { Card } from '../../../src/components/ui/Card';
+import { Skeleton, SkeletonText } from '../../../src/components/ui/Skeleton';
 
 const PROCESSING_STEPS = [
   { status: 'uploading', label: 'Uploading' },
@@ -25,47 +29,92 @@ function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
   const currentIndex = STATUS_ORDER.indexOf(currentStatus);
 
   return (
-    <View style={{ marginVertical: 16 }}>
-      {PROCESSING_STEPS.map((step) => {
+    <View className="my-4">
+      {PROCESSING_STEPS.map((step, i) => {
         const stepIndex = STATUS_ORDER.indexOf(step.status);
         const isComplete = currentIndex > stepIndex;
         const isCurrent = currentIndex === stepIndex;
+        const isLast = i === PROCESSING_STEPS.length - 1;
 
         return (
-          <View key={step.status} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+          <View key={step.status}>
             <View
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: 12,
-                backgroundColor: isComplete ? '#0d8775' : isCurrent ? '#fef3c7' : '#f5f5f4',
-                borderWidth: isCurrent ? 2 : 0,
-                borderColor: isCurrent ? '#f59e0b' : undefined,
-                justifyContent: 'center',
-                alignItems: 'center',
-                marginRight: 12,
-              }}
+              className="flex-row items-center mb-1"
+              accessibilityLabel={`${step.label}: ${isComplete ? 'complete' : isCurrent ? 'in progress' : 'pending'}`}
             >
-              {isComplete && (
-                <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>✓</Text>
-              )}
-              {isCurrent && (
-                <ActivityIndicator size="small" color="#f59e0b" />
-              )}
+              <View
+                className={`w-6 h-6 rounded-full justify-center items-center mr-3 ${
+                  isComplete
+                    ? 'bg-brand-500'
+                    : isCurrent
+                      ? 'bg-warning-100 border-2 border-warning-500'
+                      : 'bg-stone-100'
+                }`}
+              >
+                {isComplete && (
+                  <Animated.View entering={ZoomIn.duration(300)}>
+                    <Check color="#fff" size={14} strokeWidth={3} />
+                  </Animated.View>
+                )}
+                {isCurrent && (
+                  <View className="w-2 h-2 rounded-full bg-warning-500" />
+                )}
+              </View>
+              <Text
+                className={`text-body ${
+                  isComplete
+                    ? 'text-brand-500 font-medium'
+                    : isCurrent
+                      ? 'text-warning-700 font-semibold'
+                      : 'text-stone-400'
+                }`}
+              >
+                {step.label}
+              </Text>
             </View>
-            <Text
-              style={{
-                fontSize: 14,
-                color: isComplete ? '#0d8775' : isCurrent ? '#92400e' : '#a8a29e',
-                fontWeight: isCurrent ? '600' : '400',
-              }}
-            >
-              {step.label}
-            </Text>
+            {!isLast && (
+              <View className="ml-[11px] mb-1">
+                <View
+                  className={`w-0.5 h-4 ${
+                    isComplete ? 'bg-brand-500' : 'bg-stone-200'
+                  }`}
+                />
+              </View>
+            )}
           </View>
         );
       })}
     </View>
+  );
+}
+
+function DetailSkeleton() {
+  return (
+    <SafeAreaView className="screen">
+      <ScrollView className="flex-1">
+        <View className="flex-row items-center p-5 pb-0">
+          <Skeleton width={24} height={24} borderRadius={12} className="mr-3" />
+          <Skeleton width="50%" height={22} />
+        </View>
+        <View className="card m-5 mt-4">
+          <View className="flex-row flex-wrap gap-4">
+            <View>
+              <Skeleton width={60} height={12} className="mb-1.5" />
+              <Skeleton width={80} height={16} />
+            </View>
+            <View>
+              <Skeleton width={60} height={12} className="mb-1.5" />
+              <Skeleton width={100} height={16} />
+            </View>
+          </View>
+          <Skeleton width={140} height={12} className="mt-3" />
+        </View>
+        <View className="card mx-5 mb-4">
+          <Skeleton width="40%" height={18} className="mb-3" />
+          <SkeletonText lines={4} />
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -108,29 +157,24 @@ export default function RecordingDetailScreen() {
 
   if (isError) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#fafaf9', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-        <Text style={{ fontSize: 16, fontWeight: '600', color: '#991b1b', marginBottom: 8 }}>
-          Failed to load recording
-        </Text>
-        <Text style={{ fontSize: 14, color: '#78716c', textAlign: 'center', marginBottom: 16 }}>
-          {error instanceof Error ? error.message : 'An unexpected error occurred'}
-        </Text>
-        <Pressable
-          onPress={() => router.back()}
-          style={{ backgroundColor: '#0d8775', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}
-        >
-          <Text style={{ color: '#fff', fontWeight: '600' }}>Go Back</Text>
-        </Pressable>
+      <SafeAreaView className="screen justify-center items-center p-5">
+        <Animated.View entering={FadeIn.duration(300)} className="items-center">
+          <Text className="text-body-lg font-semibold text-danger-700 mb-2">
+            Failed to load recording
+          </Text>
+          <Text className="text-body text-stone-500 text-center mb-4">
+            {error instanceof Error ? error.message : 'An unexpected error occurred'}
+          </Text>
+          <Button variant="primary" onPress={() => router.back()}>
+            Go Back
+          </Button>
+        </Animated.View>
       </SafeAreaView>
     );
   }
 
   if (isLoading || !recording) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#fafaf9', justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#0d8775" />
-      </SafeAreaView>
-    );
+    return <DetailSkeleton />;
   }
 
   const isProcessing = !['completed', 'failed'].includes(recording.status);
@@ -144,15 +188,20 @@ export default function RecordingDetailScreen() {
   });
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#fafaf9' }}>
-      <ScrollView style={{ flex: 1 }}>
+    <SafeAreaView className="screen">
+      <ScrollView className="flex-1">
         {/* Header */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 20, paddingBottom: 0 }}>
-          <Pressable onPress={() => router.back()} style={{ marginRight: 12 }}>
+        <View className="flex-row items-center px-5 pt-5">
+          <Pressable
+            onPress={() => router.back()}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+            className="mr-3 w-11 h-11 items-center justify-center"
+          >
             <ChevronLeft color="#1c1917" size={24} />
           </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 20, fontWeight: '700', color: '#1c1917' }}>
+          <View className="flex-1">
+            <Text className="text-title font-bold text-stone-900">
               {recording.patientName}
             </Text>
           </View>
@@ -160,127 +209,93 @@ export default function RecordingDetailScreen() {
         </View>
 
         {/* Patient Info */}
-        <View
-          style={{
-            backgroundColor: '#fff',
-            margin: 20,
-            marginTop: 16,
-            borderRadius: 14,
-            padding: 16,
-            borderWidth: 1,
-            borderColor: '#e7e5e4',
-          }}
-        >
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+        <Card className="m-5 mt-4">
+          <View className="flex-row flex-wrap gap-4">
             {recording.species && (
               <View>
-                <Text style={{ fontSize: 11, color: '#a8a29e', fontWeight: '500' }}>SPECIES</Text>
-                <Text style={{ fontSize: 14, color: '#1c1917', marginTop: 2 }}>{recording.species}</Text>
+                <Text className="text-[11px] text-stone-400 font-medium">SPECIES</Text>
+                <Text className="text-body text-stone-900 mt-0.5">{recording.species}</Text>
               </View>
             )}
             {recording.breed && (
               <View>
-                <Text style={{ fontSize: 11, color: '#a8a29e', fontWeight: '500' }}>BREED</Text>
-                <Text style={{ fontSize: 14, color: '#1c1917', marginTop: 2 }}>{recording.breed}</Text>
+                <Text className="text-[11px] text-stone-400 font-medium">BREED</Text>
+                <Text className="text-body text-stone-900 mt-0.5">{recording.breed}</Text>
               </View>
             )}
             {recording.clientName && (
               <View>
-                <Text style={{ fontSize: 11, color: '#a8a29e', fontWeight: '500' }}>CLIENT</Text>
-                <Text style={{ fontSize: 14, color: '#1c1917', marginTop: 2 }}>{recording.clientName}</Text>
+                <Text className="text-[11px] text-stone-400 font-medium">CLIENT</Text>
+                <Text className="text-body text-stone-900 mt-0.5">{recording.clientName}</Text>
               </View>
             )}
             {recording.appointmentType && (
               <View>
-                <Text style={{ fontSize: 11, color: '#a8a29e', fontWeight: '500' }}>TYPE</Text>
-                <Text style={{ fontSize: 14, color: '#1c1917', marginTop: 2 }}>{recording.appointmentType}</Text>
+                <Text className="text-[11px] text-stone-400 font-medium">TYPE</Text>
+                <Text className="text-body text-stone-900 mt-0.5">{recording.appointmentType}</Text>
               </View>
             )}
           </View>
-          <Text style={{ fontSize: 12, color: '#a8a29e', marginTop: 12 }}>{formattedDate}</Text>
-        </View>
+          <Text className="text-caption text-stone-400 mt-3">{formattedDate}</Text>
+        </Card>
 
         {/* Processing Status */}
         {isProcessing && (
-          <View
-            style={{
-              backgroundColor: '#fff',
-              marginHorizontal: 20,
-              marginBottom: 16,
-              borderRadius: 14,
-              padding: 16,
-              borderWidth: 1,
-              borderColor: '#e7e5e4',
-            }}
-          >
-            <Text style={{ fontSize: 16, fontWeight: '600', color: '#1c1917', marginBottom: 4 }}>
+          <Card className="mx-5 mb-4">
+            <Text className="text-body-lg font-semibold text-stone-900 mb-1">
               Processing...
             </Text>
-            <Text style={{ fontSize: 13, color: '#78716c', marginBottom: 8 }}>
+            <Text className="text-body-sm text-stone-500 mb-2">
               This usually takes 1-2 minutes.
             </Text>
             <ProcessingStepper currentStatus={recording.status} />
-          </View>
+          </Card>
         )}
 
         {/* Failed */}
         {recording.status === 'failed' && (
-          <View
-            style={{
-              backgroundColor: '#fff',
-              marginHorizontal: 20,
-              marginBottom: 16,
-              borderRadius: 14,
-              padding: 16,
-              borderWidth: 1,
-              borderColor: '#fee2e2',
-            }}
-          >
-            <Text style={{ fontSize: 16, fontWeight: '600', color: '#991b1b', marginBottom: 4 }}>
-              Processing Failed
-            </Text>
-            {recording.errorMessage && (
-              <Text style={{ fontSize: 13, color: '#991b1b', marginBottom: 12 }}>
-                {recording.errorMessage}
+          <Animated.View entering={FadeInUp.duration(300)}>
+            <Card className="mx-5 mb-4 border-danger-100">
+              <Text className="text-body-lg font-semibold text-danger-700 mb-1">
+                Processing Failed
               </Text>
-            )}
-            <Pressable
-              onPress={() => retryMutation.mutate()}
-              disabled={retryMutation.isPending}
-              style={{
-                backgroundColor: '#0d8775',
-                paddingHorizontal: 16,
-                paddingVertical: 10,
-                borderRadius: 8,
-                flexDirection: 'row',
-                alignItems: 'center',
-                alignSelf: 'flex-start',
-                gap: 6,
-              }}
-            >
-              <RotateCcw color="#fff" size={16} />
-              <Text style={{ color: '#fff', fontWeight: '600' }}>
-                {retryMutation.isPending ? 'Retrying...' : 'Retry'}
-              </Text>
-            </Pressable>
-          </View>
+              {recording.errorMessage && (
+                <Text className="text-body-sm text-danger-700 mb-3">
+                  {recording.errorMessage}
+                </Text>
+              )}
+              <View className="self-start">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onPress={() => retryMutation.mutate()}
+                  loading={retryMutation.isPending}
+                  accessibilityLabel="Retry processing"
+                >
+                  Retry
+                </Button>
+              </View>
+            </Card>
+          </Animated.View>
         )}
 
         {/* SOAP Note */}
         {recording.status === 'completed' && (
-          <View style={{ paddingHorizontal: 20, paddingBottom: 32 }}>
+          <View className="px-5 pb-8">
             {isSoapNoteLoading ? (
-              <View style={{ padding: 20, alignItems: 'center' }}>
-                <ActivityIndicator size="large" color="#0d8775" />
-                <Text style={{ color: '#78716c', marginTop: 8, fontSize: 14 }}>
-                  Loading SOAP note...
-                </Text>
+              <View>
+                {[1, 2, 3, 4].map((i) => (
+                  <View key={i} className="border border-stone-200 rounded-input mb-2 p-3">
+                    <Skeleton width="30%" height={16} className="mb-2" />
+                    <SkeletonText lines={2} />
+                  </View>
+                ))}
               </View>
             ) : soapNote ? (
               <SoapNoteView soapNote={soapNote} />
             ) : (
-              <View style={{ padding: 20, alignItems: 'center' }}>
-                <Text style={{ color: '#991b1b', fontSize: 14 }}>
+              <View className="py-5 items-center">
+                <Text className="text-body text-danger-700">
                   Failed to load SOAP note. Pull down to refresh.
                 </Text>
               </View>

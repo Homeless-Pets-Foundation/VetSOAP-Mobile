@@ -8,7 +8,7 @@ export default function AuthLayout() {
 
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fafaf9' }}>
+      <View className="flex-1 justify-center items-center bg-stone-50">
         <ActivityIndicator size="large" color="#0d8775" />
       </View>
     );

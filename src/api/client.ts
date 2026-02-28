@@ -2,12 +2,14 @@ import { API_URL } from '../config';
 import { secureStorage } from '../lib/secureStorage';
 
 const REQUEST_TIMEOUT_MS = 30000;
+const UPLOAD_TIMEOUT_MS = 300000; // 5 minutes for large file uploads
 
 export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
-    public isRetryable: boolean = false
+    public isRetryable: boolean = false,
+    public details?: Array<{ field?: string; message: string }>
   ) {
     super(message);
     this.name = 'ApiError';
@@ -19,6 +21,10 @@ export class ApiClient {
 
   constructor(opts?: { onUnauthorized?: () => void }) {
     this.onUnauthorized = opts?.onUnauthorized;
+  }
+
+  setOnUnauthorized(callback: () => void) {
+    this.onUnauthorized = callback;
   }
 
   private async getAuthHeaders(): Promise<Record<string, string>> {
@@ -33,9 +39,10 @@ export class ApiClient {
       method?: string;
       body?: unknown;
       params?: Record<string, string | number | undefined>;
+      timeoutMs?: number;
     } = {}
   ): Promise<T> {
-    const { method = 'GET', body, params } = config;
+    const { method = 'GET', body, params, timeoutMs = REQUEST_TIMEOUT_MS } = config;
 
     let url = `${API_URL}${path}`;
     if (params) {
@@ -49,7 +56,7 @@ export class ApiClient {
 
     const authHeaders = await this.getAuthHeaders();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -68,10 +75,17 @@ export class ApiClient {
         }
 
         const errorBody = await response.json().catch(() => ({}));
+        const message =
+          errorBody.error ||
+          (errorBody.details?.length
+            ? errorBody.details.map((d: { message: string }) => d.message).join(', ')
+            : `Request failed: ${response.status}`);
+
         throw new ApiError(
-          errorBody.error || `Request failed: ${response.status}`,
+          message,
           response.status,
-          response.status === 429 || response.status >= 500
+          response.status === 429 || response.status >= 500,
+          errorBody.details
         );
       }
 

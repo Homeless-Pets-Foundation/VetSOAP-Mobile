@@ -7,9 +7,9 @@ import { ChevronLeft, RotateCcw } from 'lucide-react-native';
 import { recordingsApi } from '../../../src/api/recordings';
 import { StatusBadge } from '../../../src/components/StatusBadge';
 import { SoapNoteView } from '../../../src/components/SoapNoteView';
-import type { SoapNote } from '../../../src/types';
 
 const PROCESSING_STEPS = [
+  { status: 'uploading', label: 'Uploading' },
   { status: 'uploaded', label: 'Uploaded' },
   { status: 'transcribing', label: 'Transcribing' },
   { status: 'transcribed', label: 'Transcribed' },
@@ -17,14 +17,17 @@ const PROCESSING_STEPS = [
   { status: 'completed', label: 'Complete' },
 ] as const;
 
+const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'transcribed', 'generating', 'completed'];
+
 function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
-  const statusOrder = ['uploading', 'uploaded', 'transcribing', 'transcribed', 'generating', 'completed'];
-  const currentIndex = statusOrder.indexOf(currentStatus);
+  if (currentStatus === 'failed') return null;
+
+  const currentIndex = STATUS_ORDER.indexOf(currentStatus);
 
   return (
     <View style={{ marginVertical: 16 }}>
-      {PROCESSING_STEPS.map((step, i) => {
-        const stepIndex = statusOrder.indexOf(step.status);
+      {PROCESSING_STEPS.map((step) => {
+        const stepIndex = STATUS_ORDER.indexOf(step.status);
         const isComplete = currentIndex > stepIndex;
         const isCurrent = currentIndex === stepIndex;
 
@@ -71,7 +74,7 @@ export default function RecordingDetailScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const { data: recording, isLoading } = useQuery({
+  const { data: recording, isLoading, isError, error } = useQuery({
     queryKey: ['recording', id],
     queryFn: () => recordingsApi.get(id!),
     enabled: !!id,
@@ -84,9 +87,12 @@ export default function RecordingDetailScreen() {
     },
   });
 
-  const { data: soapNote } = useQuery({
+  const {
+    data: soapNote,
+    isLoading: isSoapNoteLoading,
+  } = useQuery({
     queryKey: ['soapNote', id],
-    queryFn: () => recordingsApi.getSoapNote(id!) as Promise<SoapNote>,
+    queryFn: () => recordingsApi.getSoapNote(id!),
     enabled: !!id && recording?.status === 'completed',
   });
 
@@ -99,6 +105,25 @@ export default function RecordingDetailScreen() {
       Alert.alert('Retry Failed', error.message);
     },
   });
+
+  if (isError) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#fafaf9', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+        <Text style={{ fontSize: 16, fontWeight: '600', color: '#991b1b', marginBottom: 8 }}>
+          Failed to load recording
+        </Text>
+        <Text style={{ fontSize: 14, color: '#78716c', textAlign: 'center', marginBottom: 16 }}>
+          {error instanceof Error ? error.message : 'An unexpected error occurred'}
+        </Text>
+        <Pressable
+          onPress={() => router.back()}
+          style={{ backgroundColor: '#0d8775', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Go Back</Text>
+        </Pressable>
+      </SafeAreaView>
+    );
+  }
 
   if (isLoading || !recording) {
     return (
@@ -242,9 +267,24 @@ export default function RecordingDetailScreen() {
         )}
 
         {/* SOAP Note */}
-        {recording.status === 'completed' && soapNote && (
+        {recording.status === 'completed' && (
           <View style={{ paddingHorizontal: 20, paddingBottom: 32 }}>
-            <SoapNoteView soapNote={soapNote} />
+            {isSoapNoteLoading ? (
+              <View style={{ padding: 20, alignItems: 'center' }}>
+                <ActivityIndicator size="large" color="#0d8775" />
+                <Text style={{ color: '#78716c', marginTop: 8, fontSize: 14 }}>
+                  Loading SOAP note...
+                </Text>
+              </View>
+            ) : soapNote ? (
+              <SoapNoteView soapNote={soapNote} />
+            ) : (
+              <View style={{ padding: 20, alignItems: 'center' }}>
+                <Text style={{ color: '#991b1b', fontSize: 14 }}>
+                  Failed to load SOAP note. Pull down to refresh.
+                </Text>
+              </View>
+            )}
           </View>
         )}
       </ScrollView>

@@ -34,6 +34,9 @@ yarn-error.*
 .env
 .env*.local
 
+# sensitive config (credentials, keys)
+.gitignore.d/
+
 # typescript
 *.tsbuildinfo
 

@@ -25,7 +25,7 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
   const copyAll = async () => {
     const fullNote = SECTIONS.map(({ key, label }) => {
       const section = soapNote[key];
-      return `${label.toUpperCase()}:\n${section.content}`;
+      return `${label.toUpperCase()}:\n${section?.content ?? ''}`;
     }).join('\n\n');
 
     await Clipboard.setStringAsync(fullNote);
@@ -53,6 +53,7 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
 
       {SECTIONS.map(({ key, label, color }) => {
         const section = soapNote[key];
+        if (!section) return null;
         const isExpanded = expandedSection === key;
 
         return (

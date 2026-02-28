@@ -5,15 +5,11 @@ import { secureStorage } from '../lib/secureStorage';
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     storage: {
-      async getItem(key: string) {
-        if (key.includes('access_token') || key.includes('token')) {
-          return secureStorage.getToken();
-        }
-        return null;
+      async getItem(_key: string) {
+        return secureStorage.getSession();
       },
-      async setItem(key: string, value: string) {
-        // Supabase stores the entire session as a JSON string under one key
-        // We parse it to extract access_token and refresh_token
+      async setItem(_key: string, value: string) {
+        await secureStorage.setSession(value);
         try {
           const session = JSON.parse(value);
           if (session?.access_token) {
@@ -23,8 +19,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
             await secureStorage.setRefreshToken(session.refresh_token);
           }
         } catch {
-          // Not a session JSON, store raw
-          await secureStorage.setToken(value);
+          // Not JSON — ignore
         }
       },
       async removeItem(_key: string) {

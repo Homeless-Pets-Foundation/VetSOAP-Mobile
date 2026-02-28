@@ -2,6 +2,7 @@ import React, { createContext, useEffect, useState, useCallback } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { secureStorage } from '../lib/secureStorage';
+import { apiClient } from '../api/client';
 import type { User } from '../types';
 import { API_URL } from '../config';
 
@@ -45,9 +46,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const handleSignOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    await secureStorage.clearAll();
+    setUser(null);
+    setSession(null);
+  }, []);
+
+  // Register the 401 handler so expired tokens redirect to login
   useEffect(() => {
+    apiClient.setOnUnauthorized(() => {
+      handleSignOut();
+    });
+  }, [handleSignOut]);
+
+  useEffect(() => {
+    // Restore existing session on startup
+    supabase.auth.getSession().then(({ data: { session: existingSession } }) => {
+      if (existingSession) {
+        setSession(existingSession);
+        if (existingSession.access_token) {
+          secureStorage.setToken(existingSession.access_token);
+          fetchUser(existingSession.access_token);
+        }
+      }
+      setIsLoading(false);
+    });
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, newSession) => {
+      async (_event, newSession) => {
         setSession(newSession);
 
         if (newSession?.access_token) {
@@ -65,14 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     );
 
-    // Safety timeout — if no auth event fires within 5 seconds, stop loading
-    const timeout = setTimeout(() => {
-      setIsLoading(false);
-    }, 5000);
-
     return () => {
       subscription.unsubscribe();
-      clearTimeout(timeout);
     };
   }, [fetchUser]);
 
@@ -84,13 +105,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error: null };
   }, []);
 
-  const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    await secureStorage.clearAll();
-    setUser(null);
-    setSession(null);
-  }, []);
-
   return (
     <AuthContext.Provider
       value={{
@@ -99,7 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isAuthenticated: !!session?.access_token,
         isLoading,
         signIn,
-        signOut,
+        signOut: handleSignOut,
       }}
     >
       {children}

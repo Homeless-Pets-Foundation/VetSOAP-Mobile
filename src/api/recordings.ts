@@ -5,7 +5,10 @@ import type {
   PaginatedResponse,
   UploadUrlResponse,
   RecordingStatus,
+  SoapNote,
 } from '../types';
+
+const UPLOAD_TIMEOUT_MS = 300000; // 5 minutes for R2 uploads
 
 export interface ListRecordingsParams {
   page?: number;
@@ -36,11 +39,13 @@ export const recordingsApi = {
   async getUploadUrl(
     recordingId: string,
     fileName: string,
-    contentType = 'audio/mp4'
+    contentType = 'audio/mp4',
+    fileSizeBytes?: number
   ): Promise<UploadUrlResponse> {
     return apiClient.post(`/api/recordings/${recordingId}/upload-url`, {
       fileName,
       contentType,
+      ...(fileSizeBytes !== undefined && { fileSizeBytes }),
     });
   },
 
@@ -60,25 +65,37 @@ export const recordingsApi = {
     const recording = await this.create(data);
 
     try {
-      // Step 2: Get presigned upload URL
-      const { uploadUrl, fileKey } = await this.getUploadUrl(
-        recording.id,
-        'recording.m4a',
-        contentType
-      );
-
-      // Step 3: Read local file and upload to storage
+      // Read local file to get blob and size
       const fileResponse = await fetch(fileUri);
       const blob = await fileResponse.blob();
 
-      const uploadResponse = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: blob,
-        headers: { 'Content-Type': contentType },
-      });
+      // Step 2: Get presigned upload URL (include file size for server validation)
+      const { uploadUrl, fileKey } = await this.getUploadUrl(
+        recording.id,
+        'recording.m4a',
+        contentType,
+        blob.size || undefined
+      );
 
-      if (!uploadResponse.ok) {
-        throw new Error('Failed to upload file to storage');
+      // Step 3: Upload to R2 with timeout
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+      try {
+        const uploadResponse = await fetch(uploadUrl, {
+          method: 'PUT',
+          body: blob,
+          headers: { 'Content-Type': contentType },
+          signal: controller.signal,
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error(
+            `Upload failed (${uploadResponse.status}): ${uploadResponse.statusText}`
+          );
+        }
+      } finally {
+        clearTimeout(timeout);
       }
 
       // Step 4: Confirm upload and trigger processing
@@ -94,7 +111,7 @@ export const recordingsApi = {
     return apiClient.post(`/api/recordings/${id}/retry`);
   },
 
-  async getSoapNote(recordingId: string) {
+  async getSoapNote(recordingId: string): Promise<SoapNote> {
     return apiClient.get(`/api/recordings/${recordingId}/soap-note`);
   },
 };

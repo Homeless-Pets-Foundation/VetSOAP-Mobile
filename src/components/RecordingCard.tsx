@@ -20,7 +20,7 @@ export function RecordingCard({ recording }: RecordingCardProps) {
 
   return (
     <Pressable
-      onPress={() => router.push(`/recordings/${recording.id}` as any)}
+      onPress={() => router.push(`/(app)/recordings/${recording.id}` as any)}
       style={({ pressed }) => ({
         backgroundColor: pressed ? '#f5f5f4' : '#ffffff',
         borderRadius: 12,

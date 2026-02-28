@@ -29,7 +29,7 @@ export default function RecordScreen() {
     },
     onSuccess: (recording) => {
       queryClient.invalidateQueries({ queryKey: ['recordings'] });
-      router.push(`/recordings/${recording.id}` as any);
+      router.push(`/(app)/recordings/${recording.id}` as any);
     },
     onError: (error: Error) => {
       Alert.alert('Upload Failed', error.message || 'Failed to process recording. Please try again.');

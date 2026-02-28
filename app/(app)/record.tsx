@@ -92,7 +92,15 @@ export default function RecordScreen() {
     onSuccess: (recording) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       queryClient.invalidateQueries({ queryKey: ['recordings'] });
-      router.push(`/(app)/recordings/${recording.id}` as any);
+      recorder.reset();
+      setFormData({
+        patientName: '',
+        clientName: '',
+        species: '',
+        breed: '',
+        appointmentType: '',
+      });
+      router.push(`/(app)/recordings/${recording.id}` as `/(app)/recordings/${string}`);
     },
     onError: (error: Error) => {
       Alert.alert('Upload Failed', error.message || 'Failed to process recording. Please try again.');

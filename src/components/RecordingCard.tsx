@@ -40,7 +40,11 @@ export function RecordingCard({ recording }: RecordingCardProps) {
 
   return (
     <AnimatedPressable
-      onPress={() => router.push(`/(app)/recordings/${recording.id}` as any)}
+      onPress={() => {
+        if (recording.id) {
+          router.push(`/(app)/recordings/${recording.id}` as `/(app)/recordings/${string}`);
+        }
+      }}
       onPressIn={() => {
         scale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
       }}

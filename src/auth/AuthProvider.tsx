@@ -31,15 +31,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchUser = useCallback(async (accessToken: string) => {
     try {
-      const response = await fetch(`${API_URL}/api/users/me`, {
+      const response = await fetch(`${API_URL}/auth/me`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
       });
       if (response.ok) {
-        const userData = await response.json();
-        setUser(userData);
+        const { user } = await response.json();
+        setUser(user);
       }
     } catch {
       // User fetch failed — will retry on next session event

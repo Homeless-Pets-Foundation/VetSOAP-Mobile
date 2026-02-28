@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -13,20 +13,34 @@ import { Button } from '../../../src/components/ui/Button';
 export default function RecordingsListScreen() {
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [page, setPage] = useState(1);
   const [isFocused, setIsFocused] = useState(false);
+  const isFetchingNextPageRef = useRef(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['recordings', 'list', search, page],
+    queryKey: ['recordings', 'list', debouncedSearch, page],
     queryFn: () =>
       recordingsApi.list({
-        search: search || undefined,
+        search: debouncedSearch || undefined,
         page,
         limit: 20,
         sortBy: 'createdAt',
         sortOrder: 'desc',
       }),
   });
+
+  useEffect(() => {
+    isFetchingNextPageRef.current = false;
+  }, [data]);
 
   const recordings = data?.data ?? [];
   const hasMore = data?.pagination ? page < data.pagination.totalPages : false;
@@ -50,10 +64,7 @@ export default function RecordingsListScreen() {
           <Search color="#a8a29e" size={18} />
           <TextInput
             value={search}
-            onChangeText={(v) => {
-              setSearch(v);
-              setPage(1);
-            }}
+            onChangeText={setSearch}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
             placeholder="Search by patient name..."
@@ -80,7 +91,10 @@ export default function RecordingsListScreen() {
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
         onEndReached={() => {
-          if (hasMore) setPage((p) => p + 1);
+          if (hasMore && !isFetchingNextPageRef.current) {
+            isFetchingNextPageRef.current = true;
+            setPage((p) => p + 1);
+          }
         }}
         onEndReachedThreshold={0.5}
         ListFooterComponent={

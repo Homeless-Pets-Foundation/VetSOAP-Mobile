@@ -110,7 +110,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
-      });
+      }).catch(() => {});
     }
   }, []);
 
@@ -134,7 +134,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     state,
     duration,
     audioUri,
-    mimeType: 'audio/mp4',
+    mimeType: 'audio/x-m4a',
     start,
     pause,
     resume,

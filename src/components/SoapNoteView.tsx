@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -52,11 +52,16 @@ function AccordionSection({
   onToggle: () => void;
 }) {
   const [showCopied, setShowCopied] = useState(false);
+  const copyTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const rotation = useSharedValue(isExpanded ? 1 : 0);
 
   React.useEffect(() => {
     rotation.value = withTiming(isExpanded ? 1 : 0, { duration: 200 });
   }, [isExpanded]);
+
+  React.useEffect(() => {
+    return () => clearTimeout(copyTimeoutRef.current);
+  }, []);
 
   const indicatorStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${rotation.value * 90}deg` }],
@@ -66,7 +71,8 @@ function AccordionSection({
     await Clipboard.setStringAsync(content);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowCopied(true);
-    setTimeout(() => setShowCopied(false), 1500);
+    clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = setTimeout(() => setShowCopied(false), 1500);
   };
 
   return (
@@ -120,6 +126,11 @@ function AccordionSection({
 export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
   const [expandedSection, setExpandedSection] = useState<string | null>('subjective');
   const [showCopiedAll, setShowCopiedAll] = useState(false);
+  const copyAllTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    return () => clearTimeout(copyAllTimeoutRef.current);
+  }, []);
 
   const copyAll = useCallback(async () => {
     const fullNote = SECTIONS.map(({ key, label }) => {
@@ -130,7 +141,8 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
     await Clipboard.setStringAsync(fullNote);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowCopiedAll(true);
-    setTimeout(() => setShowCopiedAll(false), 1500);
+    clearTimeout(copyAllTimeoutRef.current);
+    copyAllTimeoutRef.current = setTimeout(() => setShowCopiedAll(false), 1500);
   }, [soapNote]);
 
   return (

@@ -8,8 +8,8 @@ import Animated, {
   FadeIn,
   FadeOut,
 } from 'react-native-reanimated';
-import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
+import { copyWithAutoClear } from '../lib/secureClipboard';
 import { Copy } from 'lucide-react-native';
 import type { SoapNote } from '../types';
 
@@ -68,7 +68,7 @@ function AccordionSection({
   }));
 
   const copySection = async () => {
-    await Clipboard.setStringAsync(content);
+    await copyWithAutoClear(content);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowCopied(true);
     clearTimeout(copyTimeoutRef.current);
@@ -138,7 +138,7 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
       return `${label.toUpperCase()}:\n${section?.content ?? ''}`;
     }).join('\n\n');
 
-    await Clipboard.setStringAsync(fullNote);
+    await copyWithAutoClear(fullNote);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowCopiedAll(true);
     clearTimeout(copyAllTimeoutRef.current);

@@ -35,7 +35,9 @@ yarn-error.*
 .env*.local
 
 # sensitive config (credentials, keys)
+credentials.json
 .gitignore.d/
+.npmrc
 
 # typescript
 *.tsbuildinfo

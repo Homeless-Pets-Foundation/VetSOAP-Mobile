@@ -7,8 +7,15 @@ import type {
   RecordingStatus,
   SoapNote,
 } from '../types';
+import {
+  recordingIdSchema,
+  createRecordingSchema,
+  searchQuerySchema,
+} from '../lib/validation';
+import { validateUploadUrl } from '../lib/sslPinning';
 
 const UPLOAD_TIMEOUT_MS = 300000; // 5 minutes for R2 uploads
+const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 
 export interface ListRecordingsParams {
   page?: number;
@@ -21,18 +28,25 @@ export interface ListRecordingsParams {
 
 export const recordingsApi = {
   async list(params: ListRecordingsParams = {}): Promise<PaginatedResponse<Recording>> {
-    return apiClient.get('/api/recordings', params as Record<string, string | number | undefined>);
+    const sanitized = { ...params } as Record<string, string | number | undefined>;
+    if (params.search) {
+      sanitized.search = searchQuerySchema.parse(params.search);
+    }
+    return apiClient.get('/api/recordings', sanitized);
   },
 
   async get(id: string): Promise<Recording> {
+    recordingIdSchema.parse(id);
     return apiClient.get(`/api/recordings/${id}`);
   },
 
   async create(data: CreateRecording): Promise<Recording> {
-    return apiClient.post('/api/recordings', data);
+    const validated = createRecordingSchema.parse(data);
+    return apiClient.post('/api/recordings', validated);
   },
 
   async delete(id: string): Promise<void> {
+    recordingIdSchema.parse(id);
     return apiClient.delete(`/api/recordings/${id}`);
   },
 
@@ -42,6 +56,7 @@ export const recordingsApi = {
     contentType = 'audio/mp4',
     fileSizeBytes?: number
   ): Promise<UploadUrlResponse> {
+    recordingIdSchema.parse(recordingId);
     return apiClient.post(`/api/recordings/${recordingId}/upload-url`, {
       fileName,
       contentType,
@@ -50,6 +65,7 @@ export const recordingsApi = {
   },
 
   async confirmUpload(recordingId: string, fileKey: string): Promise<Recording> {
+    recordingIdSchema.parse(recordingId);
     return apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, { fileKey });
   },
 
@@ -61,7 +77,7 @@ export const recordingsApi = {
     fileUri: string,
     contentType = 'audio/mp4'
   ): Promise<Recording> {
-    // Step 1: Create recording record
+    // Step 1: Create recording record (validates data via this.create)
     const recording = await this.create(data);
 
     let r2UploadComplete = false;
@@ -73,6 +89,13 @@ export const recordingsApi = {
       const fileSizeBytes =
         blob.size || Number(fileResponse.headers.get('content-length')) || undefined;
 
+      // Enforce client-side file size limit
+      if (fileSizeBytes && fileSizeBytes > MAX_FILE_SIZE_BYTES) {
+        throw new Error(
+          `File too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 500MB.`
+        );
+      }
+
       // Step 2: Get presigned upload URL (include file size for server validation)
       const { uploadUrl, fileKey } = await this.getUploadUrl(
         recording.id,
@@ -80,6 +103,9 @@ export const recordingsApi = {
         contentType,
         fileSizeBytes
       );
+
+      // Validate the presigned upload URL targets a trusted storage domain
+      validateUploadUrl(uploadUrl);
 
       // Step 3: Upload to R2 with timeout
       const controller = new AbortController();
@@ -118,10 +144,12 @@ export const recordingsApi = {
   },
 
   async retry(id: string): Promise<Recording> {
+    recordingIdSchema.parse(id);
     return apiClient.post(`/api/recordings/${id}/retry`);
   },
 
   async getSoapNote(recordingId: string): Promise<SoapNote> {
+    recordingIdSchema.parse(recordingId);
     return apiClient.get(`/api/recordings/${recordingId}/soap-note`);
   },
 };

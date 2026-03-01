@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { View, Text, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
@@ -6,6 +6,10 @@ import { AlertCircle } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
+import { emailSchema, passwordSchema } from '../../src/lib/validation';
+
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_DURATION_MS = 60_000; // 1 minute
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
@@ -14,22 +18,50 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSignIn = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError('Please enter both email and password');
+  const failedAttemptsRef = useRef(0);
+  const lockoutUntilRef = useRef<number>(0);
+
+  const handleSignIn = useCallback(async () => {
+    // Check lockout
+    if (lockoutUntilRef.current > Date.now()) {
+      const remaining = Math.ceil((lockoutUntilRef.current - Date.now()) / 1000);
+      setError(`Too many failed attempts. Please try again in ${remaining}s.`);
+      return;
+    }
+
+    // Validate email format
+    const emailResult = emailSchema.safeParse(email);
+    if (!emailResult.success) {
+      setError(emailResult.error.issues[0].message);
+      return;
+    }
+
+    // Validate password length
+    const passwordResult = passwordSchema.safeParse(password);
+    if (!passwordResult.success) {
+      setError(passwordResult.error.issues[0].message);
       return;
     }
 
     setError(null);
     setIsLoading(true);
 
-    const result = await signIn(email.trim(), password);
+    const result = await signIn(emailResult.data, password);
     if (result.error) {
-      setError(result.error);
+      failedAttemptsRef.current += 1;
+      if (failedAttemptsRef.current >= MAX_LOGIN_ATTEMPTS) {
+        lockoutUntilRef.current = Date.now() + LOCKOUT_DURATION_MS;
+        failedAttemptsRef.current = 0;
+        setError('Too many failed attempts. Please try again in 60s.');
+      } else {
+        setError(result.error);
+      }
+    } else {
+      failedAttemptsRef.current = 0;
     }
 
     setIsLoading(false);
-  };
+  }, [email, password, signIn]);
 
   return (
     <SafeAreaView className="screen">

@@ -1,5 +1,7 @@
 import { API_URL } from '../config';
 import { secureStorage } from '../lib/secureStorage';
+import { validateRequestUrl } from '../lib/sslPinning';
+import { getSigningHeaders } from '../lib/requestSigning';
 
 const REQUEST_TIMEOUT_MS = 30000;
 const UPLOAD_TIMEOUT_MS = 300000; // 5 minutes for large file uploads
@@ -54,7 +56,12 @@ export class ApiClient {
       if (qs) url += `?${qs}`;
     }
 
+    // Validate the request targets a trusted domain over HTTPS
+    validateRequestUrl(url);
+
+    const serializedBody = body ? JSON.stringify(body) : undefined;
     const authHeaders = await this.getAuthHeaders();
+    const signingHeaders = await getSigningHeaders(method, path, serializedBody);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -64,8 +71,9 @@ export class ApiClient {
         headers: {
           'Content-Type': 'application/json',
           ...authHeaders,
+          ...signingHeaders,
         },
-        body: body ? JSON.stringify(body) : undefined,
+        body: serializedBody,
         signal: controller.signal,
       });
 
@@ -75,17 +83,38 @@ export class ApiClient {
         }
 
         const errorBody = await response.json().catch(() => ({}));
-        const message =
-          errorBody.error ||
-          (errorBody.details?.length
-            ? errorBody.details.map((d: { message: string }) => d.message).join(', ')
-            : `Request failed: ${response.status}`);
+
+        // In production, use generic messages for server errors to avoid
+        // leaking internal implementation details to the client.
+        let message: string;
+        if (__DEV__) {
+          message =
+            errorBody.error ||
+            (errorBody.details?.length
+              ? errorBody.details.map((d: { message: string }) => d.message).join(', ')
+              : `Request failed: ${response.status}`);
+        } else if (response.status === 401) {
+          message = 'Your session has expired. Please sign in again.';
+        } else if (response.status === 403) {
+          message = 'You do not have permission to perform this action.';
+        } else if (response.status === 404) {
+          message = 'The requested resource was not found.';
+        } else if (response.status === 422 && errorBody.details?.length) {
+          // Validation errors are safe to show
+          message = errorBody.details.map((d: { message: string }) => d.message).join(', ');
+        } else if (response.status === 429) {
+          message = 'Too many requests. Please try again shortly.';
+        } else if (response.status >= 500) {
+          message = 'A server error occurred. Please try again later.';
+        } else {
+          message = errorBody.error || 'Something went wrong. Please try again.';
+        }
 
         throw new ApiError(
           message,
           response.status,
           response.status === 429 || response.status >= 500,
-          errorBody.details
+          __DEV__ ? errorBody.details : undefined
         );
       }
 

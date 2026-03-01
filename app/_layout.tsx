@@ -27,13 +27,17 @@ class ErrorBoundary extends React.Component<
 
   render() {
     if (this.state.hasError) {
+      const displayMessage = __DEV__
+        ? (this.state.error?.message || 'An unexpected error occurred.')
+        : 'Something unexpected happened. Please try again.';
+
       return (
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
           <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 8 }}>
             Something went wrong
           </Text>
           <Text style={{ fontSize: 14, color: '#78716c', textAlign: 'center', marginBottom: 16 }}>
-            {this.state.error?.message || 'An unexpected error occurred.'}
+            {displayMessage}
           </Text>
           <Pressable
             onPress={() => this.setState({ hasError: false, error: null })}

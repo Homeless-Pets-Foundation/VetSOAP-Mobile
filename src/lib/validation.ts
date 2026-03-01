@@ -20,14 +20,12 @@ export const createRecordingSchema = z.object({
     .pipe(z.string().min(1, 'Patient name is required').max(200, 'Patient name too long')),
   clientName: z
     .string()
-    .optional()
-    .transform((v) => (v ? sanitize(v) : v))
-    .pipe(z.string().max(200, 'Client name too long').optional()),
+    .transform(sanitize)
+    .pipe(z.string().min(1, 'Client name is required').max(200, 'Client name too long')),
   species: z
     .string()
-    .optional()
-    .transform((v) => (v ? sanitize(v) : v))
-    .pipe(z.string().max(100, 'Species name too long').optional()),
+    .transform(sanitize)
+    .pipe(z.string().min(1, 'Species is required').max(100, 'Species name too long')),
   breed: z
     .string()
     .optional()

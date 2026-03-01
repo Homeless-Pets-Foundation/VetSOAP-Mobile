@@ -15,6 +15,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAudioRecorder } from '../../src/hooks/useAudioRecorder';
+import { useTemplates } from '../../src/hooks/useTemplates';
 import { recordingsApi } from '../../src/api/recordings';
 import { PatientForm } from '../../src/components/PatientForm';
 import { AudioWaveform } from '../../src/components/AudioWaveform';
@@ -74,6 +75,7 @@ export default function RecordScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const recorder = useAudioRecorder();
+  const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
   const recordBtnScale = useSharedValue(1);
 
   const [formData, setFormData] = useState<CreateRecording>({
@@ -83,6 +85,13 @@ export default function RecordScreen() {
     breed: '',
     appointmentType: '',
   });
+
+  // Auto-select default template once templates load
+  useEffect(() => {
+    if (defaultTemplate && !formData.templateId) {
+      setFormData((prev) => ({ ...prev, templateId: defaultTemplate.id }));
+    }
+  }, [defaultTemplate]);
 
   const uploadMutation = useMutation({
     mutationFn: async () => {
@@ -99,6 +108,7 @@ export default function RecordScreen() {
         species: '',
         breed: '',
         appointmentType: '',
+        templateId: defaultTemplate?.id,
       });
       router.push(`/(app)/recordings/${recording.id}` as `/(app)/recordings/${string}`);
     },
@@ -117,8 +127,12 @@ export default function RecordScreen() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const canStartRecording = formData.patientName.trim().length > 0 && recorder.permissionGranted;
-  const canSubmit = formData.patientName.trim().length > 0 && recorder.audioUri !== null;
+  const hasRequiredFields =
+    formData.patientName.trim().length > 0 &&
+    formData.clientName.trim().length > 0 &&
+    !!formData.species;
+  const canStartRecording = hasRequiredFields && recorder.permissionGranted;
+  const canSubmit = hasRequiredFields && recorder.audioUri !== null;
   const isRecording = recorder.state === 'recording';
 
   const handleStart = async () => {
@@ -152,7 +166,7 @@ export default function RecordScreen() {
     transform: [{ scale: recordBtnScale.value }],
   }));
 
-  const step1Variant = formData.patientName ? 'complete' : 'active';
+  const step1Variant = hasRequiredFields ? 'complete' : 'active';
   const step2Variant = recorder.audioUri ? 'complete' : canStartRecording ? 'active' : 'pending';
   const step3Variant = recorder.audioUri ? 'active' : 'pending';
 
@@ -188,7 +202,12 @@ export default function RecordScreen() {
         <View className="flex-row items-center mb-4">
           <StepBadge step={1} variant={step1Variant} />
         </View>
-        <PatientForm formData={formData} onUpdate={updateField} />
+        <PatientForm
+          formData={formData}
+          onUpdate={updateField}
+          templates={templates}
+          templatesLoading={templatesLoading}
+        />
       </Card>
 
       {/* Step 2: Recording Controls */}
@@ -243,7 +262,7 @@ export default function RecordScreen() {
                 }}
                 disabled={!canStartRecording}
                 accessibilityRole="button"
-                accessibilityLabel={!formData.patientName.trim() ? 'Enter patient name first' : 'Start recording'}
+                accessibilityLabel={!hasRequiredFields ? 'Enter patient name, client name, and species first' : 'Start recording'}
                 className={`w-20 h-20 rounded-full justify-center items-center ${
                   canStartRecording ? 'bg-brand-500' : 'bg-stone-300'
                 }`}

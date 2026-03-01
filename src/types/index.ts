@@ -36,8 +36,8 @@ export interface Recording {
 
 export interface CreateRecording {
   patientName: string;
-  clientName?: string;
-  species?: string;
+  clientName: string;
+  species: string;
   breed?: string;
   appointmentType?: string;
   templateId?: string;
@@ -89,3 +89,45 @@ export interface User {
   organizationId: string;
   avatarUrl: string | null;
 }
+
+export interface TemplateSection {
+  enabled: boolean;
+  customPrompt: string | null;
+  defaultContent: string | null;
+  requiredFields: string[];
+}
+
+export type OutputFormat = 'structured' | 'narrative';
+
+export interface Template {
+  id: string;
+  organizationId: string;
+  name: string;
+  description: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+  species: string[];
+  appointmentTypes: string[];
+  sections: {
+    subjective: TemplateSection;
+    objective: TemplateSection;
+    assessment: TemplateSection;
+    plan: TemplateSection;
+  };
+  systemPrompt: string | null;
+  outputFormat: OutputFormat;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Maps SOAP prompt variable keys to CreateRecording form fields.
+ * Variables not listed here (appointment_date, transcript) are auto-generated.
+ */
+export const VARIABLE_TO_FIELD: Record<string, keyof CreateRecording> = {
+  patient_name: 'patientName',
+  client_name: 'clientName',
+  species: 'species',
+  breed: 'breed',
+  appointment_type: 'appointmentType',
+};

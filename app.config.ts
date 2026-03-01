@@ -30,6 +30,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           usesCleartextTraffic: IS_DEV, // Only allow HTTP in dev
           enableProguardInReleaseBuilds: true,
           allowBackup: false, // Prevent unencrypted backup extraction
+          extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
         },
         ios: {
           deploymentTarget: '15.1', // Drop support for older insecure iOS

@@ -42,6 +42,11 @@ credentials.json
 # typescript
 *.tsbuildinfo
 
+# build artifacts
+*.apk
+*.aab
+*.ipa
+
 # generated native folders
 /ios
 /android

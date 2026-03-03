@@ -141,6 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (existingSession) {
         setSession(existingSession);
         if (existingSession.access_token) {
+          sessionTimestampRef.current = Date.now();
           secureStorage.setToken(existingSession.access_token).catch(() => {});
           fetchUser().catch(() => {});
         }

@@ -72,7 +72,9 @@ export default function LoginScreen() {
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         className="flex-1 justify-center px-6"
+        style={{ alignItems: 'center' }}
       >
+        <View style={{ width: '100%', maxWidth: 400 }}>
         {/* Logo / Brand */}
         <Animated.View entering={FadeInDown.duration(500)} className="items-center mb-10">
           <View className="w-16 h-16 rounded-2xl bg-brand-500 justify-center items-center mb-4 shadow-card-md">
@@ -136,6 +138,7 @@ export default function LoginScreen() {
             </Button>
           </View>
         </Animated.View>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

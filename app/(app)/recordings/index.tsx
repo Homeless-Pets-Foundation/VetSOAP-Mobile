@@ -63,7 +63,8 @@ export default function RecordingsListScreen() {
   const recordings = data?.pages.flatMap((page) => page.data) ?? [];
 
   return (
-    <SafeAreaView className="screen">
+    <SafeAreaView className="screen" style={{ alignItems: 'center' }}>
+      <View style={{ flex: 1, width: '100%', maxWidth: 640 }}>
       <View className="px-5 pt-5 pb-0">
         <Text
           className="text-display font-bold text-stone-900 mb-4"
@@ -150,6 +151,7 @@ export default function RecordingsListScreen() {
           )
         }
       />
+      </View>
     </SafeAreaView>
   );
 }

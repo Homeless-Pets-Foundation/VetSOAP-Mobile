@@ -154,10 +154,11 @@ export default function RecordScreen() {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
         await recorder.start();
       } catch (error) {
-        Alert.alert(
-          'Microphone Error',
-          'Failed to access microphone. Please check permissions in Settings.'
-        );
+        const msg =
+          error instanceof Error && error.message.toLowerCase().includes('permission')
+            ? 'Microphone permission is required. Please grant access in Settings.'
+            : 'Could not start recording. Please check that your device has a microphone and it is not in use by another app.';
+        Alert.alert('Microphone Error', msg);
       }
     })().catch(() => {});
   };

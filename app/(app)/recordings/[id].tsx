@@ -223,6 +223,7 @@ export default function RecordingDetailScreen() {
           />
         }
       >
+        <View style={{ width: '100%', maxWidth: 640, alignSelf: 'center' }}>
         {/* Header */}
         <View className="flex-row items-center px-5 pt-5">
           <Pressable
@@ -344,6 +345,7 @@ export default function RecordingDetailScreen() {
             )}
           </View>
         )}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );

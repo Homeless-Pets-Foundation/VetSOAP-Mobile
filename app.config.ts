@@ -50,7 +50,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     slug: 'vetsoap-mobile',
     scheme: 'vetsoap-mobile',
     version: '1.0.0',
-    orientation: 'portrait',
+    orientation: 'default',
     icon: './assets/icon.png',
     userInterfaceStyle: 'light',
     splash: {

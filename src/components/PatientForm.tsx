@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { TextInputField } from './ui/TextInputField';
 import type { CreateRecording, Template } from '../types';
 
-const SPECIES_OPTIONS = ['Canine', 'Feline', 'Equine', 'Bovine', 'Avian', 'Exotic', 'Other'];
+const SPECIES_OPTIONS = ['Canine', 'Feline'];
 
 interface PatientFormProps {
   formData: CreateRecording;
@@ -108,43 +108,41 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading }:
         <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
           Species<Text className="text-danger-500"> *</Text>
         </Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
+        <View
+          className="flex-row gap-2"
           accessibilityRole="radiogroup"
           accessibilityLabel="Species selection"
         >
-          <View className="flex-row gap-1.5">
-            {SPECIES_OPTIONS.map((species) => {
-              const isSelected = formData.species === species;
-              return (
-                <Pressable
-                  key={species}
-                  onPress={() => {
-                    Haptics.selectionAsync().catch(() => {});
-                    onUpdate('species', isSelected ? '' : species);
-                  }}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: isSelected }}
-                  accessibilityLabel={species}
-                  className={`px-3.5 min-h-[44px] justify-center rounded-pill border ${
-                    isSelected
-                      ? 'border-brand-500 bg-brand-500'
-                      : 'border-stone-300 bg-white'
+          {SPECIES_OPTIONS.map((species) => {
+            const isSelected = formData.species === species;
+            return (
+              <Pressable
+                key={species}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  onUpdate('species', isSelected ? '' : species);
+                }}
+                hitSlop={8}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: isSelected }}
+                accessibilityLabel={species}
+                className={`flex-1 min-h-[48px] items-center justify-center rounded-pill border ${
+                  isSelected
+                    ? 'border-brand-500 bg-brand-500'
+                    : 'border-stone-300 bg-white'
+                }`}
+              >
+                <Text
+                  className={`text-body font-medium ${
+                    isSelected ? 'text-white' : 'text-stone-700'
                   }`}
                 >
-                  <Text
-                    className={`text-body-sm font-medium ${
-                      isSelected ? 'text-white' : 'text-stone-700'
-                    }`}
-                  >
-                    {species}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </ScrollView>
+                  {species}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
 
       <TextInputField

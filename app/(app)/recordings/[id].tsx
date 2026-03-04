@@ -12,7 +12,6 @@ import { SoapNoteView } from '../../../src/components/SoapNoteView';
 import { Button } from '../../../src/components/ui/Button';
 import { Card } from '../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../src/components/ui/Skeleton';
-import { useScreenSecurity } from '../../../src/hooks/useScreenSecurity';
 
 const PROCESSING_STEPS = [
   { status: 'uploading', label: 'Uploading' },
@@ -124,9 +123,6 @@ export default function RecordingDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
-
-  // Prevent screenshots on screens displaying patient health data
-  useScreenSecurity();
 
   const { data: recording, isLoading, isError, error, refetch: refetchRecording, isRefetching: isRefetchingRecording } = useQuery({
     queryKey: ['recording', id],

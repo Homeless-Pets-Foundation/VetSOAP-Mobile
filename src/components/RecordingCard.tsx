@@ -65,7 +65,11 @@ export function RecordingCard({ recording }: RecordingCardProps) {
             {recording.patientName}
           </Text>
           {description ? (
-            <Text className="text-body-sm text-stone-500 mt-0.5">
+            <Text
+              className="text-body-sm text-stone-500 mt-0.5"
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
               {description}
             </Text>
           ) : null}

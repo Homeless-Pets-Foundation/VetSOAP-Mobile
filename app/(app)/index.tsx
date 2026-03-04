@@ -12,7 +12,6 @@ import { useQuery } from '@tanstack/react-query';
 import { Mic, ChevronRight, FileText } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../src/hooks/useAuth';
-import { useScreenSecurity } from '../../src/hooks/useScreenSecurity';
 import { recordingsApi } from '../../src/api/recordings';
 import { RecordingCard } from '../../src/components/RecordingCard';
 import { ScreenContainer } from '../../src/components/ui/ScreenContainer';
@@ -22,7 +21,6 @@ import { Card } from '../../src/components/ui/Card';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function HomeScreen() {
-  useScreenSecurity();
   const router = useRouter();
   const { user } = useAuth();
   const ctaScale = useSharedValue(1);

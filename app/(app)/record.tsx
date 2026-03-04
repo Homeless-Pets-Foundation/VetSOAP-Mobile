@@ -16,7 +16,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAudioRecorder } from '../../src/hooks/useAudioRecorder';
-import { useScreenSecurity } from '../../src/hooks/useScreenSecurity';
 import { useTemplates } from '../../src/hooks/useTemplates';
 import { recordingsApi } from '../../src/api/recordings';
 import { ApiError } from '../../src/api/client';
@@ -76,7 +75,6 @@ function PulsingDot() {
 }
 
 export default function RecordScreen() {
-  useScreenSecurity();
   const router = useRouter();
   const queryClient = useQueryClient();
   const recorder = useAudioRecorder();

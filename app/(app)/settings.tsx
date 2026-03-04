@@ -5,12 +5,10 @@ import { useRouter } from 'expo-router';
 import { LogOut, User, ChevronLeft, Shield } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../src/hooks/useAuth';
-import { useScreenSecurity } from '../../src/hooks/useScreenSecurity';
 import { biometrics } from '../../src/lib/biometrics';
 import Constants from 'expo-constants';
 
 export default function SettingsScreen() {
-  useScreenSecurity();
   const router = useRouter();
   const { user, signOut } = useAuth();
 

@@ -9,13 +9,11 @@ import { recordingsApi } from '../../../src/api/recordings';
 import { RecordingCard } from '../../../src/components/RecordingCard';
 import { SkeletonCard } from '../../../src/components/ui/Skeleton';
 import { Button } from '../../../src/components/ui/Button';
-import { useScreenSecurity } from '../../../src/hooks/useScreenSecurity';
 
 const PAGE_SIZE = 20;
 
 export default function RecordingsListScreen() {
   const router = useRouter();
-  useScreenSecurity();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);

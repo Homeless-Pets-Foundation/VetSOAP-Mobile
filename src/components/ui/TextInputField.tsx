@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, type TextInputProps } from 'react-native';
+import { View, Text, TextInput, type TextInputProps, type NativeSyntheticEvent, type TargetedEvent } from 'react-native';
 
 interface TextInputFieldProps extends Omit<TextInputProps, 'style'> {
   label: string;
@@ -17,12 +17,12 @@ export function TextInputField({
 }: TextInputFieldProps) {
   const [isFocused, setIsFocused] = useState(false);
 
-  const handleFocus = (e: any) => {
+  const handleFocus = (e: NativeSyntheticEvent<TargetedEvent>) => {
     setIsFocused(true);
     onFocus?.(e);
   };
 
-  const handleBlur = (e: any) => {
+  const handleBlur = (e: NativeSyntheticEvent<TargetedEvent>) => {
     setIsFocused(false);
     onBlur?.(e);
   };

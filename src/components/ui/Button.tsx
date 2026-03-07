@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, Text, ActivityIndicator, type PressableProps } from 'react-native';
+import { Pressable, Text, ActivityIndicator, type PressableProps, type GestureResponderEvent } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -70,7 +70,7 @@ export function Button({
     scale.value = withSpring(1, { damping: 15, stiffness: 300 });
   };
 
-  const handlePress = (e: any) => {
+  const handlePress = (e: GestureResponderEvent) => {
     if (haptic) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }

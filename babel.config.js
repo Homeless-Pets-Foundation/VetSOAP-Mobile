@@ -1,10 +1,9 @@
 module.exports = function (api) {
   api.cache(true);
   const plugins = ['react-native-reanimated/plugin'];
-  // Temporarily disabled to capture [Auth] diagnostic logs in release builds
-  // if (process.env.NODE_ENV === 'production') {
-  //   plugins.push('transform-remove-console');
-  // }
+  if (process.env.NODE_ENV === 'production') {
+    plugins.push('transform-remove-console');
+  }
   return {
     presets: [['babel-preset-expo', { jsxImportSource: 'nativewind' }]],
     plugins,

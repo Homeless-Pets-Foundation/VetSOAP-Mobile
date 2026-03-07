@@ -9,7 +9,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
-import { Mic, ChevronRight, FileText } from 'lucide-react-native';
+import { Mic, ChevronRight, FileText, Settings } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../src/hooks/useAuth';
 import { recordingsApi } from '../../src/api/recordings';
@@ -49,16 +49,30 @@ export default function HomeScreen() {
   return (
     <ScreenContainer refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }}>
       {/* Header */}
-      <Animated.View entering={FadeInDown.duration(400)} className="mb-6">
-        <Text
-          className="text-display font-bold text-stone-900"
-          accessibilityRole="header"
+      <Animated.View entering={FadeInDown.duration(400)} className="mb-6 flex-row items-start justify-between">
+        <View className="flex-1">
+          <Text
+            className="text-display font-bold text-stone-900"
+            accessibilityRole="header"
+          >
+            Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
+          </Text>
+          <Text className="text-body text-stone-500 mt-1">
+            Record appointments and generate SOAP notes
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            router.push('/(app)/settings');
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Settings"
+          className="p-2 -mr-2 mt-0.5"
+          hitSlop={8}
         >
-          Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
-        </Text>
-        <Text className="text-body text-stone-500 mt-1">
-          Record appointments and generate SOAP notes
-        </Text>
+          <Settings color="#78716c" size={24} />
+        </Pressable>
       </Animated.View>
 
       {/* Quick Action */}

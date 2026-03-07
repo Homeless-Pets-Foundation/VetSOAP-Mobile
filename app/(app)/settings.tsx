@@ -32,7 +32,7 @@ export default function SettingsScreen() {
       } catch (error) {
         console.error('[Settings] Failed to load biometric state:', error);
       }
-    })();
+    })().catch(() => {});
   }, []);
 
   const toggleBiometric = useCallback(async (value: boolean) => {

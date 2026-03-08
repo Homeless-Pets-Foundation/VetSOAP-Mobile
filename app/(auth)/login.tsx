@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { View, Text, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, Image, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
 import { AlertCircle } from 'lucide-react-native';
@@ -77,16 +77,13 @@ export default function LoginScreen() {
         <View style={{ width: '100%', maxWidth: 400 }}>
         {/* Logo / Brand */}
         <Animated.View entering={FadeInDown.duration(500)} className="items-center mb-10">
-          <View className="w-16 h-16 rounded-2xl bg-brand-500 justify-center items-center mb-4 shadow-card-md">
-            <Text className="text-[28px] text-white font-bold">C</Text>
-          </View>
-          <Text
-            className="text-display font-bold text-stone-900"
-            accessibilityRole="header"
-          >
-            Captivet
-          </Text>
-          <Text className="text-body text-stone-500 mt-1">
+          <Image
+            source={require('../../assets/logo-wordmark.png')}
+            style={{ width: 240, aspectRatio: 600 / 139 }}
+            resizeMode="contain"
+            accessibilityLabel="Captivet"
+          />
+          <Text className="text-body text-stone-500 mt-3">
             Sign into your Account
           </Text>
         </Animated.View>

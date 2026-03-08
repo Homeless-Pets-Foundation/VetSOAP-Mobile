@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
-import { View, Text, AppState, Alert } from 'react-native';
+import { View, Text, Image, AppState, Alert } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { biometrics } from '../lib/biometrics';
 import { AuthContext } from '../auth/AuthProvider';
@@ -117,19 +117,12 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
           backgroundColor: '#fafaf9',
         }}
       >
-        <View
-          style={{
-            width: 64,
-            height: 64,
-            borderRadius: 16,
-            backgroundColor: '#0d8775',
-            justifyContent: 'center',
-            alignItems: 'center',
-            marginBottom: 16,
-          }}
-        >
-          <Text style={{ fontSize: 28, color: '#fff', fontWeight: 'bold' }}>C</Text>
-        </View>
+        <Image
+          source={require('../../assets/logo-wordmark.png')}
+          style={{ width: 200, aspectRatio: 600 / 139, marginBottom: 16 }}
+          resizeMode="contain"
+          accessibilityLabel="Captivet"
+        />
         <Text
           style={{ fontSize: 18, fontWeight: 'bold', color: '#1c1917', marginBottom: 8 }}
         >

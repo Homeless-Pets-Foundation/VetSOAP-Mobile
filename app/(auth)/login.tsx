@@ -1,8 +1,8 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { View, Text, Image, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, Image, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
-import { AlertCircle } from 'lucide-react-native';
+import { AlertCircle, Eye, EyeOff } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { TextInputField } from '../../src/components/ui/TextInputField';
@@ -14,11 +14,12 @@ const LOCKOUT_DURATION_MS = 60_000; // 1 minute
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
-  const { width, scale } = useResponsive();
+  const { width, scale, iconSm } = useResponsive();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const failedAttemptsRef = useRef(0);
   const lockoutUntilRef = useRef<number>(0);
@@ -122,7 +123,21 @@ export default function LoginScreen() {
             value={password}
             onChangeText={setPassword}
             placeholder="Enter your password"
-            secureTextEntry
+            secureTextEntry={!showPassword}
+            rightAccessory={
+              <Pressable
+                onPress={() => setShowPassword(prev => !prev)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? (
+                  <Eye color="#78716c" size={iconSm} />
+                ) : (
+                  <EyeOff color="#78716c" size={iconSm} />
+                )}
+              </Pressable>
+            }
           />
 
           <View className="mt-2">

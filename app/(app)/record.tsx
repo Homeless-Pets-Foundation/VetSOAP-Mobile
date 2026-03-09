@@ -196,6 +196,26 @@ export default function RecordScreen() {
     })().catch(() => {});
   };
 
+  const handleRecordAgain = () => {
+    Alert.alert(
+      'Delete Current Recording?',
+      'Your current recording will be permanently deleted and cannot be recovered. Are you sure you want to start over?',
+      [
+        {
+          text: 'Keep Recording',
+          style: 'cancel',
+        },
+        {
+          text: 'Delete & Start Over',
+          style: 'destructive',
+          onPress: () => {
+            recorder.reset();
+          },
+        },
+      ]
+    );
+  };
+
   const recordBtnAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: recordBtnScale.value }],
   }));
@@ -331,7 +351,7 @@ export default function RecordScreen() {
 
           {recorder.state === 'stopped' && (
             <Animated.View entering={FadeIn.duration(200)}>
-              <Button variant="secondary" onPress={recorder.reset}>
+              <Button variant="danger" onPress={handleRecordAgain}>
                 Record Again
               </Button>
             </Animated.View>

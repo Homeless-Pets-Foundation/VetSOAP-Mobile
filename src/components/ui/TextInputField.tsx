@@ -5,12 +5,14 @@ interface TextInputFieldProps extends Omit<TextInputProps, 'style'> {
   label: string;
   required?: boolean;
   error?: string;
+  rightAccessory?: React.ReactNode;
 }
 
 export function TextInputField({
   label,
   required = false,
   error,
+  rightAccessory,
   onFocus,
   onBlur,
   ...rest
@@ -39,14 +41,28 @@ export function TextInputField({
         {label}
         {required && <Text className="text-danger-500"> *</Text>}
       </Text>
-      <TextInput
-        placeholderTextColor="#a8a29e"
-        accessibilityLabel={label}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        className={`input-base min-h-[44px] ${borderClass}`}
-        {...rest}
-      />
+      {rightAccessory ? (
+        <View className={`input-base min-h-[44px] ${borderClass} flex-row items-center`}>
+          <TextInput
+            placeholderTextColor="#a8a29e"
+            accessibilityLabel={label}
+            onFocus={handleFocus}
+            onBlur={handleBlur}
+            className="flex-1 text-body text-stone-900 p-0"
+            {...rest}
+          />
+          {rightAccessory}
+        </View>
+      ) : (
+        <TextInput
+          placeholderTextColor="#a8a29e"
+          accessibilityLabel={label}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+          className={`input-base min-h-[44px] ${borderClass}`}
+          {...rest}
+        />
+      )}
       {error && (
         <Text
           className="text-caption text-danger-600 mt-1"

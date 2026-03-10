@@ -11,7 +11,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       {
         microphonePermission:
           'Allow Captivet to access your microphone to record appointments.',
-        enableBackgroundRecording: true,
       },
     ],
     'expo-secure-store',

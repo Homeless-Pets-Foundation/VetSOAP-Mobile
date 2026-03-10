@@ -1,10 +1,9 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Alert } from 'react-native';
 import {
   useAudioRecorder as useExpoAudioRecorder,
   useAudioRecorderState,
   setAudioModeAsync,
-  requestRecordingPermissionsAsync,
   AudioQuality,
   IOSOutputFormat,
   type RecordingOptions,
@@ -26,7 +25,6 @@ export interface UseAudioRecorderReturn {
   stop: () => Promise<void>;
   reset: () => void;
   isSupported: boolean;
-  permissionGranted: boolean;
 }
 
 const RECORDING_OPTIONS: RecordingOptions = {
@@ -57,7 +55,6 @@ const RECORDING_OPTIONS: RecordingOptions = {
 export function useAudioRecorder(): UseAudioRecorderReturn {
   const [state, setState] = useState<RecordingState>('idle');
   const [audioUri, setAudioUri] = useState<string | null>(null);
-  const [permissionGranted, setPermissionGranted] = useState(false);
 
   const stoppingRef = useRef(false);
   const isStartingRef = useRef(false);
@@ -83,30 +80,13 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // Poll for status (duration, metering) at 250ms intervals
   const recorderState = useAudioRecorderState(recorder, 250);
 
-  // Request permissions on mount
-  useEffect(() => {
-    requestRecordingPermissionsAsync().then(({ granted }) => {
-      setPermissionGranted(granted);
-    }).catch(() => {});
-  }, []);
-
   const start = useCallback(async () => {
     if (isStartingRef.current || state !== 'idle') return;
     isStartingRef.current = true;
     try {
-      if (!permissionGranted) {
-        const { granted } = await requestRecordingPermissionsAsync();
-        if (!granted) {
-          throw new Error('Microphone permission not granted');
-        }
-        setPermissionGranted(true);
-      }
-
       await setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
-        shouldPlayInBackground: true,
-        allowsBackgroundRecording: true,
         interruptionMode: 'doNotMix',
         shouldRouteThroughEarpiece: false,
       });
@@ -120,7 +100,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     } finally {
       isStartingRef.current = false;
     }
-  }, [permissionGranted, state, recorder]);
+  }, [state, recorder]);
 
   const pause = useCallback(async () => {
     try {
@@ -189,6 +169,5 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     stop,
     reset,
     isSupported: true,
-    permissionGranted,
   };
 }

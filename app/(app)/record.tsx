@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, Pressable, Alert } from 'react-native';
+import { View, Text, Pressable, Alert, ActivityIndicator, Linking } from 'react-native';
 import Animated, {
   FadeIn,
   FadeInUp,
@@ -15,6 +15,10 @@ import { useRouter } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import {
+  getRecordingPermissionsAsync,
+  requestRecordingPermissionsAsync,
+} from 'expo-audio';
 import { useAudioRecorder } from '../../src/hooks/useAudioRecorder';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useTemplates } from '../../src/hooks/useTemplates';
@@ -75,7 +79,68 @@ function PulsingDot() {
   );
 }
 
-export default function RecordScreen() {
+function PermissionGate({ onGranted }: { onGranted: () => void }) {
+  const { scale } = useResponsive();
+  const [requesting, setRequesting] = useState(false);
+
+  const handleRequest = () => {
+    setRequesting(true);
+    requestRecordingPermissionsAsync()
+      .then(({ granted, canAskAgain }) => {
+        if (granted) {
+          onGranted();
+        } else if (!canAskAgain) {
+          Alert.alert(
+            'Permission Required',
+            'Microphone access was denied. Please enable it in your device Settings to record appointments.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Open Settings',
+                onPress: () => {
+                  Linking.openSettings().catch(() => {});
+                },
+              },
+            ]
+          );
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        setRequesting(false);
+      });
+  };
+
+  return (
+    <ScreenContainer>
+      <View className="flex-1 justify-center items-center px-6">
+        <View
+          className="bg-brand-50 rounded-full justify-center items-center mb-6"
+          style={{ width: scale(96), height: scale(96) }}
+        >
+          <Mic color="#0d8775" size={scale(40)} />
+        </View>
+        <Text className="text-display font-bold text-stone-900 text-center mb-3">
+          Microphone Access
+        </Text>
+        <Text className="text-body text-stone-500 text-center mb-8">
+          Captivet needs microphone permission to record veterinary appointments and generate SOAP notes.
+        </Text>
+        <Button
+          variant="primary"
+          size="lg"
+          onPress={handleRequest}
+          loading={requesting}
+          accessibilityLabel="Grant microphone access"
+        >
+          Grant Microphone Access
+        </Button>
+      </View>
+    </ScreenContainer>
+  );
+}
+
+function RecordingSession() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const recorder = useAudioRecorder();
@@ -144,7 +209,6 @@ export default function RecordScreen() {
     formData.patientName.trim().length > 0 &&
     formData.clientName.trim().length > 0 &&
     !!formData.species;
-  const canStartRecording = hasRequiredFields && recorder.permissionGranted;
   const canSubmit = hasRequiredFields && recorder.audioUri !== null;
   const isRecording = recorder.state === 'recording';
 
@@ -221,7 +285,7 @@ export default function RecordScreen() {
   }));
 
   const step1Variant = hasRequiredFields ? 'complete' : 'active';
-  const step2Variant = recorder.audioUri ? 'complete' : canStartRecording ? 'active' : 'pending';
+  const step2Variant = recorder.audioUri ? 'complete' : hasRequiredFields ? 'active' : 'pending';
   const step3Variant = recorder.audioUri ? 'active' : 'pending';
 
   return (
@@ -238,18 +302,6 @@ export default function RecordScreen() {
           Record a live appointment and generate a SOAP note
         </Text>
       </View>
-
-      {/* Permission warning */}
-      {!recorder.permissionGranted && (
-        <View
-          className="bg-warning-100 p-3.5 rounded-input mb-4 border border-warning-500/30"
-          accessibilityRole="alert"
-        >
-          <Text className="text-body-sm text-warning-700 font-medium">
-            Microphone permission is required to record appointments. Please grant access when prompted.
-          </Text>
-        </View>
-      )}
 
       {/* Step 1: Patient Info */}
       <Card className="mb-4">
@@ -315,11 +367,11 @@ export default function RecordScreen() {
                 onPressOut={() => {
                   recordBtnScale.value = withSpring(1, { damping: 15, stiffness: 300 });
                 }}
-                disabled={!canStartRecording}
+                disabled={!hasRequiredFields}
                 accessibilityRole="button"
                 accessibilityLabel={!hasRequiredFields ? 'Enter patient name, client name, and species first' : 'Start recording'}
                 className={`rounded-full justify-center items-center ${
-                  canStartRecording ? 'bg-brand-500' : 'bg-stone-300'
+                  hasRequiredFields ? 'bg-brand-500' : 'bg-stone-300'
                 }`}
                 style={[{ width: scale(80), height: scale(80) }, recordBtnAnimStyle]}
               >
@@ -394,4 +446,34 @@ export default function RecordScreen() {
       )}
     </ScreenContainer>
   );
+}
+
+export default function RecordScreen() {
+  const [permissionStatus, setPermissionStatus] = useState<'checking' | 'granted' | 'denied'>('checking');
+
+  useEffect(() => {
+    getRecordingPermissionsAsync()
+      .then(({ granted }) => {
+        setPermissionStatus(granted ? 'granted' : 'denied');
+      })
+      .catch(() => {
+        setPermissionStatus('denied');
+      });
+  }, []);
+
+  if (permissionStatus === 'checking') {
+    return (
+      <ScreenContainer>
+        <View className="flex-1 justify-center items-center">
+          <ActivityIndicator size="large" color="#0d8775" />
+        </View>
+      </ScreenContainer>
+    );
+  }
+
+  if (permissionStatus === 'denied') {
+    return <PermissionGate onGranted={() => setPermissionStatus('granted')} />;
+  }
+
+  return <RecordingSession />;
 }

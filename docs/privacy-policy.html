@@ -1,0 +1,141 @@
+<h2>Privacy Policy</h2>
+<p><strong>Last Updated:</strong> March 11, 2026</p>
+
+<p>Captivet ("we," "our," or "us") provides a mobile application for veterinary professionals to record appointments and generate clinical SOAP notes. This Privacy Policy explains how we collect, use, store, and protect your information when you use the Captivet mobile app ("App").</p>
+
+<h3>1. Information We Collect</h3>
+
+<h4>Account Information</h4>
+<ul>
+  <li>Email address and password (used to create and authenticate your account)</li>
+  <li>Full name</li>
+  <li>Organization affiliation</li>
+</ul>
+
+<h4>Veterinary Recording Data</h4>
+<ul>
+  <li>Audio recordings of veterinary appointments</li>
+  <li>Patient (animal) name, species, and breed</li>
+  <li>Client/owner name</li>
+  <li>Appointment type</li>
+  <li>Transcripts generated from audio recordings</li>
+  <li>SOAP notes generated from transcripts</li>
+</ul>
+
+<h4>Device and Technical Data</h4>
+<ul>
+  <li>Authentication tokens (stored securely on your device)</li>
+  <li>Biometric authentication preference (enabled/disabled — we do not store your biometric data)</li>
+</ul>
+
+<h3>2. Information We Do NOT Collect</h3>
+<ul>
+  <li>Location data (GPS permissions are explicitly blocked)</li>
+  <li>Photos or camera data (camera permission is explicitly blocked)</li>
+  <li>Contacts, calendar, or other personal device data</li>
+  <li>Device advertising identifiers</li>
+  <li>Browsing history or app usage analytics</li>
+  <li>We do not use any third-party analytics, advertising, or tracking services</li>
+</ul>
+
+<h3>3. How We Use Your Information</h3>
+<ul>
+  <li><strong>Account authentication:</strong> To verify your identity and secure your account</li>
+  <li><strong>Recording and transcription:</strong> To record veterinary appointments and generate text transcripts using automated speech recognition</li>
+  <li><strong>SOAP note generation:</strong> To produce structured clinical notes from your transcripts using AI</li>
+  <li><strong>Service delivery:</strong> To store and retrieve your recordings and notes so you can access them across sessions</li>
+</ul>
+
+<h3>4. How We Store and Protect Your Information</h3>
+
+<h4>Data in Transit</h4>
+<ul>
+  <li>All data transmitted between the App and our servers uses HTTPS encryption</li>
+  <li>API requests are authenticated with signed JSON Web Tokens (JWT)</li>
+  <li>Data-modifying requests include HMAC-SHA256 signatures for tamper protection</li>
+</ul>
+
+<h4>Data at Rest</h4>
+<ul>
+  <li>Authentication tokens are stored in your device's secure enclave (Android Keystore / iOS Keychain), encrypted and inaccessible to other apps</li>
+  <li>Audio files are stored in encrypted cloud storage (Cloudflare R2) accessible only through authenticated, time-limited URLs</li>
+  <li>Account data and clinical records are stored in encrypted databases</li>
+  <li>Third-party API keys used for transcription and note generation are encrypted with AES-256</li>
+</ul>
+
+<h4>Device Security</h4>
+<ul>
+  <li>Optional biometric lock (fingerprint / face recognition) for App access</li>
+  <li>Temporary audio files are automatically cleaned up after upload</li>
+  <li>Clipboard content (copied SOAP notes) is automatically cleared after 30 seconds</li>
+  <li>Android backups are disabled to prevent unencrypted data extraction</li>
+</ul>
+
+<h3>5. Third-Party Services</h3>
+<p>We use the following third-party services to operate the App. Your data is shared with these services only as necessary to provide functionality:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Service</th>
+      <th>Purpose</th>
+      <th>Data Shared</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Supabase</td>
+      <td>User authentication</td>
+      <td>Email, password (hashed), session tokens</td>
+    </tr>
+    <tr>
+      <td>Cloudflare R2</td>
+      <td>Audio file storage</td>
+      <td>Audio recordings</td>
+    </tr>
+    <tr>
+      <td>Deepgram</td>
+      <td>Speech-to-text transcription</td>
+      <td>Audio recordings</td>
+    </tr>
+    <tr>
+      <td>Google Gemini</td>
+      <td>SOAP note generation</td>
+      <td>Transcribed text</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>We do not sell, rent, or share your personal information with third parties for marketing or advertising purposes.</p>
+
+<h3>6. Microphone Permission</h3>
+<p>The App requests microphone access solely to record veterinary appointments. Audio recording occurs only when you explicitly start a recording session. The microphone is never accessed in the background.</p>
+
+<h3>7. Data Retention</h3>
+<ul>
+  <li>Your recordings, transcripts, and SOAP notes are retained in your account until you delete them</li>
+  <li>You may delete individual recordings at any time from within the App</li>
+  <li>Temporary audio files are automatically removed from your device after successful upload</li>
+  <li>Upon account deletion, all associated data (recordings, transcripts, SOAP notes) is permanently removed from our servers</li>
+</ul>
+
+<h3>8. Your Rights</h3>
+<p>You have the right to:</p>
+<ul>
+  <li><strong>Access</strong> your personal data stored in the App</li>
+  <li><strong>Delete</strong> your recordings and associated clinical notes</li>
+  <li><strong>Delete your account</strong> and all associated data</li>
+  <li><strong>Export</strong> your SOAP notes via the App's copy/export features</li>
+</ul>
+
+<p>To exercise any of these rights or for data-related inquiries, contact us at the email below.</p>
+
+<h3>9. Children's Privacy</h3>
+<p>The App is designed for licensed veterinary professionals and is not intended for use by individuals under the age of 18. We do not knowingly collect personal information from children.</p>
+
+<h3>10. Changes to This Policy</h3>
+<p>We may update this Privacy Policy from time to time. We will notify you of material changes by updating the "Last Updated" date at the top of this page. Continued use of the App after changes constitutes acceptance of the updated policy.</p>
+
+<h3>11. Contact Us</h3>
+<p>If you have questions or concerns about this Privacy Policy or our data practices, please contact us at:</p>
+<p><strong>Email:</strong> admin@homelesspets.com</p>

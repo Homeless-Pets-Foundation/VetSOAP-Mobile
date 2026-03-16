@@ -6,6 +6,7 @@ const IS_PRODUCTION = process.env.APP_VARIANT === 'production';
 export default ({ config }: ConfigContext): ExpoConfig => {
   const plugins: ExpoConfig['plugins'] = [
     'expo-router',
+    'expo-asset',
     [
       'expo-audio',
       {

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { Alert } from 'react-native';
+import { Alert, Platform, PermissionsAndroid } from 'react-native';
 import {
   useAudioRecorder as useExpoAudioRecorder,
   useAudioRecorderState,
@@ -86,11 +86,25 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     if (isStartingRef.current || state !== 'idle') return;
     isStartingRef.current = true;
     try {
+      // Android 13+ requires POST_NOTIFICATIONS for the foreground service notification.
+      // Without it the background recording service may fail to start silently.
+      if (Platform.OS === 'android' && Platform.Version >= 33) {
+        try {
+          await PermissionsAndroid.request(
+            'android.permission.POST_NOTIFICATIONS' as any,
+          );
+          // Recording still works if denied — just no persistent notification,
+          // which may let the OS kill the process. Not a blocker.
+        } catch {}
+      }
+
       await setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
         interruptionMode: 'doNotMix',
         shouldRouteThroughEarpiece: false,
+        allowsBackgroundRecording: true,
+        staysActiveInBackground: true,
       });
 
       await recorder.prepareToRecordAsync();

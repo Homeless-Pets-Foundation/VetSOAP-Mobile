@@ -24,6 +24,7 @@ export interface UseAudioRecorderReturn {
   resume: () => Promise<void>;
   stop: () => Promise<void>;
   reset: () => void;
+  resetWithoutDelete: () => void;
   isSupported: boolean;
 }
 
@@ -163,6 +164,14 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     mediaResetAlertedRef.current = false;
   }, [audioUri]);
 
+  const resetWithoutDelete = useCallback(() => {
+    setState('idle');
+    setAudioUri(null);
+    setFinalDuration(0);
+    stoppingRef.current = false;
+    mediaResetAlertedRef.current = false;
+  }, []);
+
   return {
     state,
     duration: state === 'stopped' ? finalDuration : Math.floor(recorderState.durationMillis / 1000),
@@ -174,6 +183,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     resume,
     stop,
     reset,
+    resetWithoutDelete,
     isSupported: true,
   };
 }

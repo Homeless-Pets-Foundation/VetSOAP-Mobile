@@ -1,11 +1,17 @@
 import type { CreateRecording } from './index';
 
+export interface AudioSegment {
+  uri: string;
+  duration: number; // seconds
+}
+
 export interface PatientSlot {
   id: string;
   formData: CreateRecording;
   audioState: 'idle' | 'recording' | 'paused' | 'stopped';
-  audioUri: string | null;
-  audioDuration: number;
+  segments: AudioSegment[];
+  audioUri: string | null;   // last segment's URI (compat)
+  audioDuration: number;     // sum of all segment durations
   uploadStatus: 'pending' | 'uploading' | 'success' | 'error';
   uploadProgress: number;
   uploadError: string | null;
@@ -20,6 +26,7 @@ export type SessionAction =
   | { type: 'SET_AUDIO_STATE'; slotId: string; audioState: PatientSlot['audioState'] }
   | { type: 'SAVE_AUDIO'; slotId: string; audioUri: string; duration: number }
   | { type: 'CLEAR_AUDIO'; slotId: string }
+  | { type: 'CONTINUE_RECORDING'; slotId: string }
   | { type: 'BIND_RECORDER'; slotId: string }
   | { type: 'UNBIND_RECORDER' }
   | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null }

@@ -17,6 +17,7 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
       templateId: defaultTemplateId,
     },
     audioState: 'idle',
+    segments: [],
     audioUri: null,
     audioDuration: 0,
     uploadStatus: 'pending',
@@ -95,23 +96,40 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ),
       };
 
-    case 'SAVE_AUDIO':
+    case 'SAVE_AUDIO': {
       return {
         ...state,
-        slots: state.slots.map((slot) =>
-          slot.id === action.slotId
-            ? { ...slot, audioUri: action.audioUri, audioDuration: action.duration, audioState: 'stopped' }
-            : slot
-        ),
+        slots: state.slots.map((slot) => {
+          if (slot.id !== action.slotId) return slot;
+          const newSegments = [...slot.segments, { uri: action.audioUri, duration: action.duration }];
+          return {
+            ...slot,
+            segments: newSegments,
+            audioUri: action.audioUri,
+            audioDuration: newSegments.reduce((sum, s) => sum + s.duration, 0),
+            audioState: 'stopped',
+          };
+        }),
         recorderBoundToSlotId: state.recorderBoundToSlotId === action.slotId ? null : state.recorderBoundToSlotId,
       };
+    }
 
     case 'CLEAR_AUDIO':
       return {
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null }
+            ? { ...slot, segments: [], audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null }
+            : slot
+        ),
+      };
+
+    case 'CONTINUE_RECORDING':
+      return {
+        ...state,
+        slots: state.slots.map((slot) =>
+          slot.id === action.slotId
+            ? { ...slot, audioState: 'idle' }
             : slot
         ),
       };
@@ -223,12 +241,16 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
 
   const activeSlot = state.slots[state.activeIndex] ?? state.slots[0];
 
+  const continueRecording = useCallback((slotId: string) => {
+    dispatch({ type: 'CONTINUE_RECORDING', slotId });
+  }, []);
+
   const hasUnsavedRecordings = state.slots.some(
-    (s) => s.audioUri !== null || s.audioState === 'recording' || s.audioState === 'paused'
+    (s) => s.segments.length > 0 || s.audioState === 'recording' || s.audioState === 'paused'
   );
 
   const completedUnuploadedCount = state.slots.filter(
-    (s) => s.audioUri !== null && s.uploadStatus !== 'success'
+    (s) => s.segments.length > 0 && s.uploadStatus !== 'success'
   ).length;
 
   return {
@@ -243,6 +265,7 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
     setAudioState,
     saveAudio,
     clearAudio,
+    continueRecording,
     bindRecorder,
     unbindRecorder,
     setUploadStatus,

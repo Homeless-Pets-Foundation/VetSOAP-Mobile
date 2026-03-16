@@ -41,6 +41,7 @@ interface PatientSlotCardProps {
   onResume: () => void;
   onStop: () => void;
   onRecordAgain: () => void;
+  onContinueRecording: () => void;
   onRemove: () => void;
   onSubmitSingle: () => void;
 }
@@ -91,6 +92,7 @@ export function PatientSlotCard({
   onResume,
   onStop,
   onRecordAgain,
+  onContinueRecording,
   onRemove,
   onSubmitSingle,
 }: PatientSlotCardProps) {
@@ -109,12 +111,17 @@ export function PatientSlotCard({
   const audioState = isRecorderOwner ? recorder.state : slot.audioState;
   const isRecording = audioState === 'recording';
   const isPaused = audioState === 'paused';
-  const isStopped = audioState === 'stopped' || slot.audioUri !== null;
-  const duration = isRecorderOwner ? recorder.duration : slot.audioDuration;
+  const isStopped = audioState === 'stopped';
+  const hasSegments = slot.segments.length > 0;
+  const previousSegmentsDuration = slot.segments.reduce((sum, s) => sum + s.duration, 0);
+  const duration = isRecorderOwner
+    ? previousSegmentsDuration + recorder.duration
+    : slot.audioDuration;
   const metering = isRecorderOwner ? recorder.metering : -160;
 
-  const canStartRecording = hasRequiredFields && !isStopped;
-  const canSubmitSingle = hasRequiredFields && slot.audioUri !== null && slot.uploadStatus !== 'success' && slot.uploadStatus !== 'uploading';
+  // Allow recording when idle (even with existing segments — for continuation)
+  const canStartRecording = hasRequiredFields && audioState === 'idle';
+  const canSubmitSingle = hasRequiredFields && slot.segments.length > 0 && slot.uploadStatus !== 'success' && slot.uploadStatus !== 'uploading';
 
   return (
     <ScrollView
@@ -251,19 +258,32 @@ export function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Stopped: record again */}
-          {isStopped && (
-            <Animated.View entering={FadeIn.duration(200)}>
+          {/* Stopped: continue recording or start over */}
+          {isStopped && hasSegments && (
+            <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
+              <Button variant="primary" onPress={onContinueRecording}>
+                Continue Recording
+              </Button>
               <Button variant="danger" onPress={onRecordAgain}>
-                Record Again
+                Delete & Start Over
               </Button>
             </Animated.View>
           )}
         </View>
 
-        {isStopped && slot.audioUri && !isRecorderOwner && (
+        {isStopped && hasSegments && !isRecorderOwner && (
           <Text className="text-caption text-stone-500 mt-3 text-center">
-            Recording complete ({formatDuration(slot.audioDuration)}). Processing usually takes 1-2 minutes.
+            {slot.segments.length > 1
+              ? `${slot.segments.length} segments recorded (${formatDuration(slot.audioDuration)} total).`
+              : `Recording complete (${formatDuration(slot.audioDuration)}).`}{' '}
+            Processing usually takes 1-2 minutes.
+          </Text>
+        )}
+
+        {/* Idle with existing segments: show info that new recording will be appended */}
+        {audioState === 'idle' && hasSegments && (
+          <Text className="text-caption text-brand-600 mt-3 text-center">
+            {slot.segments.length} segment{slot.segments.length > 1 ? 's' : ''} recorded ({formatDuration(slot.audioDuration)}). New recording will be appended.
           </Text>
         )}
       </Card>

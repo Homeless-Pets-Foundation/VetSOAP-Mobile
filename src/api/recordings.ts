@@ -85,9 +85,16 @@ export const recordingsApi = {
     });
   },
 
-  async confirmUpload(recordingId: string, fileKey: string): Promise<Recording> {
+  async confirmUpload(
+    recordingId: string,
+    fileKey: string,
+    opts?: { segmentKeys?: string[]; segmentCount?: number }
+  ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
-    return apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, { fileKey });
+    return apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
+      fileKey,
+      ...(opts?.segmentKeys ? { segmentKeys: opts.segmentKeys, segmentCount: opts.segmentCount } : {}),
+    });
   },
 
   /**
@@ -169,6 +176,103 @@ export const recordingsApi = {
       // Only delete if the file hasn't been uploaded to R2 yet.
       // If R2 upload succeeded but confirm failed, leave the recording
       // in "uploading" state so the user can retry.
+      if (!r2UploadComplete) {
+        await this.delete(recording.id).catch(() => {});
+      }
+      throw error;
+    }
+  },
+
+  /**
+   * Multi-segment upload flow: create record → upload each segment → confirm with segment keys
+   */
+  async createWithSegments(
+    data: CreateRecording,
+    segments: { uri: string; duration: number }[],
+    contentType = 'audio/mp4',
+    options?: { onUploadProgress?: (event: UploadProgressEvent) => void }
+  ): Promise<Recording> {
+    const recording = await this.create(data);
+    let r2UploadComplete = false;
+
+    try {
+      const segmentKeys: string[] = [];
+      const totalSegments = segments.length;
+
+      for (let i = 0; i < totalSegments; i++) {
+        const segment = segments[i];
+        const segmentFileName = `recording_segment_${i}.m4a`;
+
+        // Read local file info
+        const fileInfo = await getInfoAsync(segment.uri);
+        if (!fileInfo.exists) {
+          throw new Error(`Failed to read audio segment ${i + 1}. Please try recording again.`);
+        }
+        const fileSizeBytes = fileInfo.size ?? 0;
+        if (!fileSizeBytes) {
+          throw new Error(`Audio segment ${i + 1} is empty. Please try recording again.`);
+        }
+        if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
+          throw new Error(
+            `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 500MB.`
+          );
+        }
+
+        // Get presigned URL for this segment
+        const { uploadUrl, fileKey } = await this.getUploadUrl(
+          recording.id,
+          segmentFileName,
+          contentType,
+          fileSizeBytes
+        );
+        validateUploadUrl(uploadUrl);
+
+        // Upload segment to R2
+        const segmentProgressBase = (i / totalSegments) * 100;
+        const segmentProgressRange = 100 / totalSegments;
+
+        const uploadTask = createUploadTask(
+          uploadUrl,
+          segment.uri,
+          {
+            httpMethod: 'PUT',
+            uploadType: FileSystemUploadType.BINARY_CONTENT,
+            headers: { 'Content-Type': contentType },
+          },
+          options?.onUploadProgress
+            ? (progress) => {
+                const total = progress.totalBytesExpectedToSend;
+                const loaded = progress.totalBytesSent;
+                const segmentPercent = total > 0 ? (loaded / total) * 100 : 0;
+                const overallPercent = segmentProgressBase + (segmentPercent * segmentProgressRange) / 100;
+                options.onUploadProgress!({
+                  loaded,
+                  total,
+                  percent: Math.round(overallPercent),
+                });
+              }
+            : undefined
+        );
+
+        const uploadResult = await uploadTask.uploadAsync();
+        if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
+          throw new Error(
+            `Upload of segment ${i + 1} failed (HTTP ${uploadResult?.status ?? 'unknown'}). Please try again.`
+          );
+        }
+
+        segmentKeys.push(fileKey);
+      }
+
+      r2UploadComplete = true;
+
+      // Confirm upload with all segment keys
+      const confirmed = await this.confirmUpload(recording.id, segmentKeys[0], {
+        segmentKeys,
+        segmentCount: segmentKeys.length,
+      });
+      return confirmed;
+    } catch (error) {
       if (!r2UploadComplete) {
         await this.delete(recording.id).catch(() => {});
       }

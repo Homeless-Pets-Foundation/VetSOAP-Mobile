@@ -11,10 +11,10 @@ interface SubmitPanelProps {
 }
 
 export function SubmitPanel({ slots, isSubmitting, onSubmitAll }: SubmitPanelProps) {
-  const recorded = slots.filter((s) => s.audioUri !== null).length;
+  const recorded = slots.filter((s) => s.segments.length > 0).length;
   const uploaded = slots.filter((s) => s.uploadStatus === 'success').length;
   const readyToUpload = slots.filter(
-    (s) => s.audioUri !== null && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
+    (s) => s.segments.length > 0 && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
   ).length;
 
   // Only show when 2+ slots and at least 1 has a completed recording not yet uploaded

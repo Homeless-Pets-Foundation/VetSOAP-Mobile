@@ -105,6 +105,7 @@ function RecordingSession() {
     setAudioState,
     saveAudio,
     clearAudio,
+    continueRecording,
     bindRecorder,
     unbindRecorder,
     setUploadStatus,
@@ -144,7 +145,7 @@ function RecordingSession() {
       if (pendingStartSlotRef.current) {
         const nextSlotId = pendingStartSlotRef.current;
         pendingStartSlotRef.current = null;
-        recorder.reset();
+        recorder.resetWithoutDelete();
         setTimeout(() => {
           startRecordingRef.current(nextSlotId);
         }, 250);
@@ -163,11 +164,11 @@ function RecordingSession() {
           text: 'Discard',
           style: 'destructive',
           onPress: () => {
-            // Clean up audio files
+            // Clean up all segment audio files
             session.slots.forEach((slot) => {
-              if (slot.audioUri) {
-                FileSystem.deleteAsync(slot.audioUri, { idempotent: true }).catch(() => {});
-              }
+              slot.segments.forEach((seg) => {
+                FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+              });
             });
             navigation.dispatch(data.action);
           },
@@ -231,31 +232,46 @@ function RecordingSession() {
       // If another slot owns the recorder, prompt to stop it first
       if (session.recorderBoundToSlotId && session.recorderBoundToSlotId !== slotId) {
         const boundSlot = session.slots.find((s) => s.id === session.recorderBoundToSlotId);
-        if (boundSlot && ['recording', 'paused'].includes(recorder.state)) {
-          Alert.alert(
-            'Stop Current Recording?',
-            `Stop recording for ${boundSlot.formData.patientName || 'the other patient'} before starting a new one?`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Stop & Start New',
-                onPress: () => {
-                  // Set the pending slot so the effect starts it after stop completes
-                  pendingStartSlotRef.current = slotId;
-                  (async () => {
-                    try {
-                      // The effect will handle saving audio, unbinding, and starting the new slot
-                      await recorder.stop();
-                    } catch {
-                      pendingStartSlotRef.current = null;
-                      Alert.alert('Recording Error', 'Failed to stop the current recording.');
-                    }
-                  })().catch(() => {});
+        if (boundSlot) {
+          // Actively recording — confirm before stopping
+          if (recorder.state === 'recording') {
+            Alert.alert(
+              'Stop Current Recording?',
+              `Stop recording for ${boundSlot.formData.patientName || 'the other patient'} before starting a new one?`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Stop & Start New',
+                  onPress: () => {
+                    pendingStartSlotRef.current = slotId;
+                    (async () => {
+                      try {
+                        await recorder.stop();
+                      } catch {
+                        pendingStartSlotRef.current = null;
+                        Alert.alert('Recording Error', 'Failed to stop the current recording.');
+                      }
+                    })().catch(() => {});
+                  },
                 },
-              },
-            ]
-          );
-          return;
+              ]
+            );
+            return;
+          }
+
+          // Paused — auto-stop and start new (user already signaled intent to move on)
+          if (recorder.state === 'paused') {
+            pendingStartSlotRef.current = slotId;
+            (async () => {
+              try {
+                await recorder.stop();
+              } catch {
+                pendingStartSlotRef.current = null;
+                Alert.alert('Recording Error', 'Failed to stop the current recording.');
+              }
+            })().catch(() => {});
+            return;
+          }
         }
       }
 
@@ -334,20 +350,35 @@ function RecordingSession() {
     [recorder]
   );
 
+  const handleContinueRecording = useCallback(
+    (slotId: string) => {
+      if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
+        recorder.resetWithoutDelete();
+      }
+      continueRecording(slotId);
+    },
+    [session.recorderBoundToSlotId, continueRecording, recorder]
+  );
+
   const handleRecordAgain = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
+      const segmentCount = slot?.segments.length ?? 0;
       Alert.alert(
-        'Delete Current Recording?',
-        'Your current recording will be permanently deleted and cannot be recovered. Are you sure you want to start over?',
+        segmentCount > 1 ? 'Delete All Recordings?' : 'Delete Current Recording?',
+        segmentCount > 1
+          ? `All ${segmentCount} recording segments will be permanently deleted and cannot be recovered. Are you sure you want to start over?`
+          : 'Your current recording will be permanently deleted and cannot be recovered. Are you sure you want to start over?',
         [
           { text: 'Keep Recording', style: 'cancel' },
           {
             text: 'Delete & Start Over',
             style: 'destructive',
             onPress: () => {
-              if (slot?.audioUri) {
-                FileSystem.deleteAsync(slot.audioUri, { idempotent: true }).catch(() => {});
+              if (slot) {
+                slot.segments.forEach((seg) => {
+                  FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+                });
               }
               clearAudio(slotId);
               // Only reset recorder if it's not actively recording another patient
@@ -367,7 +398,7 @@ function RecordingSession() {
       const slot = session.slots.find((s) => s.id === slotId);
       if (!slot) return;
 
-      const hasRecording = slot.audioUri !== null || slot.audioState === 'recording' || slot.audioState === 'paused';
+      const hasRecording = slot.segments.length > 0 || slot.audioState === 'recording' || slot.audioState === 'paused';
 
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
@@ -389,9 +420,9 @@ function RecordingSession() {
                       unbindRecorder();
                       recorder.reset();
                     }
-                    if (slot.audioUri) {
-                      FileSystem.deleteAsync(slot.audioUri, { idempotent: true }).catch(() => {});
-                    }
+                    slot.segments.forEach((seg) => {
+                      FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+                    });
                     removeSlot(slotId);
                   } catch {}
                 })().catch(() => {});
@@ -410,22 +441,40 @@ function RecordingSession() {
 
   const uploadSlot = useCallback(
     async (slot: PatientSlot): Promise<boolean> => {
-      if (!slot.audioUri || slot.uploadStatus === 'success' || slot.uploadStatus === 'uploading') return true;
+      if (slot.segments.length === 0 || slot.uploadStatus === 'success' || slot.uploadStatus === 'uploading') return true;
 
       setUploadStatus(slot.id, 'uploading', { progress: 5 });
       try {
-        const result = await recordingsApi.createWithFile(
-          slot.formData,
-          slot.audioUri,
-          'audio/x-m4a',
-          {
-            onUploadProgress: ({ percent }) => {
-              setUploadStatus(slot.id, 'uploading', {
-                progress: Math.round(5 + (percent * 85) / 100),
-              });
-            },
-          }
-        );
+        let result;
+        if (slot.segments.length === 1) {
+          // Single segment: use existing single-file upload
+          result = await recordingsApi.createWithFile(
+            slot.formData,
+            slot.segments[0].uri,
+            'audio/x-m4a',
+            {
+              onUploadProgress: ({ percent }) => {
+                setUploadStatus(slot.id, 'uploading', {
+                  progress: Math.round(5 + (percent * 85) / 100),
+                });
+              },
+            }
+          );
+        } else {
+          // Multi-segment: upload all segments
+          result = await recordingsApi.createWithSegments(
+            slot.formData,
+            slot.segments,
+            'audio/x-m4a',
+            {
+              onUploadProgress: ({ percent }) => {
+                setUploadStatus(slot.id, 'uploading', {
+                  progress: Math.round(5 + (percent * 85) / 100),
+                });
+              },
+            }
+          );
+        }
         setUploadStatus(slot.id, 'success', {
           progress: 100,
           serverRecordingId: result.id,
@@ -458,7 +507,7 @@ function RecordingSession() {
 
   const handleSubmitAll = useCallback(() => {
     const slotsToUpload = session.slots.filter(
-      (s) => s.audioUri !== null && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
+      (s) => s.segments.length > 0 && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
     );
 
     if (slotsToUpload.length === 0) return;
@@ -538,6 +587,7 @@ function RecordingSession() {
           onResume={() => handleResume(item.id)}
           onStop={() => handleStop(item.id)}
           onRecordAgain={() => handleRecordAgain(item.id)}
+          onContinueRecording={() => handleContinueRecording(item.id)}
           onRemove={() => handleRemove(item.id)}
           onSubmitSingle={() => handleSubmitSingle(item.id)}
         />
@@ -557,6 +607,7 @@ function RecordingSession() {
       handleResume,
       handleStop,
       handleRecordAgain,
+      handleContinueRecording,
       handleRemove,
       handleSubmitSingle,
     ]

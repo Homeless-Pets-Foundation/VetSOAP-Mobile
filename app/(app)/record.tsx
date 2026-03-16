@@ -115,6 +115,7 @@ function RecordingSession() {
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
   const pagerRef = useRef<FlatList>(null);
   const isScrollingRef = useRef(false);
+  const swipeChangeRef = useRef(false);
   // Track pending slot for "stop A then start B" flow
   const pendingStartSlotRef = useRef<string | null>(null);
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
@@ -177,8 +178,12 @@ function RecordingSession() {
     );
   });
 
-  // Sync pager with active index
+  // Sync pager with active index (skip when change came from a swipe — FlatList is already there)
   useEffect(() => {
+    if (swipeChangeRef.current) {
+      swipeChangeRef.current = false;
+      return;
+    }
     if (!isScrollingRef.current && pagerRef.current) {
       pagerRef.current.scrollToIndex({
         index: session.activeIndex,
@@ -215,6 +220,7 @@ function RecordingSession() {
             })().catch(() => {});
           }
         }
+        swipeChangeRef.current = true;
         setActiveIndex(clampedIndex);
       }
     },
@@ -549,12 +555,6 @@ function RecordingSession() {
 
   const handleAddPatient = useCallback(() => {
     addSlot();
-    // Scroll to new slot on next frame
-    setTimeout(() => {
-      if (pagerRef.current) {
-        pagerRef.current.scrollToEnd({ animated: true });
-      }
-    }, 50);
   }, [addSlot]);
 
   // Pagination indicator

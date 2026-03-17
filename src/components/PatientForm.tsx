@@ -123,7 +123,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
                 key={species}
                 onPress={() => {
                   Haptics.selectionAsync().catch(() => {});
-                  onUpdate('species', isSelected ? '' : species);
+                  if (!isSelected) onUpdate('species', species);
                 }}
                 hitSlop={8}
                 accessibilityRole="radio"
@@ -160,7 +160,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
 
       <View className="mb-3.5">
         <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
-          Appointment Type
+          Appointment Type<Text className="text-danger-500"> *</Text>
         </Text>
         <View
           className="flex-row flex-wrap gap-2"
@@ -174,7 +174,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
                 key={type}
                 onPress={() => {
                   Haptics.selectionAsync().catch(() => {});
-                  onUpdate('appointmentType', isSelected ? '' : type);
+                  if (!isSelected) onUpdate('appointmentType', type);
                 }}
                 hitSlop={8}
                 accessibilityRole="radio"

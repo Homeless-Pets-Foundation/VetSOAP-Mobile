@@ -32,8 +32,8 @@ export const createRecordingSchema = z.object({
     .transform((v) => (v ? sanitize(v) : v))
     .pipe(z.string().max(100, 'Breed name too long').optional()),
   appointmentType: z
-    .enum(['Wellness Exam', 'Sick Visit', 'Urgent/Emergency', 'Follow-up'])
-    .optional(),
+    .enum(['Wellness Exam', 'Sick Visit', 'Urgent/Emergency', 'Follow-up']),
+  foreignLanguage: z.boolean().optional(),
   templateId: z.string().uuid().optional(),
 });
 

@@ -154,11 +154,18 @@ function RecordingSession() {
     }
   }, [recorder.state, recorder.audioUri]);
 
-  // Navigation guard: warn before leaving with unsaved recordings
-  usePreventRemove(hasUnsavedRecordings && !isSubmittingAll, ({ data }) => {
+  // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
+  const unsavedCount = session.slots.filter(
+    (s) => (s.segments.length > 0 && s.uploadStatus !== 'success') ||
+            s.audioState === 'recording' || s.audioState === 'paused'
+  ).length;
+
+  usePreventRemove(unsavedCount > 0 && !isSubmittingAll, ({ data }) => {
     Alert.alert(
       'Discard Recordings?',
-      'You have unsaved recordings. Leaving will discard them.',
+      unsavedCount === 1
+        ? 'You have 1 unsubmitted recording. Leaving will discard it.'
+        : `You have ${unsavedCount} unsubmitted recordings. Leaving will discard them.`,
       [
         { text: 'Stay', style: 'cancel' },
         {
@@ -486,9 +493,20 @@ function RecordingSession() {
           progress: 100,
           serverRecordingId: result.id,
         });
+        // Clean up local audio files now that they're safely on R2
+        slot.segments.forEach((seg) => {
+          FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+        });
         return result.id;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : 'Upload failed. Please try again.';
+        let msg: string;
+        if (error instanceof TypeError && /network/i.test(error.message)) {
+          msg = 'No internet connection. Please check your network and try again.';
+        } else if (error instanceof Error) {
+          msg = error.message;
+        } else {
+          msg = 'Upload failed. Please try again.';
+        }
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
         return null;
       }
@@ -506,8 +524,19 @@ function RecordingSession() {
         if (serverRecordingId) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
-          resetSession();
-          router.push(`/(app)/recordings/${serverRecordingId}` as `/(app)/recordings/${string}`);
+
+          // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
+          const otherSlotsWithRecordings = session.slots.some(
+            (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
+              (s.segments.length > 0 || s.audioState === 'recording' || s.audioState === 'paused')
+          );
+
+          if (otherSlotsWithRecordings) {
+            // Stay on the record screen — uploaded slot already shows success badge
+          } else {
+            resetSession();
+            router.push(`/(app)/recordings/${serverRecordingId}` as `/(app)/recordings/${string}`);
+          }
         }
       })().catch(() => {});
     },

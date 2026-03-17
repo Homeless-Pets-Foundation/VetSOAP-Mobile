@@ -105,7 +105,8 @@ export function PatientSlotCard({
   const hasRequiredFields =
     slot.formData.patientName.trim().length > 0 &&
     slot.formData.clientName.trim().length > 0 &&
-    !!slot.formData.species;
+    !!slot.formData.species &&
+    !!slot.formData.appointmentType;
 
   // The slot's audio state determines what we show
   const audioState = isRecorderOwner ? recorder.state : slot.audioState;
@@ -227,7 +228,7 @@ export function PatientSlotCard({
                 accessibilityRole="button"
                 accessibilityLabel={
                   !hasRequiredFields
-                    ? 'Enter patient name, client name, and species first'
+                    ? 'Enter patient name, client name, species, and appointment type first'
                     : recorderBusy
                       ? 'Start recording — will stop current recording first'
                       : 'Start recording'

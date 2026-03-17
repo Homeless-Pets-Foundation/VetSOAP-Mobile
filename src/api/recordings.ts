@@ -20,6 +20,22 @@ import {
 import { validateUploadUrl } from '../lib/sslPinning';
 
 const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
+const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
+
+/**
+ * Race a promise against a timeout. Rejects with a user-friendly message
+ * if the timeout fires first.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => { clearTimeout(timeoutId); resolve(value); },
+      (error) => { clearTimeout(timeoutId); reject(error); }
+    );
+  });
+}
+
 const ALLOWED_AUDIO_TYPES = new Set([
   'audio/mp4',
   'audio/x-m4a',
@@ -160,7 +176,11 @@ export const recordingsApi = {
           : undefined
       );
 
-      const uploadResult = await uploadTask.uploadAsync();
+      const uploadResult = await withTimeout(
+        uploadTask.uploadAsync(),
+        R2_UPLOAD_TIMEOUT_MS,
+        'Upload timed out. Please check your connection and try again.'
+      );
       if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
         throw new Error(
           `Upload to storage failed (HTTP ${uploadResult?.status ?? 'unknown'}). Please try again.`
@@ -254,7 +274,11 @@ export const recordingsApi = {
             : undefined
         );
 
-        const uploadResult = await uploadTask.uploadAsync();
+        const uploadResult = await withTimeout(
+          uploadTask.uploadAsync(),
+          R2_UPLOAD_TIMEOUT_MS,
+          `Upload of segment ${i + 1} timed out. Please check your connection and try again.`
+        );
         if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
           throw new Error(
             `Upload of segment ${i + 1} failed (HTTP ${uploadResult?.status ?? 'unknown'}). Please try again.`

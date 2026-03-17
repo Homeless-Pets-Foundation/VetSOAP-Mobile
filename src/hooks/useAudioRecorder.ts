@@ -130,6 +130,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       setAudioUri(recorder.uri ?? null);
       setState('stopped');
       await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      throw error;
     }
   }, [recorder, recorderState.durationMillis]);
 
@@ -145,6 +146,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       setAudioUri(recorder.uri ?? null);
       setState('stopped');
       await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      throw error;
     }
   }, [recorder, recorderState.durationMillis]);
 

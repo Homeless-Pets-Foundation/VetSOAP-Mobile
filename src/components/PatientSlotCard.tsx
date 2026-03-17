@@ -214,7 +214,7 @@ export function PatientSlotCard({
         {/* Controls */}
         <View className="flex-row gap-3">
           {/* Idle: show big record button */}
-          {!isStopped && !(isRecorderOwner && (isRecording || isPaused)) && (
+          {audioState === 'idle' && (
             <Animated.View entering={FadeIn.duration(300)}>
               <AnimatedPressable
                 onPress={onStart}
@@ -251,7 +251,7 @@ export function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Paused: resume + stop */}
+          {/* Paused: resume + stop (recorder owner) */}
           {isRecorderOwner && isPaused && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
               <Button variant="primary" onPress={onResume}>Resume</Button>
@@ -259,7 +259,17 @@ export function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Stopped: continue recording or start over */}
+          {/* Paused but not recorder owner: let user continue or start over */}
+          {isPaused && !isRecorderOwner && (
+            <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
+              <Button variant="primary" onPress={onContinueRecording}>Continue Recording</Button>
+              {hasSegments && (
+                <Button variant="danger" onPress={onRecordAgain}>Delete & Start Over</Button>
+              )}
+            </Animated.View>
+          )}
+
+          {/* Stopped with segments: continue recording or start over */}
           {isStopped && hasSegments && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
               <Button variant="primary" onPress={onContinueRecording}>
@@ -268,6 +278,13 @@ export function PatientSlotCard({
               <Button variant="danger" onPress={onRecordAgain}>
                 Delete & Start Over
               </Button>
+            </Animated.View>
+          )}
+
+          {/* Stopped with no segments (error recovery) */}
+          {isStopped && !hasSegments && (
+            <Animated.View entering={FadeIn.duration(200)}>
+              <Button variant="primary" onPress={onContinueRecording}>Try Again</Button>
             </Animated.View>
           )}
         </View>

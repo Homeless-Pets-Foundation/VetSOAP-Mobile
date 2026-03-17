@@ -151,8 +151,39 @@ function RecordingSession() {
           startRecordingRef.current(nextSlotId);
         }, 250);
       }
+    } else if (!recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
+      // Null audioUri — native pause/stop both failed. Clean up the dead binding.
+      audioCaptureDoneRef.current = true;
+      const boundSlotId = session.recorderBoundToSlotId;
+      const boundSlot = session.slots.find((s) => s.id === boundSlotId);
+      unbindRecorder();
+
+      if (boundSlot) {
+        setAudioState(boundSlotId, boundSlot.segments.length > 0 ? 'stopped' : 'idle');
+      }
+
+      if (pendingStartSlotRef.current) {
+        const nextSlotId = pendingStartSlotRef.current;
+        pendingStartSlotRef.current = null;
+        recorder.resetWithoutDelete();
+        setTimeout(() => {
+          startRecordingRef.current(nextSlotId);
+        }, 250);
+      } else {
+        recorder.reset();
+      }
     }
   }, [recorder.state, recorder.audioUri]);
+
+  // Consistency guard: fix orphaned paused/recording states when recorder ownership changes
+  useEffect(() => {
+    session.slots.forEach((slot) => {
+      if (slot.id === session.recorderBoundToSlotId) return;
+      if (slot.audioState === 'recording') {
+        setAudioState(slot.id, slot.segments.length > 0 ? 'stopped' : 'idle');
+      }
+    });
+  }, [session.recorderBoundToSlotId]);
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
@@ -199,7 +230,7 @@ function RecordingSession() {
     }
   }, [session.activeIndex]);
 
-  // Auto-pause when swiping away from recording slot
+  // Auto-pause when swiping away from a recording slot
   const handleScrollEnd = useCallback(
     (e: { nativeEvent: { contentOffset: { x: number } } }) => {
       isScrollingRef.current = false;
@@ -210,28 +241,24 @@ function RecordingSession() {
         // Haptic feedback on swipe between patients
         Haptics.selectionAsync().catch(() => {});
 
-        // If leaving a recording slot, auto-pause
+        // If leaving a recording slot, auto-pause so user can resume with one tap
         if (session.recorderBoundToSlotId && recorder.state === 'recording') {
-          const boundSlot = session.slots.find((s) => s.id === session.recorderBoundToSlotId);
-          if (boundSlot) {
-            (async () => {
-              try {
-                await recorder.pause();
-                setAudioState(session.recorderBoundToSlotId!, 'paused');
-              } catch {
-                // If pause fails, try to stop — the effect will save the audio
-                try {
-                  await recorder.stop();
-                } catch {}
-              }
-            })().catch(() => {});
-          }
+          (async () => {
+            try {
+              await recorder.pause();
+              setAudioState(session.recorderBoundToSlotId!, 'paused');
+            } catch {
+              // pause() rethrew after internal cleanup — try to stop as fallback
+              try { await recorder.stop(); } catch {}
+              // The audio-capture effect will save the segment if stop succeeded
+            }
+          })().catch(() => {});
         }
         swipeChangeRef.current = true;
         setActiveIndex(clampedIndex);
       }
     },
-    [session.activeIndex, session.slots.length, session.recorderBoundToSlotId, recorder.state, screenWidth]
+    [session.activeIndex, session.slots.length, session.recorderBoundToSlotId, recorder.state, screenWidth, setAudioState]
   );
 
   const handleScrollBegin = useCallback(() => {
@@ -325,7 +352,12 @@ function RecordingSession() {
           await recorder.pause();
           setAudioState(slotId, 'paused');
         } catch {
-          Alert.alert('Recording Error', 'Failed to pause recording.');
+          // pause() rethrows after internal cleanup (stops recorder, sets state to 'stopped').
+          // The audio-capture effect will save the segment. Don't override audioState here.
+          Alert.alert(
+            'Recording Saved',
+            'Could not pause — the recording segment was auto-saved. You can continue recording to add another segment.'
+          );
         }
       })().catch(() => {});
     },
@@ -340,7 +372,12 @@ function RecordingSession() {
           await recorder.resume();
           setAudioState(slotId, 'recording');
         } catch {
-          Alert.alert('Recording Error', 'Failed to resume recording.');
+          // resume() rethrows after internal cleanup (stops recorder, sets state to 'stopped').
+          // The audio-capture effect will save the segment. Don't override audioState here.
+          Alert.alert(
+            'Recording Saved',
+            'Could not resume — the recording segment was saved. Press "Continue Recording" to add a new segment.'
+          );
         }
       })().catch(() => {});
     },

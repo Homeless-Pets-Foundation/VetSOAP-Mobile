@@ -35,6 +35,9 @@ firebase-debug.log
 .env
 .env*.local
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # sensitive config (credentials, keys)
 credentials.json
 play-service-account.json

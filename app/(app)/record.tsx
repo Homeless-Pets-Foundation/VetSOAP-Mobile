@@ -446,8 +446,9 @@ function RecordingSession() {
   // -- Upload handlers --
 
   const uploadSlot = useCallback(
-    async (slot: PatientSlot): Promise<boolean> => {
-      if (slot.segments.length === 0 || slot.uploadStatus === 'success' || slot.uploadStatus === 'uploading') return true;
+    async (slot: PatientSlot): Promise<string | null> => {
+      if (slot.segments.length === 0 || slot.uploadStatus === 'uploading') return null;
+      if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
 
       setUploadStatus(slot.id, 'uploading', { progress: 5 });
       try {
@@ -485,11 +486,11 @@ function RecordingSession() {
           progress: 100,
           serverRecordingId: result.id,
         });
-        return true;
+        return result.id;
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Upload failed. Please try again.';
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
-        return false;
+        return null;
       }
     },
     [setUploadStatus]
@@ -501,14 +502,16 @@ function RecordingSession() {
       if (!slot) return;
 
       (async () => {
-        const success = await uploadSlot(slot);
-        if (success) {
+        const serverRecordingId = await uploadSlot(slot);
+        if (serverRecordingId) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+          resetSession();
+          router.push(`/(app)/recordings/${serverRecordingId}` as `/(app)/recordings/${string}`);
         }
       })().catch(() => {});
     },
-    [session.slots, uploadSlot, queryClient]
+    [session.slots, uploadSlot, queryClient, resetSession, router]
   );
 
   const handleSubmitAll = useCallback(() => {
@@ -524,8 +527,8 @@ function RecordingSession() {
         let allSuccess = true;
         // Sequential uploads to avoid network saturation
         for (const slot of slotsToUpload) {
-          const success = await uploadSlot(slot);
-          if (!success) allSuccess = false;
+          const recordingId = await uploadSlot(slot);
+          if (!recordingId) allSuccess = false;
         }
 
         Haptics.notificationAsync(
@@ -537,7 +540,7 @@ function RecordingSession() {
         queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
 
         if (allSuccess) {
-          // Navigate to recordings list
+          resetSession();
           router.push('/(app)/recordings');
         } else {
           Alert.alert(
@@ -551,7 +554,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsSubmittingAll(false);
     });
-  }, [session.slots, uploadSlot, queryClient, router]);
+  }, [session.slots, uploadSlot, queryClient, router, resetSession]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();

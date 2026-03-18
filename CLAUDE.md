@@ -4,7 +4,7 @@
 
 - **Framework:** Expo SDK 55, React Native 0.83, React 19
 - **Routing:** expo-router (file-based, `app/` directory)
-- **State:** React Query for server state, React context for auth
+- **State:** React Query for server state, React context for auth, useReducer for multi-patient session
 - **Styling:** NativeWind v4 (Tailwind CSS via `global.css`)
 - **Auth:** Supabase Auth with `expo-secure-store` token persistence
 - **Build:** EAS Build (managed workflow, no bare `android/` or `ios/` committed)
@@ -101,7 +101,7 @@ try {
 
 ### 7. expo-audio recording operations can throw at any time
 
-`pause()`, `record()`, `stop()` throw if the audio session is interrupted (phone call, audio focus lost, permission revoked). Callers in `record.tsx` must wrap in try/catch with user-visible error feedback (Alert). Note: `pause()` and `record()` are synchronous in expo-audio; only `stop()` and `prepareToRecordAsync()` are async.
+`pause()`, `record()`, `stop()` throw if the audio session is interrupted (phone call, audio focus lost, permission revoked). Callers in `record.tsx` must wrap in try/catch with user-visible error feedback (Alert). Note: `pause()` and `record()` are synchronous in expo-audio; only `stop()` and `prepareToRecordAsync()` are async. In the `useAudioRecorder` hook, `pause()` and `resume()` catch errors, perform internal cleanup (stop recorder, save URI, reset audio mode), then **rethrow** — callers must handle the rethrown error (typically by showing a "Recording Saved" alert).
 
 ### 8. Keep `validateRequestUrl()` inside the try block in `ApiClient.request()`
 
@@ -127,13 +127,18 @@ This applies everywhere including the shared `Button` component (`src/components
 
 ### 11. Audio recorder hook must recover from native failures
 
-`useAudioRecorder` operations (`stop`, `pause`, `resume`) call expo-audio methods that can throw at any time. The `stop()` callback wraps `recorder.stop()` in try/catch so that hook state (`state`, `audioUri`) is always cleaned up even if the native call fails. Without this, a single failure permanently corrupts the hook — subsequent interactions crash.
+`useAudioRecorder` operations (`stop`, `pause`, `resume`) call expo-audio methods that can throw at any time. Each has a different error strategy:
+
+- **`stop()`** — swallows errors (try/catch with no rethrow). State and URI are always cleaned up.
+- **`pause()` / `resume()`** — catch errors, perform cleanup (capture duration, force `recorder.stop()`, save URI, set state to `stopped`, reset audio mode), then **rethrow**. Callers must catch the rethrown error and show user feedback (e.g. "Recording Saved" alert).
+
+Without this recovery, a single native failure permanently corrupts the hook — subsequent interactions crash.
 
 The recorder is created via expo-audio's `useAudioRecorder` hook which auto-releases native resources on unmount. Status polling uses `useAudioRecorderState(recorder, 250)` for duration and metering updates.
 
 ### 12. Validate local file reads before upload
 
-In `recordingsApi.createWithFile()`, always check `fileResponse.ok` after `fetch(fileUri)` and verify `blob.size > 0` before proceeding with the upload. A missing or empty audio file (OS reclaimed temp storage, interrupted recording) should throw a user-friendly error rather than silently uploading a 0-byte file.
+In `recordingsApi.createWithFile()` and `createWithSegments()`, always check file existence and size via `getInfoAsync(uri)` before uploading. Enforce a 500MB per-file limit client-side (`MAX_FILE_SIZE_BYTES`). Both methods use a 10-minute timeout (`R2_UPLOAD_TIMEOUT_MS`) per upload via `withTimeout()`. `createWithSegments()` validates each segment independently. A missing or empty audio file should throw a user-friendly error rather than silently uploading a 0-byte file.
 
 ### 13. Guard `response.json()` results against null and unexpected shapes
 
@@ -150,7 +155,7 @@ React Query's `refetch()` returns a Promise. `RefreshControl.onRefresh` is typed
 ## EAS Build Notes
 
 - **Secrets:** `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` are stored as EAS project-level secrets (not in `eas.json`)
-- **Credentials:** Preview profile uses `credentialsSource: "local"` with `credentials.json` + `android/keystores/captivet.jks` (both gitignored)
+- **Credentials:** Both preview and production profiles use `credentialsSource: "remote"` (managed by EAS)
 - **Lock file:** Must stay in sync — run `npm install` before EAS builds if dependencies change. EAS uses `npm ci` which fails on mismatch.
 - **Secrets sync:** After changing `.env`, run `eas secret:push --scope project --env-file .env --force` to update EAS build secrets. A stale EAS secret will override the local `.env` in production builds.
 - **Metro cache:** After changing `.env`, restart Metro with `npx expo start --clear`. Metro inlines `EXPO_PUBLIC_*` values at build time — a stale cache silently uses the old values. In dev mode, `config.ts` logs a warning if Supabase vars are empty.
@@ -162,9 +167,75 @@ React Query's `refetch()` returns a Promise. `RefreshControl.onRefresh` is typed
 - `src/config.ts` — env var access with graceful fallback. Exports `CONFIG_MISSING` flag.
 - `app/_layout.tsx` — gates entire app on `CONFIG_MISSING` before any providers mount. Root `ErrorBoundary` wraps entire component tree.
 - `src/components/ui/Button.tsx` — shared button with haptic feedback. `Haptics.impactAsync` has `.catch()`. Every button press flows through this component.
-- `src/hooks/useAudioRecorder.ts` — wraps expo-audio recording. Uses `audioSource: 'voice_recognition'` on Android for optimal speech capture. `stop()` has internal try/catch for state recovery. Recorder auto-released on unmount.
+- `src/hooks/useAudioRecorder.ts` — wraps expo-audio recording. Uses `audioSource: 'voice_recognition'` on Android for optimal speech capture. `stop()` swallows errors; `pause()`/`resume()` catch, cleanup, then rethrow. Exports `resetWithoutDelete()` (clears state without deleting audio file) and `reset()` (clears state and deletes file). Recorder auto-released on unmount.
+- `src/hooks/useMultiPatientSession.ts` — `useReducer`-based multi-patient session state. Manages up to 10 `PatientSlot`s with `segments[]`, recorder binding, upload status, and `CONTINUE_RECORDING` action for multi-segment recording.
+- `src/types/multiPatient.ts` — type definitions: `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`.
 - `src/auth/AuthProvider.tsx` — `handleSignOut` wraps server call in try/catch so local cleanup always runs. Fire-and-forget promises in session restore have `.catch()`.
-- `src/api/recordings.ts` — `createWithFile()` validates file response and blob size before upload.
+- `src/api/recordings.ts` — `createWithFile()` for single-segment upload, `createWithSegments()` for multi-segment. Both validate via `getInfoAsync()`, enforce 500MB limit, 10-minute timeout.
+- `src/components/PatientSlotCard.tsx` — per-patient card with form fields, recording controls, and upload status. Rendered inside the horizontal pager.
+- `src/components/PatientTabStrip.tsx` — horizontal scrollable tab strip for switching between patient slots. Shows status badges (recording, paused, stopped, uploaded).
+- `src/components/SubmitPanel.tsx` — bottom panel with "Submit All" button. Visible when multiple slots have recordings ready to upload.
+
+## Multi-Patient Recording Architecture
+
+The recording screen (`app/(app)/record.tsx`) supports recording up to 10 patients in a single session. Each patient is a "slot" displayed as a horizontally-pageable card.
+
+### Data Model
+
+Defined in `src/types/multiPatient.ts`:
+
+- **`AudioSegment`** — `{ uri: string; duration: number }`. A single continuous recording file.
+- **`PatientSlot`** — one patient's full state: form data (`CreateRecording`), `audioState` (`idle` | `recording` | `paused` | `stopped`), `segments[]` (array of `AudioSegment`), upload lifecycle fields (`uploadStatus`, `uploadProgress`, `uploadError`, `serverRecordingId`).
+- **`SessionState`** — `{ slots: PatientSlot[]; activeIndex: number; recorderBoundToSlotId: string | null }`.
+- **`SessionAction`** — discriminated union of 12 action types dispatched to the session reducer.
+
+Max 10 slots enforced in the `ADD_SLOT` reducer case.
+
+### Recorder Ownership Model
+
+There is a single `useAudioRecorder` instance shared across all patient slots. Only one slot can "own" the recorder at a time, tracked by `recorderBoundToSlotId` in `SessionState`.
+
+- **`BIND_RECORDER`** — dispatched when starting a recording, sets `recorderBoundToSlotId`.
+- **`UNBIND_RECORDER`** — dispatched after audio is captured (in the `recorder.state === 'stopped'` effect).
+- **Pending-start queue** — if starting a new slot while another is recording/paused, the current slot is stopped first via `pendingStartSlotRef`. After the stop completes and audio is saved, the pending slot auto-starts via `startRecordingRef`.
+- **Auto-pause on swipe** — when swiping away from a recording slot (`handleScrollEnd`), the recorder is paused. If pause fails (rethrown error), the recorder is stopped as fallback.
+- **Consistency guard** — an effect watches `recorderBoundToSlotId` changes and forces any orphaned slot with `audioState: 'recording'` back to `stopped` (if it has segments) or `idle`.
+
+### Multi-Segment Recording
+
+Each slot maintains a `segments[]` array as the source of truth for recorded audio:
+
+- **`SAVE_AUDIO`** — appends a new segment to the slot's `segments[]` and sums total duration.
+- **`CONTINUE_RECORDING`** — resets the slot's `audioState` to `idle` so the user can record another segment. The recorder's `resetWithoutDelete()` clears hook state without deleting the previously-saved audio file.
+- **Upload** — `uploadSlot()` calls `createWithFile()` for single-segment slots or `createWithSegments()` for multi-segment slots. `createWithSegments()` uploads each segment to its own presigned URL, then confirms with all segment keys.
+
+### Concurrency Guards
+
+Six refs in `record.tsx` prevent race conditions:
+
+| Ref | Purpose |
+|---|---|
+| `audioCaptureDoneRef` | Prevents the `recorder.state === 'stopped'` effect from saving the same audio twice |
+| `pendingStartSlotRef` | Queues the next slot to start recording after the current slot's stop completes |
+| `startRecordingRef` | Holds a stable reference to `startRecordingForSlot` for use inside the effect (avoids stale closure) |
+| `stoppingRef` (in hook) | Prevents double-invocation of `stop()` |
+| `isScrollingRef` | Suppresses programmatic `scrollToIndex` during user-initiated swipes |
+| `swipeChangeRef` | Prevents the `activeIndex` sync effect from re-scrolling after a swipe already moved the pager |
+
+### Upload State Machine
+
+Per-slot upload lifecycle: `pending` → `uploading` → `success` | `error`.
+
+- **`uploadSlot(slot)`** — returns `string | null` (server recording ID or null on failure). Skips if already uploading or already succeeded.
+- **Single submit** (`handleSubmitSingle`) — uploads one slot. If other slots still have unsaved recordings, stays on the record screen; otherwise resets session and navigates to the recording detail.
+- **Submit all** (`handleSubmitAll`) — uploads all eligible slots **sequentially** (avoids network saturation). On full success, resets session and navigates to recordings list. On partial failure, shows alert and stays on screen.
+- **Post-upload cleanup** — after successful upload, local audio files are deleted via `FileSystem.deleteAsync`.
+
+### Navigation & Cleanup
+
+- **`usePreventRemove`** — blocks navigation when `unsavedCount > 0` (slots with segments but not yet uploaded, or actively recording/paused). Shows discard confirmation with precise count.
+- **Discard cleanup** — on confirm, iterates all slots and deletes all segment files via `FileSystem.deleteAsync`.
+- **`resetSession`** — dispatches `RESET_SESSION` to the reducer, creating a fresh initial state. Required because the record tab stays mounted across navigations — without explicit reset, stale state persists.
 
 
 <!-- TRIGGER.DEV basic START -->

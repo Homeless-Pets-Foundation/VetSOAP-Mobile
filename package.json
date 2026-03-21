@@ -46,7 +46,7 @@
   "devDependencies": {
     "@types/react": "~19.2.2",
     "babel-plugin-transform-remove-console": "^6.9.4",
-    "eslint": "^9.0.0",
+    "eslint": "^10.1.0",
     "eslint-config-expo": "~55.0.0",
     "expo-dev-client": "~55.0.18",
     "sharp": "^0.34.5",

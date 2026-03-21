@@ -150,6 +150,8 @@ function RecordingSession() {
         setTimeout(() => {
           startRecordingRef.current(nextSlotId);
         }, 250);
+      } else {
+        recorder.resetWithoutDelete();
       }
     } else if (!recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
       // Null audioUri — native pause/stop both failed. Clean up the dead binding.

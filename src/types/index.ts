@@ -5,7 +5,21 @@ export type RecordingStatus =
   | 'transcribed'
   | 'generating'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'pending_metadata';
+
+export interface CostBreakdown {
+  transcriptionCostCents: number;
+  generationCostCents: number;
+  totalCostCents: number;
+  modelUsed: string;
+  modelsUsed: Record<string, string> | null;
+  promptTokens: number;
+  completionTokens: number;
+  tokensByModel: Record<string, { promptTokens: number; completionTokens: number }> | null;
+  transcriptionModel: string | null;
+  audioDurationSeconds?: number;
+}
 
 export interface Recording {
   id: string;
@@ -32,6 +46,11 @@ export interface Recording {
   triggerJobId: string | null;
   foreignLanguage: boolean;
   templateId: string | null;
+  isExported: boolean;
+  exportedAt: string | null;
+  exportedTo: string | null;
+  exportedBy: string | null;
+  costBreakdown: CostBreakdown | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -82,6 +101,7 @@ export interface PaginatedResponse<T> {
 export interface UploadUrlResponse {
   uploadUrl: string;
   fileKey: string;
+  warnings: string[];
 }
 
 export interface User {

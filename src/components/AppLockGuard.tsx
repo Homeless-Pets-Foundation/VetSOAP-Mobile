@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
-import { View, Text, Image, AppState, Alert, useWindowDimensions } from 'react-native';
+import { View, Text, Image, AppState, Alert } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { biometrics } from '../lib/biometrics';
 import { AuthContext } from '../auth/AuthProvider';
@@ -17,7 +17,6 @@ interface AppLockGuardProps {
  */
 export function AppLockGuard({ children }: AppLockGuardProps) {
   const { signOut } = useContext(AuthContext);
-  const { width: screenWidth } = useWindowDimensions();
   const [isLocked, setIsLocked] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const backgroundedAtRef = useRef<number | null>(null);
@@ -120,7 +119,7 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
       >
         <Image
           source={require('../../assets/logo-wordmark.png')}
-          style={{ width: Math.min(screenWidth * 0.5, 240), aspectRatio: 600 / 139, marginBottom: 16 }}
+          style={{ width: '60%', maxWidth: 280, aspectRatio: 600 / 139, marginBottom: 16 }}
           resizeMode="contain"
           accessibilityLabel="Captivet"
         />

@@ -20,6 +20,7 @@ import { recordingsApi } from '../../src/api/recordings';
 import { PatientTabStrip } from '../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../src/components/SubmitPanel';
+import { UploadOverlay } from '../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../src/components/ui/ScreenContainer';
 import { Button } from '../../src/components/ui/Button';
 import type { PatientSlot } from '../../src/types/multiPatient';
@@ -113,6 +114,8 @@ function RecordingSession() {
   } = useMultiPatientSession(defaultTemplate?.id);
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
+  const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
+  const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
   const pagerRef = useRef<FlatList>(null);
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
@@ -498,6 +501,18 @@ function RecordingSession() {
 
       setUploadStatus(slot.id, 'uploading', { progress: 5 });
       try {
+        // Throttle progress updates to avoid dispatching state on every native chunk
+        let lastProgressUpdate = 0;
+        const onUploadProgress = ({ percent }: { percent: number }) => {
+          const now = Date.now();
+          if (now - lastProgressUpdate >= 500) {
+            lastProgressUpdate = now;
+            setUploadStatus(slot.id, 'uploading', {
+              progress: Math.round(5 + (percent * 85) / 100),
+            });
+          }
+        };
+
         let result;
         if (slot.segments.length === 1) {
           // Single segment: use existing single-file upload
@@ -505,13 +520,7 @@ function RecordingSession() {
             slot.formData,
             slot.segments[0].uri,
             'audio/x-m4a',
-            {
-              onUploadProgress: ({ percent }) => {
-                setUploadStatus(slot.id, 'uploading', {
-                  progress: Math.round(5 + (percent * 85) / 100),
-                });
-              },
-            }
+            { onUploadProgress }
           );
         } else {
           // Multi-segment: upload all segments
@@ -519,13 +528,7 @@ function RecordingSession() {
             slot.formData,
             slot.segments,
             'audio/x-m4a',
-            {
-              onUploadProgress: ({ percent }) => {
-                setUploadStatus(slot.id, 'uploading', {
-                  progress: Math.round(5 + (percent * 85) / 100),
-                });
-              },
-            }
+            { onUploadProgress }
           );
         }
         setUploadStatus(slot.id, 'success', {
@@ -558,26 +561,37 @@ function RecordingSession() {
       const slot = session.slots.find((s) => s.id === slotId);
       if (!slot) return;
 
+      setSubmittingSlotId(slotId);
+      setTotalSlotsToUpload(1);
+
       (async () => {
-        const serverRecordingId = await uploadSlot(slot);
-        if (serverRecordingId) {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        try {
+          const serverRecordingId = await uploadSlot(slot);
+          if (serverRecordingId) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
 
-          // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
-          const otherSlotsWithRecordings = session.slots.some(
-            (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
-              (s.segments.length > 0 || s.audioState === 'recording' || s.audioState === 'paused')
-          );
+            // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
+            const otherSlotsWithRecordings = session.slots.some(
+              (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
+                (s.segments.length > 0 || s.audioState === 'recording' || s.audioState === 'paused')
+            );
 
-          if (otherSlotsWithRecordings) {
-            // Stay on the record screen — uploaded slot already shows success badge
-          } else {
-            resetSession();
-            router.push(`/(app)/recordings/${serverRecordingId}` as `/(app)/recordings/${string}`);
+            if (otherSlotsWithRecordings) {
+              // Stay on the record screen — uploaded slot already shows success badge
+            } else {
+              resetSession();
+              router.push(`/(app)/recordings/${serverRecordingId}` as `/(app)/recordings/${string}`);
+            }
           }
+        } finally {
+          setSubmittingSlotId(null);
+          setTotalSlotsToUpload(0);
         }
-      })().catch(() => {});
+      })().catch(() => {
+        setSubmittingSlotId(null);
+        setTotalSlotsToUpload(0);
+      });
     },
     [session.slots, uploadSlot, queryClient, resetSession, router]
   );
@@ -590,11 +604,14 @@ function RecordingSession() {
     if (slotsToUpload.length === 0) return;
 
     setIsSubmittingAll(true);
+    setTotalSlotsToUpload(slotsToUpload.length);
+
     (async () => {
       try {
         let allSuccess = true;
         // Sequential uploads to avoid network saturation
         for (const slot of slotsToUpload) {
+          setSubmittingSlotId(slot.id);
           const recordingId = await uploadSlot(slot);
           if (!recordingId) allSuccess = false;
         }
@@ -618,15 +635,22 @@ function RecordingSession() {
         }
       } finally {
         setIsSubmittingAll(false);
+        setSubmittingSlotId(null);
+        setTotalSlotsToUpload(0);
       }
     })().catch(() => {
       setIsSubmittingAll(false);
+      setSubmittingSlotId(null);
+      setTotalSlotsToUpload(0);
     });
   }, [session.slots, uploadSlot, queryClient, router, resetSession]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();
   }, [addSlot]);
+
+  // Upload overlay visibility
+  const showOverlay = isSubmittingAll || session.slots.some((s) => s.uploadStatus === 'uploading');
 
   // Pagination indicator
   const paginationText =
@@ -684,6 +708,16 @@ function RecordingSession() {
     ]
   );
 
+  // Stable renderItem reference for FlatList — avoids re-rendering all visible items
+  // when the callback recreates. Combined with React.memo on PatientSlotCard,
+  // this ensures only slots with actual prop changes re-render.
+  const renderSlotCardRef = useRef(renderSlotCard);
+  renderSlotCardRef.current = renderSlotCard;
+  const stableRenderSlotCard = useCallback(
+    (info: { item: PatientSlot; index: number }) => renderSlotCardRef.current(info),
+    []
+  );
+
   const getItemLayout = useCallback(
     (_: any, index: number) => ({
       length: screenWidth,
@@ -724,7 +758,7 @@ function RecordingSession() {
       <FlatList
         ref={pagerRef}
         data={session.slots}
-        renderItem={renderSlotCard}
+        renderItem={stableRenderSlotCard}
         keyExtractor={(item) => item.id}
         horizontal
         pagingEnabled
@@ -735,6 +769,10 @@ function RecordingSession() {
         getItemLayout={getItemLayout}
         initialScrollIndex={session.activeIndex}
         style={{ flex: 1 }}
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={2}
+        windowSize={3}
+        initialNumToRender={1}
       />
 
       {/* Pagination dots or text */}
@@ -767,6 +805,15 @@ function RecordingSession() {
         slots={session.slots}
         isSubmitting={isSubmittingAll}
         onSubmitAll={handleSubmitAll}
+      />
+
+      {/* Upload overlay */}
+      <UploadOverlay
+        visible={showOverlay}
+        slots={session.slots}
+        currentSlotId={submittingSlotId}
+        totalSlotsToUpload={totalSlotsToUpload}
+        isMulti={isSubmittingAll}
       />
     </SafeAreaView>
   );

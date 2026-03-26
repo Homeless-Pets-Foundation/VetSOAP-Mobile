@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -20,6 +20,7 @@ export default function RecordingsListScreen() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const isInitialMountRef = useRef(true);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -57,11 +58,18 @@ export default function RecordingsListScreen() {
       const hasProcessing = allRecordings?.some(
         (r) => !['completed', 'failed'].includes(r.status)
       );
-      return hasProcessing ? 5000 : false;
+      return hasProcessing ? 10000 : false;
     },
   });
 
   const recordings = data?.pages.flatMap((page) => page.data) ?? [];
+
+  // Disable entry animations after initial data load
+  useEffect(() => {
+    if (data && isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+    }
+  }, [data]);
 
   return (
     <SafeAreaView className="screen" style={{ alignItems: 'center' }}>
@@ -98,9 +106,9 @@ export default function RecordingsListScreen() {
         data={recordings}
         keyExtractor={(item) => item.id}
         renderItem={({ item, index }) => {
-          if (index < 10) {
+          if (isInitialMountRef.current && index < 3) {
             return (
-              <Animated.View entering={FadeInRight.delay(index * 50).duration(300)}>
+              <Animated.View entering={FadeInRight.delay(index * 50).duration(250)}>
                 <RecordingCard recording={item} />
               </Animated.View>
             );
@@ -114,7 +122,11 @@ export default function RecordingsListScreen() {
             fetchNextPage().catch(() => {});
           }
         }}
-        onEndReachedThreshold={0.5}
+        onEndReachedThreshold={0.8}
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={5}
+        windowSize={7}
+        initialNumToRender={8}
         ListFooterComponent={
           isFetchingNextPage ? (
             <View className="py-4 items-center">

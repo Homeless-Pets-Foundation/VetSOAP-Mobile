@@ -76,7 +76,8 @@ function formatDuration(seconds: number) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-export function PatientSlotCard({
+// WARNING: update the comparator below when adding new props
+export const PatientSlotCard = React.memo(function PatientSlotCard({
   slot,
   slotIndex,
   totalSlots,
@@ -375,4 +376,41 @@ export function PatientSlotCard({
       )}
     </ScrollView>
   );
-}
+}, (prev, next) => {
+  // Return true to skip re-render (props are equal)
+  if (prev.slotIndex !== next.slotIndex) return false;
+  if (prev.totalSlots !== next.totalSlots) return false;
+  if (prev.isRecorderOwner !== next.isRecorderOwner) return false;
+  if (prev.recorderBusy !== next.recorderBusy) return false;
+  if (prev.width !== next.width) return false;
+  if (prev.templatesLoading !== next.templatesLoading) return false;
+  if (prev.templates !== next.templates) return false;
+
+  // Only compare recorder when this slot owns it
+  if (next.isRecorderOwner) {
+    if (prev.recorder.state !== next.recorder.state) return false;
+    if (prev.recorder.duration !== next.recorder.duration) return false;
+    if (prev.recorder.metering !== next.recorder.metering) return false;
+  }
+
+  // Compare slot fields individually to avoid re-renders from new slot object references
+  const ps = prev.slot;
+  const ns = next.slot;
+  if (ps.id !== ns.id) return false;
+  if (ps.audioState !== ns.audioState) return false;
+  if (ps.segments.length !== ns.segments.length) return false;
+  if (ps.uploadStatus !== ns.uploadStatus) return false;
+  if (ps.uploadProgress !== ns.uploadProgress) return false;
+  if (ps.uploadError !== ns.uploadError) return false;
+  if (ps.audioDuration !== ns.audioDuration) return false;
+  if (ps.serverRecordingId !== ns.serverRecordingId) return false;
+  if (ps.formData.patientName !== ns.formData.patientName) return false;
+  if (ps.formData.clientName !== ns.formData.clientName) return false;
+  if (ps.formData.species !== ns.formData.species) return false;
+  if (ps.formData.appointmentType !== ns.formData.appointmentType) return false;
+  if (ps.formData.breed !== ns.formData.breed) return false;
+  if (ps.formData.templateId !== ns.formData.templateId) return false;
+  if (ps.formData.foreignLanguage !== ns.formData.foreignLanguage) return false;
+
+  return true;
+});

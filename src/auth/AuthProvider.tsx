@@ -162,8 +162,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setSession(existingSession);
         }
       }
-      // Clean up orphaned audio recordings from prior crashes
-      cleanupAudioCache().catch(() => {});
+      // Clean up orphaned audio recordings from prior crashes (deferred to avoid competing with initial render)
+      setTimeout(() => { cleanupAudioCache().catch(() => {}); }, 5000);
     }).catch((error) => {
       if (__DEV__) console.error('[Auth] Failed to restore session:', error);
     }).finally(() => {

@@ -19,7 +19,7 @@ import {
 } from '../lib/validation';
 import { validateUploadUrl } from '../lib/sslPinning';
 
-const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
+const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
 
 /**
@@ -140,17 +140,20 @@ export const recordingsApi = {
       // Enforce client-side file size limit
       if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
         throw new Error(
-          `File too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 500MB.`
+          `File too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
         );
       }
 
       // Step 2: Get presigned upload URL (include file size for server validation)
-      const { uploadUrl, fileKey } = await this.getUploadUrl(
+      const { uploadUrl, fileKey, warnings } = await this.getUploadUrl(
         recording.id,
         'recording.m4a',
         contentType,
         fileSizeBytes
       );
+      if (warnings?.length) {
+        console.warn('[upload]', ...warnings);
+      }
       // Validate the presigned upload URL targets a trusted storage domain
       validateUploadUrl(uploadUrl);
 
@@ -234,17 +237,20 @@ export const recordingsApi = {
         }
         if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
           throw new Error(
-            `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 500MB.`
+            `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
           );
         }
 
         // Get presigned URL for this segment
-        const { uploadUrl, fileKey } = await this.getUploadUrl(
+        const { uploadUrl, fileKey, warnings } = await this.getUploadUrl(
           recording.id,
           segmentFileName,
           contentType,
           fileSizeBytes
         );
+        if (warnings?.length) {
+          console.warn(`[upload] segment ${i + 1}:`, ...warnings);
+        }
         validateUploadUrl(uploadUrl);
 
         // Upload segment to R2

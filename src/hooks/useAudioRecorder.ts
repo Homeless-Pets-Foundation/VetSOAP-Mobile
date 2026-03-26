@@ -79,8 +79,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // Create the expo-audio recorder (auto-released on unmount)
   const recorder = useExpoAudioRecorder(RECORDING_OPTIONS, statusListener);
 
-  // Poll for status (duration, metering) at 250ms intervals
-  const recorderState = useAudioRecorderState(recorder, 250);
+  // Poll for status (duration, metering) — 500ms balances responsiveness with CPU usage on weak hardware
+  const recorderState = useAudioRecorderState(recorder, 500);
 
   const start = useCallback(async () => {
     if (isStartingRef.current || state !== 'idle') return;

@@ -11,9 +11,19 @@ updates:
       development-dependencies:
         dependency-type: development
     open-pull-requests-limit: 10
+    ignore:
+      # Block all major version bumps — these require manual research
+      # and confirmation before upgrading
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"

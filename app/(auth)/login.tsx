@@ -14,7 +14,7 @@ const LOCKOUT_DURATION_MS = 60_000; // 1 minute
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
-  const { width, scale, iconSm } = useResponsive();
+  const { scale, iconSm } = useResponsive();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +82,7 @@ export default function LoginScreen() {
         <Animated.View entering={FadeInDown.duration(500)} className="items-center mb-10">
           <Image
             source={require('../../assets/logo-wordmark.png')}
-            style={{ width: Math.min(width * 0.55, 280), aspectRatio: 600 / 139 }}
+            style={{ width: '70%', maxWidth: 320, aspectRatio: 600 / 139 }}
             resizeMode="contain"
             accessibilityLabel="Captivet"
           />

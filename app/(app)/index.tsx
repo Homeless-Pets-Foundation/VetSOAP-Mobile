@@ -36,7 +36,7 @@ export default function HomeScreen() {
       const hasProcessing = allRecordings?.some(
         (r) => !['completed', 'failed'].includes(r.status)
       );
-      return hasProcessing ? 5000 : false;
+      return hasProcessing ? 10000 : false;
     },
   });
 

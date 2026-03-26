@@ -20,6 +20,7 @@ const STATUS_CONFIG: Record<RecordingStatus, { label: string; variant: BadgeVari
   generating: { label: 'Generating', variant: 'success', inProgress: true },
   completed: { label: 'Completed', variant: 'success' },
   failed: { label: 'Failed', variant: 'danger' },
+  pending_metadata: { label: 'Awaiting Details', variant: 'warning' },
 };
 
 const variantClasses: Record<BadgeVariant, { bg: string; text: string; dot: string }> = {

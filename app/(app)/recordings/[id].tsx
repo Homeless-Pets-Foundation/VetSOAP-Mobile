@@ -135,8 +135,8 @@ export default function RecordingDetailScreen() {
     enabled: !!id,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      if (status && !['completed', 'failed'].includes(status)) {
-        return 5000;
+      if (status && !['completed', 'failed', 'pending_metadata'].includes(status)) {
+        return 10000;
       }
       return false;
     },
@@ -200,7 +200,7 @@ export default function RecordingDetailScreen() {
     return <DetailSkeleton />;
   }
 
-  const isProcessing = !['completed', 'failed'].includes(recording.status);
+  const isProcessing = !['completed', 'failed', 'pending_metadata'].includes(recording.status);
   const parsedDate = new Date(recording.createdAt);
   const formattedDate = isNaN(parsedDate.getTime())
     ? ''
@@ -284,6 +284,23 @@ export default function RecordingDetailScreen() {
               This usually takes 1-2 minutes.
             </Text>
             <ProcessingStepper currentStatus={recording.status} />
+          </Card>
+        )}
+
+        {/* Pending Metadata (Google Drive import awaiting details) */}
+        {recording.status === 'pending_metadata' && (
+          <Card className="mx-5 mb-4 border-warning-200">
+            <View className="flex-row items-start">
+              <AlertTriangle color="#d97706" size={18} className="mr-2 mt-0.5" />
+              <View className="flex-1">
+                <Text className="text-body font-semibold text-warning-700 mb-1">
+                  Awaiting Patient Details
+                </Text>
+                <Text className="text-body-sm text-stone-500">
+                  This recording was imported and needs patient details before processing can begin. Complete the details on the web app.
+                </Text>
+              </View>
+            </View>
           </Card>
         )}
 

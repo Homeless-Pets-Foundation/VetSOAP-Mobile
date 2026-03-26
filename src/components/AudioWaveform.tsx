@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { View } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -28,9 +28,10 @@ interface WaveBarProps {
   barGap: number;
   maxHeight: number;
   targetHeight: number;
+  jitter: number;
 }
 
-function WaveBar({ index, barCount, isActive, isPaused, barWidth, barGap, maxHeight, targetHeight }: WaveBarProps) {
+const WaveBar = React.memo(function WaveBar({ index, barCount, isActive, isPaused, barWidth, barGap, maxHeight, targetHeight, jitter }: WaveBarProps) {
   const height = useSharedValue(MIN_HEIGHT);
 
   useEffect(() => {
@@ -39,8 +40,6 @@ function WaveBar({ index, barCount, isActive, isPaused, barWidth, barGap, maxHei
       const center = barCount / 2;
       const distFromCenter = Math.abs(index - center) / center;
       const variation = 1 - distFromCenter * 0.4;
-      // Add slight randomness so bars don't look identical
-      const jitter = 0.85 + Math.random() * 0.3;
       const finalHeight = Math.max(MIN_HEIGHT, targetHeight * variation * jitter);
 
       height.value = withTiming(finalHeight, {
@@ -65,7 +64,7 @@ function WaveBar({ index, barCount, isActive, isPaused, barWidth, barGap, maxHei
       style={[{ width: barWidth, marginHorizontal: barGap / 2 }, animatedStyle]}
     />
   );
-}
+});
 
 export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWaveformProps) {
   const { isTablet: isWide } = useResponsive();
@@ -73,6 +72,12 @@ export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWave
   const barWidth = isWide ? 4 : 3;
   const barGap = isWide ? 3 : 2;
   const maxHeight = isWide ? 48 : 32;
+
+  // Pre-calculate per-bar jitter once (deterministic across renders)
+  const jitterValues = useMemo(
+    () => Array.from({ length: barCount }, () => 0.85 + Math.random() * 0.3),
+    [barCount]
+  );
 
   // Normalize metering from dB range to pixel height
   const clamped = Math.max(METERING_MIN, Math.min(METERING_MAX, metering));
@@ -95,6 +100,7 @@ export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWave
           barGap={barGap}
           maxHeight={maxHeight}
           targetHeight={targetHeight}
+          jitter={jitterValues[i]}
         />
       ))}
     </View>

@@ -51,16 +51,18 @@ export function UploadOverlay({
     currentUploadIndex = 1;
   }
 
+  // Use overallProgress for phase text in multi-patient mode so label matches percentage
+  const progressForPhase = isMulti && totalSlotsToUpload > 1 ? overallProgress : currentProgress;
   const phaseText =
-    currentProgress < 10
+    progressForPhase < 10
       ? 'Preparing...'
-      : currentProgress >= 95
+      : progressForPhase >= 95
         ? 'Processing...'
         : 'Uploading...';
 
   useEffect(() => {
     if (!visible) {
-      // Reset to 0 when hidden so next appearance starts clean
+      cancelAnimation(progressWidth);
       progressWidth.value = 0;
       return;
     }

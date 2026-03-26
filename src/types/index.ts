@@ -49,8 +49,9 @@ export interface Recording {
   isExported: boolean;
   exportedAt: string | null;
   exportedTo: string | null;
-  exportedBy: string | null;
+  exportedBy: { id: string; fullName: string } | null;
   costBreakdown: CostBreakdown | null;
+  importSource: 'google_drive' | null;
   createdAt: string;
   updatedAt: string;
 }

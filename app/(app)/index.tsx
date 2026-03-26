@@ -34,7 +34,7 @@ export default function HomeScreen() {
     refetchInterval: (query) => {
       const allRecordings = query.state.data?.data;
       const hasProcessing = allRecordings?.some(
-        (r) => !['completed', 'failed'].includes(r.status)
+        (r) => !['completed', 'failed', 'pending_metadata'].includes(r.status)
       );
       return hasProcessing ? 10000 : false;
     },

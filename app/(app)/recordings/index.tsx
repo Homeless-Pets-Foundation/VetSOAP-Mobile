@@ -56,7 +56,7 @@ export default function RecordingsListScreen() {
     refetchInterval: (query) => {
       const allRecordings = query.state.data?.pages.flatMap((p) => p.data);
       const hasProcessing = allRecordings?.some(
-        (r) => !['completed', 'failed'].includes(r.status)
+        (r) => !['completed', 'failed', 'pending_metadata'].includes(r.status)
       );
       return hasProcessing ? 10000 : false;
     },

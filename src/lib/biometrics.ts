@@ -46,7 +46,9 @@ export const biometrics = {
   async setEnabled(enabled: boolean): Promise<void> {
     try {
       if (enabled) {
-        await SecureStore.setItemAsync(BIOMETRIC_ENABLED_KEY, 'true');
+        await SecureStore.setItemAsync(BIOMETRIC_ENABLED_KEY, 'true', {
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+        });
       } else {
         await SecureStore.deleteItemAsync(BIOMETRIC_ENABLED_KEY);
       }

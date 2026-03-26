@@ -19,7 +19,7 @@ export const secureStorage = {
   async setToken(token: string): Promise<void> {
     try {
       await SecureStore.setItemAsync(KEYS.ACCESS_TOKEN, token, {
-        keychainAccessible: SecureStore.WHEN_UNLOCKED,
+        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
       });
     } catch (error) {
       console.error('[SecureStorage] setToken failed:', error);
@@ -38,7 +38,7 @@ export const secureStorage = {
   async setRefreshToken(token: string): Promise<void> {
     try {
       await SecureStore.setItemAsync(KEYS.REFRESH_TOKEN, token, {
-        keychainAccessible: SecureStore.WHEN_UNLOCKED,
+        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
       });
     } catch (error) {
       console.error('[SecureStorage] setRefreshToken failed:', error);
@@ -57,7 +57,7 @@ export const secureStorage = {
   async setSession(session: string): Promise<void> {
     try {
       await SecureStore.setItemAsync(KEYS.SESSION, session, {
-        keychainAccessible: SecureStore.WHEN_UNLOCKED,
+        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
       });
     } catch (error) {
       console.error('[SecureStorage] setSession failed:', error);

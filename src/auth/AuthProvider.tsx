@@ -1,4 +1,6 @@
 import React, { createContext, useEffect, useState, useCallback, useRef } from 'react';
+import { AppState } from 'react-native';
+import type { AppStateStatus } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 import { cacheDirectory, readDirectoryAsync, deleteAsync } from 'expo-file-system/legacy';
 import { supabase } from './supabase';
@@ -147,9 +149,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const { data: { user: validatedUser }, error: validateError } =
             await supabase.auth.getUser(existingSession.access_token);
           if (validateError || !validatedUser) {
-            if (__DEV__) console.log('[Auth] session restore: server rejected token, clearing');
-            apiClient.setToken(null);
-            await secureStorage.clearAll().catch(() => {});
+            // Token expired or revoked — try refreshing before giving up
+            if (__DEV__) console.log('[Auth] session restore: server rejected token, attempting refresh');
+            const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+            if (refreshError || !refreshData.session) {
+              if (__DEV__) console.log('[Auth] session restore: refresh also failed, clearing');
+              apiClient.setToken(null);
+              await secureStorage.clearAll().catch(() => {});
+              return;
+            }
+            // Refresh succeeded — use the new session
+            if (__DEV__) console.log('[Auth] session restore: refresh succeeded');
+            setSession(refreshData.session);
+            sessionTimestampRef.current = Date.now();
+            apiClient.setToken(refreshData.session.access_token);
+            fetchUser().catch(() => {});
             return;
           }
 
@@ -211,6 +225,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [fetchUser]);
 
+  // Proactively refresh token when app returns from background.
+  // On tablets that sit idle between patients, the JS thread is suspended while
+  // backgrounded so Supabase's autoRefreshToken timer never fires. Without this,
+  // the expired token causes an immediate redirect to the login screen.
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState !== 'active') return;
+      if (!session?.expires_at) return;
+
+      const now = Date.now() / 1000;
+      const bufferSeconds = 300; // refresh if within 5 minutes of expiry
+      if (now > session.expires_at - bufferSeconds) {
+        // Skip if a refresh is already in flight (e.g., from the 401 handler)
+        if (refreshPromiseRef.current) {
+          if (__DEV__) console.log('[Auth] foreground resume: refresh already in flight, skipping');
+          return;
+        }
+
+        if (__DEV__) console.log('[Auth] foreground resume: token expired or near-expiry, refreshing');
+        const doRefresh = async () => {
+          try {
+            const { error } = await supabase.auth.refreshSession();
+            if (error) {
+              if (__DEV__) console.log('[Auth] foreground refresh failed:', error.message);
+              // Don't sign out here — let the 401 handler deal with it on next API call
+            } else {
+              if (__DEV__) console.log('[Auth] foreground refresh succeeded');
+            }
+          } catch (e) {
+            if (__DEV__) console.error('[Auth] foreground refresh threw:', e);
+          } finally {
+            refreshPromiseRef.current = null;
+          }
+        };
+        refreshPromiseRef.current = doRefresh();
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [session?.expires_at]);
+
   const signIn = useCallback(async (email: string, password: string) => {
     if (__DEV__) console.log('[Auth] signIn: attempting for', email);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -233,9 +289,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error: null };
   }, []);
 
-  const tokenExpired = isTokenExpired(session?.expires_at);
-  const isAuthenticated = !!session?.access_token && !tokenExpired;
+  // Don't gate isAuthenticated on client-side expiry. The token may be expired
+  // after the tablet was backgrounded for hours, but the refresh token is likely
+  // still valid. The foreground-resume effect and 401 handler will refresh it.
+  // Checking expiry here caused premature redirects to login before the async
+  // refresh could complete.
+  const isAuthenticated = !!session?.access_token;
   if (__DEV__ && session?.access_token) {
+    const tokenExpired = isTokenExpired(session?.expires_at);
     console.log('[Auth] isAuthenticated:', isAuthenticated,
       'hasToken:', true, 'tokenExpired:', tokenExpired,
       'expires_at:', session.expires_at, 'user:', !!user);

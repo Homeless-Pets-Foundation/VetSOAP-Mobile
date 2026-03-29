@@ -1,4 +1,6 @@
-const { withGradleProperties } = require('expo/config-plugins');
+const { withDangerousMod } = require('expo/config-plugins');
+const fs = require('fs');
+const path = require('path');
 
 /**
  * Fix ffmpeg-kit-react-native Maven artifact version.
@@ -6,24 +8,35 @@ const { withGradleProperties } = require('expo/config-plugins');
  * The bundled gradle.properties sets ffmpegKit.android.lts.version=6.0-2,
  * but com.arthenica:ffmpeg-kit-min:6.0-2.LTS doesn't exist on Maven Central.
  * The correct version is 6.0 (resolves to com.arthenica:ffmpeg-kit-min:6.0.LTS).
+ *
+ * This plugin patches the module's own gradle.properties during prebuild.
  */
 module.exports = function ffmpegVersionFix(config) {
-  return withGradleProperties(config, (config) => {
-    // Override the ffmpeg-kit version properties
-    const props = config.modResults;
+  return withDangerousMod(config, [
+    'android',
+    async (config) => {
+      const gradlePropsPath = path.join(
+        config.modRequest.projectRoot,
+        'node_modules',
+        'ffmpeg-kit-react-native',
+        'android',
+        'gradle.properties'
+      );
 
-    // Remove any existing ffmpegKit version properties
-    config.modResults = props.filter(
-      (p) => p.type !== 'property' ||
-        (p.key !== 'ffmpegKit.android.main.version' && p.key !== 'ffmpegKit.android.lts.version')
-    );
+      if (fs.existsSync(gradlePropsPath)) {
+        let content = fs.readFileSync(gradlePropsPath, 'utf8');
+        content = content.replace(
+          /ffmpegKit\.android\.main\.version=.*/,
+          'ffmpegKit.android.main.version=6.0'
+        );
+        content = content.replace(
+          /ffmpegKit\.android\.lts\.version=.*/,
+          'ffmpegKit.android.lts.version=6.0'
+        );
+        fs.writeFileSync(gradlePropsPath, content);
+      }
 
-    // Add corrected versions
-    config.modResults.push(
-      { type: 'property', key: 'ffmpegKit.android.main.version', value: '6.0' },
-      { type: 'property', key: 'ffmpegKit.android.lts.version', value: '6.0' }
-    );
-
-    return config;
-  });
+      return config;
+    },
+  ]);
 };

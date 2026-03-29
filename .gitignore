@@ -43,7 +43,6 @@ credentials.json
 play-service-account.json
 *-service-account*.json
 .gitignore.d/
-.npmrc
 
 # typescript
 *.tsbuildinfo

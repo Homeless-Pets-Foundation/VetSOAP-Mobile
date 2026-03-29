@@ -191,6 +191,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             sessionTimestampRef.current = Date.now();
             apiClient.setToken(refreshData.session.access_token);
             fetchUser().catch(() => {});
+            registerDevice().catch(() => {});
             return;
           }
 
@@ -198,6 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           sessionTimestampRef.current = Date.now();
           apiClient.setToken(existingSession.access_token);
           fetchUser().catch(() => {});
+          registerDevice().catch(() => {});
         } else {
           setSession(existingSession);
         }

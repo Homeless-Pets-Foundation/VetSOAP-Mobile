@@ -798,18 +798,20 @@ function RecordingSession() {
   const handleEditRecording = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
-      if (!slot || slot.segments.length === 0) return;
+      if (!slot || slot.segments.length === 0) {
+        Alert.alert('No Recording', 'Please record audio before editing.');
+        return;
+      }
 
-      audioEditorBridge.setInput({
-        slotId,
-        segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration })),
-      });
+      // Snapshot segments before navigating — avoids stale closure if session changes while editing
+      const originalSegments = slot.segments.map((s) => ({ uri: s.uri, duration: s.duration }));
 
+      // Set callback BEFORE input — editor reads input on mount, callback must be ready
       audioEditorBridge.setResultCallback((result) => {
         if (result) {
           // Delete old segment files that are no longer in the result
           const newUris = new Set(result.segments.map((s) => s.uri));
-          slot.segments.forEach((seg) => {
+          originalSegments.forEach((seg) => {
             if (!newUris.has(seg.uri)) {
               FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
             }
@@ -817,6 +819,8 @@ function RecordingSession() {
           replaceAllSegments(result.slotId, result.segments);
         }
       });
+
+      audioEditorBridge.setInput({ slotId, segments: originalSegments });
 
       router.push('/(app)/audio-editor' as any);
     },

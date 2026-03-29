@@ -2,7 +2,7 @@ import React, { useCallback } from 'react';
 import { View, Text } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import { StaticWaveform } from './StaticWaveform';
-import { TrimHandle } from './TrimHandle';
+import { TrimOverlay } from './TrimOverlay';
 
 interface WaveformEditorProps {
   peaks: number[];
@@ -33,7 +33,6 @@ export function WaveformEditor({
 }: WaveformEditorProps) {
   const [containerWidth, setContainerWidth] = React.useState(0);
   const WAVEFORM_HEIGHT = 120;
-  const MIN_TRIM_GAP_SECONDS = 1;
 
   // Store containerWidth and duration in shared values so worklets can read them
   const containerWidthSV = useSharedValue(0);
@@ -45,44 +44,26 @@ export function WaveformEditor({
     durationSV.value = duration;
   }, [duration, durationSV]);
 
-  // Shared values for handle positions (in seconds, not pixels)
+  // Shared values for handle positions (in seconds)
   const trimStartSV = useSharedValue(trimStart);
   const trimEndSV = useSharedValue(trimEnd);
 
-  // Sync shared values when React state props change (e.g., segment switch)
+  // Sync shared values when React state props change (e.g., segment switch, reset)
   React.useEffect(() => {
     trimStartSV.value = trimStart;
     trimEndSV.value = trimEnd;
   }, [trimStart, trimEnd, trimStartSV, trimEndSV]);
 
-  // Callbacks for when a handle finishes dragging — read seconds from shared values
+  // Stable ref for onTrimChange to avoid recreating TrimOverlay callbacks
   const onTrimChangeRef = React.useRef(onTrimChange);
   onTrimChangeRef.current = onTrimChange;
 
-  // Receive values directly from the worklet via runOnJS args to avoid stale shared value reads
-  const handleStartDragEnd = useCallback((finalStart: number, otherEnd: number) => {
-    const newStart = Math.max(0, Math.min(finalStart, otherEnd - MIN_TRIM_GAP_SECONDS));
-    trimStartSV.value = newStart;
-    onTrimChangeRef.current(newStart, otherEnd);
-  }, [trimStartSV]);
-
-  const handleEndDragEnd = useCallback((finalEnd: number, otherStart: number) => {
-    const dur = durationSV.value;
-    const newEnd = Math.max(otherStart + MIN_TRIM_GAP_SECONDS, Math.min(finalEnd, dur));
-    trimEndSV.value = newEnd;
-    onTrimChangeRef.current(otherStart, newEnd);
-  }, [trimEndSV, durationSV]);
-
-  const minGapFraction = duration > 0 ? MIN_TRIM_GAP_SECONDS / duration : 0;
+  const handleTrimChange = useCallback((start: number, end: number) => {
+    onTrimChangeRef.current(start, end);
+  }, []);
 
   const keepDuration = Math.max(0, trimEnd - trimStart);
   const removeDuration = Math.max(0, duration - keepDuration);
-
-  // Convert seconds → pixels for display
-  const secToX = useCallback(
-    (sec: number) => (duration > 0 ? (sec / duration) * containerWidth : 0),
-    [duration, containerWidth]
-  );
 
   return (
     <View
@@ -96,44 +77,22 @@ export function WaveformEditor({
         currentTime={currentTime}
         trimStart={trimStart}
         trimEnd={trimEnd}
-        onSeek={onSeek}
         height={WAVEFORM_HEIGHT}
         isLoading={isLoading}
       />
 
-      {/* Trim handles overlay — uses plain View; expo-router provides GestureHandlerRootView at app root */}
+      {/* Unified trim overlay — handles all touch interactions */}
       {!isLoading && containerWidth > 0 && duration > 0 && (
-        <View
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-          pointerEvents="box-none"
-        >
-          <TrimHandle
-            positionSeconds={trimStartSV}
-            otherPositionSeconds={trimEndSV}
-            durationSV={durationSV}
-            containerWidthSV={containerWidthSV}
-            containerWidth={containerWidth}
-            height={WAVEFORM_HEIGHT}
-            side="left"
-            minGapFraction={minGapFraction}
-            timeSeconds={trimStart}
-            duration={duration}
-            onDragEnd={handleStartDragEnd}
-          />
-          <TrimHandle
-            positionSeconds={trimEndSV}
-            otherPositionSeconds={trimStartSV}
-            durationSV={durationSV}
-            containerWidthSV={containerWidthSV}
-            containerWidth={containerWidth}
-            height={WAVEFORM_HEIGHT}
-            side="right"
-            minGapFraction={minGapFraction}
-            timeSeconds={trimEnd}
-            duration={duration}
-            onDragEnd={handleEndDragEnd}
-          />
-        </View>
+        <TrimOverlay
+          trimStartSV={trimStartSV}
+          trimEndSV={trimEndSV}
+          durationSV={durationSV}
+          containerWidthSV={containerWidthSV}
+          containerWidth={containerWidth}
+          height={WAVEFORM_HEIGHT}
+          duration={duration}
+          onTrimChange={handleTrimChange}
+        />
       )}
 
       {/* Time labels */}

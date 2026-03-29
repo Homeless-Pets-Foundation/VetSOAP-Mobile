@@ -29,8 +29,10 @@ export const audioEditorBridge = {
   },
 
   emitResult(result: AudioEditorResult | null) {
-    resultCallback?.(result);
+    // Capture and clear before invoking — prevents double-call and re-entrant issues
+    const cb = resultCallback;
     resultCallback = null;
+    cb?.(result);
   },
 
   /** Clear all in-memory state. Called on sign-out to prevent cross-user data leakage. */

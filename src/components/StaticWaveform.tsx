@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Pressable } from 'react-native';
+import { View } from 'react-native';
 import Svg, { Rect, Line } from 'react-native-svg';
 import { Skeleton } from './ui/Skeleton';
 
@@ -9,7 +9,6 @@ interface StaticWaveformProps {
   currentTime: number;
   trimStart: number;
   trimEnd: number;
-  onSeek: (seconds: number) => void;
   height?: number;
   isLoading?: boolean;
 }
@@ -20,7 +19,6 @@ export function StaticWaveform({
   currentTime,
   trimStart,
   trimEnd,
-  onSeek,
   height = 120,
   isLoading = false,
 }: StaticWaveformProps) {
@@ -54,16 +52,8 @@ export function StaticWaveform({
   const trimStartX = duration > 0 ? (trimStart / duration) * layoutWidth : 0;
   const trimEndX = duration > 0 ? (trimEnd / duration) * layoutWidth : layoutWidth;
 
-  const handlePress = (event: { nativeEvent: { locationX: number } }) => {
-    if (layoutWidth <= 0 || duration <= 0) return;
-    const x = event.nativeEvent.locationX;
-    const seconds = (x / layoutWidth) * duration;
-    onSeek(Math.max(0, Math.min(seconds, duration)));
-  };
-
   return (
-    <Pressable
-      onPress={handlePress}
+    <View
       accessibilityRole="adjustable"
       accessibilityLabel={`Audio waveform. Current position ${Math.floor(currentTime)} of ${Math.floor(duration)} seconds.`}
       onLayout={(e) => setLayoutWidth(e.nativeEvent.layout.width)}
@@ -117,6 +107,6 @@ export function StaticWaveform({
           />
         </Svg>
       )}
-    </Pressable>
+    </View>
   );
 }

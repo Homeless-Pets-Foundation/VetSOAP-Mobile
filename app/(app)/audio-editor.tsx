@@ -59,6 +59,7 @@ export default function AudioEditorScreen() {
         setSegments([{ uri: result.uri, duration: result.duration }]);
         setSelectedIndex(0);
         setHasChanges(true);
+        Alert.alert('Segments Merged', `${initialSegmentCountRef.current} recording segments have been combined into one.`);
       } catch (error) {
         if (__DEV__) console.error('[Editor] concatenation failed:', error);
         Alert.alert('Note', 'Could not merge segments. You can edit each segment individually.');
@@ -201,6 +202,11 @@ export default function AudioEditorScreen() {
       return;
     }
 
+    if (trimEnd <= trimStart) {
+      Alert.alert('Invalid Range', 'The trim end must be after the start.');
+      return;
+    }
+
     const keepDuration = trimEnd - trimStart;
     if (keepDuration < 1) {
       Alert.alert('Too Short', 'The trimmed result must be at least 1 second long.');
@@ -222,6 +228,11 @@ export default function AudioEditorScreen() {
           outputPath
         );
 
+        // Validate output is usable
+        if (result.duration < 0.1) {
+          throw new Error('Trim produced invalid output (duration near zero)');
+        }
+
         // Update segments with trimmed file
         const newSegments = [...segments];
         const oldUri = newSegments[selectedIndex].uri;
@@ -240,11 +251,11 @@ export default function AudioEditorScreen() {
         setTrimEnd(result.duration);
         setHasChanges(true);
 
-        // Delete old file
-        FileSystem.deleteAsync(oldUri, { idempotent: true }).catch(() => {});
-
-        // Load new source for playback
+        // Load new source BEFORE deleting old file — prevents playback stutter
         playback.loadSource(result.uri);
+
+        // Now safe to delete the old file
+        FileSystem.deleteAsync(oldUri, { idempotent: true }).catch(() => {});
 
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         Alert.alert('Trim Applied', `Recording trimmed to ${formatTime(result.duration)}.`);
@@ -528,28 +539,37 @@ export default function AudioEditorScreen() {
 
         {/* Trim action buttons */}
         <View className="gap-3">
-          <Button
-            variant="secondary"
-            onPress={handlePreview}
-            disabled={isTrimming}
-          >
-            Preview Trim
-          </Button>
-          <Button
-            variant="primary"
-            onPress={handleApplyTrim}
-            loading={isTrimming}
-            disabled={isTrimming}
-          >
-            Apply Trim
-          </Button>
-          <Button
-            variant="ghost"
-            onPress={handleReset}
-            disabled={isTrimming}
-          >
-            Reset to Full Range
-          </Button>
+          {(() => {
+            const isAtFullRange =
+              Math.abs(trimStart) < 0.1 &&
+              Math.abs(trimEnd - (selectedSegment?.duration ?? 0)) < 0.1;
+            return (
+              <>
+                <Button
+                  variant="secondary"
+                  onPress={handlePreview}
+                  disabled={isTrimming || isAtFullRange}
+                >
+                  Preview Trim
+                </Button>
+                <Button
+                  variant="primary"
+                  onPress={handleApplyTrim}
+                  loading={isTrimming}
+                  disabled={isTrimming || isAtFullRange}
+                >
+                  Apply Trim
+                </Button>
+                <Button
+                  variant="ghost"
+                  onPress={handleReset}
+                  disabled={isTrimming || isAtFullRange}
+                >
+                  Reset to Full Range
+                </Button>
+              </>
+            );
+          })()}
         </View>
 
         {/* Trimming overlay */}

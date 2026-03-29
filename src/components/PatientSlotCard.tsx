@@ -11,7 +11,7 @@ import Animated, {
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
-import { Mic, X } from 'lucide-react-native';
+import { Mic, X, Plus, Scissors, Trash2 } from 'lucide-react-native';
 import { PatientForm } from './PatientForm';
 import { AudioWaveform } from './AudioWaveform';
 import { Card } from './ui/Card';
@@ -201,8 +201,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Text>
           </>
         ) : isStopped ? (
-          <Text className="text-body text-stone-600 mb-5">
-            Recording Complete ({formatDuration(slot.audioDuration)})
+          <Text className="text-body text-stone-600 mb-3">
+            {slot.segments.length > 1
+              ? `${slot.segments.length} segments · ${formatDuration(slot.audioDuration)}`
+              : formatDuration(slot.audioDuration)}
           </Text>
         ) : (
           <>
@@ -271,24 +273,26 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Stopped with segments: continue recording, edit, or start over */}
+          {/* Stopped with segments: continue, edit, or discard */}
           {isStopped && hasSegments && (
-            <Animated.View entering={FadeIn.duration(200)} className="gap-3">
-              <Button variant="primary" onPress={onContinueRecording}>
+            <Animated.View entering={FadeIn.duration(200)} className="gap-2">
+              <Button variant="primary" size="lg" onPress={onContinueRecording} icon={<Plus color="#fff" size={18} />}>
                 Continue Recording
               </Button>
-              <View className="flex-row gap-3">
-                <View className="flex-1">
-                  <Button variant="secondary" onPress={onEditRecording}>
-                    Edit
-                  </Button>
+              <Button variant="secondary" onPress={onEditRecording} icon={<Scissors color="#1c1917" size={16} />}>
+                Edit Recording
+              </Button>
+              <Pressable
+                onPress={onRecordAgain}
+                accessibilityRole="button"
+                accessibilityLabel="Delete recording and start over"
+                className="py-2 items-center"
+              >
+                <View className="flex-row items-center gap-1.5">
+                  <Trash2 color="#a8a29e" size={14} />
+                  <Text className="text-body-sm text-stone-400">Delete & Start Over</Text>
                 </View>
-                <View className="flex-1">
-                  <Button variant="danger" onPress={onRecordAgain}>
-                    Delete & Start Over
-                  </Button>
-                </View>
-              </View>
+              </Pressable>
             </Animated.View>
           )}
 
@@ -301,10 +305,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         </View>
 
         {isStopped && hasSegments && !isRecorderOwner && (
-          <Text className="text-caption text-stone-500 mt-3 text-center">
-            {slot.segments.length > 1
-              ? `${slot.segments.length} segments recorded (${formatDuration(slot.audioDuration)} total).`
-              : `Recording complete (${formatDuration(slot.audioDuration)}).`}{' '}
+          <Text className="text-caption text-stone-400 mt-2 text-center">
             Processing usually takes 1-2 minutes.
           </Text>
         )}

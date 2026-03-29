@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, Text, ActivityIndicator, type PressableProps, type GestureResponderEvent } from 'react-native';
+import { Pressable, Text, View, ActivityIndicator, type PressableProps, type GestureResponderEvent } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -18,6 +18,7 @@ interface ButtonProps extends Omit<PressableProps, 'style' | 'children'> {
   size?: ButtonSize;
   loading?: boolean;
   haptic?: boolean;
+  icon?: React.ReactNode;
 }
 
 const variantClasses: Record<ButtonVariant, { container: string; text: string }> = {
@@ -51,6 +52,7 @@ export function Button({
   size = 'md',
   loading = false,
   haptic = true,
+  icon,
   disabled,
   onPress,
   accessibilityLabel,
@@ -99,7 +101,10 @@ export function Button({
           size="small"
         />
       ) : (
-        <Text className={`${v.text} ${s.text}`}>{children}</Text>
+        <>
+          {icon && <View style={{ marginRight: 8 }}>{icon}</View>}
+          <Text className={`${v.text} ${s.text}`}>{children}</Text>
+        </>
       )}
     </AnimatedPressable>
   );

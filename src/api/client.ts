@@ -20,8 +20,8 @@ export class ApiClient {
   private onUnauthorized?: () => void | Promise<void>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
-  /** Cached device ID — read from SecureStore once, then reused. */
-  private cachedDeviceId: string | null | undefined = undefined; // undefined = not yet loaded
+  /** Cached device ID — read from SecureStore once, then reused. Only caches non-null values. */
+  private cachedDeviceId: string | undefined = undefined; // undefined = not yet loaded/not yet successful
 
   constructor(opts?: { onUnauthorized?: () => void | Promise<void> }) {
     this.onUnauthorized = opts?.onUnauthorized;
@@ -79,11 +79,13 @@ export class ApiClient {
     timeoutMs: number
   ): Promise<Response> {
     const authHeaders = await this.getAuthHeaders();
-    // Cache device ID after first read to avoid hitting SecureStore on every request
+    // Cache device ID after first successful read to avoid hitting SecureStore on every request.
+    // Don't cache null — Keystore may be transiently unavailable (e.g. Android direct boot).
     if (this.cachedDeviceId === undefined) {
-      this.cachedDeviceId = await secureStorage.getDeviceId();
+      const id = await secureStorage.getDeviceId();
+      if (id) this.cachedDeviceId = id;
     }
-    const deviceId = this.cachedDeviceId;
+    const deviceId = this.cachedDeviceId ?? null;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 

@@ -90,7 +90,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
         value={formData.patientName}
         onChangeText={(v) => onUpdate('patientName', v)}
         placeholder="e.g., Buddy"
-        maxLength={200}
+        maxLength={100}
         autoCorrect={false}
         autoComplete="off"
       />
@@ -101,7 +101,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
         value={formData.clientName || ''}
         onChangeText={(v) => onUpdate('clientName', v)}
         placeholder="e.g., John Smith"
-        maxLength={200}
+        maxLength={100}
         autoCorrect={false}
         autoComplete="off"
         editable={!clientNameDisabled}

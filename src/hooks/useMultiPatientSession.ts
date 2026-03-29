@@ -173,10 +173,15 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
 
     case 'RESTORE_SESSION':
       return {
-        slots: action.slots.map((slot) => ({
-          ...slot,
-          segments: validateSegments(slot.segments),
-        })),
+        slots: action.slots.map((slot) => {
+          const validSegments = validateSegments(slot.segments);
+          return {
+            ...slot,
+            segments: validSegments,
+            audioDuration: validSegments.reduce((sum, s) => sum + s.duration, 0),
+            audioUri: validSegments.length > 0 ? validSegments[validSegments.length - 1].uri : null,
+          };
+        }),
         activeIndex: 0,
         recorderBoundToSlotId: null,
       };

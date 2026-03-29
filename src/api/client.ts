@@ -20,6 +20,8 @@ export class ApiClient {
   private onUnauthorized?: () => void | Promise<void>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
+  /** Cached device ID — read from SecureStore once, then reused. */
+  private cachedDeviceId: string | null | undefined = undefined; // undefined = not yet loaded
 
   constructor(opts?: { onUnauthorized?: () => void | Promise<void> }) {
     this.onUnauthorized = opts?.onUnauthorized;
@@ -77,7 +79,11 @@ export class ApiClient {
     timeoutMs: number
   ): Promise<Response> {
     const authHeaders = await this.getAuthHeaders();
-    const deviceId = await secureStorage.getDeviceId();
+    // Cache device ID after first read to avoid hitting SecureStore on every request
+    if (this.cachedDeviceId === undefined) {
+      this.cachedDeviceId = await secureStorage.getDeviceId();
+    }
+    const deviceId = this.cachedDeviceId;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -136,6 +142,14 @@ export class ApiClient {
         try { await this.onUnauthorized?.(); } catch { /* ignore */ }
         throw new ApiError(
           'This device has been revoked. Contact your administrator.',
+          401,
+          false
+        );
+      }
+      if (errorPreview.code === 'DEVICE_ID_REQUIRED') {
+        // Device ID missing (Keystore failure) — don't retry, surface clear error
+        throw new ApiError(
+          'Device identification failed. Please restart the app or reinstall.',
           401,
           false
         );

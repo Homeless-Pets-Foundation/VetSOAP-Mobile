@@ -34,11 +34,7 @@ export const AuthContext = createContext<AuthContextType>({
 
 /** Check if the Supabase session token has expired. */
 function isTokenExpired(expiresAt: number | undefined): boolean {
-  // A session with an access_token but no expires_at should be treated as valid —
-  // the server will reject it if it's actually expired. Treating undefined as expired
-  // causes a sign-out race when onAuthStateChange fires before expires_at is populated.
   if (expiresAt === undefined || expiresAt === null) return false;
-  // expires_at is in seconds (Unix timestamp)
   return Date.now() / 1000 > expiresAt;
 }
 
@@ -57,6 +53,12 @@ async function cleanupAudioCache(): Promise<void> {
   }
 }
 
+/** Set user ID on stash modules so they scope data per-user. */
+function setStashUserId(userId: string | null): void {
+  stashStorage.setUserId(userId);
+  stashAudioManager.setUserId(userId);
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -70,7 +72,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (__DEV__) console.log('[Auth] fetchUser: requesting /auth/me');
       const body = await apiClient.get<{ user: User }>('/auth/me');
       if (__DEV__) console.log('[Auth] fetchUser: success, user:', body.user?.email ?? 'null');
-      setUser(body.user ?? null);
+      const fetchedUser = body.user ?? null;
+      setUser(fetchedUser);
+      // Set user ID for stash scoping as soon as we know it
+      if (fetchedUser?.id) {
+        setStashUserId(fetchedUser.id);
+      }
     } catch (error) {
       if (__DEV__) console.log('[Auth] fetchUser: failed', error);
     }
@@ -92,20 +99,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     // Clear cached PHI from React Query
     queryClient.clear();
-    // Clean up orphaned audio temp files
-    cleanupAudioCache().catch(() => {});
-    // Clean up stashed session data and audio files (retry once on failure)
-    stashStorage.clearAllStashes()
-      .catch(() => stashStorage.clearAllStashes())
-      .catch(() => {});
-    stashAudioManager.deleteAllStashedAudio()
-      .catch(() => stashAudioManager.deleteAllStashedAudio())
-      .catch(() => {});
-    // Clean up audio editor temp files (trimmed outputs, PCM waveform data)
-    audioTempFiles.cleanupAll().catch(() => {});
+
+    // Await critical PHI cleanup before clearing auth state.
+    // This prevents a race where the next user signs in while the previous
+    // user's stash data and audio files are still on disk.
+    try {
+      await Promise.all([
+        stashStorage.clearAllStashes().catch(() =>
+          stashStorage.clearAllStashes()
+        ).catch(() => {}),
+        stashAudioManager.deleteAllStashedAudio().catch(() =>
+          stashAudioManager.deleteAllStashedAudio()
+        ).catch(() => {}),
+        cleanupAudioCache().catch(() => {}),
+        audioTempFiles.cleanupAll().catch(() => {}),
+      ]);
+    } catch {
+      // All cleanup is best-effort — don't block sign-out indefinitely
+    }
+
     // Clear in-memory PHI: audio editor bridge state and clipboard
     audioEditorBridge.clear();
     clearClipboard();
+
+    // Now clear stash user scoping and auth state
+    setStashUserId(null);
     setUser(null);
     setSession(null);
   }, []);
@@ -119,14 +137,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const sessionAge = Date.now() - sessionTimestampRef.current;
       if (__DEV__) console.log('[Auth] onUnauthorized fired, session age:', sessionAge, 'ms');
 
-      // Don't sign out if the session was just established — the 401 is
-      // likely from a stale request that was in-flight before sign-in.
       if (sessionAge < 10_000) {
         if (__DEV__) console.log('[Auth] onUnauthorized: ignoring, session too fresh (<10s)');
         return;
       }
 
-      // If a refresh is already in flight, wait for it instead of starting another
       if (refreshPromiseRef.current) {
         await refreshPromiseRef.current;
         return;
@@ -142,7 +157,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           } else {
             if (__DEV__) console.log('[Auth] onUnauthorized: refresh succeeded');
           }
-          // If refresh succeeded, Supabase's onAuthStateChange will update the token
         } catch {
           if (__DEV__) console.log('[Auth] onUnauthorized: refresh threw, signing out');
           handleSignOut().catch(() => {});
@@ -161,12 +175,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     supabase.auth.getSession().then(async ({ data: { session: existingSession } }) => {
       if (existingSession) {
         if (existingSession.access_token) {
-          // Validate session server-side before trusting local state.
-          // Catches revoked sessions (admin sign-out, password change on another device).
           const { data: { user: validatedUser }, error: validateError } =
             await supabase.auth.getUser(existingSession.access_token);
           if (validateError || !validatedUser) {
-            // Token expired or revoked — try refreshing before giving up
             if (__DEV__) console.log('[Auth] session restore: server rejected token, attempting refresh');
             const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
             if (refreshError || !refreshData.session) {
@@ -175,7 +186,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               await secureStorage.clearAll().catch(() => {});
               return;
             }
-            // Refresh succeeded — use the new session
             if (__DEV__) console.log('[Auth] session restore: refresh succeeded');
             setSession(refreshData.session);
             sessionTimestampRef.current = Date.now();
@@ -186,17 +196,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           setSession(existingSession);
           sessionTimestampRef.current = Date.now();
-          // Set in-memory token first (reliable), then persist to SecureStore (best-effort)
           apiClient.setToken(existingSession.access_token);
           fetchUser().catch(() => {});
         } else {
           setSession(existingSession);
         }
       }
-      // Clean up orphaned audio recordings from prior crashes (deferred to avoid competing with initial render)
+      // Clean up legacy global stash data from pre-user-scoped versions (one-time migration)
+      stashStorage.clearLegacyGlobalStashes().catch(() => {});
+      stashAudioManager.deleteAllStashedAudioGlobal().catch(() => {});
+
+      // Clean up orphaned audio recordings from prior crashes (deferred)
       setTimeout(() => {
         cleanupAudioCache().catch(() => {});
-        // Clean up orphaned stash directories whose session no longer exists in storage
         stashStorage.getStashedSessions().then((sessions) => {
           const validIds = sessions.map((s) => s.id);
           stashAudioManager.cleanupOrphanedStashDirs(validIds).catch(() => {});
@@ -214,7 +226,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           'hasToken:', !!newSession?.access_token,
           'expires_at:', newSession?.expires_at);
 
-        // Skip INITIAL_SESSION — getSession() above already handles startup
         if (event === 'INITIAL_SESSION') return;
 
         try {
@@ -223,7 +234,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (newSession?.access_token) {
             sessionTimestampRef.current = Date.now();
             if (__DEV__) console.log('[Auth] session established, storing token');
-            // Set in-memory token immediately (reliable), then persist (best-effort)
             apiClient.setToken(newSession.access_token);
             await fetchUser();
             if (__DEV__) console.log('[Auth] sign-in flow complete');
@@ -231,6 +241,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (__DEV__) console.log('[Auth] no access_token, clearing session');
             apiClient.setToken(null);
             await secureStorage.clearAll();
+            setStashUserId(null);
             setUser(null);
           }
         } catch (error) {
@@ -247,18 +258,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUser]);
 
   // Proactively refresh token when app returns from background.
-  // On tablets that sit idle between patients, the JS thread is suspended while
-  // backgrounded so Supabase's autoRefreshToken timer never fires. Without this,
-  // the expired token causes an immediate redirect to the login screen.
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState !== 'active') return;
       if (!session?.expires_at) return;
 
       const now = Date.now() / 1000;
-      const bufferSeconds = 300; // refresh if within 5 minutes of expiry
+      const bufferSeconds = 300;
       if (now > session.expires_at - bufferSeconds) {
-        // Skip if a refresh is already in flight (e.g., from the 401 handler)
         if (refreshPromiseRef.current) {
           if (__DEV__) console.log('[Auth] foreground resume: refresh already in flight, skipping');
           return;
@@ -270,7 +277,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const { error } = await supabase.auth.refreshSession();
             if (error) {
               if (__DEV__) console.log('[Auth] foreground refresh failed:', error.message);
-              // Don't sign out here — let the 401 handler deal with it on next API call
             } else {
               if (__DEV__) console.log('[Auth] foreground refresh succeeded');
             }
@@ -300,14 +306,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error.status === 0 || error.message?.includes('fetch')) {
         return { error: 'Unable to reach the authentication server. Please check your connection.' };
       }
-      // In dev, surface the actual Supabase error so misconfig is immediately obvious
       if (__DEV__) {
         return { error: `[DEV] ${error.message} (status: ${error.status})` };
       }
       return { error: 'Invalid email or password' };
     }
     if (__DEV__) console.log('[Auth] signIn: success');
-    // Register this device with the server (fire-and-forget — non-blocking)
     registerDevice().catch(() => {});
     return { error: null };
   }, []);
@@ -326,11 +330,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Don't gate isAuthenticated on client-side expiry. The token may be expired
-  // after the tablet was backgrounded for hours, but the refresh token is likely
-  // still valid. The foreground-resume effect and 401 handler will refresh it.
-  // Checking expiry here caused premature redirects to login before the async
-  // refresh could complete.
   const isAuthenticated = !!session?.access_token;
   if (__DEV__ && session?.access_token) {
     const tokenExpired = isTokenExpired(session?.expires_at);

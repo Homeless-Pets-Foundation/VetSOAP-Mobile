@@ -1,8 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
 
-const KEY_PREFIX = 'captivet_stash_chunk_';
-const COUNT_KEY = 'captivet_stash_count';
 const MAX_STASHES = 5;
 
 // Android SecureStore limit is 2048 bytes per value.
@@ -13,6 +11,19 @@ const STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
 };
 
+/** Current user ID — set by AuthProvider to scope stash data per-user. */
+let currentUserId: string | null = null;
+
+function keyPrefix(): string {
+  if (!currentUserId) throw new Error('Stash storage: no user ID set');
+  return `captivet_stash_${currentUserId}_chunk_`;
+}
+
+function countKey(): string {
+  if (!currentUserId) throw new Error('Stash storage: no user ID set');
+  return `captivet_stash_${currentUserId}_count`;
+}
+
 /**
  * Encrypted stash storage using expo-secure-store with chunked writes.
  *
@@ -20,19 +31,27 @@ const STORE_OPTIONS = {
  * providing encryption at rest for PHI (patient names, client names, etc.).
  *
  * Android has a 2KB per-value limit, so we chunk the JSON across multiple keys.
+ * Keys are scoped by user ID to prevent cross-user data leakage on shared tablets.
  */
 export const stashStorage = {
+  /** Set the current user ID. Must be called before any stash operations. */
+  setUserId(userId: string | null): void {
+    currentUserId = userId;
+  },
+
   async getStashedSessions(): Promise<StashedSession[]> {
     try {
-      const countStr = await SecureStore.getItemAsync(COUNT_KEY);
+      if (!currentUserId) return [];
+      const countStr = await SecureStore.getItemAsync(countKey());
       if (!countStr) return [];
 
       const count = parseInt(countStr, 10);
       if (isNaN(count) || count <= 0) return [];
 
+      const prefix = keyPrefix();
       const chunks: string[] = [];
       for (let i = 0; i < count; i++) {
-        const chunk = await SecureStore.getItemAsync(`${KEY_PREFIX}${i}`);
+        const chunk = await SecureStore.getItemAsync(`${prefix}${i}`);
         if (chunk === null) return []; // Corrupted — missing chunk
         chunks.push(chunk);
       }
@@ -68,15 +87,16 @@ export const stashStorage = {
 
       const raw = JSON.stringify(sessions);
       const chunkCount = Math.ceil(raw.length / CHUNK_SIZE);
+      const prefix = keyPrefix();
 
       // Write chunks
       for (let i = 0; i < chunkCount; i++) {
         const chunk = raw.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        await SecureStore.setItemAsync(`${KEY_PREFIX}${i}`, chunk, STORE_OPTIONS);
+        await SecureStore.setItemAsync(`${prefix}${i}`, chunk, STORE_OPTIONS);
       }
 
       // Write count last (acts as a commit flag)
-      await SecureStore.setItemAsync(COUNT_KEY, String(chunkCount), STORE_OPTIONS);
+      await SecureStore.setItemAsync(countKey(), String(chunkCount), STORE_OPTIONS);
     } catch {
       // Best-effort persistence
     }
@@ -115,16 +135,42 @@ export const stashStorage = {
   /** Delete all chunk keys and the count key from SecureStore. */
   async deleteAllChunks(): Promise<void> {
     try {
-      const countStr = await SecureStore.getItemAsync(COUNT_KEY);
+      if (!currentUserId) return;
+      const ck = countKey();
+      const countStr = await SecureStore.getItemAsync(ck);
+      if (countStr) {
+        const count = parseInt(countStr, 10);
+        if (!isNaN(count)) {
+          const prefix = keyPrefix();
+          for (let i = 0; i < count; i++) {
+            try { await SecureStore.deleteItemAsync(`${prefix}${i}`); } catch { /* ignore */ }
+          }
+        }
+      }
+      try { await SecureStore.deleteItemAsync(ck); } catch { /* ignore */ }
+    } catch {
+      // Best-effort
+    }
+  },
+
+  /**
+   * Clean up legacy global (non-user-scoped) stash keys from previous versions.
+   * Called once during migration to user-scoped storage.
+   */
+  async clearLegacyGlobalStashes(): Promise<void> {
+    try {
+      const legacyCountKey = 'captivet_stash_count';
+      const legacyPrefix = 'captivet_stash_chunk_';
+      const countStr = await SecureStore.getItemAsync(legacyCountKey);
       if (countStr) {
         const count = parseInt(countStr, 10);
         if (!isNaN(count)) {
           for (let i = 0; i < count; i++) {
-            try { await SecureStore.deleteItemAsync(`${KEY_PREFIX}${i}`); } catch { /* ignore */ }
+            try { await SecureStore.deleteItemAsync(`${legacyPrefix}${i}`); } catch { /* ignore */ }
           }
         }
+        try { await SecureStore.deleteItemAsync(legacyCountKey); } catch { /* ignore */ }
       }
-      try { await SecureStore.deleteItemAsync(COUNT_KEY); } catch { /* ignore */ }
     } catch {
       // Best-effort
     }

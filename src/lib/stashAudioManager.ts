@@ -9,7 +9,15 @@ import {
 import type { PatientSlot } from '../types/multiPatient';
 import type { StashedSlot } from '../types/stash';
 
-const STASH_DIR = `${documentDirectory}stashed-audio/`;
+const BASE_STASH_DIR = `${documentDirectory}stashed-audio/`;
+
+/** Current user ID — set by AuthProvider to scope audio files per-user. */
+let currentUserId: string | null = null;
+
+function userStashDir(): string {
+  if (!currentUserId) throw new Error('Stash audio manager: no user ID set');
+  return `${BASE_STASH_DIR}${currentUserId}/`;
+}
 
 /** Validate sessionId to prevent path traversal attacks. */
 function validateSessionId(sessionId: string): void {
@@ -20,10 +28,15 @@ function validateSessionId(sessionId: string): void {
 
 function sessionDir(sessionId: string): string {
   validateSessionId(sessionId);
-  return `${STASH_DIR}${sessionId}/`;
+  return `${userStashDir()}${sessionId}/`;
 }
 
 export const stashAudioManager = {
+  /** Set the current user ID. Must be called before any stash operations. */
+  setUserId(userId: string | null): void {
+    currentUserId = userId;
+  },
+
   /**
    * Move audio segment files from cacheDirectory to persistent stash directory.
    * Uses copy-then-delete for safety — if copy fails, original is untouched.
@@ -126,11 +139,29 @@ export const stashAudioManager = {
     }
   },
 
+  /** Delete all stashed audio for the current user. */
   async deleteAllStashedAudio(): Promise<void> {
     try {
-      const info = await getInfoAsync(STASH_DIR);
+      if (!currentUserId) return;
+      const dir = userStashDir();
+      const info = await getInfoAsync(dir);
       if (info.exists) {
-        await deleteAsync(STASH_DIR, { idempotent: true });
+        await deleteAsync(dir, { idempotent: true });
+      }
+    } catch {
+      // Best-effort cleanup
+    }
+  },
+
+  /**
+   * Delete the entire stash base directory (all users).
+   * Only used during legacy cleanup migration.
+   */
+  async deleteAllStashedAudioGlobal(): Promise<void> {
+    try {
+      const info = await getInfoAsync(BASE_STASH_DIR);
+      if (info.exists) {
+        await deleteAsync(BASE_STASH_DIR, { idempotent: true });
       }
     } catch {
       // Best-effort cleanup
@@ -144,17 +175,19 @@ export const stashAudioManager = {
     if (this._cleanupInProgress) return;
     this._cleanupInProgress = true;
     try {
-      const info = await getInfoAsync(STASH_DIR);
+      if (!currentUserId) return;
+      const dir = userStashDir();
+      const info = await getInfoAsync(dir);
       if (!info.exists) return;
 
-      const dirs = await readDirectoryAsync(STASH_DIR);
+      const dirs = await readDirectoryAsync(dir);
       const validSet = new Set(validSessionIds);
 
       await Promise.all(
         dirs
           .filter((d) => !validSet.has(d))
           .map((d) =>
-            deleteAsync(`${STASH_DIR}${d}`, { idempotent: true }).catch(() => {})
+            deleteAsync(`${dir}${d}`, { idempotent: true }).catch(() => {})
           )
       );
     } catch {

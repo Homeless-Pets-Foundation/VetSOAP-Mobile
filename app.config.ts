@@ -26,8 +26,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // FFmpeg for on-device audio trimming and waveform extraction
     [
       '@config-plugins/ffmpeg-kit-react-native',
-      { package: 'min' },
+      { package: 'min-lts' },
     ],
+    // Fix: ffmpeg-kit 6.0-2 removed from Maven Central, override to 6.0
+    './plugins/ffmpeg-version-fix',
     // Android: disable cleartext (HTTP) traffic in production,
     // enable backup encryption, and configure iOS hardening
     [

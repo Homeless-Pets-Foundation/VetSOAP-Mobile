@@ -10,12 +10,20 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 
 interface TrimHandleProps {
-  position: SharedValue<number>;
-  otherPosition: SharedValue<number>;
+  /** Current position in seconds (shared value, mutated by drag) */
+  positionSeconds: SharedValue<number>;
+  /** Other handle's position in seconds (for clamping) */
+  otherPositionSeconds: SharedValue<number>;
+  /** Duration shared value (readable from worklet) */
+  durationSV: SharedValue<number>;
+  /** Container width shared value (readable from worklet) */
+  containerWidthSV: SharedValue<number>;
+  /** Container width for initial layout (plain number) */
   containerWidth: number;
   height: number;
   side: 'left' | 'right';
-  minGapPx: number;
+  /** Minimum gap between handles as fraction of duration */
+  minGapFraction: number;
   timeSeconds: number;
   duration: number;
   onDragEnd?: () => void;
@@ -28,35 +36,44 @@ function triggerHaptic() {
 const HANDLE_WIDTH = 24;
 
 export function TrimHandle({
-  position,
-  otherPosition,
+  positionSeconds,
+  otherPositionSeconds,
+  durationSV,
+  containerWidthSV,
   containerWidth,
   height,
   side,
-  minGapPx,
+  minGapFraction,
   timeSeconds,
   duration,
   onDragEnd,
 }: TrimHandleProps) {
   const HIT_SLOP = 20;
-  const startPos = useSharedValue(0);
+  const dragStartSec = useSharedValue(0);
 
   const pan = Gesture.Pan()
     .onStart(() => {
       'worklet';
-      startPos.value = position.value;
+      dragStartSec.value = positionSeconds.value;
       runOnJS(triggerHaptic)();
     })
     .onUpdate((event) => {
       'worklet';
-      const newPos = startPos.value + event.translationX;
-      // Clamp dynamically against the OTHER handle's current position
+      const cw = containerWidthSV.value;
+      const dur = durationSV.value;
+      if (cw <= 0 || dur <= 0) return;
+
+      // Convert pixel delta to seconds delta
+      const deltaSec = (event.translationX / cw) * dur;
+      const newSec = dragStartSec.value + deltaSec;
+      const minGap = minGapFraction * dur;
+
       if (side === 'left') {
-        const max = otherPosition.value - minGapPx;
-        position.value = Math.max(0, Math.min(newPos, max));
+        const max = otherPositionSeconds.value - minGap;
+        positionSeconds.value = Math.max(0, Math.min(newSec, max));
       } else {
-        const min = otherPosition.value + minGapPx;
-        position.value = Math.max(min, Math.min(newPos, containerWidth));
+        const min = otherPositionSeconds.value + minGap;
+        positionSeconds.value = Math.max(min, Math.min(newSec, dur));
       }
     })
     .onEnd(() => {
@@ -68,16 +85,19 @@ export function TrimHandle({
     .hitSlop({ left: HIT_SLOP, right: HIT_SLOP, top: 0, bottom: 0 })
     .minDistance(0);
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [
-      {
-        translateX:
-          side === 'left'
-            ? position.value - HANDLE_WIDTH
-            : position.value,
-      },
-    ],
-  }));
+  // Convert seconds → pixels for the visual position
+  const animatedStyle = useAnimatedStyle(() => {
+    const cw = containerWidthSV.value;
+    const dur = durationSV.value;
+    const px = dur > 0 ? (positionSeconds.value / dur) * cw : 0;
+    return {
+      transform: [
+        {
+          translateX: side === 'left' ? px - HANDLE_WIDTH : px,
+        },
+      ],
+    };
+  });
 
   return (
     <GestureDetector gesture={pan}>

@@ -1,7 +1,7 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { View, Text } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useSharedValue } from 'react-native-reanimated';
+import { useSharedValue, runOnJS } from 'react-native-reanimated';
 import { StaticWaveform } from './StaticWaveform';
 import { TrimHandle } from './TrimHandle';
 
@@ -36,44 +36,55 @@ export function WaveformEditor({
   const WAVEFORM_HEIGHT = 120;
   const MIN_TRIM_GAP_SECONDS = 1;
 
-  // Convert seconds → pixels
+  // Store containerWidth and duration in shared values so worklets can read them
+  const containerWidthSV = useSharedValue(0);
+  const durationSV = useSharedValue(duration);
+  React.useEffect(() => {
+    containerWidthSV.value = containerWidth;
+  }, [containerWidth, containerWidthSV]);
+  React.useEffect(() => {
+    durationSV.value = duration;
+  }, [duration, durationSV]);
+
+  // Shared values for handle positions (in seconds, not pixels)
+  const trimStartSV = useSharedValue(trimStart);
+  const trimEndSV = useSharedValue(trimEnd);
+
+  // Sync shared values when React state props change (e.g., segment switch)
+  React.useEffect(() => {
+    trimStartSV.value = trimStart;
+    trimEndSV.value = trimEnd;
+  }, [trimStart, trimEnd, trimStartSV, trimEndSV]);
+
+  // Callbacks for when a handle finishes dragging — read seconds from shared values
+  const onTrimChangeRef = React.useRef(onTrimChange);
+  onTrimChangeRef.current = onTrimChange;
+
+  const handleStartDragEnd = useCallback(() => {
+    const newStart = Math.max(0, Math.min(trimStartSV.value, trimEndSV.value - MIN_TRIM_GAP_SECONDS));
+    const currentEnd = trimEndSV.value;
+    trimStartSV.value = newStart;
+    onTrimChangeRef.current(newStart, currentEnd);
+  }, [trimStartSV, trimEndSV]);
+
+  const handleEndDragEnd = useCallback(() => {
+    const currentStart = trimStartSV.value;
+    const dur = durationSV.value;
+    const newEnd = Math.max(currentStart + MIN_TRIM_GAP_SECONDS, Math.min(trimEndSV.value, dur));
+    trimEndSV.value = newEnd;
+    onTrimChangeRef.current(currentStart, newEnd);
+  }, [trimStartSV, trimEndSV, durationSV]);
+
+  const minGapFraction = duration > 0 ? MIN_TRIM_GAP_SECONDS / duration : 0;
+
+  const keepDuration = Math.max(0, trimEnd - trimStart);
+  const removeDuration = Math.max(0, duration - keepDuration);
+
+  // Convert seconds → pixels for display
   const secToX = useCallback(
     (sec: number) => (duration > 0 ? (sec / duration) * containerWidth : 0),
     [duration, containerWidth]
   );
-  const xToSec = useCallback(
-    (x: number) => (containerWidth > 0 ? (x / containerWidth) * duration : 0),
-    [duration, containerWidth]
-  );
-
-  // Shared values for handle positions (in pixels)
-  const startX = useSharedValue(secToX(trimStart));
-  const endX = useSharedValue(secToX(trimEnd));
-
-  // Sync shared values when props change
-  React.useEffect(() => {
-    if (containerWidth > 0) {
-      startX.value = secToX(trimStart);
-      endX.value = secToX(trimEnd);
-    }
-  }, [trimStart, trimEnd, containerWidth, duration, startX, endX, secToX]);
-
-  const handleStartDragEnd = useCallback(() => {
-    const newStart = xToSec(startX.value);
-    const currentEnd = xToSec(endX.value);
-    const clamped = Math.min(newStart, currentEnd - MIN_TRIM_GAP_SECONDS);
-    onTrimChange(Math.max(0, clamped), currentEnd);
-  }, [xToSec, startX, endX, onTrimChange]);
-
-  const handleEndDragEnd = useCallback(() => {
-    const currentStart = xToSec(startX.value);
-    const newEnd = xToSec(endX.value);
-    const clamped = Math.max(newEnd, currentStart + MIN_TRIM_GAP_SECONDS);
-    onTrimChange(currentStart, Math.min(clamped, duration));
-  }, [xToSec, startX, endX, duration, onTrimChange]);
-
-  const keepDuration = Math.max(0, trimEnd - trimStart);
-  const removeDuration = Math.max(0, duration - keepDuration);
 
   return (
     <View
@@ -99,23 +110,27 @@ export function WaveformEditor({
           pointerEvents="box-none"
         >
           <TrimHandle
-            position={startX}
-            otherPosition={endX}
+            positionSeconds={trimStartSV}
+            otherPositionSeconds={trimEndSV}
+            durationSV={durationSV}
+            containerWidthSV={containerWidthSV}
             containerWidth={containerWidth}
             height={WAVEFORM_HEIGHT}
             side="left"
-            minGapPx={secToX(MIN_TRIM_GAP_SECONDS)}
+            minGapFraction={minGapFraction}
             timeSeconds={trimStart}
             duration={duration}
             onDragEnd={handleStartDragEnd}
           />
           <TrimHandle
-            position={endX}
-            otherPosition={startX}
+            positionSeconds={trimEndSV}
+            otherPositionSeconds={trimStartSV}
+            durationSV={durationSV}
+            containerWidthSV={containerWidthSV}
             containerWidth={containerWidth}
             height={WAVEFORM_HEIGHT}
             side="right"
-            minGapPx={secToX(MIN_TRIM_GAP_SECONDS)}
+            minGapFraction={minGapFraction}
             timeSeconds={trimEnd}
             duration={duration}
             onDragEnd={handleEndDragEnd}

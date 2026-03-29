@@ -61,6 +61,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const stoppingRef = useRef(false);
   const isStartingRef = useRef(false);
   const mediaResetAlertedRef = useRef(false);
+  // Capture duration before pause/stop — native pause can reset the polled durationMillis to 0
+  const capturedDurationRef = useRef(0);
 
   // Status listener for recording events (errors, media reset)
   const statusListener = useCallback((status: RecordingStatus) => {
@@ -112,6 +114,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
       setState('recording');
       setAudioUri(null);
+      capturedDurationRef.current = 0;
       mediaResetAlertedRef.current = false;
     } finally {
       isStartingRef.current = false;
@@ -119,13 +122,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   }, [state, recorder]);
 
   const pause = useCallback(async () => {
+    // Capture duration before native pause — Android can reset polled durationMillis to 0
+    capturedDurationRef.current = Math.floor(recorderState.durationMillis / 1000);
     try {
       recorder.pause();
       setState('paused');
     } catch (error) {
       console.error('[AudioRecorder] pause failed:', error);
       // Native handle is broken — clean up so user can start fresh
-      setFinalDuration(Math.floor(recorderState.durationMillis / 1000));
+      setFinalDuration(capturedDurationRef.current);
       try { await recorder.stop(); } catch {}
       setAudioUri(recorder.uri ?? null);
       setState('stopped');
@@ -141,7 +146,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     } catch (error) {
       console.error('[AudioRecorder] resume failed:', error);
       // Native handle is broken — clean up so user can start fresh
-      setFinalDuration(Math.floor(recorderState.durationMillis / 1000));
+      // Use captured duration since polled value may be 0 while paused
+      const polledDuration = Math.floor(recorderState.durationMillis / 1000);
+      setFinalDuration(polledDuration > 0 ? polledDuration : capturedDurationRef.current);
       try { await recorder.stop(); } catch {}
       setAudioUri(recorder.uri ?? null);
       setState('stopped');
@@ -153,8 +160,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const stop = useCallback(async () => {
     if (stoppingRef.current) return;
     stoppingRef.current = true;
-    // Capture duration before native stop resets it
-    setFinalDuration(Math.floor(recorderState.durationMillis / 1000));
+    // Use polled duration if available, otherwise fall back to duration captured before pause
+    const polledDuration = Math.floor(recorderState.durationMillis / 1000);
+    setFinalDuration(polledDuration > 0 ? polledDuration : capturedDurationRef.current);
     try {
       await recorder.stop();
     } catch (error) {
@@ -176,6 +184,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setState('idle');
     setAudioUri(null);
     setFinalDuration(0);
+    capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
   }, [audioUri]);
@@ -184,6 +193,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setState('idle');
     setAudioUri(null);
     setFinalDuration(0);
+    capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
   }, []);

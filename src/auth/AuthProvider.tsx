@@ -77,6 +77,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Set user ID for stash scoping as soon as we know it
       if (fetchedUser?.id) {
         setStashUserId(fetchedUser.id);
+        // Now that user ID is set, safe to clean up orphaned stash data.
+        // Must run AFTER setStashUserId or getStashedSessions returns []
+        // and all stash audio dirs get deleted as "orphaned".
+        stashStorage.clearLegacyGlobalStashes().catch(() => {});
+        stashAudioManager.deleteAllStashedAudioGlobal().catch(() => {});
+        stashStorage.getStashedSessions().then((sessions) => {
+          const validIds = sessions.map((s) => s.id);
+          stashAudioManager.cleanupOrphanedStashDirs(validIds).catch(() => {});
+        }).catch(() => {});
       }
     } catch (error) {
       if (__DEV__) console.log('[Auth] fetchUser: failed', error);
@@ -204,17 +213,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setSession(existingSession);
         }
       }
-      // Clean up legacy global stash data from pre-user-scoped versions (one-time migration)
-      stashStorage.clearLegacyGlobalStashes().catch(() => {});
-      stashAudioManager.deleteAllStashedAudioGlobal().catch(() => {});
-
-      // Clean up orphaned audio recordings from prior crashes (deferred)
+      // Clean up orphaned audio recordings from prior crashes (deferred).
+      // Cache cleanup is safe without user ID. Stash cleanup requires user ID
+      // to be set (by fetchUser) so it only runs after authentication completes.
       setTimeout(() => {
         cleanupAudioCache().catch(() => {});
-        stashStorage.getStashedSessions().then((sessions) => {
-          const validIds = sessions.map((s) => s.id);
-          stashAudioManager.cleanupOrphanedStashDirs(validIds).catch(() => {});
-        }).catch(() => {});
       }, 5000);
     }).catch((error) => {
       if (__DEV__) console.error('[Auth] Failed to restore session:', error);

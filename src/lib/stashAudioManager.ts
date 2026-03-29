@@ -154,15 +154,21 @@ export const stashAudioManager = {
   },
 
   /**
-   * Delete the entire stash base directory (all users).
+   * Delete only legacy (non-user-scoped) stash directories.
+   * Entries that look like UUIDs are user-scoped directories and are preserved.
    * Only used during legacy cleanup migration.
    */
   async deleteAllStashedAudioGlobal(): Promise<void> {
     try {
       const info = await getInfoAsync(BASE_STASH_DIR);
-      if (info.exists) {
-        await deleteAsync(BASE_STASH_DIR, { idempotent: true });
-      }
+      if (!info.exists) return;
+      const entries = await readDirectoryAsync(BASE_STASH_DIR);
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      await Promise.all(
+        entries
+          .filter((e) => !uuidPattern.test(e)) // Skip user-scoped dirs (UUIDs)
+          .map((e) => deleteAsync(`${BASE_STASH_DIR}${e}`, { idempotent: true }).catch(() => {}))
+      );
     } catch {
       // Best-effort cleanup
     }

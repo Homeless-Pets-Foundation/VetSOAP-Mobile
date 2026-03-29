@@ -50,7 +50,7 @@ export default function SettingsScreen() {
       setBiometricEnabled(value);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (error) {
-      console.error('[Settings] toggleBiometric failed:', error);
+      if (__DEV__) console.error('[Settings] toggleBiometric failed:', error);
     }
   }, []);
 

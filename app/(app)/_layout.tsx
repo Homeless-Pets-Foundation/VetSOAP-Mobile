@@ -6,17 +6,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Mic, FileText } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { preventScreenCaptureAsync, allowScreenCaptureAsync } from 'expo-screen-capture';
+import Constants from 'expo-constants';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
+
+const IS_PRODUCTION = Constants.expoConfig?.extra?.isProduction === true;
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading } = useAuth();
   const insets = useSafeAreaInsets();
 
-  // Prevent screenshots and screen recording of PHI screens in production.
+  // Prevent screenshots and screen recording of PHI screens in production builds only.
   // On Android this also sets FLAG_SECURE, hiding content in the task switcher.
-  // Skipped in dev so you can still take screenshots for debugging/error reports.
+  // Skipped in dev and preview/internal-testing builds so you can still take screenshots.
   useEffect(() => {
-    if (isAuthenticated && !__DEV__) {
+    if (isAuthenticated && IS_PRODUCTION) {
       preventScreenCaptureAsync().catch(() => {});
       return () => { allowScreenCaptureAsync().catch(() => {}); };
     }

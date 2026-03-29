@@ -115,6 +115,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         projectId: 'ec4f66b0-2608-4d2a-82dd-8cc9bcfd0e23',
       },
       router: {},
+      isProduction: IS_PRODUCTION,
     },
     experiments: {
       typedRoutes: true,

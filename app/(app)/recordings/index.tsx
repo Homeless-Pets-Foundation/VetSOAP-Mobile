@@ -73,7 +73,7 @@ export default function RecordingsListScreen() {
   }, [data]);
 
   return (
-    <SafeAreaView className="screen" style={{ alignItems: 'center' }}>
+    <SafeAreaView className="screen items-center">
       <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
       <View className="px-5 pt-5 pb-0">
         <Text

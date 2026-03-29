@@ -76,7 +76,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <SafeAreaView className="screen" style={{ alignItems: 'center' }}>
+    <SafeAreaView className="screen items-center">
       <View className="p-5" style={{ width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
         {/* Header */}
         <View className="flex-row items-center mb-6">

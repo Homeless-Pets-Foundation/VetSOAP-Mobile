@@ -21,7 +21,7 @@ export function ScreenContainer({
 }: ScreenContainerProps) {
   if (!scrollable) {
     return (
-      <SafeAreaView className="screen" style={{ alignItems: 'center' }}>
+      <SafeAreaView className="screen items-center">
         <View style={{ width: '100%', maxWidth: CONTENT_MAX_WIDTH, flex: 1 }}>
           {children}
         </View>

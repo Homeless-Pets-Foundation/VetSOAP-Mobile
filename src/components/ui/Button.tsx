@@ -91,7 +91,7 @@ export function Button({
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || children}
       accessibilityState={{ disabled: disabled || loading }}
-      className={`rounded-btn items-center justify-center flex-row min-h-[44px] shadow-btn ${v.container} ${s.container} ${disabled || loading ? 'opacity-50' : ''}`}
+      className={`rounded-btn items-center justify-center flex-row min-h-[44px] ${variant !== 'ghost' ? 'shadow-btn' : ''} ${v.container} ${s.container} ${disabled || loading ? 'opacity-50' : ''}`}
       style={animatedStyle}
       {...rest}
     >
@@ -102,7 +102,7 @@ export function Button({
         />
       ) : (
         <>
-          {icon && <View style={{ marginRight: 8 }}>{icon}</View>}
+          {icon && <View className="mr-2">{icon}</View>}
           <Text className={`${v.text} ${s.text}`}>{children}</Text>
         </>
       )}

@@ -265,10 +265,20 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
           {/* Paused but not recorder owner: let user continue or start over */}
           {isPaused && !isRecorderOwner && (
-            <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
-              <Button variant="primary" onPress={onContinueRecording}>Continue Recording</Button>
+            <Animated.View entering={FadeIn.duration(200)} className="gap-2">
+              <Button variant="primary" onPress={onContinueRecording} icon={<Plus color="#fff" size={18} />}>Continue Recording</Button>
               {hasSegments && (
-                <Button variant="danger" onPress={onRecordAgain}>Delete & Start Over</Button>
+                <Pressable
+                  onPress={onRecordAgain}
+                  accessibilityRole="button"
+                  accessibilityLabel="Delete recording and start over"
+                  className="min-h-[44px] justify-center items-center"
+                >
+                  <View className="flex-row items-center gap-1.5">
+                    <Trash2 color="#a8a29e" size={14} />
+                    <Text className="text-body-sm text-stone-400">Delete & Start Over</Text>
+                  </View>
+                </Pressable>
               )}
             </Animated.View>
           )}
@@ -286,7 +296,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 onPress={onRecordAgain}
                 accessibilityRole="button"
                 accessibilityLabel="Delete recording and start over"
-                className="py-2 items-center"
+                className="min-h-[44px] justify-center items-center"
               >
                 <View className="flex-row items-center gap-1.5">
                   <Trash2 color="#a8a29e" size={14} />

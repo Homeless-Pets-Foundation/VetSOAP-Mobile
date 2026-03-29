@@ -79,7 +79,7 @@ function AccordionSection({
   };
 
   return (
-    <View className="border border-stone-200 rounded-input mb-2 overflow-hidden">
+    <View className="border border-stone-200 rounded-input mb-3 overflow-hidden">
       <Pressable
         onPress={onToggle}
         accessibilityRole="button"

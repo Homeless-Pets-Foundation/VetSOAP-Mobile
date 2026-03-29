@@ -101,8 +101,7 @@ export function StashedSessionCard({ stash, onResume, onDelete }: StashedSession
             accessibilityRole="button"
             accessibilityLabel="Resume session"
             accessibilityHint="Double-tap to restore this recording session"
-            className="p-2 rounded-full bg-brand-50"
-            hitSlop={8}
+            className="w-10 h-10 rounded-full bg-brand-50 items-center justify-center"
           >
             <Play color="#2563eb" size={16} fill="#2563eb" />
           </Pressable>
@@ -111,7 +110,7 @@ export function StashedSessionCard({ stash, onResume, onDelete }: StashedSession
             accessibilityRole="button"
             accessibilityLabel="Delete saved session"
             accessibilityHint="Double-tap to permanently delete this saved session and its recordings"
-            className="p-2 rounded-full"
+            className="w-10 h-10 rounded-full items-center justify-center"
             hitSlop={8}
           >
             <Trash2 color="#78716c" size={16} />

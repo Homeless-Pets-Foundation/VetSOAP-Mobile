@@ -236,7 +236,7 @@ export default function RecordingDetailScreen() {
             <ChevronLeft color="#1c1917" size={iconMd} />
           </Pressable>
           <View className="flex-1">
-            <Text className="text-title font-bold text-stone-900">
+            <Text className="text-title font-bold text-stone-900" numberOfLines={1}>
               {recording.patientName}
             </Text>
           </View>
@@ -245,33 +245,33 @@ export default function RecordingDetailScreen() {
 
         {/* Patient Info */}
         <Card className="m-5 mt-4">
-          <View className="flex-row flex-wrap gap-4">
+          <View className="flex-row flex-wrap">
             {recording.species && (
-              <View>
-                <Text className="text-[11px] text-stone-400 font-medium">SPECIES</Text>
+              <View style={{ width: '50%' }} className="mb-3 pr-2">
+                <Text className="text-caption text-stone-400 font-medium uppercase">Species</Text>
                 <Text className="text-body text-stone-900 mt-0.5">{recording.species}</Text>
               </View>
             )}
             {recording.breed && (
-              <View>
-                <Text className="text-[11px] text-stone-400 font-medium">BREED</Text>
+              <View style={{ width: '50%' }} className="mb-3 pl-2">
+                <Text className="text-caption text-stone-400 font-medium uppercase">Breed</Text>
                 <Text className="text-body text-stone-900 mt-0.5">{recording.breed}</Text>
               </View>
             )}
             {recording.clientName && (
-              <View>
-                <Text className="text-[11px] text-stone-400 font-medium">CLIENT</Text>
-                <Text className="text-body text-stone-900 mt-0.5">{recording.clientName}</Text>
+              <View style={{ width: '50%' }} className="mb-3 pr-2">
+                <Text className="text-caption text-stone-400 font-medium uppercase">Client</Text>
+                <Text className="text-body text-stone-900 mt-0.5" numberOfLines={1}>{recording.clientName}</Text>
               </View>
             )}
             {recording.appointmentType && (
-              <View>
-                <Text className="text-[11px] text-stone-400 font-medium">TYPE</Text>
+              <View style={{ width: '50%' }} className="mb-3 pl-2">
+                <Text className="text-caption text-stone-400 font-medium uppercase">Type</Text>
                 <Text className="text-body text-stone-900 mt-0.5">{recording.appointmentType}</Text>
               </View>
             )}
           </View>
-          <Text className="text-caption text-stone-400 mt-3">{formattedDate}</Text>
+          <Text className="text-caption text-stone-400">{formattedDate}</Text>
         </Card>
 
         {/* Processing Status */}
@@ -291,7 +291,7 @@ export default function RecordingDetailScreen() {
         {recording.status === 'pending_metadata' && (
           <Card className="mx-5 mb-4 border-warning-200">
             <View className="flex-row items-start">
-              <AlertTriangle color="#d97706" size={18} className="mr-2 mt-0.5" />
+              <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
               <View className="flex-1">
                 <Text className="text-body font-semibold text-warning-700 mb-1">
                   Awaiting Patient Details
@@ -336,7 +336,7 @@ export default function RecordingDetailScreen() {
           <Animated.View entering={FadeInUp.duration(300)}>
             <Card className="mx-5 mb-4 border-warning-200">
               <View className="flex-row items-start">
-                <AlertTriangle color="#d97706" size={18} className="mr-2 mt-0.5" />
+                <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
                 <View className="flex-1">
                   <Text className="text-body font-semibold text-warning-700 mb-1">
                     Transcript Quality Warning

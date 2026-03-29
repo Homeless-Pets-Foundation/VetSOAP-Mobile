@@ -41,7 +41,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           allowBackup: false, // Prevent unencrypted backup extraction
           minSdkVersion: 24, // Required by ffmpeg-kit-react-native
           extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
-          extraMavenRepos: ['https://repo1.maven.org/maven2'],
+          extraMavenRepos: ['https://homeless-pets-foundation.github.io/ffmpeg-kit-maven'],
         },
         ios: {
           deploymentTarget: '15.1', // Drop support for older insecure iOS

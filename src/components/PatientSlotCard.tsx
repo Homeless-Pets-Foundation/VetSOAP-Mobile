@@ -11,7 +11,7 @@ import Animated, {
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
-import { Mic, X, Plus, Scissors, Trash2 } from 'lucide-react-native';
+import { Mic, X, Plus, Scissors, Trash2, Check } from 'lucide-react-native';
 import { PatientForm } from './PatientForm';
 import { AudioWaveform } from './AudioWaveform';
 import { Card } from './ui/Card';
@@ -247,19 +247,19 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Recording: pause + stop */}
+          {/* Recording: pause + finish */}
           {isRecorderOwner && isRecording && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
               <Button variant="secondary" onPress={onPause}>Pause</Button>
-              <Button variant="danger" onPress={onStop}>Stop</Button>
+              <Button variant="primary" onPress={onStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
             </Animated.View>
           )}
 
-          {/* Paused: resume + stop (recorder owner) */}
+          {/* Paused: resume + finish (recorder owner) */}
           {isRecorderOwner && isPaused && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
-              <Button variant="primary" onPress={onResume}>Resume</Button>
-              <Button variant="danger" onPress={onStop}>Stop</Button>
+              <Button variant="secondary" onPress={onResume}>Resume</Button>
+              <Button variant="primary" onPress={onStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
             </Animated.View>
           )}
 

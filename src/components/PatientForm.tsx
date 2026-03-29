@@ -163,24 +163,24 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
           Appointment Type<Text className="text-danger-500"> *</Text>
         </Text>
         <View
-          className="flex-row flex-wrap gap-2"
+          className="flex-row flex-wrap"
+          style={{ marginHorizontal: -4 }}
           accessibilityRole="radiogroup"
           accessibilityLabel="Appointment type selection"
         >
           {APPOINTMENT_TYPE_OPTIONS.map((type) => {
             const isSelected = formData.appointmentType === type;
             return (
+              <View key={type} style={{ width: '50%', paddingHorizontal: 4, marginBottom: 8 }}>
               <Pressable
-                key={type}
                 onPress={() => {
                   Haptics.selectionAsync().catch(() => {});
                   if (!isSelected) onUpdate('appointmentType', type);
                 }}
-                hitSlop={8}
                 accessibilityRole="radio"
                 accessibilityState={{ selected: isSelected }}
                 accessibilityLabel={type}
-                className={`px-4 min-h-[44px] items-center justify-center rounded-pill border ${
+                className={`min-h-[44px] items-center justify-center rounded-btn border ${
                   isSelected
                     ? 'border-brand-500 bg-brand-500'
                     : 'border-stone-300 bg-white'
@@ -194,6 +194,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
                   {type}
                 </Text>
               </Pressable>
+              </View>
             );
           })}
         </View>

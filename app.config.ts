@@ -42,6 +42,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           minSdkVersion: 24, // Required by ffmpeg-kit-react-native
           extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
           extraMavenRepos: ['https://homeless-pets-foundation.github.io/ffmpeg-kit-maven'],
+          useLegacyPackaging: false, // Required for 16 KB memory page alignment (Android 15+)
         },
         ios: {
           deploymentTarget: '15.1', // Drop support for older insecure iOS

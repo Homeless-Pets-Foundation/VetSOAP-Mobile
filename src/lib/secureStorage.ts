@@ -4,6 +4,7 @@ const KEYS = {
   ACCESS_TOKEN: 'captivet_access_token',
   REFRESH_TOKEN: 'captivet_refresh_token',
   SESSION: 'captivet_session',
+  DEVICE_ID: 'captivet_device_id',
 } as const;
 
 export const secureStorage = {
@@ -42,6 +43,29 @@ export const secureStorage = {
       });
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] setSession failed:', error);
+    }
+  },
+
+  /** Get or generate a persistent device ID (survives sign-out, tied to this device). */
+  async getDeviceId(): Promise<string | null> {
+    try {
+      let id = await SecureStore.getItemAsync(KEYS.DEVICE_ID);
+      if (!id) {
+        // Generate UUID v4 using crypto.getRandomValues (available on Hermes)
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+        bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
+        const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+        id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+        await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+        });
+      }
+      return id;
+    } catch (error) {
+      if (__DEV__) console.error('[SecureStorage] getDeviceId failed:', error);
+      return null;
     }
   },
 

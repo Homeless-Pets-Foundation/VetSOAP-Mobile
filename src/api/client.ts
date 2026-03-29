@@ -1,7 +1,6 @@
 import { API_URL } from '../config';
 import { secureStorage } from '../lib/secureStorage';
 import { validateRequestUrl } from '../lib/sslPinning';
-import { getSigningHeaders } from '../lib/requestSigning';
 
 const REQUEST_TIMEOUT_MS = 30000;
 
@@ -78,7 +77,7 @@ export class ApiClient {
     timeoutMs: number
   ): Promise<Response> {
     const authHeaders = await this.getAuthHeaders();
-    const signingHeaders = await getSigningHeaders(method, path, serializedBody);
+    const deviceId = await secureStorage.getDeviceId();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -92,7 +91,7 @@ export class ApiClient {
           'Content-Type': 'application/json',
           'Cache-Control': 'no-store',
           ...authHeaders,
-          ...signingHeaders,
+          ...(deviceId ? { 'X-Device-Id': deviceId } : {}),
         },
         body: serializedBody,
         signal: controller.signal,
@@ -129,8 +128,19 @@ export class ApiClient {
     const serializedBody = body ? JSON.stringify(body) : undefined;
     let response = await this.doFetch(url, method, path, serializedBody, timeoutMs);
 
-    // On 401, attempt token refresh and retry once with fresh credentials
+    // On 401, check for device revocation before attempting refresh
     if (response.status === 401) {
+      const errorPreview = await response.clone().json().catch(() => ({})) ?? {};
+      if (errorPreview.code === 'DEVICE_REVOKED') {
+        // Device was revoked by admin — force sign-out, no retry
+        try { await this.onUnauthorized?.(); } catch { /* ignore */ }
+        throw new ApiError(
+          'This device has been revoked. Contact your administrator.',
+          401,
+          false
+        );
+      }
+
       const oldToken = this.currentToken;
 
       try {

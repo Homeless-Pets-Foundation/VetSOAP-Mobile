@@ -1,5 +1,5 @@
 import React, { createContext, useEffect, useState, useCallback, useRef } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 import { cacheDirectory, readDirectoryAsync, deleteAsync } from 'expo-file-system/legacy';
@@ -307,7 +307,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { error: 'Invalid email or password' };
     }
     if (__DEV__) console.log('[Auth] signIn: success');
+    // Register this device with the server (fire-and-forget — non-blocking)
+    registerDevice().catch(() => {});
     return { error: null };
+  }, []);
+
+  const registerDevice = useCallback(async () => {
+    try {
+      const deviceId = await secureStorage.getDeviceId();
+      if (!deviceId) return;
+      await apiClient.post('/api/device-sessions/register', {
+        deviceId,
+        deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
+        appVersion: require('../../package.json').version,
+      });
+    } catch (error) {
+      if (__DEV__) console.log('[Auth] device registration failed (non-fatal):', error);
+    }
   }, []);
 
   // Don't gate isAuthenticated on client-side expiry. The token may be expired

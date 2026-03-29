@@ -82,9 +82,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // and all stash audio dirs get deleted as "orphaned".
         stashStorage.clearLegacyGlobalStashes().catch(() => {});
         stashAudioManager.deleteAllStashedAudioGlobal().catch(() => {});
-        stashStorage.getStashedSessions().then((sessions) => {
+        stashStorage.getStashedSessions().then(async (sessions) => {
           const validIds = sessions.map((s) => s.id);
-          stashAudioManager.cleanupOrphanedStashDirs(validIds).catch(() => {});
+          const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
+          // If orphaned sessions were recovered from manifests, save them to SecureStore
+          for (const session of recovered) {
+            await stashStorage.addStashedSession(session);
+            await stashAudioManager.deleteRecoveryManifest(session.id);
+          }
         }).catch(() => {});
       }
     } catch (error) {

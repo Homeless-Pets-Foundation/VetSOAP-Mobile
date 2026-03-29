@@ -5,9 +5,11 @@ import {
   deleteAsync,
   makeDirectoryAsync,
   readDirectoryAsync,
+  writeAsStringAsync,
+  readAsStringAsync,
 } from 'expo-file-system/legacy';
 import type { PatientSlot } from '../types/multiPatient';
-import type { StashedSlot } from '../types/stash';
+import type { StashedSlot, StashedSession } from '../types/stash';
 
 const BASE_STASH_DIR = `${documentDirectory}stashed-audio/`;
 
@@ -174,30 +176,85 @@ export const stashAudioManager = {
     }
   },
 
+  /**
+   * Write a recovery manifest alongside the audio files.
+   * If the app crashes before SecureStore is written, this manifest
+   * allows the stash to be recovered on next launch.
+   */
+  async writeRecoveryManifest(sessionId: string, session: StashedSession): Promise<void> {
+    try {
+      const path = `${sessionDir(sessionId)}recovery.json`;
+      await writeAsStringAsync(path, JSON.stringify(session));
+    } catch {
+      // Best-effort — stash still works if manifest write fails
+    }
+  },
+
+  /** Delete the recovery manifest after SecureStore write succeeds. */
+  async deleteRecoveryManifest(sessionId: string): Promise<void> {
+    try {
+      const path = `${sessionDir(sessionId)}recovery.json`;
+      await deleteAsync(path, { idempotent: true });
+    } catch {
+      // Best-effort cleanup
+    }
+  },
+
+  /** Read a recovery manifest from a stash directory. Returns null if missing or corrupt. */
+  async readRecoveryManifest(sessionId: string): Promise<StashedSession | null> {
+    try {
+      const path = `${sessionDir(sessionId)}recovery.json`;
+      const info = await getInfoAsync(path);
+      if (!info.exists) return null;
+      const raw = await readAsStringAsync(path);
+      const parsed = JSON.parse(raw) as StashedSession;
+      if (!parsed.id || !parsed.slots) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  },
+
   // Prevents concurrent cleanup from racing with stash/resume operations
   _cleanupInProgress: false,
 
-  async cleanupOrphanedStashDirs(validSessionIds: string[]): Promise<void> {
-    if (this._cleanupInProgress) return;
+  /**
+   * Scan for orphaned stash directories (not in SecureStore) and recover them
+   * if they have a recovery manifest. Directories without a manifest are deleted.
+   * Returns any recovered sessions so the caller can add them to SecureStore.
+   */
+  async recoverOrCleanupOrphans(validSessionIds: string[]): Promise<StashedSession[]> {
+    if (this._cleanupInProgress) return [];
     this._cleanupInProgress = true;
     try {
-      if (!currentUserId) return;
+      if (!currentUserId) return [];
       const dir = userStashDir();
       const info = await getInfoAsync(dir);
-      if (!info.exists) return;
+      if (!info.exists) return [];
 
       const dirs = await readDirectoryAsync(dir);
       const validSet = new Set(validSessionIds);
+      const orphanDirs = dirs.filter((d) => !validSet.has(d));
+      const recovered: StashedSession[] = [];
 
-      await Promise.all(
-        dirs
-          .filter((d) => !validSet.has(d))
-          .map((d) =>
-            deleteAsync(`${dir}${d}`, { idempotent: true }).catch(() => {})
-          )
-      );
+      for (const orphanId of orphanDirs) {
+        const manifest = await this.readRecoveryManifest(orphanId);
+        if (manifest) {
+          // Validate that audio files still exist before recovering
+          const { validSlots, allValid } = await this.validateStashedAudio(manifest.slots);
+          const hasAudio = validSlots.some((s) => s.segments.length > 0);
+          if (hasAudio) {
+            recovered.push({ ...manifest, slots: validSlots });
+            continue;
+          }
+        }
+        // No manifest or no valid audio — delete the orphaned directory
+        await deleteAsync(`${dir}${orphanId}`, { idempotent: true }).catch(() => {});
+      }
+
+      return recovered;
     } catch {
-      // Best-effort cleanup
+      return [];
     } finally {
       this._cleanupInProgress = false;
     }

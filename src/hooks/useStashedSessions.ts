@@ -32,11 +32,34 @@ export function useStashedSessions() {
     }
   }, []);
 
+  // On init: load stashes, then recover any orphaned directories with recovery manifests
   useEffect(() => {
-    refreshStashes().finally(() => {
+    (async () => {
+      try {
+        const sessions = await stashStorage.getStashedSessions();
+        setStashes(sessions);
+
+        // Recover orphaned stash directories that have recovery manifests
+        const validIds = sessions.map((s) => s.id);
+        const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
+        if (recovered.length > 0) {
+          for (const session of recovered) {
+            await stashStorage.addStashedSession(session);
+            await stashAudioManager.deleteRecoveryManifest(session.id);
+          }
+          // Refresh to show recovered sessions
+          const updated = await stashStorage.getStashedSessions();
+          setStashes(updated);
+        }
+      } catch {
+        setStashes([]);
+      } finally {
+        setIsLoading(false);
+      }
+    })().catch(() => {
       setIsLoading(false);
     });
-  }, [refreshStashes]);
+  }, []);
 
   const stashSession = useCallback(
     async (sessionState: SessionState): Promise<boolean> => {
@@ -76,6 +99,10 @@ export function useStashedSessions() {
           slots: stashedSlots,
         };
 
+        // Write recovery manifest BEFORE SecureStore — if the app crashes between
+        // here and addStashedSession, the manifest allows recovery on next launch
+        await stashAudioManager.writeRecoveryManifest(sessionId, stashedSession);
+
         const saved = await stashStorage.addStashedSession(stashedSession);
         if (!saved) {
           // Max stashes reached — shouldn't happen if UI disables button, but guard
@@ -87,6 +114,9 @@ export function useStashedSessions() {
           await stashAudioManager.deleteStashedAudio(sessionId);
           return false;
         }
+
+        // SecureStore is now authoritative — clean up the recovery manifest
+        await stashAudioManager.deleteRecoveryManifest(sessionId);
 
         await refreshStashes();
         return true;

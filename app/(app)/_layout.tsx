@@ -12,10 +12,11 @@ export default function AppLayout() {
   const { isAuthenticated, isLoading } = useAuth();
   const insets = useSafeAreaInsets();
 
-  // Prevent screenshots and screen recording of PHI screens.
+  // Prevent screenshots and screen recording of PHI screens in production.
   // On Android this also sets FLAG_SECURE, hiding content in the task switcher.
+  // Skipped in dev so you can still take screenshots for debugging/error reports.
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !__DEV__) {
       preventScreenCaptureAsync().catch(() => {});
       return () => { allowScreenCaptureAsync().catch(() => {}); };
     }

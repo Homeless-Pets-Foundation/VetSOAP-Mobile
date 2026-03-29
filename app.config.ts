@@ -26,12 +26,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // FFmpeg for on-device audio trimming and waveform extraction
     [
       '@config-plugins/ffmpeg-kit-react-native',
-      { package: 'min-lts' },
+      { package: 'min' },
     ],
-    // Fix: ffmpeg-kit 6.0-2 removed from Maven Central, override to 6.0
-    './plugins/ffmpeg-version-fix',
     // Android: disable cleartext (HTTP) traffic in production,
-    // enable backup encryption, and configure iOS hardening
+    // enable backup encryption, and configure iOS hardening.
+    // extraMavenRepos: Gradle 9 ignores project-level repos declared by
+    // ffmpeg-kit-react-native — must redeclare Maven Central at settings level.
     [
       'expo-build-properties',
       {
@@ -41,6 +41,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           allowBackup: false, // Prevent unencrypted backup extraction
           minSdkVersion: 24, // Required by ffmpeg-kit-react-native
           extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
+          extraMavenRepos: ['https://repo1.maven.org/maven2'],
         },
         ios: {
           deploymentTarget: '15.1', // Drop support for older insecure iOS

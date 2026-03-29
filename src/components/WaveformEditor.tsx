@@ -1,7 +1,6 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback } from 'react';
 import { View, Text } from 'react-native';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useSharedValue, runOnJS } from 'react-native-reanimated';
+import { useSharedValue } from 'react-native-reanimated';
 import { StaticWaveform } from './StaticWaveform';
 import { TrimHandle } from './TrimHandle';
 
@@ -60,20 +59,19 @@ export function WaveformEditor({
   const onTrimChangeRef = React.useRef(onTrimChange);
   onTrimChangeRef.current = onTrimChange;
 
-  const handleStartDragEnd = useCallback(() => {
-    const newStart = Math.max(0, Math.min(trimStartSV.value, trimEndSV.value - MIN_TRIM_GAP_SECONDS));
-    const currentEnd = trimEndSV.value;
+  // Receive values directly from the worklet via runOnJS args to avoid stale shared value reads
+  const handleStartDragEnd = useCallback((finalStart: number, otherEnd: number) => {
+    const newStart = Math.max(0, Math.min(finalStart, otherEnd - MIN_TRIM_GAP_SECONDS));
     trimStartSV.value = newStart;
-    onTrimChangeRef.current(newStart, currentEnd);
-  }, [trimStartSV, trimEndSV]);
+    onTrimChangeRef.current(newStart, otherEnd);
+  }, [trimStartSV]);
 
-  const handleEndDragEnd = useCallback(() => {
-    const currentStart = trimStartSV.value;
+  const handleEndDragEnd = useCallback((finalEnd: number, otherStart: number) => {
     const dur = durationSV.value;
-    const newEnd = Math.max(currentStart + MIN_TRIM_GAP_SECONDS, Math.min(trimEndSV.value, dur));
+    const newEnd = Math.max(otherStart + MIN_TRIM_GAP_SECONDS, Math.min(finalEnd, dur));
     trimEndSV.value = newEnd;
-    onTrimChangeRef.current(currentStart, newEnd);
-  }, [trimStartSV, trimEndSV, durationSV]);
+    onTrimChangeRef.current(otherStart, newEnd);
+  }, [trimEndSV, durationSV]);
 
   const minGapFraction = duration > 0 ? MIN_TRIM_GAP_SECONDS / duration : 0;
 
@@ -103,9 +101,9 @@ export function WaveformEditor({
         isLoading={isLoading}
       />
 
-      {/* Trim handles overlay */}
+      {/* Trim handles overlay — uses plain View; expo-router provides GestureHandlerRootView at app root */}
       {!isLoading && containerWidth > 0 && duration > 0 && (
-        <GestureHandlerRootView
+        <View
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
           pointerEvents="box-none"
         >
@@ -135,7 +133,7 @@ export function WaveformEditor({
             duration={duration}
             onDragEnd={handleEndDragEnd}
           />
-        </GestureHandlerRootView>
+        </View>
       )}
 
       {/* Time labels */}

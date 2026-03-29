@@ -8,7 +8,7 @@ import * as Haptics from 'expo-haptics';
 import * as FileSystem from 'expo-file-system';
 import { useAudioPlayback } from '../../src/hooks/useAudioPlayback';
 import { audioEditorBridge } from '../../src/lib/audioEditorBridge';
-import { trimAudio, extractWaveformPeaks } from '../../src/lib/ffmpeg';
+import { trimAudio, concatenateAudio, extractWaveformPeaks } from '../../src/lib/ffmpeg';
 import { audioTempFiles } from '../../src/lib/audioTempFiles';
 import { WaveformEditor } from '../../src/components/WaveformEditor';
 import { Button } from '../../src/components/ui/Button';
@@ -38,8 +38,37 @@ export default function AudioEditorScreen() {
   const [isTrimming, setIsTrimming] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [peakErrors, setPeakErrors] = useState<Set<number>>(new Set());
+  // Track whether we emitted trimmed segments — if so, skip temp file cleanup on unmount
+  const savedResultRef = useRef(false);
+  const [isConcatenating, setIsConcatenating] = useState(false);
+  const initialSegmentCountRef = useRef(inputRef.current?.segments.length ?? 0);
 
   const playback = useAudioPlayback();
+
+  // Auto-concatenate multiple segments into one on mount
+  useEffect(() => {
+    if (initialSegmentCountRef.current <= 1) return;
+
+    setIsConcatenating(true);
+    (async () => {
+      try {
+        await audioTempFiles.ensureDir();
+        const outputPath = audioTempFiles.getConcatOutputPath();
+        const uris = (inputRef.current?.segments ?? []).map((s) => s.uri);
+        const result = await concatenateAudio(uris, outputPath);
+        setSegments([{ uri: result.uri, duration: result.duration }]);
+        setSelectedIndex(0);
+        setHasChanges(true);
+      } catch (error) {
+        if (__DEV__) console.error('[Editor] concatenation failed:', error);
+        Alert.alert('Note', 'Could not merge segments. You can edit each segment individually.');
+      } finally {
+        setIsConcatenating(false);
+      }
+    })().catch(() => {
+      setIsConcatenating(false);
+    });
+  }, []);
 
   // Selected segment
   const selectedSegment = segments[selectedIndex] ?? null;
@@ -106,10 +135,12 @@ export default function AudioEditorScreen() {
     );
   });
 
-  // Cleanup temp files on unmount
+  // Cleanup temp files on unmount — but only if user discarded (not if they saved trimmed segments)
   useEffect(() => {
     return () => {
-      audioTempFiles.cleanupAll().catch(() => {});
+      if (!savedResultRef.current) {
+        audioTempFiles.cleanupAll().catch(() => {});
+      }
     };
   }, []);
 
@@ -283,6 +314,7 @@ export default function AudioEditorScreen() {
   const handleDone = useCallback(() => {
     playback.pause();
     if (hasChanges) {
+      savedResultRef.current = true; // Prevent temp file cleanup — session needs trimmed files
       audioEditorBridge.emitResult({ slotId, segments });
     } else {
       audioEditorBridge.emitResult(null);
@@ -334,6 +366,15 @@ export default function AudioEditorScreen() {
       return next;
     });
   }, [selectedIndex]);
+
+  if (isConcatenating) {
+    return (
+      <SafeAreaView className="flex-1 bg-stone-50 items-center justify-center">
+        <ActivityIndicator size="large" color="#0d8775" />
+        <Text className="text-body text-stone-500 mt-3">Merging segments...</Text>
+      </SafeAreaView>
+    );
+  }
 
   if (!inputRef.current || segments.length === 0) {
     return (

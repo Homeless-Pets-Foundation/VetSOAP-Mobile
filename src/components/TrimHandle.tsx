@@ -26,14 +26,15 @@ interface TrimHandleProps {
   minGapFraction: number;
   timeSeconds: number;
   duration: number;
-  onDragEnd?: () => void;
+  /** Called on drag end with (thisPosition, otherPosition) in seconds */
+  onDragEnd?: (position: number, otherPosition: number) => void;
 }
 
 function triggerHaptic() {
   Haptics.selectionAsync().catch(() => {});
 }
 
-const HANDLE_WIDTH = 24;
+const HANDLE_WIDTH = 32;
 
 export function TrimHandle({
   positionSeconds,
@@ -48,7 +49,7 @@ export function TrimHandle({
   duration,
   onDragEnd,
 }: TrimHandleProps) {
-  const HIT_SLOP = 20;
+  const HIT_SLOP = 40;
   const dragStartSec = useSharedValue(0);
 
   const pan = Gesture.Pan()
@@ -79,11 +80,13 @@ export function TrimHandle({
     .onEnd(() => {
       'worklet';
       if (onDragEnd) {
-        runOnJS(onDragEnd)();
+        // Pass values directly from UI thread — avoids stale shared value reads on JS thread
+        runOnJS(onDragEnd)(positionSeconds.value, otherPositionSeconds.value);
       }
     })
-    .hitSlop({ left: HIT_SLOP, right: HIT_SLOP, top: 0, bottom: 0 })
-    .minDistance(0);
+    .hitSlop({ left: HIT_SLOP, right: HIT_SLOP, top: 20, bottom: 20 })
+    .activeOffsetX([-8, 8])
+    .failOffsetY([-15, 15]);
 
   // Convert seconds → pixels for the visual position
   const animatedStyle = useAnimatedStyle(() => {

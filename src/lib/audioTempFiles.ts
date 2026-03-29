@@ -23,6 +23,14 @@ export const audioTempFiles = {
     return `${EDIT_TEMP_DIR}trimmed-${segmentIndex}-${Date.now()}.m4a`;
   },
 
+  getConcatOutputPath(): string {
+    return `${EDIT_TEMP_DIR}concat-${Date.now()}.m4a`;
+  },
+
+  getConcatListPath(): string {
+    return `${EDIT_TEMP_DIR}concat-list.txt`;
+  },
+
   getPcmTempPath(segmentIndex: number): string {
     return `${EDIT_TEMP_DIR}pcm-${segmentIndex}-${Date.now()}.raw`;
   },

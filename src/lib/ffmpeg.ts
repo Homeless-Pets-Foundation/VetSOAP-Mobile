@@ -2,6 +2,7 @@ import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 import {
   getInfoAsync,
   readAsStringAsync,
+  writeAsStringAsync,
   EncodingType,
 } from 'expo-file-system/legacy';
 import { audioTempFiles } from './audioTempFiles';
@@ -92,6 +93,61 @@ export async function trimAudio(
 
   const duration = await getAudioDuration(outputUri);
   return { uri: outputUri, duration };
+}
+
+/**
+ * Concatenate multiple audio segments into a single file using stream copy (no re-encoding).
+ * All input files must use the same codec (AAC in M4A, as produced by expo-audio).
+ * Returns immediately for single-segment input without invoking FFmpeg.
+ */
+export async function concatenateAudio(
+  inputUris: string[],
+  outputUri: string
+): Promise<{ uri: string; duration: number }> {
+  if (inputUris.length === 0) throw new Error('No input files to concatenate');
+
+  if (inputUris.length === 1) {
+    const duration = await getAudioDuration(inputUris[0]);
+    return { uri: inputUris[0], duration };
+  }
+
+  for (const uri of inputUris) validateFileUri(uri, 'Concat input');
+  validateFileUri(outputUri, 'Concat output');
+
+  // Verify all inputs exist
+  for (const uri of inputUris) {
+    const info = await getInfoAsync(uri);
+    if (!info.exists) throw new Error(`Concat input file does not exist: ${uri}`);
+  }
+
+  // Write concat demuxer list file — FFmpeg expects paths without file:// prefix
+  const listPath = audioTempFiles.getConcatListPath();
+  const listContent = inputUris
+    .map((uri) => `file '${uri.replace(/^file:\/\//, '')}'`)
+    .join('\n');
+  await writeAsStringAsync(listPath, listContent);
+
+  try {
+    const command = `-f concat -safe 0 -i "${listPath}" -c copy -y "${outputUri}"`;
+    const session = await FFmpegKit.execute(command);
+    const returnCode = await session.getReturnCode();
+
+    if (!ReturnCode.isSuccess(returnCode)) {
+      await audioTempFiles.cleanupFile(outputUri);
+      const logs = await session.getLogsAsString();
+      throw new Error(`FFmpeg concat failed (code ${returnCode.getValue()}): ${logs.slice(0, 200)}`);
+    }
+
+    const outputInfo = await getInfoAsync(outputUri);
+    if (!outputInfo.exists) {
+      throw new Error('FFmpeg concat produced no output file');
+    }
+
+    const duration = await getAudioDuration(outputUri);
+    return { uri: outputUri, duration };
+  } finally {
+    await audioTempFiles.cleanupFile(listPath);
+  }
 }
 
 /**

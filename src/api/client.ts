@@ -4,14 +4,13 @@ import { validateRequestUrl } from '../lib/sslPinning';
 import { getSigningHeaders } from '../lib/requestSigning';
 
 const REQUEST_TIMEOUT_MS = 30000;
-const UPLOAD_TIMEOUT_MS = 300000; // 5 minutes for large file uploads
 
 export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
     public isRetryable: boolean = false,
-    public details?: Array<{ field?: string; message: string }>
+    public details?: { field?: string; message: string }[]
   ) {
     super(message);
     this.name = 'ApiError';
@@ -52,7 +51,7 @@ export class ApiClient {
   private buildErrorMessage(
     status: number,
     errorBody: Record<string, unknown>,
-    details: Array<{ message: string }>
+    details: { message: string }[]
   ): string {
     if (__DEV__) {
       return (

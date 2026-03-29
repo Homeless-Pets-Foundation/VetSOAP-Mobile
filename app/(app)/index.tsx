@@ -18,6 +18,7 @@ import { RecordingCard } from '../../src/components/RecordingCard';
 import { ScreenContainer } from '../../src/components/ui/ScreenContainer';
 import { SkeletonCard } from '../../src/components/ui/Skeleton';
 import { Card } from '../../src/components/ui/Card';
+import { Button } from '../../src/components/ui/Button';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -27,7 +28,7 @@ export default function HomeScreen() {
   const { iconMd, iconLg } = useResponsive();
   const ctaScale = useSharedValue(1);
 
-  const { data, isLoading, refetch, isRefetching } = useQuery({
+  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['recordings', 'recent'],
     queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc' }),
     enabled: !!user,  // Don't fire until fetchUser has completed
@@ -149,11 +150,23 @@ export default function HomeScreen() {
             <SkeletonCard />
             <SkeletonCard />
           </View>
+        ) : isError ? (
+          <Card className="items-center py-6">
+            <FileText color="#dc2626" size={iconLg} />
+            <Text className="text-body text-stone-600 mt-3 text-center">
+              Could not load recordings.
+            </Text>
+            <View className="mt-3">
+              <Button variant="secondary" size="sm" onPress={() => { refetch().catch(() => {}); }}>
+                Retry
+              </Button>
+            </View>
+          </Card>
         ) : recordings.length === 0 ? (
           <Card className="items-center py-6">
             <FileText color="#a8a29e" size={iconLg} />
             <Text className="text-body text-stone-500 mt-3 text-center">
-              No recordings yet. Tap "Record Appointment" to get started.
+              No recordings yet. Tap &quot;Record Appointment&quot; to get started.
             </Text>
           </Card>
         ) : (

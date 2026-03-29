@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
 import { templatesApi } from '../api/templates';
-import type { Template } from '../types';
 
 const FIVE_MINUTES = 5 * 60 * 1000;
 const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;

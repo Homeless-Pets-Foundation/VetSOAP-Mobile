@@ -61,7 +61,7 @@ export function RecordingCard({ recording }: RecordingCardProps) {
     >
       <View className="flex-row justify-between items-center">
         <View className="flex-1 mr-3">
-          <Text className="text-body-lg font-semibold text-stone-900">
+          <Text className="text-body-lg font-semibold text-stone-900" numberOfLines={1}>
             {recording.patientName}
           </Text>
           {description ? (
@@ -73,7 +73,7 @@ export function RecordingCard({ recording }: RecordingCardProps) {
               {description}
             </Text>
           ) : null}
-          <Text className="text-caption text-stone-400 mt-1">
+          <Text className="text-caption text-stone-500 mt-1">
             {formattedDate}
           </Text>
         </View>

@@ -13,12 +13,16 @@ interface AppLockGuardProps {
 
 /**
  * Wraps authenticated screens and requires biometric re-auth
- * when the app returns from background after a threshold duration.
+ * when the app returns from background after a threshold duration
+ * AND on initial app launch (cold start) when a session is restored.
  */
 export function AppLockGuard({ children }: AppLockGuardProps) {
   const { signOut } = useContext(AuthContext);
-  const [isLocked, setIsLocked] = useState(false);
+  // Default to true — assume locked until we verify biometric is not needed.
+  // This prevents a brief flash of PHI content before the lock screen renders.
+  const [isLocked, setIsLocked] = useState(true);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [isReady, setIsReady] = useState(false);
   const backgroundedAtRef = useRef<number | null>(null);
   const isAuthenticatingRef = useRef(false);
 
@@ -56,6 +60,49 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     }
   }, []);
 
+  // Cold-start biometric check: on mount, check if biometric lock is enabled.
+  // If so, require authentication before showing content.
+  useEffect(() => {
+    (async () => {
+      try {
+        const [available, enabled] = await Promise.all([
+          biometrics.isAvailable(),
+          biometrics.isEnabled(),
+        ]);
+
+        if (available && enabled) {
+          // Keep locked and trigger biometric prompt
+          setIsReady(true);
+          isAuthenticatingRef.current = true;
+          setIsAuthenticating(true);
+          try {
+            const success = await biometrics.authenticate(
+              'Verify your identity to continue'
+            );
+            if (success) {
+              setIsLocked(false);
+            }
+          } finally {
+            isAuthenticatingRef.current = false;
+            setIsAuthenticating(false);
+          }
+        } else {
+          // Biometric not available or not enabled — unlock immediately
+          setIsLocked(false);
+          setIsReady(true);
+        }
+      } catch {
+        // On error, unlock to avoid permanently locking user out
+        setIsLocked(false);
+        setIsReady(true);
+      }
+    })().catch(() => {
+      setIsLocked(false);
+      setIsReady(true);
+    });
+  }, []);
+
+  // Background/foreground lock handler
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       (async () => {
@@ -106,36 +153,27 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     return () => subscription.remove();
   }, []);
 
+  // While checking biometric state on cold start, show nothing (prevents flash)
+  if (!isReady && isLocked) {
+    return (
+      <View className="flex-1 bg-stone-50" />
+    );
+  }
+
   if (isLocked) {
     return (
-      <View
-        style={{
-          flex: 1,
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: 24,
-          backgroundColor: '#fafaf9',
-        }}
-      >
+      <View className="flex-1 justify-center items-center p-6 bg-stone-50">
         <Image
           source={require('../../assets/logo-wordmark.png')}
-          style={{ width: '60%', maxWidth: 280, aspectRatio: 600 / 139, marginBottom: 16 }}
+          style={{ width: '60%', maxWidth: 280, aspectRatio: 600 / 139 }}
           resizeMode="contain"
           accessibilityLabel="Captivet"
+          className="mb-4"
         />
-        <Text
-          style={{ fontSize: 18, fontWeight: 'bold', color: '#1c1917', marginBottom: 8 }}
-        >
+        <Text className="text-body-lg font-bold text-stone-900 mb-2">
           Captivet Locked
         </Text>
-        <Text
-          style={{
-            fontSize: 14,
-            color: '#78716c',
-            textAlign: 'center',
-            marginBottom: 24,
-          }}
-        >
+        <Text className="text-body-sm text-stone-500 text-center mb-6">
           Authenticate to continue using the app.
         </Text>
         <Button
@@ -147,7 +185,7 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
         >
           Unlock
         </Button>
-        <View style={{ marginTop: 16 }}>
+        <View className="mt-4">
           <Button
             variant="secondary"
             size="sm"

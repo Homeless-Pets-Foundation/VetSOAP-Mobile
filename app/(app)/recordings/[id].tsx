@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback } from 'react';
 import { View, Text, ScrollView, Pressable, Alert, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { ChevronLeft, RotateCcw, Check, AlertTriangle } from 'lucide-react-native';
+import { ChevronLeft, Check, AlertTriangle } from 'lucide-react-native';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../src/components/ui/ScreenContainer';
 import { recordingsApi } from '../../../src/api/recordings';
@@ -184,11 +184,11 @@ export default function RecordingDetailScreen() {
             {error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'}
           </Text>
           <View className="flex-row gap-3">
-            <Button variant="secondary" onPress={() => { refetchRecording().catch(() => {}); }}>
-              Retry
-            </Button>
             <Button variant="primary" onPress={() => router.back()}>
               Go Back
+            </Button>
+            <Button variant="secondary" onPress={() => { refetchRecording().catch(() => {}); }}>
+              Retry
             </Button>
           </View>
         </Animated.View>
@@ -332,7 +332,7 @@ export default function RecordingDetailScreen() {
         )}
 
         {/* Transcript Quality Warnings */}
-        {recording.status === 'completed' && recording.qualityWarnings?.length > 0 && (
+        {recording.status === 'completed' && Array.isArray(recording.qualityWarnings) && recording.qualityWarnings.length > 0 && (
           <Animated.View entering={FadeInUp.duration(300)}>
             <Card className="mx-5 mb-4 border-warning-200">
               <View className="flex-row items-start">

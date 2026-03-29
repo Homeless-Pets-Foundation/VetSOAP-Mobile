@@ -44,8 +44,9 @@ export function TextInputField({
       {rightAccessory ? (
         <View className={`input-base min-h-[44px] ${borderClass} flex-row items-center`}>
           <TextInput
-            placeholderTextColor="#a8a29e"
+            placeholderTextColor="#78716c"
             accessibilityLabel={label}
+            accessibilityHint={required ? 'Required field' : undefined}
             onFocus={handleFocus}
             onBlur={handleBlur}
             className="flex-1 text-body text-stone-900 p-0"
@@ -55,8 +56,9 @@ export function TextInputField({
         </View>
       ) : (
         <TextInput
-          placeholderTextColor="#a8a29e"
+          placeholderTextColor="#78716c"
           accessibilityLabel={label}
+          accessibilityHint={required ? 'Required field' : undefined}
           onFocus={handleFocus}
           onBlur={handleBlur}
           className={`input-base min-h-[44px] ${borderClass}`}

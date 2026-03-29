@@ -1,6 +1,18 @@
 import { useReducer, useCallback } from 'react';
 import type { CreateRecording } from '../types';
-import type { PatientSlot, SessionAction, SessionState } from '../types/multiPatient';
+import type { PatientSlot, SessionAction, SessionState, AudioSegment } from '../types/multiPatient';
+
+/** Validate that a segment URI is a local file path (not a remote URL). */
+function isLocalFileUri(uri: string): boolean {
+  return uri.startsWith('file://') || uri.startsWith('/');
+}
+
+/** Filter segments to only include local file URIs. */
+function validateSegments(segments: AudioSegment[]): AudioSegment[] {
+  return segments.filter(
+    (s) => s && typeof s.uri === 'string' && isLocalFileUri(s.uri) && typeof s.duration === 'number'
+  );
+}
 
 let slotCounter = 0;
 
@@ -159,6 +171,83 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
     case 'RESET_SESSION':
       return createInitialState(action.defaultTemplateId);
 
+    case 'RESTORE_SESSION':
+      return {
+        slots: action.slots.map((slot) => ({
+          ...slot,
+          segments: validateSegments(slot.segments),
+        })),
+        activeIndex: 0,
+        recorderBoundToSlotId: null,
+      };
+
+    case 'UPDATE_SEGMENT': {
+      return {
+        ...state,
+        slots: state.slots.map((slot) => {
+          if (slot.id !== action.slotId) return slot;
+          const newSegments = slot.segments.map((seg, i) =>
+            i === action.segmentIndex ? { uri: action.uri, duration: action.duration } : seg
+          );
+          const newDuration = newSegments.reduce((sum, s) => sum + s.duration, 0);
+          return {
+            ...slot,
+            segments: newSegments,
+            audioDuration: newDuration,
+            audioUri: newSegments.length > 0 ? newSegments[newSegments.length - 1].uri : null,
+          };
+        }),
+      };
+    }
+
+    case 'DELETE_SEGMENT': {
+      return {
+        ...state,
+        slots: state.slots.map((slot) => {
+          if (slot.id !== action.slotId) return slot;
+          const newSegments = slot.segments.filter((_, i) => i !== action.segmentIndex);
+          if (newSegments.length === 0) {
+            return {
+              ...slot,
+              segments: [],
+              audioUri: null,
+              audioDuration: 0,
+              audioState: 'idle',
+              uploadStatus: 'pending',
+              uploadProgress: 0,
+              uploadError: null,
+              serverRecordingId: null,
+            };
+          }
+          const newDuration = newSegments.reduce((sum, s) => sum + s.duration, 0);
+          return {
+            ...slot,
+            segments: newSegments,
+            audioDuration: newDuration,
+            audioUri: newSegments[newSegments.length - 1].uri,
+          };
+        }),
+      };
+    }
+
+    case 'REPLACE_ALL_SEGMENTS': {
+      const validatedSegments = validateSegments(action.segments);
+      return {
+        ...state,
+        slots: state.slots.map((slot) => {
+          if (slot.id !== action.slotId) return slot;
+          const newDuration = validatedSegments.reduce((sum, s) => sum + s.duration, 0);
+          return {
+            ...slot,
+            segments: validatedSegments,
+            audioDuration: newDuration,
+            audioUri: validatedSegments.length > 0 ? validatedSegments[validatedSegments.length - 1].uri : null,
+            audioState: validatedSegments.length > 0 ? 'stopped' : 'idle',
+          };
+        }),
+      };
+    }
+
     default:
       return state;
   }
@@ -239,6 +328,31 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
     dispatch({ type: 'RESET_SESSION', defaultTemplateId });
   }, [defaultTemplateId]);
 
+  const restoreSession = useCallback((slots: PatientSlot[]) => {
+    dispatch({ type: 'RESTORE_SESSION', slots });
+  }, []);
+
+  const updateSegment = useCallback(
+    (slotId: string, segmentIndex: number, uri: string, duration: number) => {
+      dispatch({ type: 'UPDATE_SEGMENT', slotId, segmentIndex, uri, duration });
+    },
+    []
+  );
+
+  const deleteSegment = useCallback(
+    (slotId: string, segmentIndex: number) => {
+      dispatch({ type: 'DELETE_SEGMENT', slotId, segmentIndex });
+    },
+    []
+  );
+
+  const replaceAllSegments = useCallback(
+    (slotId: string, segments: { uri: string; duration: number }[]) => {
+      dispatch({ type: 'REPLACE_ALL_SEGMENTS', slotId, segments });
+    },
+    []
+  );
+
   const activeSlot = state.slots[state.activeIndex] ?? state.slots[0];
 
   const continueRecording = useCallback((slotId: string) => {
@@ -270,6 +384,10 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
     unbindRecorder,
     setUploadStatus,
     resetSession,
+    restoreSession,
+    updateSegment,
+    deleteSegment,
+    replaceAllSegments,
     dispatch,
   };
 }

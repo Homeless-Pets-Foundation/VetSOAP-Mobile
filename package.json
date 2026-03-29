@@ -10,6 +10,8 @@
     "lint": "expo lint"
   },
   "dependencies": {
+    "@config-plugins/ffmpeg-kit-react-native": "^9.0.0",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.98.0",
     "@tanstack/react-query": "^5.90.21",
     "babel-preset-expo": "^55.0.10",
@@ -29,6 +31,7 @@
     "expo-secure-store": "~55.0.9",
     "expo-splash-screen": "~55.0.12",
     "expo-status-bar": "~55.0.4",
+    "ffmpeg-kit-react-native": "^6.0.2",
     "lucide-react-native": "^0.576.0",
     "nativewind": "^4.2.2",
     "react": "19.2.0",

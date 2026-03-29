@@ -25,6 +25,18 @@ AppState.addEventListener('change', (state) => {
  * indefinitely. This utility copies the text and schedules a clear
  * after a configurable timeout.
  */
+/** Force-clear any pending clipboard data. Called on sign-out. */
+export function clearClipboard(): void {
+  if (clearTimer) {
+    clearTimeout(clearTimer);
+    clearTimer = null;
+  }
+  if (pendingText !== null) {
+    Clipboard.setStringAsync('').catch(() => {});
+    pendingText = null;
+  }
+}
+
 export async function copyWithAutoClear(text: string): Promise<void> {
   // Clear any existing timer
   if (clearTimer) {
@@ -36,7 +48,7 @@ export async function copyWithAutoClear(text: string): Promise<void> {
     await Clipboard.setStringAsync(text);
     pendingText = text;
   } catch (error) {
-    console.error('[Clipboard] setStringAsync failed:', error);
+    if (__DEV__) console.error('[Clipboard] setStringAsync failed:', error);
     return;
   }
 

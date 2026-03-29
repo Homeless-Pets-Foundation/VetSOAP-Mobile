@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 // Sanitize a string: trim whitespace, strip control characters
 function sanitize(val: string): string {
-  // eslint-disable-next-line no-control-regex
   return val.trim().replace(/[\x00-\x1F\x7F]/g, '');
 }
 

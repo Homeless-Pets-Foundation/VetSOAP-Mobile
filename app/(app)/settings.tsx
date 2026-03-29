@@ -33,7 +33,7 @@ export default function SettingsScreen() {
           setBiometricType(type);
         }
       } catch (error) {
-        console.error('[Settings] Failed to load biometric state:', error);
+        if (__DEV__) console.error('[Settings] Failed to load biometric state:', error);
       }
     })().catch(() => {});
   }, []);
@@ -67,7 +67,7 @@ export default function SettingsScreen() {
               await biometrics.clear();
               await signOut();
             } catch (error) {
-              console.error('[Settings] signOut failed:', error);
+              if (__DEV__) console.error('[Settings] signOut failed:', error);
             }
           })().catch(() => {});
         },
@@ -142,6 +142,7 @@ export default function SettingsScreen() {
               trackColor={{ false: '#d6d3d1', true: '#0d8775' }}
               thumbColor="#fff"
               accessibilityLabel={`Toggle ${biometricType} lock`}
+              accessibilityValue={{ text: biometricEnabled ? 'on' : 'off' }}
             />
           </View>
         )}

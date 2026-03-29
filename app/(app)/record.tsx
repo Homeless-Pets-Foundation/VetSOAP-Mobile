@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useNavigation } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';
-import { useNavigation } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
@@ -13,13 +12,16 @@ import {
 } from 'expo-audio';
 import { useAudioRecorder } from '../../src/hooks/useAudioRecorder';
 import { useMultiPatientSession } from '../../src/hooks/useMultiPatientSession';
+import { useStashedSessions } from '../../src/hooks/useStashedSessions';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useTemplates } from '../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi } from '../../src/api/recordings';
+import { audioEditorBridge } from '../../src/lib/audioEditorBridge';
 import { PatientTabStrip } from '../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../src/components/SubmitPanel';
+import { StashedSessionCard } from '../../src/components/StashedSessionCard';
 import { UploadOverlay } from '../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../src/components/ui/ScreenContainer';
 import { Button } from '../../src/components/ui/Button';
@@ -96,9 +98,7 @@ function RecordingSession() {
 
   const {
     state: session,
-    activeSlot,
     hasUnsavedRecordings,
-    completedUnuploadedCount,
     addSlot,
     removeSlot,
     setActiveIndex,
@@ -111,16 +111,30 @@ function RecordingSession() {
     unbindRecorder,
     setUploadStatus,
     resetSession,
+    restoreSession,
+    replaceAllSegments,
   } = useMultiPatientSession(defaultTemplate?.id);
+
+  const {
+    stashes,
+    stashCount,
+    isAtCapacity,
+    stashSession,
+    resumeSession: resumeStashedSession,
+    deleteStash,
+  } = useStashedSessions();
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
   const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
+  const [isStashing, setIsStashing] = useState(false);
   const pagerRef = useRef<FlatList>(null);
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
   // Track pending slot for "stop A then start B" flow
   const pendingStartSlotRef = useRef<string | null>(null);
+  // Track pending stash for "stop recorder then stash" flow
+  const pendingStashRef = useRef(false);
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
   // Guard: prevent the audio-capture effect from saving twice for the same stop
@@ -145,8 +159,13 @@ function RecordingSession() {
       saveAudio(session.recorderBoundToSlotId, recorder.audioUri, recorder.duration);
       unbindRecorder();
 
-      // If there's a pending slot to start recording on, do it now
-      if (pendingStartSlotRef.current) {
+      // If there's a pending stash, execute it now that recording is saved
+      if (pendingStashRef.current) {
+        pendingStashRef.current = false;
+        recorder.resetWithoutDelete();
+        executeStash();
+      } else if (pendingStartSlotRef.current) {
+        // If there's a pending slot to start recording on, do it now
         const nextSlotId = pendingStartSlotRef.current;
         pendingStartSlotRef.current = null;
         recorder.resetWithoutDelete();
@@ -649,6 +668,168 @@ function RecordingSession() {
     addSlot();
   }, [addSlot]);
 
+  // -- Stash handlers --
+
+  const executeStash = useCallback(() => {
+    setIsStashing(true);
+    (async () => {
+      try {
+        const success = await stashSession(session);
+        if (success) {
+          resetSession();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          Alert.alert('Session Saved', 'Your recordings have been saved. You can resume them anytime from this screen.');
+        }
+      } catch (error) {
+        if (__DEV__) console.error('[Record] stash failed:', error);
+      } finally {
+        setIsStashing(false);
+      }
+    })().catch(() => {
+      setIsStashing(false);
+    });
+  }, [session, stashSession, resetSession]);
+
+  const handleStashSession = useCallback(() => {
+    // If recorder is active, stop it first — the effect will trigger executeStash
+    if (session.recorderBoundToSlotId && (recorder.state === 'recording' || recorder.state === 'paused')) {
+      Alert.alert(
+        'Save for Later?',
+        'Your active recording will be saved. You can resume this session later to add more context.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Save',
+            onPress: () => {
+              pendingStashRef.current = true;
+              (async () => {
+                try {
+                  await recorder.stop();
+                } catch {
+                  pendingStashRef.current = false;
+                  // stop() swallows errors — if we get here the effect should still fire
+                }
+              })().catch(() => {
+                pendingStashRef.current = false;
+              });
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Save for Later?',
+      'Your recordings will be saved. You can resume this session later to add more context.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: executeStash },
+      ]
+    );
+  }, [session.recorderBoundToSlotId, recorder, executeStash]);
+
+  const handleResumeStash = useCallback(
+    (stashId: string) => {
+      const doResume = () => {
+        (async () => {
+          try {
+            const slots = await resumeStashedSession(stashId);
+            if (slots) {
+              restoreSession(slots);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            }
+          } catch (error) {
+            if (__DEV__) console.error('[Record] resume stash failed:', error);
+          }
+        })().catch(() => {});
+      };
+
+      if (hasUnsavedRecordings) {
+        Alert.alert(
+          'Replace Current Session?',
+          'Your current recordings will be lost. Are you sure you want to resume the saved session?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Replace',
+              style: 'destructive',
+              onPress: () => {
+                // Clean up current session audio files before restoring
+                session.slots.forEach((slot) => {
+                  slot.segments.forEach((seg) => {
+                    FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+                  });
+                });
+                doResume();
+              },
+            },
+          ]
+        );
+      } else {
+        doResume();
+      }
+    },
+    [hasUnsavedRecordings, session.slots, resumeStashedSession, restoreSession]
+  );
+
+  const handleDeleteStash = useCallback(
+    (stashId: string) => {
+      Alert.alert(
+        'Delete Saved Session?',
+        'Audio recordings will be permanently deleted. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => {
+              deleteStash(stashId).catch(() => {});
+            },
+          },
+        ]
+      );
+    },
+    [deleteStash]
+  );
+
+  // -- Edit handler --
+
+  const handleEditRecording = useCallback(
+    (slotId: string) => {
+      const slot = session.slots.find((s) => s.id === slotId);
+      if (!slot || slot.segments.length === 0) return;
+
+      audioEditorBridge.setInput({
+        slotId,
+        segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration })),
+      });
+
+      audioEditorBridge.setResultCallback((result) => {
+        if (result) {
+          // Delete old segment files that are no longer in the result
+          const newUris = new Set(result.segments.map((s) => s.uri));
+          slot.segments.forEach((seg) => {
+            if (!newUris.has(seg.uri)) {
+              FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+            }
+          });
+          replaceAllSegments(result.slotId, result.segments);
+        }
+      });
+
+      router.push('/(app)/audio-editor' as any);
+    },
+    [session.slots, router, replaceAllSegments]
+  );
+
+  // Show stash list when session is clean and stashes exist
+  const showStashList = stashCount > 0 && !hasUnsavedRecordings;
+
+  // Show stash button when there are unsaved recordings to stash
+  const canStash = hasUnsavedRecordings && !isSubmittingAll && !isStashing;
+  const isAnyUploading = session.slots.some((s) => s.uploadStatus === 'uploading');
+
   // Upload overlay visibility
   const showOverlay = isSubmittingAll || session.slots.some((s) => s.uploadStatus === 'uploading');
 
@@ -685,6 +866,7 @@ function RecordingSession() {
           onContinueRecording={() => handleContinueRecording(item.id)}
           onRemove={() => handleRemove(item.id)}
           onSubmitSingle={() => handleSubmitSingle(item.id)}
+          onEditRecording={() => handleEditRecording(item.id)}
         />
       );
     },
@@ -705,6 +887,7 @@ function RecordingSession() {
       handleContinueRecording,
       handleRemove,
       handleSubmitSingle,
+      handleEditRecording,
     ]
   );
 
@@ -731,16 +914,51 @@ function RecordingSession() {
     <SafeAreaView className="flex-1 bg-stone-50">
       {/* Header */}
       <View className="px-5 pt-3 pb-2 bg-stone-50">
-        <Text
-          className="text-display font-bold text-stone-900"
-          accessibilityRole="header"
-        >
-          Record Appointment
-        </Text>
-        <Text className="text-body text-stone-500 mt-1">
-          Record a live appointment and generate a SOAP note
-        </Text>
+        <View className="flex-row justify-between items-start">
+          <View className="flex-1">
+            <Text
+              className="text-display font-bold text-stone-900"
+              accessibilityRole="header"
+            >
+              Record Appointment
+            </Text>
+            <Text className="text-body text-stone-500 mt-1">
+              Record a live appointment and generate a SOAP note
+            </Text>
+          </View>
+          {canStash && (
+            <View className="ml-3 mt-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                onPress={handleStashSession}
+                disabled={isAtCapacity || isAnyUploading}
+                loading={isStashing}
+                accessibilityLabel="Save session for later"
+              >
+                {isAtCapacity ? 'Saved Full' : 'Save for Later'}
+              </Button>
+            </View>
+          )}
+        </View>
       </View>
+
+      {/* Stashed Sessions */}
+      {showStashList && (
+        <View className="px-5 pb-2">
+          <Text className="text-body-sm font-semibold text-stone-600 mb-2">
+            Saved Sessions ({stashCount})
+          </Text>
+          {stashes.map((stash) => (
+            <StashedSessionCard
+              key={stash.id}
+              stash={stash}
+              onResume={() => handleResumeStash(stash.id)}
+              onDelete={() => handleDeleteStash(stash.id)}
+            />
+          ))}
+        </View>
+      )}
 
       {/* Patient Tab Strip */}
       <View className="px-3 pb-1">
@@ -793,6 +1011,7 @@ function RecordingSession() {
                   className={`w-2 h-2 rounded-full ${
                     i === session.activeIndex ? 'bg-brand-500' : 'bg-stone-300'
                   }`}
+                  accessibilityLabel={`Patient ${i + 1}${i === session.activeIndex ? ', current' : ''}`}
                 />
               ))}
             </View>

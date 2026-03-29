@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, ScrollView, Pressable, Alert } from 'react-native';
+import { View, Text, ScrollView, Pressable } from 'react-native';
 import Animated, {
   FadeIn,
   FadeInUp,
@@ -12,7 +12,6 @@ import Animated, {
   cancelAnimation,
 } from 'react-native-reanimated';
 import { Mic, X } from 'lucide-react-native';
-import * as Haptics from 'expo-haptics';
 import { PatientForm } from './PatientForm';
 import { AudioWaveform } from './AudioWaveform';
 import { Card } from './ui/Card';
@@ -44,6 +43,7 @@ interface PatientSlotCardProps {
   onContinueRecording: () => void;
   onRemove: () => void;
   onSubmitSingle: () => void;
+  onEditRecording: () => void;
 }
 
 function PulsingDot() {
@@ -96,6 +96,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   onContinueRecording,
   onRemove,
   onSubmitSingle,
+  onEditRecording,
 }: PatientSlotCardProps) {
   const { scale } = useResponsive();
   const recordBtnScale = useSharedValue(1);
@@ -143,7 +144,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={`Remove patient ${slotIndex + 1}`}
-            className="flex-row items-center px-2 py-1 flex-shrink-0"
+            className="flex-row items-center px-3 py-2 min-h-[44px] flex-shrink-0"
           >
             <X color="#dc2626" size={16} />
             <Text className="text-body-sm text-danger-600 ml-1">Remove</Text>
@@ -270,15 +271,24 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Stopped with segments: continue recording or start over */}
+          {/* Stopped with segments: continue recording, edit, or start over */}
           {isStopped && hasSegments && (
-            <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
+            <Animated.View entering={FadeIn.duration(200)} className="gap-3">
               <Button variant="primary" onPress={onContinueRecording}>
                 Continue Recording
               </Button>
-              <Button variant="danger" onPress={onRecordAgain}>
-                Delete & Start Over
-              </Button>
+              <View className="flex-row gap-3">
+                <View className="flex-1">
+                  <Button variant="secondary" onPress={onEditRecording}>
+                    Edit
+                  </Button>
+                </View>
+                <View className="flex-1">
+                  <Button variant="danger" onPress={onRecordAgain}>
+                    Delete & Start Over
+                  </Button>
+                </View>
+              </View>
             </Animated.View>
           )}
 
@@ -313,7 +323,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           <Card className="mb-4">
             <Text className="text-body-lg font-semibold text-stone-900 mb-2">Submit</Text>
             <Text className="text-body-sm text-stone-500 mb-4">
-              Upload this patient's recording and generate a SOAP note.
+              Upload this patient&apos;s recording and generate a SOAP note.
             </Text>
 
             {slot.uploadStatus === 'uploading' && (

@@ -62,6 +62,9 @@ export default function LoginScreen() {
         }
       } else {
         failedAttemptsRef.current = 0;
+        // Clear password from React state after successful login to prevent
+        // it from lingering in memory on shared clinic tablets
+        setPassword('');
       }
     } catch {
       setError('A network error occurred. Please check your connection and try again.');
@@ -99,7 +102,7 @@ export default function LoginScreen() {
           {error && (
             <Animated.View
               entering={FadeIn.duration(200)}
-              className="bg-danger-100 p-3 rounded-input mb-4 flex-row items-center gap-2"
+              className="bg-danger-50 p-3 rounded-input mb-4 flex-row items-center gap-2"
               accessibilityRole="alert"
               accessibilityLiveRegion="assertive"
             >

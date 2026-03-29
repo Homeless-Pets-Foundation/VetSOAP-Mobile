@@ -5,8 +5,13 @@ import type { Session } from '@supabase/supabase-js';
 import { cacheDirectory, readDirectoryAsync, deleteAsync } from 'expo-file-system/legacy';
 import { supabase } from './supabase';
 import { secureStorage } from '../lib/secureStorage';
+import { stashStorage } from '../lib/stashStorage';
+import { stashAudioManager } from '../lib/stashAudioManager';
+import { audioTempFiles } from '../lib/audioTempFiles';
 import { apiClient } from '../api/client';
 import { queryClient } from '../lib/queryClient';
+import { audioEditorBridge } from '../lib/audioEditorBridge';
+import { clearClipboard } from '../lib/secureClipboard';
 import type { User } from '../types';
 
 interface AuthContextType {
@@ -89,6 +94,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryClient.clear();
     // Clean up orphaned audio temp files
     cleanupAudioCache().catch(() => {});
+    // Clean up stashed session data and audio files (retry once on failure)
+    stashStorage.clearAllStashes()
+      .catch(() => stashStorage.clearAllStashes())
+      .catch(() => {});
+    stashAudioManager.deleteAllStashedAudio()
+      .catch(() => stashAudioManager.deleteAllStashedAudio())
+      .catch(() => {});
+    // Clean up audio editor temp files (trimmed outputs, PCM waveform data)
+    audioTempFiles.cleanupAll().catch(() => {});
+    // Clear in-memory PHI: audio editor bridge state and clipboard
+    audioEditorBridge.clear();
+    clearClipboard();
     setUser(null);
     setSession(null);
   }, []);
@@ -118,7 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const doRefresh = async () => {
         try {
           if (__DEV__) console.log('[Auth] onUnauthorized: attempting token refresh');
-          const { data, error } = await supabase.auth.refreshSession();
+          const { error } = await supabase.auth.refreshSession();
           if (error) {
             if (__DEV__) console.log('[Auth] onUnauthorized: refresh failed, signing out');
             await handleSignOut();
@@ -126,7 +143,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (__DEV__) console.log('[Auth] onUnauthorized: refresh succeeded');
           }
           // If refresh succeeded, Supabase's onAuthStateChange will update the token
-        } catch (e) {
+        } catch {
           if (__DEV__) console.log('[Auth] onUnauthorized: refresh threw, signing out');
           handleSignOut().catch(() => {});
         } finally {
@@ -177,7 +194,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
       // Clean up orphaned audio recordings from prior crashes (deferred to avoid competing with initial render)
-      setTimeout(() => { cleanupAudioCache().catch(() => {}); }, 5000);
+      setTimeout(() => {
+        cleanupAudioCache().catch(() => {});
+        // Clean up orphaned stash directories whose session no longer exists in storage
+        stashStorage.getStashedSessions().then((sessions) => {
+          const validIds = sessions.map((s) => s.id);
+          stashAudioManager.cleanupOrphanedStashDirs(validIds).catch(() => {});
+        }).catch(() => {});
+      }, 5000);
     }).catch((error) => {
       if (__DEV__) console.error('[Auth] Failed to restore session:', error);
     }).finally(() => {
@@ -201,9 +225,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (__DEV__) console.log('[Auth] session established, storing token');
             // Set in-memory token immediately (reliable), then persist (best-effort)
             apiClient.setToken(newSession.access_token);
-            if (newSession.refresh_token) {
-              await secureStorage.setRefreshToken(newSession.refresh_token);
-            }
             await fetchUser();
             if (__DEV__) console.log('[Auth] sign-in flow complete');
           } else {

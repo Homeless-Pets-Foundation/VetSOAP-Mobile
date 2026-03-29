@@ -11,7 +11,7 @@ export const secureStorage = {
     try {
       return await SecureStore.getItemAsync(KEYS.ACCESS_TOKEN);
     } catch (error) {
-      console.error('[SecureStorage] getToken failed:', error);
+      if (__DEV__) console.error('[SecureStorage] getToken failed:', error);
       return null;
     }
   },
@@ -22,26 +22,7 @@ export const secureStorage = {
         keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
       });
     } catch (error) {
-      console.error('[SecureStorage] setToken failed:', error);
-    }
-  },
-
-  async getRefreshToken(): Promise<string | null> {
-    try {
-      return await SecureStore.getItemAsync(KEYS.REFRESH_TOKEN);
-    } catch (error) {
-      console.error('[SecureStorage] getRefreshToken failed:', error);
-      return null;
-    }
-  },
-
-  async setRefreshToken(token: string): Promise<void> {
-    try {
-      await SecureStore.setItemAsync(KEYS.REFRESH_TOKEN, token, {
-        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-      });
-    } catch (error) {
-      console.error('[SecureStorage] setRefreshToken failed:', error);
+      if (__DEV__) console.error('[SecureStorage] setToken failed:', error);
     }
   },
 
@@ -49,7 +30,7 @@ export const secureStorage = {
     try {
       return await SecureStore.getItemAsync(KEYS.SESSION);
     } catch (error) {
-      console.error('[SecureStorage] getSession failed:', error);
+      if (__DEV__) console.error('[SecureStorage] getSession failed:', error);
       return null;
     }
   },
@@ -60,7 +41,7 @@ export const secureStorage = {
         keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
       });
     } catch (error) {
-      console.error('[SecureStorage] setSession failed:', error);
+      if (__DEV__) console.error('[SecureStorage] setSession failed:', error);
     }
   },
 

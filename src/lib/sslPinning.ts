@@ -97,11 +97,13 @@ export function validateUploadUrl(url: string): void {
     throw new Error('Insecure upload URL rejected: HTTPS required');
   }
 
-  // Validate hostname when R2_BUCKET_HOSTNAME is configured
-  if (R2_BUCKET_HOSTNAME) {
-    if (parsed.hostname !== R2_BUCKET_HOSTNAME) {
-      throw new Error('Upload URL targets an untrusted storage domain');
-    }
+  // Validate hostname against the configured R2 bucket.
+  // Fail-closed: if R2_BUCKET_HOSTNAME is not configured, reject all uploads.
+  if (!R2_BUCKET_HOSTNAME) {
+    throw new Error('Upload rejected: R2_BUCKET_HOSTNAME is not configured');
+  }
+  if (parsed.hostname !== R2_BUCKET_HOSTNAME) {
+    throw new Error('Upload URL targets an untrusted storage domain');
   }
 
   // Verify presigned URL has a signature parameter (S3/R2 v4 signing)

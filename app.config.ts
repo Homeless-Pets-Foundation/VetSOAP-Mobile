@@ -16,12 +16,18 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       },
     ],
     'expo-secure-store',
+    'expo-screen-capture',
     [
       'expo-local-authentication',
       {
         faceIDPermission:
           'Allow Captivet to use Face ID to secure your account.',
       },
+    ],
+    // FFmpeg for on-device audio trimming and waveform extraction
+    [
+      '@config-plugins/ffmpeg-kit-react-native',
+      { package: 'min' },
     ],
     // Android: disable cleartext (HTTP) traffic in production,
     // enable backup encryption, and configure iOS hardening
@@ -32,6 +38,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           usesCleartextTraffic: IS_DEV, // Only allow HTTP in dev
           enableProguardInReleaseBuilds: true,
           allowBackup: false, // Prevent unencrypted backup extraction
+          minSdkVersion: 24, // Required by ffmpeg-kit-react-native
           extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
         },
         ios: {

@@ -32,6 +32,7 @@ export default function RecordingsListScreen() {
   const {
     data,
     isLoading,
+    isError,
     refetch,
     isRefetching,
     fetchNextPage,
@@ -88,14 +89,14 @@ export default function RecordingsListScreen() {
             isFocused ? 'border-brand-500' : 'border-stone-300'
           }`}
         >
-          <Search color="#a8a29e" size={iconSm} />
+          <Search color="#78716c" size={iconSm} />
           <TextInput
             value={search}
             onChangeText={setSearch}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
             placeholder="Search by patient name..."
-            placeholderTextColor="#a8a29e"
+            placeholderTextColor="#78716c"
             accessibilityLabel="Search recordings by patient name"
             className="flex-1 p-3 text-body text-stone-900"
           />
@@ -143,9 +144,25 @@ export default function RecordingsListScreen() {
               <SkeletonCard />
               <SkeletonCard />
             </View>
+          ) : isError ? (
+            <View className="py-10 items-center">
+              <Search color="#dc2626" size={iconLg} />
+              <Text className="text-body text-stone-600 mt-3 text-center">
+                Could not load recordings.
+              </Text>
+              <View className="mt-4">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onPress={() => { refetch().catch(() => {}); }}
+                >
+                  Retry
+                </Button>
+              </View>
+            </View>
           ) : (
             <View className="py-10 items-center">
-              <Search color="#a8a29e" size={iconLg} />
+              <Search color="#78716c" size={iconLg} />
               <Text className="text-body text-stone-500 mt-3 text-center">
                 {search ? 'No recordings match your search.' : 'No recordings yet.'}
               </Text>

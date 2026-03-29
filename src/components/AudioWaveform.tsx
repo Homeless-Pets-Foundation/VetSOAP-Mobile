@@ -88,6 +88,8 @@ export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWave
     <View
       className="flex-row items-center justify-center my-3"
       style={{ height: isWide ? 56 : 40 }}
+      accessibilityLabel="Audio recording waveform"
+      accessibilityRole="image"
     >
       {Array.from({ length: barCount }).map((_, i) => (
         <WaveBar

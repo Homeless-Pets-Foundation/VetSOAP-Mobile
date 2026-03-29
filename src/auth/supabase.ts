@@ -24,9 +24,6 @@ function initSupabase() {
             if (typeof session?.access_token === 'string') {
               await secureStorage.setToken(session.access_token);
             }
-            if (typeof session?.refresh_token === 'string') {
-              await secureStorage.setRefreshToken(session.refresh_token);
-            }
           } catch {
             // Not valid JSON — ignore
           }

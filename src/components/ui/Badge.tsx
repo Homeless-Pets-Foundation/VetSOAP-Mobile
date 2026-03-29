@@ -6,6 +6,7 @@ type BadgeVariant = 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'neutr
 interface BadgeProps {
   children: string;
   variant?: BadgeVariant;
+  accessibilityLabel?: string;
 }
 
 const variantClasses: Record<BadgeVariant, { bg: string; text: string }> = {
@@ -17,12 +18,16 @@ const variantClasses: Record<BadgeVariant, { bg: string; text: string }> = {
   neutral: { bg: 'bg-stone-100', text: 'text-stone-600' },
 };
 
-export function Badge({ children, variant = 'neutral' }: BadgeProps) {
+export function Badge({ children, variant = 'neutral', accessibilityLabel }: BadgeProps) {
   const v = variantClasses[variant];
 
   return (
-    <View className={`px-2 py-0.5 rounded-badge ${v.bg}`}>
-      <Text className={`text-caption font-semibold ${v.text}`}>{children}</Text>
+    <View
+      className={`px-2 py-0.5 rounded-badge ${v.bg}`}
+      accessibilityLabel={accessibilityLabel ?? children}
+      accessibilityRole="text"
+    >
+      <Text className={`text-caption font-semibold ${v.text}`} numberOfLines={1}>{children}</Text>
     </View>
   );
 }

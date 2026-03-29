@@ -1,15 +1,25 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Redirect, Tabs } from 'expo-router';
 import { useAuth } from '../../src/hooks/useAuth';
 import { View, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Mic, FileText } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { preventScreenCaptureAsync, allowScreenCaptureAsync } from 'expo-screen-capture';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading } = useAuth();
   const insets = useSafeAreaInsets();
+
+  // Prevent screenshots and screen recording of PHI screens.
+  // On Android this also sets FLAG_SECURE, hiding content in the task switcher.
+  useEffect(() => {
+    if (isAuthenticated) {
+      preventScreenCaptureAsync().catch(() => {});
+      return () => { allowScreenCaptureAsync().catch(() => {}); };
+    }
+  }, [isAuthenticated]);
 
   if (__DEV__) console.log('[AppLayout] render: isLoading=', isLoading, 'isAuthenticated=', isAuthenticated);
 
@@ -81,9 +91,13 @@ export default function AppLayout() {
           tabBarAccessibilityLabel: 'View all recordings',
         }}
       />
-      {/* Hide settings from tab bar */}
+      {/* Hide settings and audio editor from tab bar */}
       <Tabs.Screen
         name="settings"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="audio-editor"
         options={{ href: null }}
       />
     </Tabs>

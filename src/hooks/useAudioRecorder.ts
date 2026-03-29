@@ -104,7 +104,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         interruptionMode: 'doNotMix',
         shouldRouteThroughEarpiece: false,
         allowsBackgroundRecording: true,
-        staysActiveInBackground: true,
+        shouldPlayInBackground: true,
       });
 
       await recorder.prepareToRecordAsync();

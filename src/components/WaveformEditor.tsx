@@ -100,22 +100,22 @@ export function WaveformEditor({
         >
           <TrimHandle
             position={startX}
-            minPosition={0}
-            maxPosition={secToX(trimEnd - MIN_TRIM_GAP_SECONDS)}
+            otherPosition={endX}
             containerWidth={containerWidth}
             height={WAVEFORM_HEIGHT}
             side="left"
+            minGapPx={secToX(MIN_TRIM_GAP_SECONDS)}
             timeSeconds={trimStart}
             duration={duration}
             onDragEnd={handleStartDragEnd}
           />
           <TrimHandle
             position={endX}
-            minPosition={secToX(trimStart + MIN_TRIM_GAP_SECONDS)}
-            maxPosition={containerWidth}
+            otherPosition={startX}
             containerWidth={containerWidth}
             height={WAVEFORM_HEIGHT}
             side="right"
+            minGapPx={secToX(MIN_TRIM_GAP_SECONDS)}
             timeSeconds={trimEnd}
             duration={duration}
             onDragEnd={handleEndDragEnd}

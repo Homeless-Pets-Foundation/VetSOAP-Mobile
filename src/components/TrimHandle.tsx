@@ -11,11 +11,11 @@ import * as Haptics from 'expo-haptics';
 
 interface TrimHandleProps {
   position: SharedValue<number>;
-  minPosition: number;
-  maxPosition: number;
+  otherPosition: SharedValue<number>;
   containerWidth: number;
   height: number;
   side: 'left' | 'right';
+  minGapPx: number;
   timeSeconds: number;
   duration: number;
   onDragEnd?: () => void;
@@ -25,20 +25,20 @@ function triggerHaptic() {
   Haptics.selectionAsync().catch(() => {});
 }
 
+const HANDLE_WIDTH = 24;
+
 export function TrimHandle({
   position,
-  minPosition,
-  maxPosition,
+  otherPosition,
   containerWidth,
   height,
   side,
+  minGapPx,
   timeSeconds,
   duration,
   onDragEnd,
 }: TrimHandleProps) {
-  const HANDLE_WIDTH = 16;
-  const HIT_SLOP = 14;
-
+  const HIT_SLOP = 20;
   const startPos = useSharedValue(0);
 
   const pan = Gesture.Pan()
@@ -50,9 +50,17 @@ export function TrimHandle({
     .onUpdate((event) => {
       'worklet';
       const newPos = startPos.value + event.translationX;
-      position.value = Math.max(minPosition, Math.min(newPos, maxPosition));
+      // Clamp dynamically against the OTHER handle's current position
+      if (side === 'left') {
+        const max = otherPosition.value - minGapPx;
+        position.value = Math.max(0, Math.min(newPos, max));
+      } else {
+        const min = otherPosition.value + minGapPx;
+        position.value = Math.max(min, Math.min(newPos, containerWidth));
+      }
     })
     .onEnd(() => {
+      'worklet';
       if (onDragEnd) {
         runOnJS(onDragEnd)();
       }
@@ -111,7 +119,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     justifyContent: 'center',
     alignItems: 'center',
-    minWidth: 44, // accessibility minimum touch target
   },
   grip: {
     gap: 3,

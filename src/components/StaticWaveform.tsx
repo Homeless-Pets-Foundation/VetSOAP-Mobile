@@ -1,6 +1,6 @@
 import React from 'react';
 import { View } from 'react-native';
-import Svg, { Rect, Line } from 'react-native-svg';
+import Svg, { Path, Line } from 'react-native-svg';
 import { Skeleton } from './ui/Skeleton';
 
 interface StaticWaveformProps {
@@ -52,6 +52,32 @@ export function StaticWaveform({
   const trimStartX = duration > 0 ? (trimStart / duration) * layoutWidth : 0;
   const trimEndX = duration > 0 ? (trimEnd / duration) * layoutWidth : layoutWidth;
 
+  // Build 2 SVG path strings (active + dimmed) instead of 600 individual Rect
+  // elements. Each bar is a pair of M...h...v...h...Z subpaths (top + bottom
+  // mirror). The native SVG renderer processes each path in a single C++ pass
+  // with one GPU draw call, instead of 600 bridge crossings.
+  const { activePath, dimmedPath } = React.useMemo(() => {
+    let active = '';
+    let dimmed = '';
+    for (let i = 0; i < peaks.length; i++) {
+      const x = i * (barWidth + barGap);
+      const barHeight = Math.max(minBarHeight, peaks[i] * halfHeight * 0.9);
+      const isInTrimRegion = x >= trimStartX && x <= trimEndX;
+
+      // Top half (mirrored above center)
+      const topY = halfHeight - barHeight;
+      const bar = `M${x},${topY}h${barWidth}v${barHeight}h${-barWidth}Z` +
+                  `M${x},${halfHeight}h${barWidth}v${barHeight}h${-barWidth}Z`;
+
+      if (isInTrimRegion) {
+        active += bar;
+      } else {
+        dimmed += bar;
+      }
+    }
+    return { activePath: active, dimmedPath: dimmed };
+  }, [peaks, barWidth, barGap, halfHeight, minBarHeight, trimStartX, trimEndX]);
+
   return (
     <View
       accessibilityRole="adjustable"
@@ -62,39 +88,13 @@ export function StaticWaveform({
     >
       {layoutWidth > 0 && (
         <Svg width={layoutWidth} height={height}>
-          {/* Waveform bars */}
-          {peaks.map((peak, i) => {
-            const x = i * (barWidth + barGap);
-            const barHeight = Math.max(minBarHeight, peak * halfHeight * 0.9);
-            const isInTrimRegion = x >= trimStartX && x <= trimEndX;
-            const fill = isInTrimRegion ? '#0d8775' : '#a8a29e';
-            const opacity = isInTrimRegion ? 1 : 0.4;
-
-            return (
-              <React.Fragment key={i}>
-                {/* Top half (mirrored) */}
-                <Rect
-                  x={x}
-                  y={halfHeight - barHeight}
-                  width={barWidth}
-                  height={barHeight}
-                  fill={fill}
-                  opacity={opacity}
-                  rx={barWidth > 2 ? 1 : 0}
-                />
-                {/* Bottom half */}
-                <Rect
-                  x={x}
-                  y={halfHeight}
-                  width={barWidth}
-                  height={barHeight}
-                  fill={fill}
-                  opacity={opacity}
-                  rx={barWidth > 2 ? 1 : 0}
-                />
-              </React.Fragment>
-            );
-          })}
+          {/* Waveform bars — 2 Path elements instead of N*2 Rects */}
+          {dimmedPath.length > 0 && (
+            <Path d={dimmedPath} fill="#a8a29e" opacity={0.4} />
+          )}
+          {activePath.length > 0 && (
+            <Path d={activePath} fill="#0d8775" opacity={1} />
+          )}
 
           {/* Playhead line */}
           <Line

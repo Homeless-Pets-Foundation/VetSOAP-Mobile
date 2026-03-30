@@ -5,6 +5,7 @@ import {
   writeAsStringAsync,
   EncodingType,
 } from 'expo-file-system/legacy';
+import { File as ExpoFile } from 'expo-file-system';
 import { audioTempFiles } from './audioTempFiles';
 
 // Maximum input file size for waveform extraction (500MB).
@@ -209,8 +210,11 @@ export async function extractWaveformPeaks(
   const pcmPath = audioTempFiles.getPcmTempPath(0);
 
   try {
-    // Decode to 8kHz mono 16-bit little-endian PCM
-    const command = `-i "${inputUri}" -ac 1 -ar 8000 -f s16le -acodec pcm_s16le -y "${pcmPath}"`;
+    // Decode to 2kHz mono 16-bit little-endian PCM (2kHz is sufficient for
+    // visualization peaks and produces 4x less data than 8kHz — critical for
+    // low-end tablets like the A7 Lite where JS-thread PCM processing is the
+    // bottleneck)
+    const command = `-i "${inputUri}" -ac 1 -ar 2000 -f s16le -acodec pcm_s16le -y "${pcmPath}"`;
 
     const session = await FFmpegKit.execute(command);
     const returnCode = await session.getReturnCode();
@@ -230,57 +234,55 @@ export async function extractWaveformPeaks(
     const samplesPerPeak = Math.max(1, Math.floor(totalSamples / numberOfPeaks));
     const actualPeaks = Math.min(numberOfPeaks, totalSamples);
 
-    // Read in chunks and compute peaks
-    const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+    // Read PCM via native FileHandle — returns Uint8Array directly, avoiding
+    // the base64 encode → atob decode → charCodeAt loop that blocks the JS
+    // thread for 10-30s on low-end devices
+    const CHUNK_SIZE = 256 * 1024; // 256KB (no base64 overhead, smaller is fine)
     const peaks: number[] = [];
     let globalMax = 1; // avoid division by zero
 
     let currentPeakMax = 0;
     let samplesInCurrentPeak = 0;
 
-    for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
-      const length = Math.min(CHUNK_SIZE, totalBytes - offset);
+    const file = new ExpoFile(pcmPath);
+    const handle = file.open();
+    let chunkCount = 0;
 
-      // Read as base64 since expo-file-system doesn't support raw binary reads
-      const base64Data = await readAsStringAsync(pcmPath, {
-        encoding: EncodingType.Base64,
-        position: offset,
-        length,
-      });
+    try {
+      for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
+        const readSize = Math.min(CHUNK_SIZE, totalBytes - offset);
+        handle.offset = offset;
+        const bytes = handle.readBytes(readSize);
 
-      // Decode base64 to bytes
-      let binaryString: string;
-      try {
-        binaryString = atob(base64Data);
-      } catch {
-        throw new Error(`Corrupted audio data at offset ${offset}`);
-      }
+        // Process 16-bit samples (little-endian)
+        for (let i = 0; i + 1 < bytes.length; i += bytesPerSample) {
+          let sample = bytes[i] | (bytes[i + 1] << 8);
+          // Convert unsigned to signed 16-bit
+          if (sample >= 0x8000) sample -= 0x10000;
+          const absSample = Math.abs(sample);
 
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
+          if (absSample > currentPeakMax) {
+            currentPeakMax = absSample;
+          }
 
-      // Process 16-bit samples (little-endian)
-      for (let i = 0; i + 1 < bytes.length; i += bytesPerSample) {
-        let sample = bytes[i] | (bytes[i + 1] << 8);
-        // Convert unsigned to signed 16-bit
-        if (sample >= 0x8000) sample -= 0x10000;
-        const absSample = Math.abs(sample);
+          samplesInCurrentPeak++;
 
-        if (absSample > currentPeakMax) {
-          currentPeakMax = absSample;
+          if (samplesInCurrentPeak >= samplesPerPeak && peaks.length < actualPeaks) {
+            if (currentPeakMax > globalMax) globalMax = currentPeakMax;
+            peaks.push(currentPeakMax);
+            currentPeakMax = 0;
+            samplesInCurrentPeak = 0;
+          }
         }
 
-        samplesInCurrentPeak++;
-
-        if (samplesInCurrentPeak >= samplesPerPeak && peaks.length < actualPeaks) {
-          if (currentPeakMax > globalMax) globalMax = currentPeakMax;
-          peaks.push(currentPeakMax);
-          currentPeakMax = 0;
-          samplesInCurrentPeak = 0;
+        // Yield to JS thread every 4 chunks to prevent ANR on slow devices
+        chunkCount++;
+        if (chunkCount % 4 === 0) {
+          await new Promise<void>((r) => setTimeout(r, 0));
         }
       }
+    } finally {
+      handle.close();
     }
 
     // Push any remaining samples as the last peak

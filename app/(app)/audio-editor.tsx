@@ -131,7 +131,7 @@ export default function AudioEditorScreen() {
 
     (async () => {
       try {
-        const peakData = await extractWaveformPeaks(selectedUri, 300);
+        const peakData = await extractWaveformPeaks(selectedUri, 150);
         setPeaks((prev) => new Map(prev).set(index, peakData));
       } catch (error) {
         if (__DEV__) console.error('[Editor] peak extraction failed:', error);

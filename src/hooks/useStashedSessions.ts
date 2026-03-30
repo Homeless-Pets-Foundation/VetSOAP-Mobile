@@ -71,6 +71,16 @@ export function useStashedSessions() {
 
         if (slotsToStash.length === 0) return false;
 
+        // Safety net: refuse to stash if no slot has any audio segments.
+        // This catches the React state timing bug where executeStash runs
+        // before SAVE_AUDIO is processed — better to fail visibly than
+        // silently stash an empty session and lose the recording.
+        const preStashSegmentCount = slotsToStash.reduce((sum, s) => sum + s.segments.length, 0);
+        if (preStashSegmentCount === 0) {
+          if (__DEV__) console.error('[Stash] no audio segments in any slot — aborting to prevent data loss');
+          return false;
+        }
+
         const sessionId = generateId();
 
         // Move audio files to persistent storage
@@ -83,6 +93,15 @@ export function useStashedSessions() {
           (sum, s) => sum + s.segments.length,
           0
         );
+
+        // Post-move safety net: if file copies failed and no segments survived,
+        // clean up the empty stash directory and abort.
+        if (totalSegments === 0) {
+          if (__DEV__) console.error('[Stash] all segment copies failed — no audio in stash directory');
+          await stashAudioManager.deleteStashedAudio(sessionId);
+          return false;
+        }
+
         const totalDuration = stashedSlots.reduce(
           (sum, s) => sum + s.audioDuration,
           0
@@ -132,13 +151,29 @@ export function useStashedSessions() {
     [refreshStashes]
   );
 
+  /**
+   * Remove stash from SecureStore after the caller has confirmed restore succeeded.
+   * Called by record.tsx AFTER restoreSession dispatches, so if the app crashes
+   * before this point, the stash is still in SecureStore for recovery.
+   */
+  const confirmResume = useCallback(
+    async (stashId: string): Promise<void> => {
+      try {
+        await stashStorage.removeStashedSession(stashId);
+        await refreshStashes();
+      } catch {
+        // Best-effort — stash list may show a phantom entry until next refresh
+      }
+    },
+    [refreshStashes]
+  );
+
   const resumeSession = useCallback(
     async (stashId: string): Promise<PatientSlot[] | null> => {
-      const convertToPatientSlots = async (
-        id: string,
+      const convertToPatientSlots = (
         stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number }[]; audioDuration: number }[]
-      ): Promise<PatientSlot[]> => {
-        const restoredSlots: PatientSlot[] = stashedSlots.map((slot) => ({
+      ): PatientSlot[] => {
+        return stashedSlots.map((slot) => ({
           id: slot.id,
           formData: { ...slot.formData },
           audioState: slot.segments.length > 0 ? ('stopped' as const) : ('idle' as const),
@@ -150,12 +185,6 @@ export function useStashedSessions() {
           uploadError: null,
           serverRecordingId: null,
         }));
-
-        // Remove from stash storage (audio files stay — now owned by the session)
-        await stashStorage.removeStashedSession(id);
-        await refreshStashes();
-
-        return restoredSlots;
       };
 
       try {
@@ -199,9 +228,7 @@ export function useStashedSessions() {
                 {
                   text: 'Resume Anyway',
                   onPress: () => {
-                    convertToPatientSlots(stashId, validSlots)
-                      .then(resolve)
-                      .catch(() => resolve(null));
+                    resolve(convertToPatientSlots(validSlots));
                   },
                 },
               ]
@@ -209,7 +236,7 @@ export function useStashedSessions() {
           });
         }
 
-        return await convertToPatientSlots(stashId, validSlots);
+        return convertToPatientSlots(validSlots);
       } catch (error) {
         if (__DEV__) console.error('[Stash] resumeSession failed:', error);
         Alert.alert('Resume Failed', 'Could not restore your session.');
@@ -239,6 +266,7 @@ export function useStashedSessions() {
     isAtCapacity: stashes.length >= 5,
     stashSession,
     resumeSession,
+    confirmResume,
     deleteStash,
     refreshStashes,
   };

@@ -121,6 +121,7 @@ function RecordingSession() {
     isAtCapacity,
     stashSession,
     resumeSession: resumeStashedSession,
+    confirmResume,
     deleteStash,
   } = useStashedSessions();
 
@@ -159,11 +160,12 @@ function RecordingSession() {
       saveAudio(session.recorderBoundToSlotId, recorder.audioUri, recorder.duration);
       unbindRecorder();
 
-      // If there's a pending stash, execute it now that recording is saved
+      // If there's a pending stash, just reset the recorder here.
+      // Don't call executeStash() yet — saveAudio dispatch hasn't been processed,
+      // so `session` still has 0 segments. A separate effect fires executeStash
+      // on the next render after SAVE_AUDIO updates the session state.
       if (pendingStashRef.current) {
-        pendingStashRef.current = false;
         recorder.resetWithoutDelete();
-        executeStash();
       } else if (pendingStartSlotRef.current) {
         // If there's a pending slot to start recording on, do it now
         const nextSlotId = pendingStartSlotRef.current;
@@ -186,7 +188,16 @@ function RecordingSession() {
         setAudioState(boundSlotId, boundSlot.segments.length > 0 ? 'stopped' : 'idle');
       }
 
-      if (pendingStartSlotRef.current) {
+      if (pendingStashRef.current) {
+        // Native recorder failed to produce audio. The deferred stash effect will
+        // still fire (unbindRecorder makes recorderBoundToSlotId null). It will stash
+        // any previously-saved segments, but this recording is lost.
+        recorder.reset();
+        Alert.alert(
+          'Recording Error',
+          'The current recording could not be captured. Any previously saved segments will still be stashed.'
+        );
+      } else if (pendingStartSlotRef.current) {
         const nextSlotId = pendingStartSlotRef.current;
         pendingStartSlotRef.current = null;
         recorder.resetWithoutDelete();
@@ -679,9 +690,14 @@ function RecordingSession() {
           resetSession();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           Alert.alert('Session Saved', 'Your recordings have been saved. You can resume them anytime from this screen.');
+        } else {
+          // stashSession returns false if no slots have audio or max stashes reached.
+          // The session is NOT reset, so recordings are still in the active session.
+          Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
         }
       } catch (error) {
         if (__DEV__) console.error('[Record] stash failed:', error);
+        Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
       } finally {
         setIsStashing(false);
       }
@@ -689,6 +705,18 @@ function RecordingSession() {
       setIsStashing(false);
     });
   }, [session, stashSession, resetSession]);
+
+  // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
+  // The audio capture effect sets pendingStashRef but defers the actual stash to here,
+  // because session state hasn't been updated yet when the capture effect runs.
+  // This effect fires on the re-render caused by saveAudio + unbindRecorder,
+  // at which point session.slots includes the just-saved segment.
+  useEffect(() => {
+    if (pendingStashRef.current && !session.recorderBoundToSlotId) {
+      pendingStashRef.current = false;
+      executeStash();
+    }
+  }, [session, executeStash]);
 
   const handleStashSession = useCallback(() => {
     // If recorder is active, stop it first — the effect will trigger executeStash
@@ -737,6 +765,9 @@ function RecordingSession() {
             const slots = await resumeStashedSession(stashId);
             if (slots) {
               restoreSession(slots);
+              // Remove from SecureStore AFTER restoreSession dispatches.
+              // If the app crashes before this, the stash survives for retry.
+              confirmResume(stashId).catch(() => {});
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
             }
           } catch (error) {
@@ -770,7 +801,7 @@ function RecordingSession() {
         doResume();
       }
     },
-    [hasUnsavedRecordings, session.slots, resumeStashedSession, restoreSession]
+    [hasUnsavedRecordings, session.slots, resumeStashedSession, confirmResume, restoreSession]
   );
 
   const handleDeleteStash = useCallback(

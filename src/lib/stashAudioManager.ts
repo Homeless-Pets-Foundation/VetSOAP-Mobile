@@ -70,10 +70,10 @@ export const stashAudioManager = {
           if (destInfo.exists) {
             await deleteAsync(segment.uri, { idempotent: true }).catch(() => {});
             stashedSegments.push({ uri: destUri, duration: segment.duration });
-          } else {
-            // Copy failed — keep original, skip this segment from stash
-            stashedSegments.push({ uri: segment.uri, duration: segment.duration });
           }
+          // If copy failed, skip this segment entirely. The original is in
+          // cacheDirectory which gets cleaned up — keeping that URI would
+          // create a stash that silently loses audio on restore.
           segmentIndex++;
         }
 

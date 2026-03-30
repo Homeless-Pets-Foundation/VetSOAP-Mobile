@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, Alert, ScrollView, Pressable, ActivityIndicator } from 'react-native';
-import { useNavigation } from 'expo-router';
-import { usePreventRemove } from '@react-navigation/native';
+import { useNavigation, useRouter } from 'expo-router';
+import { usePreventRemove, useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, Play, Pause, SkipBack, SkipForward } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
@@ -17,18 +17,19 @@ import type { AudioSegment } from '../../src/types/multiPatient';
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
 export default function AudioEditorScreen() {
   const navigation = useNavigation();
+  const router = useRouter();
 
-  // Load input from bridge on mount
-  const inputRef = useRef(audioEditorBridge.getInput());
-  const slotId = inputRef.current?.slotId ?? '';
+  // Bridge input — re-read each time the screen gains focus (Tab screens stay mounted)
+  const [input, setInput] = useState(() => audioEditorBridge.getInput());
+  const slotId = input?.slotId ?? '';
 
   const [segments, setSegments] = useState<AudioSegment[]>(
-    () => inputRef.current?.segments ?? []
+    () => input?.segments ?? []
   );
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [peaks, setPeaks] = useState<Map<number, number[]>>(new Map());
@@ -41,25 +42,50 @@ export default function AudioEditorScreen() {
   // Track whether we emitted trimmed segments — if so, skip temp file cleanup on unmount
   const savedResultRef = useRef(false);
   const [isConcatenating, setIsConcatenating] = useState(false);
-  const initialSegmentCountRef = useRef(inputRef.current?.segments.length ?? 0);
+  // Bumped each time the screen opens with new input — triggers concatenation effect
+  const [sessionKey, setSessionKey] = useState(0);
+  const initialSegmentCountRef = useRef(input?.segments.length ?? 0);
 
   const playback = useAudioPlayback();
 
-  // Auto-concatenate multiple segments into one on mount
+  // Re-read bridge input when screen regains focus (Tab screens stay mounted between visits)
+  useFocusEffect(
+    useCallback(() => {
+      const bridgeInput = audioEditorBridge.getInput();
+      if (!bridgeInput) return; // No new input — screen was focused without a new edit request
+      if (__DEV__) console.log('[Editor] focus: new input for slot', bridgeInput.slotId, bridgeInput.segments.length, 'segs');
+      setInput(bridgeInput);
+      setSegments(bridgeInput.segments);
+      setSelectedIndex(0);
+      setPeaks(new Map());
+      setPeaksLoading(new Set());
+      setPeakErrors(new Set());
+      setTrimStart(0);
+      setTrimEnd(0);
+      setIsTrimming(false);
+      setHasChanges(false);
+      savedResultRef.current = false;
+      initialSegmentCountRef.current = bridgeInput.segments.length;
+      setSessionKey((k) => k + 1);
+    }, [])
+  );
+
+  // Auto-concatenate multiple segments into one when a new editing session starts
   useEffect(() => {
     if (initialSegmentCountRef.current <= 1) return;
 
     setIsConcatenating(true);
+    const segmentUris = segments.map((s) => s.uri);
+    const segmentCount = initialSegmentCountRef.current;
     (async () => {
       try {
         await audioTempFiles.ensureDir();
         const outputPath = audioTempFiles.getConcatOutputPath();
-        const uris = (inputRef.current?.segments ?? []).map((s) => s.uri);
-        const result = await concatenateAudio(uris, outputPath);
+        const result = await concatenateAudio(segmentUris, outputPath);
         setSegments([{ uri: result.uri, duration: result.duration }]);
         setSelectedIndex(0);
         setHasChanges(true);
-        Alert.alert('Segments Merged', `${initialSegmentCountRef.current} recording segments have been combined into one.`);
+        Alert.alert('Segments Merged', `${segmentCount} recording segments have been combined into one.`);
       } catch (error) {
         if (__DEV__) console.error('[Editor] concatenation failed:', error);
         Alert.alert('Note', 'Could not merge segments. You can edit each segment individually.');
@@ -69,7 +95,8 @@ export default function AudioEditorScreen() {
     })().catch(() => {
       setIsConcatenating(false);
     });
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionKey]);
 
   // Selected segment
   const selectedSegment = segments[selectedIndex] ?? null;
@@ -77,13 +104,15 @@ export default function AudioEditorScreen() {
   // Load audio source when segment changes
   const selectedUri = selectedSegment?.uri;
   const selectedDuration = selectedSegment?.duration ?? 0;
+  const loadSourceRef = useRef(playback.loadSource);
+  loadSourceRef.current = playback.loadSource;
   useEffect(() => {
     if (selectedUri) {
-      playback.loadSource(selectedUri);
+      loadSourceRef.current(selectedUri);
       setTrimStart(0);
       setTrimEnd(selectedDuration);
     }
-  }, [selectedUri, selectedDuration, playback]);
+  }, [selectedUri, selectedDuration]);
 
   // Extract waveform peaks for selected segment
   // We use refs for peaks/peaksLoading checks to avoid re-triggering when they update
@@ -321,18 +350,19 @@ export default function AudioEditorScreen() {
     }
   }, [selectedSegment]);
 
-  // Done — emit result and go back
+  // Done — emit result and pop back to Record screen
   const handleDone = useCallback(() => {
     playback.pause();
     if (hasChanges) {
       savedResultRef.current = true; // Prevent temp file cleanup — session needs trimmed files
+      if (__DEV__) console.log('[Editor] emitting result:', slotId, segments.length, 'segs, durations:', segments.map(s => s.duration));
       audioEditorBridge.emitResult({ slotId, segments });
     } else {
       audioEditorBridge.emitResult(null);
     }
     setHasChanges(false); // Prevent navigation guard from firing
-    navigation.goBack();
-  }, [hasChanges, slotId, segments, playback, navigation]);
+    router.back();
+  }, [hasChanges, slotId, segments, playback, router]);
 
   // Go back without saving
   const handleBack = useCallback(() => {
@@ -349,7 +379,7 @@ export default function AudioEditorScreen() {
               playback.pause();
               audioEditorBridge.emitResult(null);
               setHasChanges(false);
-              navigation.goBack();
+              router.back();
             },
           },
         ]
@@ -357,9 +387,9 @@ export default function AudioEditorScreen() {
     } else {
       playback.pause();
       audioEditorBridge.emitResult(null);
-      navigation.goBack();
+      router.back();
     }
-  }, [hasChanges, playback, navigation]);
+  }, [hasChanges, playback, router]);
 
   const currentPeaks = peaks.get(selectedIndex) ?? [];
   const isPeaksLoading = peaksLoading.has(selectedIndex);
@@ -387,7 +417,7 @@ export default function AudioEditorScreen() {
     );
   }
 
-  if (!inputRef.current || segments.length === 0) {
+  if (!input || segments.length === 0) {
     return (
       <SafeAreaView className="flex-1 bg-stone-50 items-center justify-center">
         <Text className="text-body text-stone-500">No recording to edit.</Text>
@@ -419,78 +449,79 @@ export default function AudioEditorScreen() {
         </Button>
       </View>
 
+      {/* Segment tabs — outside ScrollView so horizontal scroll doesn't conflict */}
+      {segments.length > 1 && (
+        <View className="mb-4 px-5" style={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}>
+          <Text className="text-body-sm font-semibold text-stone-600 mb-2">
+            Segments ({segments.length})
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View className="flex-row gap-2">
+              {segments.map((seg, i) => (
+                <Pressable
+                  key={i}
+                  onPress={() => {
+                    playback.pause();
+                    setSelectedIndex(i);
+                  }}
+                  onLongPress={segments.length > 1 ? () => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                    handleDeleteSegment(i);
+                  } : undefined}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: i === selectedIndex }}
+                  accessibilityLabel={`Segment ${i + 1}, ${formatTime(seg.duration)}`}
+                  accessibilityHint={segments.length > 1 ? 'Long press to delete this segment' : undefined}
+                  className={`px-3 py-2 rounded-full ${
+                    i === selectedIndex ? 'bg-brand-600' : 'bg-stone-200'
+                  }`}
+                >
+                  <Text
+                    className={`text-body-sm font-medium ${
+                      i === selectedIndex ? 'text-white' : 'text-stone-600'
+                    }`}
+                  >
+                    Seg {i + 1} ({formatTime(seg.duration)})
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Waveform editor — OUTSIDE ScrollView so gestures have no competition */}
+      <View className="mb-4 px-5" style={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}>
+        {hasPeakError && !isPeaksLoading ? (
+          <View className="rounded-lg bg-stone-100 p-4 items-center" style={{ height: 120, justifyContent: 'center' }}>
+            <Text className="text-body-sm text-stone-600 mb-2">
+              Could not load waveform. You can still trim by time.
+            </Text>
+            <Button variant="secondary" size="sm" onPress={handleRetryPeaks}>
+              Retry
+            </Button>
+          </View>
+        ) : (
+          <WaveformEditor
+            peaks={currentPeaks}
+            duration={selectedSegment?.duration ?? 0}
+            currentTime={playback.currentTime}
+            trimStart={trimStart}
+            trimEnd={trimEnd}
+            onTrimChange={handleTrimChange}
+            onSeek={handleSeek}
+            isLoading={isPeaksLoading}
+          />
+        )}
+      </View>
+
+      {/* Everything below the waveform can scroll on small screens */}
       <ScrollView
         className="flex-1"
         contentContainerClassName="px-5 pb-8"
         contentContainerStyle={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Segment tabs */}
-        {segments.length > 1 && (
-          <View className="mb-4">
-            <Text className="text-body-sm font-semibold text-stone-600 mb-2">
-              Segments ({segments.length})
-            </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <View className="flex-row gap-2">
-                {segments.map((seg, i) => (
-                  <Pressable
-                    key={i}
-                    onPress={() => {
-                      playback.pause();
-                      setSelectedIndex(i);
-                    }}
-                    onLongPress={segments.length > 1 ? () => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-                      handleDeleteSegment(i);
-                    } : undefined}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: i === selectedIndex }}
-                    accessibilityLabel={`Segment ${i + 1}, ${formatTime(seg.duration)}`}
-                    accessibilityHint={segments.length > 1 ? 'Long press to delete this segment' : undefined}
-                    className={`px-3 py-2 rounded-full ${
-                      i === selectedIndex ? 'bg-brand-600' : 'bg-stone-200'
-                    }`}
-                  >
-                    <Text
-                      className={`text-body-sm font-medium ${
-                        i === selectedIndex ? 'text-white' : 'text-stone-600'
-                      }`}
-                    >
-                      Seg {i + 1} ({formatTime(seg.duration)})
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Waveform editor */}
-        <View className="mb-6">
-          {hasPeakError && !isPeaksLoading ? (
-            <View className="rounded-lg bg-stone-100 p-4 items-center" style={{ height: 120, justifyContent: 'center' }}>
-              <Text className="text-body-sm text-stone-600 mb-2">
-                Could not load waveform. You can still trim by time.
-              </Text>
-              <Button variant="secondary" size="sm" onPress={handleRetryPeaks}>
-                Retry
-              </Button>
-            </View>
-          ) : (
-            <WaveformEditor
-              peaks={currentPeaks}
-              duration={selectedSegment?.duration ?? 0}
-              currentTime={playback.currentTime}
-              trimStart={trimStart}
-              trimEnd={trimEnd}
-              onTrimChange={handleTrimChange}
-              onSeek={handleSeek}
-              isLoading={isPeaksLoading}
-            />
-          )}
-        </View>
-
         {/* Playback controls */}
         <View className="flex-row items-center justify-center gap-6 mb-6">
           <Pressable
@@ -504,10 +535,11 @@ export default function AudioEditorScreen() {
           </Pressable>
           <Pressable
             onPress={() => playback.toggle()}
+            disabled={!playback.isLoaded}
             accessibilityRole="button"
             accessibilityLabel={playback.isPlaying ? 'Pause' : 'Play'}
             accessibilityHint="Double-tap to start or stop audio playback"
-            className="w-14 h-14 rounded-full bg-brand-500 items-center justify-center shadow-btn"
+            className={`w-14 h-14 rounded-full items-center justify-center shadow-btn ${playback.isLoaded ? 'bg-brand-500' : 'bg-stone-300'}`}
           >
             {playback.isPlaying ? (
               <Pause color="#fff" size={24} fill="#fff" />

@@ -5,12 +5,12 @@ import { useRouter } from 'expo-router';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
-import { recordingsApi } from '../../../src/api/recordings';
-import { useResponsive } from '../../../src/hooks/useResponsive';
-import { CONTENT_MAX_WIDTH } from '../../../src/components/ui/ScreenContainer';
-import { RecordingCard } from '../../../src/components/RecordingCard';
-import { SkeletonCard } from '../../../src/components/ui/Skeleton';
-import { Button } from '../../../src/components/ui/Button';
+import { recordingsApi } from '../../../../src/api/recordings';
+import { useResponsive } from '../../../../src/hooks/useResponsive';
+import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
+import { RecordingCard } from '../../../../src/components/RecordingCard';
+import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
+import { Button } from '../../../../src/components/ui/Button';
 
 const PAGE_SIZE = 20;
 
@@ -170,7 +170,7 @@ export default function RecordingsListScreen() {
                 <View className="mt-4">
                   <Button
                     variant="primary"
-                    onPress={() => router.push('/(app)/record')}
+                    onPress={() => router.push('/record')}
                     accessibilityLabel="Start recording an appointment"
                   >
                     Record Appointment

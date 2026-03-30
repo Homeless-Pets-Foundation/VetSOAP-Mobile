@@ -10,22 +10,22 @@ import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
-import { useAudioRecorder } from '../../src/hooks/useAudioRecorder';
-import { useMultiPatientSession } from '../../src/hooks/useMultiPatientSession';
-import { useStashedSessions } from '../../src/hooks/useStashedSessions';
-import { useResponsive } from '../../src/hooks/useResponsive';
-import { useTemplates } from '../../src/hooks/useTemplates';
+import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
+import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
+import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
+import { useResponsive } from '../../../src/hooks/useResponsive';
+import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { recordingsApi } from '../../src/api/recordings';
-import { audioEditorBridge } from '../../src/lib/audioEditorBridge';
-import { PatientTabStrip } from '../../src/components/PatientTabStrip';
-import { PatientSlotCard } from '../../src/components/PatientSlotCard';
-import { SubmitPanel } from '../../src/components/SubmitPanel';
-import { StashedSessionCard } from '../../src/components/StashedSessionCard';
-import { UploadOverlay } from '../../src/components/UploadOverlay';
-import { ScreenContainer } from '../../src/components/ui/ScreenContainer';
-import { Button } from '../../src/components/ui/Button';
-import type { PatientSlot } from '../../src/types/multiPatient';
+import { recordingsApi } from '../../../src/api/recordings';
+import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
+import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
+import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
+import { SubmitPanel } from '../../../src/components/SubmitPanel';
+import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
+import { UploadOverlay } from '../../../src/components/UploadOverlay';
+import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
+import { Button } from '../../../src/components/ui/Button';
+import type { PatientSlot } from '../../../src/types/multiPatient';
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
   const { scale } = useResponsive();
@@ -600,7 +600,7 @@ function RecordingSession() {
               // Stay on the record screen — uploaded slot already shows success badge
             } else {
               resetSession();
-              router.push(`/(app)/recordings/${serverRecordingId}` as `/(app)/recordings/${string}`);
+              router.push(`/recordings/${serverRecordingId}` as `/recordings/${string}`);
             }
           }
         } finally {
@@ -645,7 +645,7 @@ function RecordingSession() {
 
         if (allSuccess) {
           resetSession();
-          router.push('/(app)/recordings');
+          router.push('/recordings');
         } else {
           Alert.alert(
             'Some Uploads Failed',

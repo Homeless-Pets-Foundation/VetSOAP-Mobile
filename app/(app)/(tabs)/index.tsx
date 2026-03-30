@@ -11,14 +11,14 @@ import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Mic, ChevronRight, FileText, Settings } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuth } from '../../src/hooks/useAuth';
-import { useResponsive } from '../../src/hooks/useResponsive';
-import { recordingsApi } from '../../src/api/recordings';
-import { RecordingCard } from '../../src/components/RecordingCard';
-import { ScreenContainer } from '../../src/components/ui/ScreenContainer';
-import { SkeletonCard } from '../../src/components/ui/Skeleton';
-import { Card } from '../../src/components/ui/Card';
-import { Button } from '../../src/components/ui/Button';
+import { useAuth } from '../../../src/hooks/useAuth';
+import { useResponsive } from '../../../src/hooks/useResponsive';
+import { recordingsApi } from '../../../src/api/recordings';
+import { RecordingCard } from '../../../src/components/RecordingCard';
+import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
+import { SkeletonCard } from '../../../src/components/ui/Skeleton';
+import { Card } from '../../../src/components/ui/Card';
+import { Button } from '../../../src/components/ui/Button';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -69,7 +69,7 @@ export default function HomeScreen() {
         <Pressable
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-            router.push('/(app)/settings');
+            router.push('/settings');
           }}
           accessibilityRole="button"
           accessibilityLabel="Settings"
@@ -84,7 +84,7 @@ export default function HomeScreen() {
       <AnimatedPressable
         onPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-          router.push('/(app)/record');
+          router.push('/record');
         }}
         onPressIn={() => {
           ctaScale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
@@ -135,7 +135,7 @@ export default function HomeScreen() {
           <Text className="section-title">Recent Recordings</Text>
           {totalRecordings > 5 && (
             <Pressable
-              onPress={() => router.push('/(app)/recordings')}
+              onPress={() => router.push('/recordings')}
               accessibilityRole="button"
               accessibilityLabel="View all recordings"
             >

@@ -6,15 +6,15 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { ChevronLeft, Check, AlertTriangle } from 'lucide-react-native';
-import { useResponsive } from '../../../src/hooks/useResponsive';
-import { CONTENT_MAX_WIDTH } from '../../../src/components/ui/ScreenContainer';
-import { recordingsApi } from '../../../src/api/recordings';
-import { ApiError } from '../../../src/api/client';
-import { StatusBadge } from '../../../src/components/StatusBadge';
-import { SoapNoteView } from '../../../src/components/SoapNoteView';
-import { Button } from '../../../src/components/ui/Button';
-import { Card } from '../../../src/components/ui/Card';
-import { Skeleton, SkeletonText } from '../../../src/components/ui/Skeleton';
+import { useResponsive } from '../../../../src/hooks/useResponsive';
+import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
+import { recordingsApi } from '../../../../src/api/recordings';
+import { ApiError } from '../../../../src/api/client';
+import { StatusBadge } from '../../../../src/components/StatusBadge';
+import { SoapNoteView } from '../../../../src/components/SoapNoteView';
+import { Button } from '../../../../src/components/ui/Button';
+import { Card } from '../../../../src/components/ui/Card';
+import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 
 const PROCESSING_STEPS = [
   { status: 'uploading', label: 'Uploading' },

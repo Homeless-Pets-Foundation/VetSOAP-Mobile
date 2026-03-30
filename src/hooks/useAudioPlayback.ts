@@ -38,16 +38,19 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
 
   const loadSource = useCallback(
     (uri: string) => {
+      // Set playback mode eagerly so it's ready before the user presses play
+      ensurePlaybackMode().catch(() => {});
       try {
         player.replace({ uri });
       } catch (error) {
         if (__DEV__) console.error('[Playback] loadSource failed:', error);
       }
     },
-    [player]
+    [player, ensurePlaybackMode]
   );
 
   const play = useCallback(() => {
+    if (!status.isLoaded) return;
     ensurePlaybackMode()
       .then(() => {
         try {
@@ -57,7 +60,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
         }
       })
       .catch(() => {});
-  }, [player, ensurePlaybackMode]);
+  }, [player, status.isLoaded, ensurePlaybackMode]);
 
   const pause = useCallback(() => {
     try {

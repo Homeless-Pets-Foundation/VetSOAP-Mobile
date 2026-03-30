@@ -4,10 +4,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { LogOut, User, ChevronLeft, Shield } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuth } from '../../src/hooks/useAuth';
-import { useResponsive } from '../../src/hooks/useResponsive';
-import { biometrics } from '../../src/lib/biometrics';
-import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
+import { useAuth } from '../../../src/hooks/useAuth';
+import { useResponsive } from '../../../src/hooks/useResponsive';
+import { biometrics } from '../../../src/lib/biometrics';
+import { CONTENT_MAX_WIDTH } from '../../../src/components/ui/ScreenContainer';
 import Constants from 'expo-constants';
 
 export default function SettingsScreen() {

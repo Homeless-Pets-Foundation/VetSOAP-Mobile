@@ -45,7 +45,7 @@ export function RecordingCard({ recording }: RecordingCardProps) {
     <AnimatedPressable
       onPress={() => {
         if (recording.id) {
-          router.push(`/(app)/recordings/${recording.id}` as `/(app)/recordings/${string}`);
+          router.push(`/recordings/${recording.id}` as `/recordings/${string}`);
         }
       }}
       onPressIn={() => {

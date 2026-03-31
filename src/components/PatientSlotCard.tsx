@@ -56,6 +56,7 @@ function PulsingDot() {
       true
     );
     return () => { cancelAnimation(opacity); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- opacity is a stable Reanimated SharedValue ref
   }, []);
 
   const style = useAnimatedStyle(() => ({

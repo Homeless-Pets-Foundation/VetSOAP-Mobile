@@ -241,7 +241,7 @@ export const stashAudioManager = {
         const manifest = await this.readRecoveryManifest(orphanId);
         if (manifest) {
           // Validate that audio files still exist before recovering
-          const { validSlots, allValid } = await this.validateStashedAudio(manifest.slots);
+          const { validSlots } = await this.validateStashedAudio(manifest.slots);
           const hasAudio = validSlots.some((s) => s.segments.length > 0);
           if (hasAudio) {
             recovered.push({ ...manifest, slots: validSlots });

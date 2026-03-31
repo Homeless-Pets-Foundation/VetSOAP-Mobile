@@ -56,6 +56,7 @@ function AccordionSection({
 
   React.useEffect(() => {
     rotation.value = withTiming(isExpanded ? 1 : 0, { duration: 200 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rotation is a stable Reanimated SharedValue ref
   }, [isExpanded]);
 
   React.useEffect(() => {
@@ -74,7 +75,7 @@ function AccordionSection({
       clearTimeout(copyTimeoutRef.current);
       copyTimeoutRef.current = setTimeout(() => setShowCopied(false), 1500);
     } catch (error) {
-      console.error('[SoapNote] copySection failed:', error);
+      if (__DEV__) console.error('[SoapNote] copySection failed:', error);
     }
   };
 
@@ -147,7 +148,7 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
       clearTimeout(copyAllTimeoutRef.current);
       copyAllTimeoutRef.current = setTimeout(() => setShowCopiedAll(false), 1500);
     } catch (error) {
-      console.error('[SoapNote] copyAll failed:', error);
+      if (__DEV__) console.error('[SoapNote] copyAll failed:', error);
     }
   }, [soapNote]);
 

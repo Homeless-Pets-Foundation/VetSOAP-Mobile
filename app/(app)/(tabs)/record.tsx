@@ -146,6 +146,7 @@ function RecordingSession() {
     if (defaultTemplate && session.slots.length === 1 && !session.slots[0].formData.templateId) {
       updateForm(session.slots[0].id, 'templateId', defaultTemplate.id);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only run when defaultTemplate loads, not on every slot/form change
   }, [defaultTemplate]);
 
   // Effect: capture audio URI when recorder transitions to stopped while bound to a slot
@@ -208,6 +209,7 @@ function RecordingSession() {
         recorder.reset();
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends only on recorder state transitions, not on session/slot refs which would cause infinite loops
   }, [recorder.state, recorder.audioUri]);
 
   // Consistency guard: fix orphaned paused/recording states when recorder ownership changes
@@ -218,6 +220,7 @@ function RecordingSession() {
         setAudioState(slot.id, slot.segments.length > 0 ? 'stopped' : 'idle');
       }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- guard runs only when recorder ownership changes, reading slots is intentionally from current render
   }, [session.recorderBoundToSlotId]);
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
@@ -293,6 +296,7 @@ function RecordingSession() {
         setActiveIndex(clampedIndex);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- recorder and setActiveIndex accessed via refs/stable dispatch
     [session.activeIndex, session.slots.length, session.recorderBoundToSlotId, recorder.state, screenWidth, setAudioState]
   );
 
@@ -352,6 +356,7 @@ function RecordingSession() {
 
       startRecordingForSlot(slotId);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- startRecordingForSlot accessed via startRecordingRef
     [session.recorderBoundToSlotId, session.slots, recorder]
   );
 

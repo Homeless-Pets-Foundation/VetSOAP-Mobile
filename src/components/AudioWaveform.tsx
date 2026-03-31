@@ -52,6 +52,7 @@ const WaveBar = React.memo(function WaveBar({ index, barCount, isActive, isPause
       height.value = withTiming(MIN_HEIGHT, { duration: 400 });
     }
     return () => { cancelAnimation(height); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- height is a stable Reanimated SharedValue ref; barCount/index/jitter are stable per-bar props
   }, [isActive, isPaused, targetHeight, maxHeight]);
 
   const animatedStyle = useAnimatedStyle(() => ({

@@ -74,7 +74,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       );
     }
     if (status.hasError) {
-      console.error('[AudioRecorder] Recording error:', status.error);
+      if (__DEV__) console.error('[AudioRecorder] Recording error:', status.error);
     }
   }, []);
 
@@ -128,7 +128,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       recorder.pause();
       setState('paused');
     } catch (error) {
-      console.error('[AudioRecorder] pause failed:', error);
+      if (__DEV__) console.error('[AudioRecorder] pause failed:', error);
       // Native handle is broken — clean up so user can start fresh
       setFinalDuration(capturedDurationRef.current);
       try { await recorder.stop(); } catch {}
@@ -144,7 +144,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       recorder.record();
       setState('recording');
     } catch (error) {
-      console.error('[AudioRecorder] resume failed:', error);
+      if (__DEV__) console.error('[AudioRecorder] resume failed:', error);
       // Native handle is broken — clean up so user can start fresh
       // Use captured duration since polled value may be 0 while paused
       const polledDuration = Math.floor(recorderState.durationMillis / 1000);
@@ -166,7 +166,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     try {
       await recorder.stop();
     } catch (error) {
-      console.error('[AudioRecorder] stop failed:', error);
+      if (__DEV__) console.error('[AudioRecorder] stop failed:', error);
     }
     setAudioUri(recorder.uri ?? null);
     setState('stopped');

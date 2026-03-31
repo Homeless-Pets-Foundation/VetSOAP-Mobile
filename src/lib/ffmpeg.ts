@@ -1,9 +1,8 @@
+// eslint-disable-next-line import/no-unresolved -- native module resolved during EAS build, not in node_modules
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 import {
   getInfoAsync,
-  readAsStringAsync,
   writeAsStringAsync,
-  EncodingType,
 } from 'expo-file-system/legacy';
 import { File as ExpoFile } from 'expo-file-system';
 import { audioTempFiles } from './audioTempFiles';

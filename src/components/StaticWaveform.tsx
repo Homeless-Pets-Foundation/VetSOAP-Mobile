@@ -24,25 +24,8 @@ export function StaticWaveform({
 }: StaticWaveformProps) {
   const [layoutWidth, setLayoutWidth] = React.useState(0);
 
-  if (isLoading) {
-    return (
-      <View style={{ height }} className="rounded-lg overflow-hidden">
-        <Skeleton />
-      </View>
-    );
-  }
-
-  if (peaks.length === 0 || duration <= 0) {
-    return (
-      <View
-        style={{ height }}
-        className="rounded-lg bg-stone-100 items-center justify-center"
-      />
-    );
-  }
-
   const barCount = peaks.length;
-  const barWidth = layoutWidth > 0 ? Math.max(1, layoutWidth / barCount - 1) : 2;
+  const barWidth = layoutWidth > 0 && barCount > 0 ? Math.max(1, layoutWidth / barCount - 1) : 2;
   const barGap = 1;
   const halfHeight = height / 2;
   const minBarHeight = 2;
@@ -57,6 +40,7 @@ export function StaticWaveform({
   // mirror). The native SVG renderer processes each path in a single C++ pass
   // with one GPU draw call, instead of 600 bridge crossings.
   const { activePath, dimmedPath } = React.useMemo(() => {
+    if (barCount === 0 || duration <= 0) return { activePath: '', dimmedPath: '' };
     let active = '';
     let dimmed = '';
     for (let i = 0; i < peaks.length; i++) {
@@ -76,7 +60,24 @@ export function StaticWaveform({
       }
     }
     return { activePath: active, dimmedPath: dimmed };
-  }, [peaks, barWidth, barGap, halfHeight, minBarHeight, trimStartX, trimEndX]);
+  }, [peaks, barCount, barWidth, barGap, halfHeight, minBarHeight, trimStartX, trimEndX, duration]);
+
+  if (isLoading) {
+    return (
+      <View style={{ height }} className="rounded-lg overflow-hidden">
+        <Skeleton />
+      </View>
+    );
+  }
+
+  if (peaks.length === 0 || duration <= 0) {
+    return (
+      <View
+        style={{ height }}
+        className="rounded-lg bg-stone-100 items-center justify-center"
+      />
+    );
+  }
 
   return (
     <View

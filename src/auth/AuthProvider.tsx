@@ -97,6 +97,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const registerDevice = useCallback(async () => {
+    try {
+      const deviceId = await secureStorage.getDeviceId();
+      if (!deviceId) return;
+      await apiClient.post('/api/device-sessions/register', {
+        deviceId,
+        deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
+        appVersion: require('../../package.json').version,
+      });
+    } catch (error) {
+      if (__DEV__) console.log('[Auth] device registration failed (non-fatal):', error);
+    }
+  }, []);
+
   const handleSignOut = useCallback(async () => {
     if (__DEV__) console.log('[Auth] handleSignOut: starting');
     // Clear in-memory token immediately
@@ -265,7 +279,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, [fetchUser]);
+  }, [fetchUser, registerDevice]);
 
   // Proactively refresh token when app returns from background.
   useEffect(() => {
@@ -324,21 +338,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (__DEV__) console.log('[Auth] signIn: success');
     registerDevice().catch(() => {});
     return { error: null };
-  }, []);
-
-  const registerDevice = useCallback(async () => {
-    try {
-      const deviceId = await secureStorage.getDeviceId();
-      if (!deviceId) return;
-      await apiClient.post('/api/device-sessions/register', {
-        deviceId,
-        deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
-        appVersion: require('../../package.json').version,
-      });
-    } catch (error) {
-      if (__DEV__) console.log('[Auth] device registration failed (non-fatal):', error);
-    }
-  }, []);
+  }, [registerDevice]);
 
   const isAuthenticated = !!session?.access_token;
   if (__DEV__ && session?.access_token) {

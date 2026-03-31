@@ -31,6 +31,7 @@ export function Skeleton({
       true
     );
     return () => { cancelAnimation(opacity); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- opacity is a stable Reanimated SharedValue ref
   }, []);
 
   const animatedStyle = useAnimatedStyle(() => ({

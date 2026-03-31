@@ -60,5 +60,5 @@ if (!R2_BUCKET_HOSTNAME) {
 export const CONFIG_MISSING = configErrors.length > 0;
 
 if (CONFIG_MISSING) {
-  console.error('[Config] Missing or invalid environment variables:', configErrors);
+  if (__DEV__) console.error('[Config] Missing or invalid environment variables:', configErrors);
 }

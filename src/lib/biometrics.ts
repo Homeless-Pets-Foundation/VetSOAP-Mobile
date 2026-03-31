@@ -10,7 +10,7 @@ export const biometrics = {
       if (!compatible) return false;
       return await LocalAuthentication.isEnrolledAsync();
     } catch (error) {
-      console.error('[Biometrics] isAvailable failed:', error);
+      if (__DEV__) console.error('[Biometrics] isAvailable failed:', error);
       return false;
     }
   },
@@ -28,7 +28,7 @@ export const biometrics = {
         return 'Iris';
       }
     } catch (error) {
-      console.error('[Biometrics] getType failed:', error);
+      if (__DEV__) console.error('[Biometrics] getType failed:', error);
     }
     return 'Biometric';
   },
@@ -38,7 +38,7 @@ export const biometrics = {
       const value = await SecureStore.getItemAsync(BIOMETRIC_ENABLED_KEY);
       return value === 'true';
     } catch (error) {
-      console.error('[Biometrics] isEnabled failed:', error);
+      if (__DEV__) console.error('[Biometrics] isEnabled failed:', error);
       return false;
     }
   },
@@ -53,7 +53,7 @@ export const biometrics = {
         await SecureStore.deleteItemAsync(BIOMETRIC_ENABLED_KEY);
       }
     } catch (error) {
-      console.error('[Biometrics] setEnabled failed:', error);
+      if (__DEV__) console.error('[Biometrics] setEnabled failed:', error);
     }
   },
 
@@ -67,7 +67,7 @@ export const biometrics = {
       });
       return result.success;
     } catch (error) {
-      console.error('[Biometrics] authenticate failed:', error);
+      if (__DEV__) console.error('[Biometrics] authenticate failed:', error);
       return false;
     }
   },
@@ -76,7 +76,7 @@ export const biometrics = {
     try {
       await SecureStore.deleteItemAsync(BIOMETRIC_ENABLED_KEY);
     } catch (error) {
-      console.error('[Biometrics] clear failed:', error);
+      if (__DEV__) console.error('[Biometrics] clear failed:', error);
     }
   },
 };

@@ -189,6 +189,66 @@ The mobile app sends an `X-Device-Id` header on every API request. The device ID
 - **Expo doctor:** Always run `npx expo-doctor` before triggering an EAS build. A pre-build Claude hook (`.claude/hooks/pre-eas-build.sh`) enforces this automatically. If Dependabot bumps packages beyond Expo SDK compatibility, run `npx expo install --fix` to restore correct versions.
 - **APP_VARIANT:** `app.config.ts` exposes `extra.isProduction` based on `APP_VARIANT=production`. Used at runtime to gate production-only features (e.g., screen capture prevention, when re-enabled).
 
+## Emulator Testing (WSL2)
+
+The dev environment runs Metro in WSL2 while the Android emulator runs on the Windows host. All `adb` commands that target the emulator must use the **Windows** ADB binary (`adb.exe`), not the WSL2 `adb`.
+
+### Setup & Launch
+
+1. **Start the emulator:**
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/emulator/emulator.exe" -avd Medium_Phone_API_36.1 -no-snapshot-load &>/dev/null &
+   ```
+2. **Wait for the emulator to appear** (check with Windows ADB):
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" devices
+   ```
+3. **ADB reverse** (emulator localhost → Windows localhost):
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" reverse tcp:8081 tcp:8081
+   ```
+4. **Port proxy** (Windows localhost → WSL2 IP, requires admin):
+   ```bash
+   WSL_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+   powershell.exe -Command "Start-Process powershell -ArgumentList '-Command netsh interface portproxy delete v4tov4 listenport=8081 listenaddress=127.0.0.1; netsh interface portproxy add v4tov4 listenport=8081 listenaddress=127.0.0.1 connectport=8081 connectaddress=$WSL_IP' -Verb RunAs"
+   ```
+5. **Start Metro** (clean cache recommended after code changes):
+   ```bash
+   npx expo start --clear
+   ```
+6. **Deep-link the app** to connect to the dev server:
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" shell am start -a android.intent.action.VIEW -d 'captivet://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081'
+   ```
+
+If Metro was already running on port 8081, kill it first: `lsof -ti:8081 | xargs kill -9`
+
+### ADB UI Interaction
+
+Use these commands to interact with the emulator for testing. All use the Windows ADB binary.
+
+| Action | Command |
+|--------|---------|
+| **Screenshot** | `adb.exe exec-out screencap -p > /tmp/screen.png` (then use Read tool to view) |
+| **Tap** | `adb.exe shell input tap <x> <y>` (coordinates in device pixels, 1080x2400) |
+| **Swipe/Scroll** | `adb.exe shell input swipe <x1> <y1> <x2> <y2> <duration_ms>` |
+| **Type text** | `adb.exe shell input text "hello"` (no spaces — use `%s` for spaces) |
+| **Press back** | `adb.exe shell input keyevent KEYCODE_BACK` |
+| **Dismiss keyboard** | `adb.exe shell input keyevent KEYCODE_ESCAPE` |
+| **UI hierarchy** | `adb.exe shell uiautomator dump /sdcard/ui.xml && adb.exe shell cat /sdcard/ui.xml` |
+
+### Finding Tap Coordinates
+
+1. **Preferred: `uiautomator dump`** — returns XML with `bounds="[left,top][right,bottom]"` for every element. Calculate center: `x = (left + right) / 2`, `y = (top + bottom) / 2`. Filter with `grep -iE "button_text\|content_desc"`.
+2. **Fallback: screenshot** — if `uiautomator dump` fails (it can't dump during animations), take a screenshot, view it with the Read tool, and estimate coordinates. The screen is 1080x2400 pixels.
+
+### Key App Flows for Testing
+
+- **Record:** Home → Record tab or "Record Appointment" → fill Patient Name, Client Name, select Species + Appointment Type → scroll down → tap "Start recording" → wait → "Finish"
+- **Stash:** While recording or stopped → "Save for Later" (top right) → "SAVE" in dialog → session appears under "Saved Sessions" with "Resume Session" button
+- **Edit:** After recording completes → scroll to "Edit Recording" → opens audio editor with waveform, trim handles, playback, and "Apply Trim" / "Done"
+- **App package:** `com.captivet.mobile`, launch with: `adb.exe shell am start -n com.captivet.mobile/.MainActivity`
+
 ## File Conventions
 
 - `src/lib/secureStorage.ts` — sole interface to `expo-secure-store`. All calls wrapped in try/catch. Also provides `getDeviceId()` which generates a persistent UUID v4 on first call (cached in memory after first read). The `DEVICE_ID` key is NOT deleted in `clearAll()` — it's device-scoped, not user-scoped.

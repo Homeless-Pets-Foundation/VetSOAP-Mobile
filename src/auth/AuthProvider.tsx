@@ -265,6 +265,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (__DEV__) console.log('[Auth] no access_token, clearing session');
             apiClient.setToken(null);
             await secureStorage.clearAll();
+            // Clear cached PHI so the next user on this shared tablet
+            // doesn't briefly see the previous user's recording list.
+            queryClient.clear();
             setStashUserId(null);
             setUser(null);
           }

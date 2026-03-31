@@ -81,7 +81,7 @@ export async function trimAudio(
   if (!ReturnCode.isSuccess(returnCode)) {
     // Clean up partial output file on failure
     await audioTempFiles.cleanupFile(outputUri);
-    const logs = await session.getLogsAsString();
+    const logs = (await session.getLogsAsString()) ?? '';
     throw new Error(`FFmpeg trim failed (code ${returnCode.getValue()}): ${logs.slice(0, 200)}`);
   }
 
@@ -134,7 +134,7 @@ export async function concatenateAudio(
 
     if (!ReturnCode.isSuccess(returnCode)) {
       await audioTempFiles.cleanupFile(outputUri);
-      const logs = await session.getLogsAsString();
+      const logs = (await session.getLogsAsString()) ?? '';
       throw new Error(`FFmpeg concat failed (code ${returnCode.getValue()}): ${logs.slice(0, 200)}`);
     }
 

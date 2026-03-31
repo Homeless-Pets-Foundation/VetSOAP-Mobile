@@ -162,8 +162,8 @@ export default function RecordingDetailScreen() {
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['recordings'] });
-      queryClient.invalidateQueries({ queryKey: ['recording', id] });
+      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
     },
     onError: (error: Error) => {
       Alert.alert(

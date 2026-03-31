@@ -151,10 +151,12 @@ function RecordingSession() {
 
   // Effect: capture audio URI when recorder transitions to stopped while bound to a slot
   useEffect(() => {
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+
     if (recorder.state !== 'stopped') {
       // Reset guard when recorder leaves stopped state (e.g. after reset → new recording)
       audioCaptureDoneRef.current = false;
-      return;
+      return () => { if (timerId) clearTimeout(timerId); };
     }
     if (recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
       audioCaptureDoneRef.current = true;
@@ -172,7 +174,7 @@ function RecordingSession() {
         const nextSlotId = pendingStartSlotRef.current;
         pendingStartSlotRef.current = null;
         recorder.resetWithoutDelete();
-        setTimeout(() => {
+        timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
         }, 250);
       } else {
@@ -202,13 +204,15 @@ function RecordingSession() {
         const nextSlotId = pendingStartSlotRef.current;
         pendingStartSlotRef.current = null;
         recorder.resetWithoutDelete();
-        setTimeout(() => {
+        timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
         }, 250);
       } else {
         recorder.reset();
       }
     }
+
+    return () => { if (timerId) clearTimeout(timerId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends only on recorder state transitions, not on session/slot refs which would cause infinite loops
   }, [recorder.state, recorder.audioUri]);
 

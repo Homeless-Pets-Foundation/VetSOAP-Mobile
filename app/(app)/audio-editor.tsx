@@ -5,7 +5,7 @@ import { usePreventRemove, useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, Play, Pause, SkipBack, SkipForward } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import * as FileSystem from 'expo-file-system';
+import { safeDeleteFile } from '../../src/lib/fileOps';
 import { useAudioPlayback } from '../../src/hooks/useAudioPlayback';
 import { audioEditorBridge } from '../../src/lib/audioEditorBridge';
 import { trimAudio, concatenateAudio, extractWaveformPeaks } from '../../src/lib/ffmpeg';
@@ -169,7 +169,7 @@ export default function AudioEditorScreen() {
   useEffect(() => {
     return () => {
       if (!savedResultRef.current) {
-        audioTempFiles.cleanupAll().catch(() => {});
+        audioTempFiles.cleanupAll();
       }
     };
   }, []);
@@ -284,7 +284,7 @@ export default function AudioEditorScreen() {
         playback.loadSource(result.uri);
 
         // Now safe to delete the old file
-        FileSystem.deleteAsync(oldUri, { idempotent: true }).catch(() => {});
+        safeDeleteFile(oldUri);
 
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         Alert.alert('Trim Applied', `Recording trimmed to ${formatTime(result.duration)}.`);
@@ -318,7 +318,7 @@ export default function AudioEditorScreen() {
             style: 'destructive',
             onPress: () => {
               playback.pause();
-              FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+              safeDeleteFile(seg.uri);
               const newSegments = segments.filter((_, i) => i !== index);
               setSegments(newSegments);
 

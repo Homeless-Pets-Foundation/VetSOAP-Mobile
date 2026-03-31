@@ -9,7 +9,7 @@ import {
   type RecordingOptions,
   type RecordingStatus,
 } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import { safeDeleteFile } from '../lib/fileOps';
 
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped';
 
@@ -179,7 +179,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   const reset = useCallback(() => {
     if (audioUri) {
-      FileSystem.deleteAsync(audioUri, { idempotent: true }).catch(() => {});
+      safeDeleteFile(audioUri);
     }
     setState('idle');
     setAudioUri(null);

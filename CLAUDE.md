@@ -193,6 +193,7 @@ The mobile app sends an `X-Device-Id` header on every API request. The device ID
 
 - `src/lib/secureStorage.ts` — sole interface to `expo-secure-store`. All calls wrapped in try/catch. Also provides `getDeviceId()` which generates a persistent UUID v4 on first call (cached in memory after first read). The `DEVICE_ID` key is NOT deleted in `clearAll()` — it's device-scoped, not user-scoped.
 - `src/lib/biometrics.ts` — sole interface to `expo-local-authentication` + biometric SecureStore preference. All calls wrapped in try/catch.
+- `src/lib/fileOps.ts` — safe wrappers around `expo-file-system` `File`/`Directory` classes. All operations wrapped in try/catch. Use `safeDeleteFile`/`safeDeleteDirectory` instead of calling `.delete()` directly. Never import from `expo-file-system/legacy` in new code.
 - `src/lib/secureClipboard.ts` — clipboard with 30-second auto-clear for sensitive data. Exports `clearClipboard()` for sign-out cleanup.
 - `src/lib/audioEditorBridge.ts` — module-level singleton bridging `record.tsx` and `audio-editor.tsx`. Exports `clear()` for sign-out cleanup.
 - `src/lib/stashStorage.ts` — encrypted stash metadata in SecureStore, chunked for Android 2KB limit. **User-scoped**: keys prefixed with user ID. Must call `setUserId()` before any operations. Includes `clearLegacyGlobalStashes()` for one-time migration.

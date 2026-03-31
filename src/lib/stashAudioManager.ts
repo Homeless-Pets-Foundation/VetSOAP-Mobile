@@ -1,17 +1,15 @@
+import { File as ExpoFile, Directory, Paths } from 'expo-file-system';
 import {
-  documentDirectory,
-  getInfoAsync,
-  copyAsync,
-  deleteAsync,
-  makeDirectoryAsync,
-  readDirectoryAsync,
-  writeAsStringAsync,
-  readAsStringAsync,
-} from 'expo-file-system/legacy';
+  fileExists,
+  directoryExists,
+  safeDeleteFile,
+  safeDeleteDirectory,
+  ensureDirectory,
+} from './fileOps';
 import type { PatientSlot } from '../types/multiPatient';
 import type { StashedSlot, StashedSession } from '../types/stash';
 
-const BASE_STASH_DIR = `${documentDirectory}stashed-audio/`;
+const BASE_STASH_DIR = `${Paths.document.uri}stashed-audio/`;
 
 /** Current user ID — set by AuthProvider to scope audio files per-user. */
 let currentUserId: string | null = null;
@@ -50,7 +48,7 @@ export const stashAudioManager = {
   ): Promise<StashedSlot[]> {
     const dir = sessionDir(sessionId);
     try {
-      await makeDirectoryAsync(dir, { intermediates: true });
+      ensureDirectory(dir);
 
       const stashedSlots: StashedSlot[] = [];
       let segmentIndex = 0;
@@ -59,16 +57,19 @@ export const stashAudioManager = {
         const stashedSegments: { uri: string; duration: number }[] = [];
 
         for (const segment of slot.segments) {
-          const info = await getInfoAsync(segment.uri);
-          if (!info.exists) continue;
+          if (!fileExists(segment.uri)) continue;
 
           const destUri = `${dir}segment-${segmentIndex}.m4a`;
-          await copyAsync({ from: segment.uri, to: destUri });
+          try {
+            new ExpoFile(segment.uri).copy(new ExpoFile(destUri));
+          } catch {
+            segmentIndex++;
+            continue;
+          }
 
           // Verify copy succeeded before deleting original
-          const destInfo = await getInfoAsync(destUri);
-          if (destInfo.exists) {
-            await deleteAsync(segment.uri, { idempotent: true }).catch(() => {});
+          if (fileExists(destUri)) {
+            safeDeleteFile(segment.uri);
             stashedSegments.push({ uri: destUri, duration: segment.duration });
           }
           // If copy failed, skip this segment entirely. The original is in
@@ -88,7 +89,7 @@ export const stashAudioManager = {
       return stashedSlots;
     } catch (error) {
       // Clean up partially-copied files on failure
-      await deleteAsync(dir, { idempotent: true }).catch(() => {});
+      safeDeleteDirectory(dir);
       throw error;
     }
   },
@@ -106,8 +107,7 @@ export const stashAudioManager = {
     for (const slot of slots) {
       const validSegments: { uri: string; duration: number }[] = [];
       for (const segment of slot.segments) {
-        const info = await getInfoAsync(segment.uri);
-        if (info.exists) {
+        if (fileExists(segment.uri)) {
           validSegments.push(segment);
         } else {
           missingCount++;
@@ -132,10 +132,7 @@ export const stashAudioManager = {
   async deleteStashedAudio(sessionId: string): Promise<void> {
     try {
       const dir = sessionDir(sessionId);
-      const info = await getInfoAsync(dir);
-      if (info.exists) {
-        await deleteAsync(dir, { idempotent: true });
-      }
+      safeDeleteDirectory(dir);
     } catch {
       // Best-effort cleanup
     }
@@ -146,10 +143,7 @@ export const stashAudioManager = {
     try {
       if (!currentUserId) return;
       const dir = userStashDir();
-      const info = await getInfoAsync(dir);
-      if (info.exists) {
-        await deleteAsync(dir, { idempotent: true });
-      }
+      safeDeleteDirectory(dir);
     } catch {
       // Best-effort cleanup
     }
@@ -162,15 +156,14 @@ export const stashAudioManager = {
    */
   async deleteAllStashedAudioGlobal(): Promise<void> {
     try {
-      const info = await getInfoAsync(BASE_STASH_DIR);
-      if (!info.exists) return;
-      const entries = await readDirectoryAsync(BASE_STASH_DIR);
+      if (!directoryExists(BASE_STASH_DIR)) return;
+      const entries = new Directory(BASE_STASH_DIR).list();
       const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      await Promise.all(
-        entries
-          .filter((e) => !uuidPattern.test(e)) // Skip user-scoped dirs (UUIDs)
-          .map((e) => deleteAsync(`${BASE_STASH_DIR}${e}`, { idempotent: true }).catch(() => {}))
-      );
+      for (const entry of entries) {
+        if (!uuidPattern.test(entry.name)) {
+          safeDeleteDirectory(entry.uri);
+        }
+      }
     } catch {
       // Best-effort cleanup
     }
@@ -184,7 +177,7 @@ export const stashAudioManager = {
   async writeRecoveryManifest(sessionId: string, session: StashedSession): Promise<void> {
     try {
       const path = `${sessionDir(sessionId)}recovery.json`;
-      await writeAsStringAsync(path, JSON.stringify(session));
+      new ExpoFile(path).write(JSON.stringify(session));
     } catch {
       // Best-effort — stash still works if manifest write fails
     }
@@ -194,7 +187,7 @@ export const stashAudioManager = {
   async deleteRecoveryManifest(sessionId: string): Promise<void> {
     try {
       const path = `${sessionDir(sessionId)}recovery.json`;
-      await deleteAsync(path, { idempotent: true });
+      safeDeleteFile(path);
     } catch {
       // Best-effort cleanup
     }
@@ -204,9 +197,8 @@ export const stashAudioManager = {
   async readRecoveryManifest(sessionId: string): Promise<StashedSession | null> {
     try {
       const path = `${sessionDir(sessionId)}recovery.json`;
-      const info = await getInfoAsync(path);
-      if (!info.exists) return null;
-      const raw = await readAsStringAsync(path);
+      if (!fileExists(path)) return null;
+      const raw = await new ExpoFile(path).text();
       const parsed = JSON.parse(raw) as StashedSession;
       if (!parsed.id || !parsed.slots) return null;
       return parsed;
@@ -229,16 +221,15 @@ export const stashAudioManager = {
     try {
       if (!currentUserId) return [];
       const dir = userStashDir();
-      const info = await getInfoAsync(dir);
-      if (!info.exists) return [];
+      if (!directoryExists(dir)) return [];
 
-      const dirs = await readDirectoryAsync(dir);
+      const dirEntries = new Directory(dir).list();
       const validSet = new Set(validSessionIds);
-      const orphanDirs = dirs.filter((d) => !validSet.has(d));
+      const orphanDirs = dirEntries.filter((d) => !validSet.has(d.name));
       const recovered: StashedSession[] = [];
 
-      for (const orphanId of orphanDirs) {
-        const manifest = await this.readRecoveryManifest(orphanId);
+      for (const orphan of orphanDirs) {
+        const manifest = await this.readRecoveryManifest(orphan.name);
         if (manifest) {
           // Validate that audio files still exist before recovering
           const { validSlots } = await this.validateStashedAudio(manifest.slots);
@@ -249,7 +240,7 @@ export const stashAudioManager = {
           }
         }
         // No manifest or no valid audio — delete the orphaned directory
-        await deleteAsync(`${dir}${orphanId}`, { idempotent: true }).catch(() => {});
+        safeDeleteDirectory(orphan.uri);
       }
 
       return recovered;

@@ -1,22 +1,11 @@
-import {
-  cacheDirectory,
-  makeDirectoryAsync,
-  deleteAsync,
-  getInfoAsync,
-} from 'expo-file-system/legacy';
+import { Paths } from 'expo-file-system';
+import { ensureDirectory, safeDeleteDirectory, safeDeleteFile } from './fileOps';
 
-const EDIT_TEMP_DIR = `${cacheDirectory}audio-edit/`;
+const EDIT_TEMP_DIR = `${Paths.cache.uri}audio-edit/`;
 
 export const audioTempFiles = {
-  async ensureDir(): Promise<void> {
-    try {
-      const info = await getInfoAsync(EDIT_TEMP_DIR);
-      if (!info.exists) {
-        await makeDirectoryAsync(EDIT_TEMP_DIR, { intermediates: true });
-      }
-    } catch {
-      // Best-effort
-    }
+  ensureDir(): void {
+    ensureDirectory(EDIT_TEMP_DIR);
   },
 
   getTrimOutputPath(segmentIndex: number): string {
@@ -35,22 +24,11 @@ export const audioTempFiles = {
     return `${EDIT_TEMP_DIR}pcm-${segmentIndex}-${Date.now()}.raw`;
   },
 
-  async cleanupAll(): Promise<void> {
-    try {
-      const info = await getInfoAsync(EDIT_TEMP_DIR);
-      if (info.exists) {
-        await deleteAsync(EDIT_TEMP_DIR, { idempotent: true });
-      }
-    } catch {
-      // Best-effort cleanup
-    }
+  cleanupAll(): void {
+    safeDeleteDirectory(EDIT_TEMP_DIR);
   },
 
-  async cleanupFile(uri: string): Promise<void> {
-    try {
-      await deleteAsync(uri, { idempotent: true });
-    } catch {
-      // Best-effort cleanup
-    }
+  cleanupFile(uri: string): void {
+    safeDeleteFile(uri);
   },
 };

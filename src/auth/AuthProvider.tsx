@@ -2,7 +2,8 @@ import React, { createContext, useEffect, useState, useCallback, useRef } from '
 import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
-import { cacheDirectory, readDirectoryAsync, deleteAsync } from 'expo-file-system/legacy';
+import { Paths, Directory, File as ExpoFile } from 'expo-file-system';
+import { safeDeleteFile } from '../lib/fileOps';
 import { supabase } from './supabase';
 import { secureStorage } from '../lib/secureStorage';
 import { stashStorage } from '../lib/stashStorage';
@@ -39,15 +40,15 @@ function isTokenExpired(expiresAt: number | undefined): boolean {
 }
 
 /** Delete orphaned audio recordings from the cache directory. */
-async function cleanupAudioCache(): Promise<void> {
+function cleanupAudioCache(): void {
   try {
-    if (!cacheDirectory) return;
-    const files = await readDirectoryAsync(cacheDirectory);
-    await Promise.all(
-      files
-        .filter((f) => f.endsWith('.m4a'))
-        .map((f) => deleteAsync(`${cacheDirectory}${f}`, { idempotent: true }).catch(() => {}))
-    );
+    const cacheDir = new Directory(Paths.cache);
+    if (!cacheDir.exists) return;
+    for (const item of cacheDir.list()) {
+      if (item instanceof ExpoFile && item.name.endsWith('.m4a')) {
+        safeDeleteFile(item.uri);
+      }
+    }
   } catch {
     // Cache cleanup is best-effort
   }
@@ -139,8 +140,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         stashAudioManager.deleteAllStashedAudio().catch(() =>
           stashAudioManager.deleteAllStashedAudio()
         ).catch(() => {}),
-        cleanupAudioCache().catch(() => {}),
-        audioTempFiles.cleanupAll().catch(() => {}),
+        Promise.resolve(cleanupAudioCache()),
+        Promise.resolve(audioTempFiles.cleanupAll()),
       ]);
     } catch {
       // All cleanup is best-effort — don't block sign-out indefinitely
@@ -236,7 +237,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Cache cleanup is safe without user ID. Stash cleanup requires user ID
       // to be set (by fetchUser) so it only runs after authentication completes.
       setTimeout(() => {
-        cleanupAudioCache().catch(() => {});
+        cleanupAudioCache();
       }, 5000);
     }).catch((error) => {
       if (__DEV__) console.error('[Auth] Failed to restore session:', error);

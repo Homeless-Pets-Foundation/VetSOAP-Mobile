@@ -5,7 +5,7 @@ import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import * as FileSystem from 'expo-file-system';
+import { safeDeleteFile } from '../../../src/lib/fileOps';
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
@@ -248,7 +248,7 @@ function RecordingSession() {
             // Clean up all segment audio files
             session.slots.forEach((slot) => {
               slot.segments.forEach((seg) => {
-                FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+                safeDeleteFile(seg.uri);
               });
             });
             navigation.dispatch(data.action);
@@ -471,7 +471,7 @@ function RecordingSession() {
             onPress: () => {
               if (slot) {
                 slot.segments.forEach((seg) => {
-                  FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+                  safeDeleteFile(seg.uri);
                 });
               }
               clearAudio(slotId);
@@ -515,7 +515,7 @@ function RecordingSession() {
                       recorder.reset();
                     }
                     slot.segments.forEach((seg) => {
-                      FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+                      safeDeleteFile(seg.uri);
                     });
                     removeSlot(slotId);
                   } catch {}
@@ -576,7 +576,7 @@ function RecordingSession() {
         });
         // Clean up local audio files now that they're safely on R2
         slot.segments.forEach((seg) => {
-          FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+          safeDeleteFile(seg.uri);
         });
         return result.id;
       } catch (error) {
@@ -798,7 +798,7 @@ function RecordingSession() {
                 // Clean up current session audio files before restoring
                 session.slots.forEach((slot) => {
                   slot.segments.forEach((seg) => {
-                    FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+                    safeDeleteFile(seg.uri);
                   });
                 });
                 doResume();
@@ -853,7 +853,7 @@ function RecordingSession() {
           const newUris = new Set(result.segments.map((s) => s.uri));
           originalSegments.forEach((seg) => {
             if (!newUris.has(seg.uri)) {
-              FileSystem.deleteAsync(seg.uri, { idempotent: true }).catch(() => {});
+              safeDeleteFile(seg.uri);
             }
           });
           replaceAllSegments(result.slotId, result.segments);

@@ -30,8 +30,6 @@ export function StaticWaveform({
   const halfHeight = height / 2;
   const minBarHeight = 2;
 
-  // Compute positions
-  const playheadX = duration > 0 ? (currentTime / duration) * layoutWidth : 0;
   const trimStartX = duration > 0 ? (trimStart / duration) * layoutWidth : 0;
   const trimEndX = duration > 0 ? (trimEnd / duration) * layoutWidth : layoutWidth;
 
@@ -40,7 +38,7 @@ export function StaticWaveform({
   // mirror). The native SVG renderer processes each path in a single C++ pass
   // with one GPU draw call, instead of 600 bridge crossings.
   const { activePath, dimmedPath } = React.useMemo(() => {
-    if (barCount === 0 || duration <= 0) return { activePath: '', dimmedPath: '' };
+    if (peaks.length === 0 || duration <= 0) return { activePath: '', dimmedPath: '' };
     let active = '';
     let dimmed = '';
     for (let i = 0; i < peaks.length; i++) {
@@ -60,7 +58,7 @@ export function StaticWaveform({
       }
     }
     return { activePath: active, dimmedPath: dimmed };
-  }, [peaks, barCount, barWidth, barGap, halfHeight, minBarHeight, trimStartX, trimEndX, duration]);
+  }, [peaks, duration, barWidth, barGap, halfHeight, minBarHeight, trimStartX, trimEndX]);
 
   if (isLoading) {
     return (
@@ -78,6 +76,8 @@ export function StaticWaveform({
       />
     );
   }
+
+  const playheadX = duration > 0 ? (currentTime / duration) * layoutWidth : 0;
 
   return (
     <View

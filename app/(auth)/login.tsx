@@ -147,7 +147,7 @@ export default function LoginScreen() {
             <Button
               variant="primary"
               size="lg"
-              onPress={handleSignIn}
+              onPress={() => { handleSignIn().catch(() => {}); }}
               loading={isLoading}
               accessibilityLabel="Sign into your Account"
             >

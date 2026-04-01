@@ -179,7 +179,7 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
         <Button
           variant="primary"
           size="lg"
-          onPress={attemptUnlock}
+          onPress={() => { attemptUnlock().catch(() => {}); }}
           loading={isAuthenticating}
           accessibilityLabel="Unlock with biometrics"
         >

@@ -138,7 +138,7 @@ The recorder is created via expo-audio's `useAudioRecorder` hook which auto-rele
 
 ### 12. Validate local file reads before upload
 
-In `recordingsApi.createWithFile()` and `createWithSegments()`, always check file existence and size via `getInfoAsync(uri)` before uploading. Enforce a 500MB per-file limit client-side (`MAX_FILE_SIZE_BYTES`). Both methods use a 10-minute timeout (`R2_UPLOAD_TIMEOUT_MS`) per upload via `withTimeout()`. `createWithSegments()` validates each segment independently. A missing or empty audio file should throw a user-friendly error rather than silently uploading a 0-byte file.
+In `recordingsApi.createWithFile()` and `createWithSegments()`, always check file existence and size via `getInfoAsync(uri)` before uploading. Enforce a 250MB per-file limit client-side (`MAX_FILE_SIZE_BYTES`). Both methods use a 10-minute timeout (`R2_UPLOAD_TIMEOUT_MS`) per upload via `withTimeout()`. `createWithSegments()` validates each segment independently. A missing or empty audio file should throw a user-friendly error rather than silently uploading a 0-byte file.
 
 ### 13. Guard `response.json()` results against null and unexpected shapes
 

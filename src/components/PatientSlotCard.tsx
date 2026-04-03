@@ -194,9 +194,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               metering={metering}
             />
             <Text
-              className={`text-timer font-bold font-mono tracking-wider mb-5 ${
+              className={`text-timer font-bold font-mono mb-5 ${
                 isRecording ? 'text-brand-500' : 'text-stone-900'
               }`}
+              style={{ paddingRight: 4 }}
             >
               {formatDuration(duration)}
             </Text>
@@ -210,7 +211,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         ) : (
           <>
             <AudioWaveform isActive={false} />
-            <Text className="text-timer font-bold font-mono tracking-wider mb-5 text-stone-900">
+            <Text className="text-timer font-bold font-mono mb-5 text-stone-900" style={{ paddingRight: 4 }}>
               {formatDuration(duration)}
             </Text>
           </>

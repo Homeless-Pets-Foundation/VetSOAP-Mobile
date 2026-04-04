@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -13,6 +13,7 @@ import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { Button } from '../../../../src/components/ui/Button';
 
 const PAGE_SIZE = 20;
+const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
 
 export default function RecordingsListScreen() {
   const router = useRouter();
@@ -63,7 +64,18 @@ export default function RecordingsListScreen() {
     },
   });
 
-  const recordings = data?.pages.flatMap((page) => page.data) ?? [];
+  const recordings = useMemo(
+    () => data?.pages.flatMap((page) => page.data) ?? [],
+    [data]
+  );
+
+  const keyExtractor = useCallback((item: { id: string }) => item.id, []);
+
+  const onEndReached = useCallback(() => {
+    if (hasNextPage && !isFetchingNextPage) {
+      fetchNextPage().catch(() => {});
+    }
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   // Disable entry animations after initial data load
   useEffect(() => {
@@ -105,7 +117,7 @@ export default function RecordingsListScreen() {
 
       <FlatList
         data={recordings}
-        keyExtractor={(item) => item.id}
+        keyExtractor={keyExtractor}
         renderItem={({ item, index }) => {
           if (isInitialMountRef.current && index < 3) {
             return (
@@ -116,13 +128,9 @@ export default function RecordingsListScreen() {
           }
           return <RecordingCard recording={item} />;
         }}
-        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
+        contentContainerStyle={FLATLIST_CONTENT_STYLE}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} />}
-        onEndReached={() => {
-          if (hasNextPage && !isFetchingNextPage) {
-            fetchNextPage().catch(() => {});
-          }
-        }}
+        onEndReached={onEndReached}
         onEndReachedThreshold={0.8}
         removeClippedSubviews={true}
         maxToRenderPerBatch={5}

@@ -5,6 +5,8 @@ import { usePreventRemove, useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, Play, Pause, SkipBack, SkipForward } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { useAnimatedReaction, runOnJS } from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import { safeDeleteFile } from '../../src/lib/fileOps';
 import { useAudioPlayback } from '../../src/hooks/useAudioPlayback';
 import { audioEditorBridge } from '../../src/lib/audioEditorBridge';
@@ -18,6 +20,36 @@ function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Isolated time display component. Subscribes to the Reanimated shared value
+ * and only triggers a React re-render when the displayed second changes (~1x/sec),
+ * instead of every 100ms like the full screen would.
+ */
+function PlaybackTimeDisplay({
+  currentTimeSV,
+  duration,
+}: {
+  currentTimeSV: SharedValue<number>;
+  duration: number;
+}) {
+  const [displayTime, setDisplayTime] = useState(0);
+
+  useAnimatedReaction(
+    () => Math.floor(currentTimeSV.value),
+    (currentSecond, previousSecond) => {
+      if (currentSecond !== previousSecond) {
+        runOnJS(setDisplayTime)(currentSecond);
+      }
+    }
+  );
+
+  return (
+    <Text className="text-center text-body text-stone-500 mb-1">
+      {formatTime(displayTime)} / {formatTime(duration)}
+    </Text>
+  );
 }
 
 export default function AudioEditorScreen() {
@@ -183,17 +215,17 @@ export default function AudioEditorScreen() {
     (seconds: number) => {
       playback.seekTo(seconds).catch(() => {});
     },
-    [playback]
+    [playback.seekTo]
   );
 
   const handleSkipBack = useCallback(() => {
-    playback.seekTo(Math.max(0, playback.currentTime - 10)).catch(() => {});
-  }, [playback]);
+    playback.seekTo(Math.max(0, (playback.currentTimeRef.current ?? 0) - 10)).catch(() => {});
+  }, [playback.seekTo, playback.currentTimeRef]);
 
   const handleSkipForward = useCallback(() => {
     const maxTime = selectedSegment?.duration ?? 0;
-    playback.seekTo(Math.min(maxTime, playback.currentTime + 10)).catch(() => {});
-  }, [playback, selectedSegment?.duration]);
+    playback.seekTo(Math.min(maxTime, (playback.currentTimeRef.current ?? 0) + 10)).catch(() => {});
+  }, [playback.seekTo, playback.currentTimeRef, selectedSegment?.duration]);
 
   // Preview: play only the trimmed region
   const [isPreviewMode, setIsPreviewMode] = useState(false);
@@ -203,20 +235,27 @@ export default function AudioEditorScreen() {
     playback.seekTo(trimStart).then(() => {
       playback.play();
     }).catch(() => {});
-  }, [playback, trimStart]);
+  }, [playback.seekTo, playback.play, trimStart]);
 
-  // Stop playback at trim end during preview (with 0.15s tolerance for timing jitter)
-  const { isPlaying, currentTime: playbackTime, pause: pausePlayback } = playback;
+  // Stop playback at trim end during preview (with 0.15s tolerance for timing jitter).
+  // Uses setInterval to check currentTimeRef so this only runs during the brief preview period
+  // and avoids re-rendering the full screen on every 100ms position update.
   useEffect(() => {
-    if (isPreviewMode && isPlaying && playbackTime >= trimEnd - 0.15 && trimEnd < selectedDuration) {
-      pausePlayback();
+    if (!isPreviewMode) return;
+    // Clear preview flag if user paused manually before the interval fires
+    if (!playback.isPlaying) {
       setIsPreviewMode(false);
+      return;
     }
-    // Clear preview mode if user pauses manually
-    if (isPreviewMode && !isPlaying) {
-      setIsPreviewMode(false);
-    }
-  }, [playbackTime, isPlaying, trimEnd, selectedDuration, pausePlayback, isPreviewMode]);
+    const interval = setInterval(() => {
+      const time = playback.currentTimeRef.current ?? 0;
+      if (time >= trimEnd - 0.15 && trimEnd < selectedDuration) {
+        playback.pause();
+        setIsPreviewMode(false);
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isPreviewMode, playback.isPlaying, trimEnd, selectedDuration, playback.pause, playback.currentTimeRef]);
 
   // Apply trim via FFmpeg
   const handleApplyTrim = useCallback(() => {
@@ -297,7 +336,7 @@ export default function AudioEditorScreen() {
     })().catch(() => {
       setIsTrimming(false);
     });
-  }, [selectedSegment, selectedIndex, segments, trimStart, trimEnd, isTrimming, playback]);
+  }, [selectedSegment, selectedIndex, segments, trimStart, trimEnd, isTrimming, playback.pause, playback.loadSource]);
 
   // Delete a segment
   const handleDeleteSegment = useCallback(
@@ -339,7 +378,7 @@ export default function AudioEditorScreen() {
         ]
       );
     },
-    [segments, selectedIndex, playback]
+    [segments, selectedIndex, playback.pause]
   );
 
   // Reset trim handles to full range
@@ -362,7 +401,7 @@ export default function AudioEditorScreen() {
     }
     setHasChanges(false); // Prevent navigation guard from firing
     router.back();
-  }, [hasChanges, slotId, segments, playback, router]);
+  }, [hasChanges, slotId, segments, playback.pause, router]);
 
   // Go back without saving
   const handleBack = useCallback(() => {
@@ -389,7 +428,7 @@ export default function AudioEditorScreen() {
       audioEditorBridge.emitResult(null);
       router.back();
     }
-  }, [hasChanges, playback, router]);
+  }, [hasChanges, playback.pause, router]);
 
   const currentPeaks = peaks.get(selectedIndex) ?? [];
   const isPeaksLoading = peaksLoading.has(selectedIndex);
@@ -505,7 +544,7 @@ export default function AudioEditorScreen() {
           <WaveformEditor
             peaks={currentPeaks}
             duration={selectedSegment?.duration ?? 0}
-            currentTime={playback.currentTime}
+            currentTimeSV={playback.currentTimeSV}
             trimStart={trimStart}
             trimEnd={trimEnd}
             onTrimChange={handleTrimChange}
@@ -541,11 +580,10 @@ export default function AudioEditorScreen() {
             accessibilityHint="Double-tap to start or stop audio playback"
             className={`w-14 h-14 rounded-full items-center justify-center shadow-btn ${playback.isLoaded ? 'bg-brand-500' : 'bg-stone-300'}`}
           >
-            {playback.isPlaying ? (
-              <Pause color="#fff" size={24} fill="#fff" />
-            ) : (
-              <Play color="#fff" size={24} fill="#fff" />
-            )}
+            {playback.isPlaying
+              ? <Pause color="#fff" size={24} fill="#fff" />
+              : <Play color="#fff" size={24} fill="#fff" />
+            }
           </Pressable>
           <Pressable
             onPress={handleSkipForward}
@@ -558,10 +596,11 @@ export default function AudioEditorScreen() {
           </Pressable>
         </View>
 
-        {/* Current time display */}
-        <Text className="text-center text-body text-stone-500 mb-1">
-          {formatTime(playback.currentTime)} / {formatTime(selectedSegment?.duration ?? 0)}
-        </Text>
+        {/* Current time display — isolated component, re-renders only once per second */}
+        <PlaybackTimeDisplay
+          currentTimeSV={playback.currentTimeSV}
+          duration={selectedSegment?.duration ?? 0}
+        />
         {isPreviewMode && (
           <Text className="text-center text-caption text-brand-600 font-medium mb-4">
             Previewing trim region

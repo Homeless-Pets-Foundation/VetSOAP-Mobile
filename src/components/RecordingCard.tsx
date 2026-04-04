@@ -16,7 +16,7 @@ interface RecordingCardProps {
   recording: Recording;
 }
 
-export function RecordingCard({ recording }: RecordingCardProps) {
+export const RecordingCard = React.memo(function RecordingCard({ recording }: RecordingCardProps) {
   const router = useRouter();
   const scale = useSharedValue(1);
 
@@ -84,4 +84,7 @@ export function RecordingCard({ recording }: RecordingCardProps) {
       </View>
     </AnimatedPressable>
   );
-}
+}, (prev, next) =>
+  prev.recording.id === next.recording.id &&
+  prev.recording.status === next.recording.status
+);

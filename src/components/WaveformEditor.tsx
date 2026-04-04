@@ -1,13 +1,14 @@
 import React, { useCallback } from 'react';
 import { View, Text } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, useDerivedValue } from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import { StaticWaveform } from './StaticWaveform';
 import { TrimOverlay } from './TrimOverlay';
 
 interface WaveformEditorProps {
   peaks: number[];
   duration: number;
-  currentTime: number;
+  currentTimeSV: SharedValue<number>;
   trimStart: number;
   trimEnd: number;
   onTrimChange: (start: number, end: number) => void;
@@ -24,7 +25,7 @@ function formatTime(seconds: number): string {
 export function WaveformEditor({
   peaks,
   duration,
-  currentTime,
+  currentTimeSV,
   trimStart,
   trimEnd,
   onTrimChange,
@@ -55,13 +56,7 @@ export function WaveformEditor({
   }, [trimStart, trimEnd, trimStartSV, trimEndSV]);
 
   // Playhead — driven entirely on the UI thread via Reanimated.
-  // currentTime syncs to a shared value; useAnimatedStyle derives the translateX.
-  // This means playback progress never triggers React reconciliation.
-  const currentTimeSV = useSharedValue(currentTime);
-  React.useEffect(() => {
-    currentTimeSV.value = currentTime;
-  }, [currentTime, currentTimeSV]);
-
+  // currentTimeSV comes from the parent hook and is updated at 100ms without React re-renders.
   const playheadX = useDerivedValue(() => {
     if (durationSV.value <= 0 || containerWidthSV.value <= 0) return 0;
     return (currentTimeSV.value / durationSV.value) * containerWidthSV.value;

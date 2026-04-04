@@ -2,6 +2,7 @@ import { Paths } from 'expo-file-system';
 import { File as ExpoFile, Directory } from 'expo-file-system';
 
 const CACHE_DIR = `${Paths.cache.uri}waveform-peaks/`;
+const MAX_CACHE_ENTRIES = 100;
 
 /**
  * Build a deterministic cache filename from a file URI and its size.
@@ -40,6 +41,17 @@ export function cachePeaks(fileUri: string, fileSize: number, peaks: number[]): 
   try {
     const dir = new Directory(CACHE_DIR);
     if (!dir.exists) dir.create({ intermediates: true });
+    const entries = dir.list();
+    if (entries.length >= MAX_CACHE_ENTRIES) {
+      const files = entries
+        .filter((e): e is ExpoFile => e instanceof ExpoFile)
+        .map((f) => ({ file: f, mtime: f.modificationTime ?? 0 }))
+        .sort((a, b) => a.mtime - b.mtime);
+      const deleteCount = Math.ceil(files.length / 2);
+      for (let i = 0; i < deleteCount; i++) {
+        try { files[i].file.delete(); } catch { /* best-effort */ }
+      }
+    }
     const path = CACHE_DIR + cacheKey(fileUri, fileSize);
     new ExpoFile(path).write(JSON.stringify(peaks));
   } catch {

@@ -13,6 +13,7 @@ import { apiClient } from '../api/client';
 import { queryClient } from '../lib/queryClient';
 import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
+import { clearPeakCache } from '../lib/waveformCache';
 import type { User } from '../types';
 
 interface AuthContextType {
@@ -142,6 +143,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ).catch(() => {}),
         Promise.resolve(cleanupAudioCache()),
         Promise.resolve(audioTempFiles.cleanupAll()),
+        Promise.resolve(clearPeakCache()),
       ]);
     } catch {
       // All cleanup is best-effort — don't block sign-out indefinitely

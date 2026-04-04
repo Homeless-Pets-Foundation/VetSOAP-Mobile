@@ -1,6 +1,6 @@
 import React, { useCallback } from 'react';
 import { View, Text } from 'react-native';
-import { useSharedValue } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, useDerivedValue } from 'react-native-reanimated';
 import { StaticWaveform } from './StaticWaveform';
 import { TrimOverlay } from './TrimOverlay';
 
@@ -54,6 +54,23 @@ export function WaveformEditor({
     trimEndSV.value = trimEnd;
   }, [trimStart, trimEnd, trimStartSV, trimEndSV]);
 
+  // Playhead — driven entirely on the UI thread via Reanimated.
+  // currentTime syncs to a shared value; useAnimatedStyle derives the translateX.
+  // This means playback progress never triggers React reconciliation.
+  const currentTimeSV = useSharedValue(currentTime);
+  React.useEffect(() => {
+    currentTimeSV.value = currentTime;
+  }, [currentTime, currentTimeSV]);
+
+  const playheadX = useDerivedValue(() => {
+    if (durationSV.value <= 0 || containerWidthSV.value <= 0) return 0;
+    return (currentTimeSV.value / durationSV.value) * containerWidthSV.value;
+  });
+
+  const playheadStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: playheadX.value }],
+  }));
+
   // Stable ref for onTrimChange to avoid recreating TrimOverlay callbacks
   const onTrimChangeRef = React.useRef(onTrimChange);
   onTrimChangeRef.current = onTrimChange;
@@ -70,16 +87,33 @@ export function WaveformEditor({
       onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
       className="relative"
     >
-      {/* Waveform */}
+      {/* Waveform — static SVG, only re-renders when peaks or trim range change */}
       <StaticWaveform
         peaks={peaks}
         duration={duration}
-        currentTime={currentTime}
         trimStart={trimStart}
         trimEnd={trimEnd}
         height={WAVEFORM_HEIGHT}
         isLoading={isLoading}
       />
+
+      {/* Playhead — 2px red line, moves on UI thread via Reanimated, zero JS cost */}
+      {!isLoading && containerWidth > 0 && duration > 0 && (
+        <Animated.View
+          style={[
+            {
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: 2,
+              height: WAVEFORM_HEIGHT,
+              backgroundColor: '#ef4444',
+            },
+            playheadStyle,
+          ]}
+          pointerEvents="none"
+        />
+      )}
 
       {/* Unified trim overlay — handles all touch interactions */}
       {!isLoading && containerWidth > 0 && duration > 0 && (

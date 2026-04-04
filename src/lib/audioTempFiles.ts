@@ -24,6 +24,10 @@ export const audioTempFiles = {
     return `${EDIT_TEMP_DIR}pcm-${segmentIndex}-${Date.now()}.raw`;
   },
 
+  getBatchPcmTempPath(batchIndex: number): string {
+    return `${EDIT_TEMP_DIR}pcm-batch-${batchIndex}-${Date.now()}.raw`;
+  },
+
   cleanupAll(): void {
     safeDeleteDirectory(EDIT_TEMP_DIR);
   },

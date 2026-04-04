@@ -1,22 +1,23 @@
 import React from 'react';
 import { View } from 'react-native';
-import Svg, { Path, Line } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 import { Skeleton } from './ui/Skeleton';
 
 interface StaticWaveformProps {
   peaks: number[];
   duration: number;
-  currentTime: number;
   trimStart: number;
   trimEnd: number;
   height?: number;
   isLoading?: boolean;
 }
 
-export function StaticWaveform({
+// Wrapped in React.memo — only re-renders when peaks or trim range change.
+// The playhead is rendered separately in WaveformEditor as a Reanimated
+// Animated.View, so currentTime updates never trigger an SVG re-render.
+export const StaticWaveform = React.memo(function StaticWaveform({
   peaks,
   duration,
-  currentTime,
   trimStart,
   trimEnd,
   height = 120,
@@ -77,12 +78,10 @@ export function StaticWaveform({
     );
   }
 
-  const playheadX = duration > 0 ? (currentTime / duration) * layoutWidth : 0;
-
   return (
     <View
       accessibilityRole="adjustable"
-      accessibilityLabel={`Audio waveform. Current position ${Math.floor(currentTime)} of ${Math.floor(duration)} seconds.`}
+      accessibilityLabel={`Audio waveform. Duration ${Math.floor(duration)} seconds.`}
       onLayout={(e) => setLayoutWidth(e.nativeEvent.layout.width)}
       style={{ height }}
       className="rounded-lg bg-stone-100 overflow-hidden"
@@ -96,18 +95,8 @@ export function StaticWaveform({
           {activePath.length > 0 && (
             <Path d={activePath} fill="#0d8775" opacity={1} />
           )}
-
-          {/* Playhead line */}
-          <Line
-            x1={playheadX}
-            y1={0}
-            x2={playheadX}
-            y2={height}
-            stroke="#ef4444"
-            strokeWidth={2}
-          />
         </Svg>
       )}
     </View>
   );
-}
+});

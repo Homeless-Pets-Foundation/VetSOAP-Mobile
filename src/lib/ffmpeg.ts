@@ -6,10 +6,19 @@ import {
 } from 'expo-file-system/legacy';
 import { File as ExpoFile } from 'expo-file-system';
 import { audioTempFiles } from './audioTempFiles';
+import { getCachedPeaks, cachePeaks } from './waveformCache';
 
 // Maximum input file size for waveform extraction (500MB).
 // Prevents OOM from decoding extremely large files to PCM.
 const MAX_WAVEFORM_INPUT_BYTES = 500 * 1024 * 1024;
+
+// Seek-based sampling constants (used when duration >= SHORT_FILE_THRESHOLD_S)
+const SHORT_FILE_THRESHOLD_S = 60;   // files shorter than this use full-decode path
+const SAMPLE_DURATION_S = 4;         // seconds of audio decoded per sample position
+const BATCH_SIZE = 10;               // FFmpeg inputs per command (multi-input concat)
+const SAMPLES_PER_POSITION = 5;      // waveform peaks extracted per sample position
+const SEEK_SAMPLERATE = 2000;        // Hz for seek-based PCM output
+const SHORT_SAMPLERATE = 500;        // Hz for full-decode path (short files)
 
 /**
  * Validate that a file URI is safe to pass to FFmpeg.
@@ -176,13 +185,294 @@ export async function getAudioDuration(uri: string): Promise<number> {
 }
 
 /**
+ * Read raw 16-bit little-endian PCM from a file and compute `peakCount`
+ * max-amplitude windows. Returns normalized values (0.0 - 1.0).
+ *
+ * Used by both the full-decode path (short files) and the seek-based path
+ * (long files). The file handle is always closed in a finally block.
+ */
+async function readPcmPeaks(
+  pcmPath: string,
+  totalBytes: number,
+  peakCount: number
+): Promise<number[]> {
+  const bytesPerSample = 2; // 16-bit
+  const totalSamples = Math.floor(totalBytes / bytesPerSample);
+  const samplesPerPeak = Math.max(1, Math.floor(totalSamples / peakCount));
+  const actualPeaks = Math.min(peakCount, totalSamples);
+
+  const CHUNK_SIZE = 256 * 1024; // 256KB chunks — no base64 overhead
+  const peaks: number[] = [];
+  let globalMax = 1; // avoid division by zero
+  let currentPeakMax = 0;
+  let samplesInCurrentPeak = 0;
+
+  const file = new ExpoFile(pcmPath);
+  const handle = file.open();
+  let chunkCount = 0;
+
+  try {
+    for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
+      const readSize = Math.min(CHUNK_SIZE, totalBytes - offset);
+      handle.offset = offset;
+      const bytes = handle.readBytes(readSize);
+
+      // Process 16-bit samples (little-endian)
+      for (let i = 0; i + 1 < bytes.length; i += bytesPerSample) {
+        let sample = bytes[i] | (bytes[i + 1] << 8);
+        // Convert unsigned to signed 16-bit
+        if (sample >= 0x8000) sample -= 0x10000;
+        const absSample = Math.abs(sample);
+
+        if (absSample > currentPeakMax) {
+          currentPeakMax = absSample;
+        }
+
+        samplesInCurrentPeak++;
+
+        if (samplesInCurrentPeak >= samplesPerPeak && peaks.length < actualPeaks) {
+          if (currentPeakMax > globalMax) globalMax = currentPeakMax;
+          peaks.push(currentPeakMax);
+          currentPeakMax = 0;
+          samplesInCurrentPeak = 0;
+        }
+      }
+
+      // Yield to JS thread every 4 chunks to prevent ANR on slow devices
+      chunkCount++;
+      if (chunkCount % 4 === 0) {
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }
+    }
+  } finally {
+    handle.close();
+  }
+
+  // Push any remaining samples as the last peak
+  if (samplesInCurrentPeak > 0 && peaks.length < actualPeaks) {
+    if (currentPeakMax > globalMax) globalMax = currentPeakMax;
+    peaks.push(currentPeakMax);
+  }
+
+  // Normalize to 0.0 - 1.0
+  return peaks.map((p) => p / globalMax);
+}
+
+/**
+ * Seek-based waveform extraction for long files (>= SHORT_FILE_THRESHOLD_S).
+ *
+ * Divides the recording into `numberOfPeaks` equal windows. For each window
+ * the audio at the window's midpoint is sampled, decoding SAMPLE_DURATION_S
+ * seconds. Positions are grouped into batches of BATCH_SIZE per FFmpeg call
+ * using multi-input + concat filter to amortise process startup cost.
+ *
+ * For 150 peaks at 30 positions × 4s at 2kHz: ~240KB of PCM total instead
+ * of decoding the full file — a 60x reduction for a 120-minute recording.
+ */
+async function extractPeaksSampled(
+  inputUri: string,
+  numberOfPeaks: number,
+  duration: number
+): Promise<number[]> {
+  // Number of evenly-spaced sample positions across the file
+  const numPositions = Math.ceil(numberOfPeaks / SAMPLES_PER_POSITION);
+  // Peaks per position — may exceed SAMPLES_PER_POSITION for odd numberOfPeaks
+  const peaksPerPosition = Math.ceil(numberOfPeaks / numPositions);
+
+  // Compute midpoint seek offsets for each window
+  const windowSize = duration / numPositions;
+  const positions: number[] = [];
+  for (let i = 0; i < numPositions; i++) {
+    // Midpoint of each equal-width window, clamped so the 4s decode fits
+    const mid = (i + 0.5) * windowSize;
+    const seekPos = Math.max(0, Math.min(mid, duration - SAMPLE_DURATION_S));
+    positions.push(seekPos);
+  }
+
+  const allPeaks: number[] = [];
+
+  // Process positions in batches
+  const numBatches = Math.ceil(positions.length / BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < numBatches; batchIdx++) {
+    const batchPositions = positions.slice(
+      batchIdx * BATCH_SIZE,
+      (batchIdx + 1) * BATCH_SIZE
+    );
+    const batchPcmPath = audioTempFiles.getBatchPcmTempPath(batchIdx);
+
+    try {
+      const batchPeaks = await runBatch(inputUri, batchPositions, batchPcmPath, peaksPerPosition);
+      allPeaks.push(...batchPeaks);
+    } finally {
+      audioTempFiles.cleanupFile(batchPcmPath);
+    }
+  }
+
+  // Ensure we return exactly numberOfPeaks (trim or pad with 0 as needed)
+  while (allPeaks.length < numberOfPeaks) allPeaks.push(0);
+  return allPeaks.slice(0, numberOfPeaks);
+}
+
+/**
+ * Run a single batch: try multi-input concat first, fall back to sequential
+ * individual decodes if FFmpeg returns non-success.
+ */
+async function runBatch(
+  inputUri: string,
+  batchPositions: number[],
+  batchPcmPath: string,
+  peaksPerPosition: number
+): Promise<number[]> {
+  const n = batchPositions.length;
+
+  // Build multi-input concat command
+  // e.g.: -ss 0 -t 4 -i "f.m4a" -ss 240 -t 4 -i "f.m4a" ... -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1[out]" -map "[out]" -ac 1 -ar 2000 -f s16le ...
+  const inputArgs = batchPositions
+    .map((pos) => `-ss ${pos.toFixed(3)} -t ${SAMPLE_DURATION_S} -i "${inputUri}"`)
+    .join(' ');
+
+  const concatInputs = Array.from({ length: n }, (_, i) => `[${i}:a]`).join('');
+  const filterComplex = `${concatInputs}concat=n=${n}:v=0:a=1[out]`;
+
+  const batchCommand =
+    `${inputArgs} -filter_complex "${filterComplex}" -map "[out]"` +
+    ` -ac 1 -ar ${SEEK_SAMPLERATE} -f s16le -acodec pcm_s16le -y "${batchPcmPath}"`;
+
+  const batchSession = await FFmpegKit.execute(batchCommand);
+  const batchReturnCode = await batchSession.getReturnCode();
+
+  if (ReturnCode.isSuccess(batchReturnCode)) {
+    return await readBatchPcm(batchPcmPath, n, peaksPerPosition);
+  }
+
+  // Batch failed — fall back to individual decodes
+  if (__DEV__) {
+    console.log('[ffmpeg] multi-input concat failed, falling back to individual decodes');
+  }
+
+  const peaks: number[] = [];
+  for (let i = 0; i < batchPositions.length; i++) {
+    const pos = batchPositions[i];
+    const individualCommand =
+      `-ss ${pos.toFixed(3)} -t ${SAMPLE_DURATION_S} -i "${inputUri}"` +
+      ` -ac 1 -ar ${SEEK_SAMPLERATE} -f s16le -acodec pcm_s16le -y "${batchPcmPath}"`;
+
+    const individualSession = await FFmpegKit.execute(individualCommand);
+    const individualReturnCode = await individualSession.getReturnCode();
+
+    if (!ReturnCode.isSuccess(individualReturnCode)) {
+      // Pad with zeros for this position rather than aborting the whole extraction
+      for (let p = 0; p < peaksPerPosition; p++) peaks.push(0);
+      continue;
+    }
+
+    const indivInfo = await getInfoAsync(batchPcmPath);
+    if (!indivInfo.exists || !('size' in indivInfo) || indivInfo.size === 0) {
+      for (let p = 0; p < peaksPerPosition; p++) peaks.push(0);
+      continue;
+    }
+
+    const positionPeaks = await readPcmPeaks(batchPcmPath, indivInfo.size, peaksPerPosition);
+    peaks.push(...positionPeaks);
+
+    // Clean up between individual calls so the next one gets a fresh file
+    audioTempFiles.cleanupFile(batchPcmPath);
+  }
+
+  return peaks;
+}
+
+/**
+ * Read the concatenated PCM output from a multi-input batch and extract
+ * `peaksPerPosition` peaks from each `SAMPLE_DURATION_S`-second window.
+ */
+async function readBatchPcm(
+  batchPcmPath: string,
+  numPositions: number,
+  peaksPerPosition: number
+): Promise<number[]> {
+  const pcmInfo = await getInfoAsync(batchPcmPath);
+  if (!pcmInfo.exists || !('size' in pcmInfo) || pcmInfo.size === 0) {
+    // Return zeros for the entire batch rather than throwing
+    return Array(numPositions * peaksPerPosition).fill(0) as number[];
+  }
+
+  const totalBytes = pcmInfo.size;
+  const bytesPerSample = 2; // 16-bit
+  // Bytes for one SAMPLE_DURATION_S window at SEEK_SAMPLERATE
+  const bytesPerWindow = SAMPLE_DURATION_S * SEEK_SAMPLERATE * bytesPerSample;
+
+  const allPeaks: number[] = [];
+
+  for (let wi = 0; wi < numPositions; wi++) {
+    const windowOffset = wi * bytesPerWindow;
+    const windowBytes = Math.min(bytesPerWindow, totalBytes - windowOffset);
+    if (windowBytes <= 0) {
+      // Window extends past EOF (shouldn't happen, but be defensive)
+      for (let p = 0; p < peaksPerPosition; p++) allPeaks.push(0);
+      continue;
+    }
+
+    // Read just this window's bytes from the file
+    const file = new ExpoFile(batchPcmPath);
+    const handle = file.open();
+    let windowPeaks: number[];
+    try {
+      handle.offset = windowOffset;
+      const bytes = handle.readBytes(windowBytes);
+
+      // Extract peaksPerPosition peaks from this window inline
+      const totalSamples = Math.floor(bytes.length / bytesPerSample);
+      const samplesPerPeak = Math.max(1, Math.floor(totalSamples / peaksPerPosition));
+      const rawPeaks: number[] = [];
+      let globalMax = 1;
+      let currentPeakMax = 0;
+      let samplesInCurrentPeak = 0;
+
+      for (let i = 0; i + 1 < bytes.length; i += bytesPerSample) {
+        let sample = bytes[i] | (bytes[i + 1] << 8);
+        if (sample >= 0x8000) sample -= 0x10000;
+        const absSample = Math.abs(sample);
+        if (absSample > currentPeakMax) currentPeakMax = absSample;
+        samplesInCurrentPeak++;
+
+        if (samplesInCurrentPeak >= samplesPerPeak && rawPeaks.length < peaksPerPosition) {
+          if (currentPeakMax > globalMax) globalMax = currentPeakMax;
+          rawPeaks.push(currentPeakMax);
+          currentPeakMax = 0;
+          samplesInCurrentPeak = 0;
+        }
+      }
+      if (samplesInCurrentPeak > 0 && rawPeaks.length < peaksPerPosition) {
+        if (currentPeakMax > globalMax) globalMax = currentPeakMax;
+        rawPeaks.push(currentPeakMax);
+      }
+
+      windowPeaks = rawPeaks.map((p) => p / globalMax);
+    } finally {
+      handle.close();
+    }
+
+    // Pad or trim to exactly peaksPerPosition
+    while (windowPeaks.length < peaksPerPosition) windowPeaks.push(0);
+    allPeaks.push(...windowPeaks.slice(0, peaksPerPosition));
+  }
+
+  return allPeaks;
+}
+
+/**
  * Extract waveform peak amplitudes for visualization.
  *
- * Decodes audio to 8kHz mono raw PCM, then reads in chunks and computes
- * the max absolute amplitude per window. Returns normalized values (0.0 - 1.0).
+ * For short files (< 60s): decodes the entire file to 500Hz mono PCM, then
+ * computes max-amplitude windows in JS. Returns normalized values (0.0 - 1.0).
  *
- * For a 90-minute file at 8kHz mono 16-bit: ~86MB of PCM data.
- * We process in 1MB chunks to avoid memory pressure.
+ * For long files (>= 60s): uses seek-based sampling — jumps to evenly-spaced
+ * positions and decodes only SAMPLE_DURATION_S seconds at each, batching 10
+ * positions per FFmpeg call. For a 120-minute file this reduces decoded audio
+ * from 7,200s to 120s (60x improvement).
+ *
+ * Results are cached by file URI + size and returned immediately on cache hit.
  */
 export async function extractWaveformPeaks(
   inputUri: string,
@@ -205,95 +495,49 @@ export async function extractWaveformPeaks(
     );
   }
 
-  await audioTempFiles.ensureDir();
-  const pcmPath = audioTempFiles.getPcmTempPath(0);
+  const fileSize = 'size' in inputInfo ? inputInfo.size : 0;
 
-  try {
-    // Decode to 2kHz mono 16-bit little-endian PCM (2kHz is sufficient for
-    // visualization peaks and produces 4x less data than 8kHz — critical for
-    // low-end tablets like the A7 Lite where JS-thread PCM processing is the
-    // bottleneck)
-    const command = `-i "${inputUri}" -ac 1 -ar 2000 -f s16le -acodec pcm_s16le -y "${pcmPath}"`;
+  // Check cache before any FFmpeg work
+  const cached = await getCachedPeaks(inputUri, fileSize);
+  if (cached !== null) return cached;
 
-    const session = await FFmpegKit.execute(command);
-    const returnCode = await session.getReturnCode();
+  // Get duration to decide which extraction strategy to use
+  const duration = await getAudioDuration(inputUri);
 
-    if (!ReturnCode.isSuccess(returnCode)) {
-      throw new Error('FFmpeg waveform extraction failed');
-    }
+  let peaks: number[];
 
-    const pcmInfo = await getInfoAsync(pcmPath);
-    if (!pcmInfo.exists || !('size' in pcmInfo) || pcmInfo.size === 0) {
-      throw new Error('PCM output file is empty or missing');
-    }
-
-    const totalBytes = pcmInfo.size;
-    const bytesPerSample = 2; // 16-bit
-    const totalSamples = Math.floor(totalBytes / bytesPerSample);
-    const samplesPerPeak = Math.max(1, Math.floor(totalSamples / numberOfPeaks));
-    const actualPeaks = Math.min(numberOfPeaks, totalSamples);
-
-    // Read PCM via native FileHandle — returns Uint8Array directly, avoiding
-    // the base64 encode → atob decode → charCodeAt loop that blocks the JS
-    // thread for 10-30s on low-end devices
-    const CHUNK_SIZE = 256 * 1024; // 256KB (no base64 overhead, smaller is fine)
-    const peaks: number[] = [];
-    let globalMax = 1; // avoid division by zero
-
-    let currentPeakMax = 0;
-    let samplesInCurrentPeak = 0;
-
-    const file = new ExpoFile(pcmPath);
-    const handle = file.open();
-    let chunkCount = 0;
+  if (duration >= SHORT_FILE_THRESHOLD_S) {
+    // Long file: seek-based sampling (fast — only decodes 4s per position)
+    peaks = await extractPeaksSampled(inputUri, numberOfPeaks, duration);
+  } else {
+    // Short file: full decode at low sample rate (500Hz is sufficient for visuals)
+    await audioTempFiles.ensureDir();
+    const pcmPath = audioTempFiles.getPcmTempPath(0);
 
     try {
-      for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
-        const readSize = Math.min(CHUNK_SIZE, totalBytes - offset);
-        handle.offset = offset;
-        const bytes = handle.readBytes(readSize);
+      const command =
+        `-i "${inputUri}" -ac 1 -ar ${SHORT_SAMPLERATE} -f s16le -acodec pcm_s16le -y "${pcmPath}"`;
 
-        // Process 16-bit samples (little-endian)
-        for (let i = 0; i + 1 < bytes.length; i += bytesPerSample) {
-          let sample = bytes[i] | (bytes[i + 1] << 8);
-          // Convert unsigned to signed 16-bit
-          if (sample >= 0x8000) sample -= 0x10000;
-          const absSample = Math.abs(sample);
+      const session = await FFmpegKit.execute(command);
+      const returnCode = await session.getReturnCode();
 
-          if (absSample > currentPeakMax) {
-            currentPeakMax = absSample;
-          }
-
-          samplesInCurrentPeak++;
-
-          if (samplesInCurrentPeak >= samplesPerPeak && peaks.length < actualPeaks) {
-            if (currentPeakMax > globalMax) globalMax = currentPeakMax;
-            peaks.push(currentPeakMax);
-            currentPeakMax = 0;
-            samplesInCurrentPeak = 0;
-          }
-        }
-
-        // Yield to JS thread every 4 chunks to prevent ANR on slow devices
-        chunkCount++;
-        if (chunkCount % 4 === 0) {
-          await new Promise<void>((r) => setTimeout(r, 0));
-        }
+      if (!ReturnCode.isSuccess(returnCode)) {
+        throw new Error('FFmpeg waveform extraction failed');
       }
+
+      const pcmInfo = await getInfoAsync(pcmPath);
+      if (!pcmInfo.exists || !('size' in pcmInfo) || pcmInfo.size === 0) {
+        throw new Error('PCM output file is empty or missing');
+      }
+
+      peaks = await readPcmPeaks(pcmPath, pcmInfo.size, numberOfPeaks);
     } finally {
-      handle.close();
+      audioTempFiles.cleanupFile(pcmPath);
     }
-
-    // Push any remaining samples as the last peak
-    if (samplesInCurrentPeak > 0 && peaks.length < actualPeaks) {
-      if (currentPeakMax > globalMax) globalMax = currentPeakMax;
-      peaks.push(currentPeakMax);
-    }
-
-    // Normalize to 0.0 - 1.0
-    return peaks.map((p) => p / globalMax);
-  } finally {
-    // Always clean up temp PCM file
-    await audioTempFiles.cleanupFile(pcmPath);
   }
+
+  // Write to cache (fire-and-forget — cachePeaks() has internal try/catch)
+  cachePeaks(inputUri, fileSize, peaks);
+
+  return peaks;
 }

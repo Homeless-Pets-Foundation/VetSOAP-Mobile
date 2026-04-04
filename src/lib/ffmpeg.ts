@@ -13,7 +13,7 @@ import { getCachedPeaks, cachePeaks } from './waveformCache';
 const MAX_WAVEFORM_INPUT_BYTES = 500 * 1024 * 1024;
 
 // Seek-based sampling constants (used when duration >= SHORT_FILE_THRESHOLD_S)
-const SHORT_FILE_THRESHOLD_S = 60;   // files shorter than this use full-decode path
+export const SHORT_FILE_THRESHOLD_S = 480;   // 8 min — seek-based only wins for very long files
 const SAMPLE_DURATION_S = 4;         // seconds of audio decoded per sample position
 const BATCH_SIZE = 10;               // FFmpeg inputs per command (multi-input concat)
 const SAMPLES_PER_POSITION = 5;      // waveform peaks extracted per sample position
@@ -272,8 +272,10 @@ async function readPcmPeaks(
 async function extractPeaksSampled(
   inputUri: string,
   numberOfPeaks: number,
-  duration: number
+  duration: number,
+  onProgress?: (partialPeaks: number[]) => void
 ): Promise<number[]> {
+  await audioTempFiles.ensureDir();
   // Number of evenly-spaced sample positions across the file
   const numPositions = Math.ceil(numberOfPeaks / SAMPLES_PER_POSITION);
   // Peaks per position — may exceed SAMPLES_PER_POSITION for odd numberOfPeaks
@@ -303,6 +305,15 @@ async function extractPeaksSampled(
     try {
       const batchPeaks = await runBatch(inputUri, batchPositions, batchPcmPath, peaksPerPosition);
       allPeaks.push(...batchPeaks);
+      if (onProgress) {
+        try {
+          const partial = allPeaks.slice();
+          while (partial.length < numberOfPeaks) partial.push(0);
+          onProgress(partial.slice(0, numberOfPeaks));
+        } catch {
+          // best-effort — don't abort extraction if progress callback fails
+        }
+      }
     } finally {
       audioTempFiles.cleanupFile(batchPcmPath);
     }
@@ -476,7 +487,8 @@ async function readBatchPcm(
  */
 export async function extractWaveformPeaks(
   inputUri: string,
-  numberOfPeaks: number
+  numberOfPeaks: number,
+  options?: { knownDuration?: number; onProgress?: (partialPeaks: number[]) => void }
 ): Promise<number[]> {
   validateFileUri(inputUri, 'Waveform input');
 
@@ -502,13 +514,15 @@ export async function extractWaveformPeaks(
   if (cached !== null) return cached;
 
   // Get duration to decide which extraction strategy to use
-  const duration = await getAudioDuration(inputUri);
+  const duration = (options?.knownDuration && options.knownDuration > 0)
+    ? options.knownDuration
+    : await getAudioDuration(inputUri);
 
   let peaks: number[];
 
   if (duration >= SHORT_FILE_THRESHOLD_S) {
     // Long file: seek-based sampling (fast — only decodes 4s per position)
-    peaks = await extractPeaksSampled(inputUri, numberOfPeaks, duration);
+    peaks = await extractPeaksSampled(inputUri, numberOfPeaks, duration, options?.onProgress);
   } else {
     // Short file: full decode at low sample rate (500Hz is sufficient for visuals)
     await audioTempFiles.ensureDir();

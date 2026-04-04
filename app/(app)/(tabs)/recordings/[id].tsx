@@ -1,5 +1,5 @@
-import React, { useCallback } from 'react';
-import { View, Text, ScrollView, Pressable, Alert, RefreshControl } from 'react-native';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
+import { View, Text, ScrollView, Pressable, Alert, RefreshControl, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -20,12 +20,11 @@ const PROCESSING_STEPS = [
   { status: 'uploading', label: 'Uploading' },
   { status: 'uploaded', label: 'Uploaded' },
   { status: 'transcribing', label: 'Transcribing' },
-  { status: 'transcribed', label: 'Transcribed' },
   { status: 'generating', label: 'Generating SOAP' },
   { status: 'completed', label: 'Complete' },
 ] as const;
 
-const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'transcribed', 'generating', 'completed'];
+const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'generating', 'completed'];
 
 function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
   if (currentStatus === 'failed') return null;
@@ -128,17 +127,39 @@ export default function RecordingDetailScreen() {
   const queryClient = useQueryClient();
   const { iconMd } = useResponsive();
 
+  const appStateRef = useRef(AppState.currentState);
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
+  const pollingStartedAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      appStateRef.current = nextState;
+      setIsAppActive(nextState === 'active');
+    });
+    return () => sub.remove();
+  }, []);
 
   const { data: recording, isLoading, isError, error, refetch: refetchRecording, isRefetching: isRefetchingRecording } = useQuery({
     queryKey: ['recording', id],
     queryFn: () => recordingsApi.get(id!),
     enabled: !!id,
     refetchInterval: (query) => {
+      if (!isAppActive) return false;
       const status = query.state.data?.status;
-      if (status && !['completed', 'failed', 'pending_metadata'].includes(status)) {
-        return 10000;
+      if (!status || ['completed', 'failed', 'pending_metadata'].includes(status)) {
+        pollingStartedAtRef.current = null;
+        return false;
       }
-      return false;
+      if (!pollingStartedAtRef.current) {
+        pollingStartedAtRef.current = Date.now();
+      }
+      const elapsedMs = Date.now() - pollingStartedAtRef.current;
+      if (elapsedMs > 30 * 60 * 1000) {
+        return false; // Stop polling — stale processing
+      }
+      // Exponential backoff: 5s → 7.5s → 11.25s → … capped at 60s
+      const attempts = query.state.dataUpdateCount;
+      return Math.min(5_000 * Math.pow(1.5, attempts), 60_000);
     },
   });
 
@@ -152,12 +173,19 @@ export default function RecordingDetailScreen() {
     queryKey: ['soapNote', id],
     queryFn: () => recordingsApi.getSoapNote(id!),
     enabled: !!id && recording?.status === 'completed',
+    retry: 3,
+    retryDelay: 2000,
   });
 
   const handleRefresh = useCallback(() => {
     refetchRecording().catch(() => {});
     refetchSoapNote().catch(() => {});
   }, [refetchRecording, refetchSoapNote]);
+
+  const isPollingStale =
+    !!pollingStartedAtRef.current &&
+    Date.now() - pollingStartedAtRef.current > 30 * 60 * 1000 &&
+    !['completed', 'failed', 'pending_metadata'].includes(recording?.status ?? '');
 
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
@@ -287,6 +315,33 @@ export default function RecordingDetailScreen() {
           </Card>
         )}
 
+        {/* Stale processing warning — shown after 30 min of non-terminal status */}
+        {isPollingStale && (
+          <Card className="mx-5 mb-4 border-warning-200">
+            <View className="flex-row items-start">
+              <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+              <View className="flex-1">
+                <Text className="text-body font-semibold text-warning-700 mb-1">
+                  Processing is taking longer than expected
+                </Text>
+                <Text className="text-body-sm text-stone-500 mb-2">
+                  This may indicate a server issue. You can wait or retry processing.
+                </Text>
+                <View className="self-start">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onPress={() => retryMutation.mutate()}
+                    loading={retryMutation.isPending}
+                  >
+                    Retry Processing
+                  </Button>
+                </View>
+              </View>
+            </View>
+          </Card>
+        )}
+
         {/* Pending Metadata (Google Drive import awaiting details) */}
         {recording.status === 'pending_metadata' && (
           <Card className="mx-5 mb-4 border-warning-200">
@@ -355,6 +410,33 @@ export default function RecordingDetailScreen() {
         {/* SOAP Note */}
         {recording.status === 'completed' && (
           <View className="px-5 pb-8">
+            {recording.errorCode === 'PARTIAL_GENERATION' && (
+              <Animated.View entering={FadeInUp.duration(300)} className="mb-4">
+                <Card className="border-warning-200">
+                  <View className="flex-row items-start">
+                    <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+                    <View className="flex-1">
+                      <Text className="text-body font-semibold text-warning-700 mb-1">
+                        Partial SOAP Note
+                      </Text>
+                      <Text className="text-body-sm text-stone-500 mb-2">
+                        One or more sections could not be generated. The note below may be incomplete.
+                      </Text>
+                      <View className="self-start">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onPress={() => retryMutation.mutate()}
+                          loading={retryMutation.isPending}
+                        >
+                          Regenerate
+                        </Button>
+                      </View>
+                    </View>
+                  </View>
+                </Card>
+              </Animated.View>
+            )}
             {isSoapNoteLoading ? (
               <View>
                 {[1, 2, 3, 4].map((i) => (

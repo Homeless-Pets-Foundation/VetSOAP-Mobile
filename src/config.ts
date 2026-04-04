@@ -47,13 +47,17 @@ if (__DEV__ && (!SUPABASE_URL || !SUPABASE_ANON_KEY)) {
 }
 
 // Specific R2 bucket hostname for upload URL validation (e.g. "<account-id>.r2.cloudflarestorage.com")
-// Soft default — missing hostname weakens upload URL validation but doesn't brick the app.
-export const R2_BUCKET_HOSTNAME = process.env.EXPO_PUBLIC_R2_BUCKET_HOSTNAME || '';
+// Required in production — missing hostname causes fail-closed upload validation (all uploads rejected).
+// In dev, missing hostname weakens validation to HTTPS + signature only.
+export const R2_BUCKET_HOSTNAME = __DEV__
+  ? (process.env.EXPO_PUBLIC_R2_BUCKET_HOSTNAME || '')
+  : requireValue('EXPO_PUBLIC_R2_BUCKET_HOSTNAME', process.env.EXPO_PUBLIC_R2_BUCKET_HOSTNAME);
 
-if (!R2_BUCKET_HOSTNAME) {
+if (__DEV__ && !R2_BUCKET_HOSTNAME) {
   console.warn(
     '[Config] EXPO_PUBLIC_R2_BUCKET_HOSTNAME is not set. ' +
-    'Upload URL validation will be weaker (HTTPS + signature only).'
+    'Upload URL validation will be weaker in dev (HTTPS + signature only). ' +
+    'This will block all uploads in a production build.'
   );
 }
 

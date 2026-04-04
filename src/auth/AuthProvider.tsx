@@ -164,6 +164,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Register the 401 handler: attempt token refresh before signing out
   useEffect(() => {
+    apiClient.setOnDeviceRevoked(() => {
+      handleSignOut().catch(() => {});
+    });
     apiClient.setOnUnauthorized(async () => {
       const sessionAge = Date.now() - sessionTimestampRef.current;
       if (__DEV__) console.log('[Auth] onUnauthorized fired, session age:', sessionAge, 'ms');
@@ -267,6 +270,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           } else {
             if (__DEV__) console.log('[Auth] no access_token, clearing session');
             apiClient.setToken(null);
+            // Await stash PHI cleanup before clearing auth state — mirrors handleSignOut.
+            // Prevents the next user on a shared tablet from seeing stashed patient data
+            // when a session expires or is revoked by the server.
+            try {
+              await Promise.all([
+                stashStorage.clearAllStashes().catch(() =>
+                  stashStorage.clearAllStashes()
+                ).catch(() => {}),
+                stashAudioManager.deleteAllStashedAudio().catch(() =>
+                  stashAudioManager.deleteAllStashedAudio()
+                ).catch(() => {}),
+              ]);
+            } catch {}
+            audioEditorBridge.clear();
+            clearClipboard();
             await secureStorage.clearAll();
             // Clear cached PHI so the next user on this shared tablet
             // doesn't briefly see the previous user's recording list.
@@ -294,7 +312,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!session?.expires_at) return;
 
       const now = Date.now() / 1000;
-      const bufferSeconds = 300;
+      const bufferSeconds = 600;
       if (now > session.expires_at - bufferSeconds) {
         if (refreshPromiseRef.current) {
           if (__DEV__) console.log('[Auth] foreground resume: refresh already in flight, skipping');

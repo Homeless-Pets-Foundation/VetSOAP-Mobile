@@ -18,17 +18,23 @@ export class ApiError extends Error {
 
 export class ApiClient {
   private onUnauthorized?: () => void | Promise<void>;
+  private onDeviceRevoked?: () => void | Promise<void>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
   /** Cached device ID — read from SecureStore once, then reused. Only caches non-null values. */
   private cachedDeviceId: string | undefined = undefined; // undefined = not yet loaded/not yet successful
 
-  constructor(opts?: { onUnauthorized?: () => void | Promise<void> }) {
+  constructor(opts?: { onUnauthorized?: () => void | Promise<void>; onDeviceRevoked?: () => void | Promise<void> }) {
     this.onUnauthorized = opts?.onUnauthorized;
+    this.onDeviceRevoked = opts?.onDeviceRevoked;
   }
 
   setOnUnauthorized(callback: () => void | Promise<void>) {
     this.onUnauthorized = callback;
+  }
+
+  setOnDeviceRevoked(callback: () => void | Promise<void>) {
+    this.onDeviceRevoked = callback;
   }
 
   /**
@@ -76,7 +82,8 @@ export class ApiClient {
     method: string,
     path: string,
     serializedBody: string | undefined,
-    timeoutMs: number
+    timeoutMs: number,
+    idempotencyKey?: string
   ): Promise<Response> {
     const authHeaders = await this.getAuthHeaders();
     // Cache device ID after first successful read to avoid hitting SecureStore on every request.
@@ -100,6 +107,7 @@ export class ApiClient {
           'Cache-Control': 'no-store',
           ...authHeaders,
           ...(deviceId ? { 'X-Device-Id': deviceId } : {}),
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
         },
         body: serializedBody,
         signal: controller.signal,
@@ -119,9 +127,10 @@ export class ApiClient {
       body?: unknown;
       params?: Record<string, string | number | undefined>;
       timeoutMs?: number;
+      idempotencyKey?: string;
     } = {}
   ): Promise<T> {
-    const { method = 'GET', body, params, timeoutMs = REQUEST_TIMEOUT_MS } = config;
+    const { method = 'GET', body, params, timeoutMs = REQUEST_TIMEOUT_MS, idempotencyKey } = config;
 
     let url = `${API_URL}${path}`;
     if (params) {
@@ -134,14 +143,14 @@ export class ApiClient {
     }
 
     const serializedBody = body ? JSON.stringify(body) : undefined;
-    let response = await this.doFetch(url, method, path, serializedBody, timeoutMs);
+    let response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey);
 
     // On 401, check for device revocation before attempting refresh
     if (response.status === 401) {
       const errorPreview = await response.clone().json().catch(() => ({})) ?? {};
       if (errorPreview.code === 'DEVICE_REVOKED') {
-        // Device was revoked by admin — force sign-out, no retry
-        try { await this.onUnauthorized?.(); } catch { /* ignore */ }
+        // Device was revoked by admin — force sign-out without token refresh
+        try { await this.onDeviceRevoked?.(); } catch { /* ignore */ }
         throw new ApiError(
           'This device has been revoked. Contact your administrator.',
           401,
@@ -169,7 +178,7 @@ export class ApiClient {
       // If the token changed after refresh, retry the request once
       if (newToken && newToken !== oldToken) {
         if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
-        response = await this.doFetch(url, method, path, serializedBody, timeoutMs);
+        response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey);
       }
     }
 
@@ -199,8 +208,8 @@ export class ApiClient {
     return this.request<T>(path, { params });
   }
 
-  post<T>(path: string, body?: unknown) {
-    return this.request<T>(path, { method: 'POST', body });
+  post<T>(path: string, body?: unknown, idempotencyKey?: string) {
+    return this.request<T>(path, { method: 'POST', body, idempotencyKey });
   }
 
   put<T>(path: string, body?: unknown) {

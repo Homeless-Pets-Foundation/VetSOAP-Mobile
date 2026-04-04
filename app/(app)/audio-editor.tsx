@@ -140,7 +140,7 @@ export default function AudioEditorScreen() {
   loadSourceRef.current = playback.loadSource;
   useEffect(() => {
     if (selectedUri) {
-      loadSourceRef.current(selectedUri);
+      loadSourceRef.current(selectedUri).catch(() => {});
       setTrimStart(0);
       setTrimEnd(selectedDuration);
     }
@@ -320,7 +320,7 @@ export default function AudioEditorScreen() {
         setHasChanges(true);
 
         // Load new source BEFORE deleting old file — prevents playback stutter
-        playback.loadSource(result.uri);
+        playback.loadSource(result.uri).catch(() => {});
 
         // Now safe to delete the old file
         safeDeleteFile(oldUri);
@@ -358,15 +358,23 @@ export default function AudioEditorScreen() {
             onPress: () => {
               playback.pause();
               safeDeleteFile(seg.uri);
-              const newSegments = segments.filter((_, i) => i !== index);
-              setSegments(newSegments);
+              // Use functional updater to avoid stale closure over `segments` —
+              // a concurrent trim between alert-show and confirm would otherwise
+              // filter the wrong array and potentially delete the wrong segment.
+              setSegments((latestSegments) => {
+                if (!latestSegments[index]) return latestSegments;
+                return latestSegments.filter((_, i) => i !== index);
+              });
 
               // Clear peaks for deleted and subsequent indices
               setPeaks(new Map());
 
-              // Adjust selected index
-              if (selectedIndex >= newSegments.length) {
-                setSelectedIndex(Math.max(0, newSegments.length - 1));
+              // Adjust selected index (selectedIndex/segments.length may be
+              // slightly stale here, but that only affects which tab is focused —
+              // not data integrity).
+              const approxNewLength = segments.length - 1;
+              if (selectedIndex >= approxNewLength) {
+                setSelectedIndex(Math.max(0, approxNewLength - 1));
               } else if (selectedIndex === index) {
                 setSelectedIndex(Math.max(0, index - 1));
               }
@@ -499,6 +507,7 @@ export default function AudioEditorScreen() {
               {segments.map((seg, i) => (
                 <Pressable
                   key={i}
+                  disabled={isTrimming}
                   onPress={() => {
                     playback.pause();
                     setSelectedIndex(i);

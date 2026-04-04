@@ -17,7 +17,7 @@ export interface UseAudioPlaybackReturn {
   pause: () => void;
   toggle: () => void;
   seekTo: (seconds: number) => Promise<void>;
-  loadSource: (uri: string) => void;
+  loadSource: (uri: string) => Promise<void>;
 }
 
 export function useAudioPlayback(): UseAudioPlaybackReturn {
@@ -85,9 +85,8 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
   }, []);
 
   const loadSource = useCallback(
-    (uri: string) => {
-      // Set playback mode eagerly so it's ready before the user presses play
-      ensurePlaybackMode().catch(() => {});
+    async (uri: string) => {
+      await ensurePlaybackMode();
       try {
         player.replace({ uri });
       } catch (error) {
@@ -107,7 +106,9 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
           if (__DEV__) console.error('[Playback] play failed:', error);
         }
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (__DEV__) console.error('[Playback] play: ensurePlaybackMode failed:', error);
+      });
   }, [player, isLoaded, ensurePlaybackMode]);
 
   const pause = useCallback(() => {

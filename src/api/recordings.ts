@@ -3,7 +3,7 @@ import {
   createUploadTask,
   FileSystemUploadType,
 } from 'expo-file-system/legacy';
-import { apiClient } from './client';
+import { apiClient, ApiError } from './client';
 import type {
   Recording,
   CreateRecording,
@@ -21,6 +21,20 @@ import { validateUploadUrl } from '../lib/sslPinning';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
+
+function generateIdempotencyKey(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+
+function extensionFromUri(uri: string, fallback = 'm4a'): string {
+  const match = uri.split('?')[0].match(/\.([a-zA-Z0-9]+)$/);
+  return match ? match[1].toLowerCase() : fallback;
+}
 
 /**
  * Race a promise against a timeout. Rejects with a user-friendly message
@@ -76,7 +90,8 @@ export const recordingsApi = {
 
   async create(data: CreateRecording): Promise<Recording> {
     const validated = createRecordingSchema.parse(data);
-    return apiClient.post('/api/recordings', validated);
+    const idempotencyKey = generateIdempotencyKey();
+    return apiClient.post('/api/recordings', validated, idempotencyKey);
   },
 
   async delete(id: string): Promise<void> {
@@ -87,7 +102,7 @@ export const recordingsApi = {
   async getUploadUrl(
     recordingId: string,
     fileName: string,
-    contentType = 'audio/mp4',
+    contentType = 'audio/x-m4a',
     fileSizeBytes?: number
   ): Promise<UploadUrlResponse> {
     recordingIdSchema.parse(recordingId);
@@ -107,10 +122,24 @@ export const recordingsApi = {
     opts?: { segmentKeys?: string[]; segmentCount?: number }
   ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
-    return apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
-      fileKey,
-      ...(opts?.segmentKeys ? { segmentKeys: opts.segmentKeys, segmentCount: opts.segmentCount } : {}),
-    });
+    try {
+      return await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
+        fileKey,
+        ...(opts?.segmentKeys ? { segmentKeys: opts.segmentKeys, segmentCount: opts.segmentCount } : {}),
+      });
+    } catch (error) {
+      // 409 means the recording is already past 'uploading' state. This happens when the
+      // client times out waiting for the confirm-upload response and retries — the first
+      // request succeeded and processing already started. Fetch current state and return it
+      // so the caller can poll normally rather than showing a spurious error.
+      if (error instanceof ApiError && error.status === 409) {
+        const current = await this.get(recordingId).catch(() => null);
+        if (current && current.status !== 'uploading' && current.status !== 'failed') {
+          return current;
+        }
+      }
+      throw error;
+    }
   },
 
   /**
@@ -119,7 +148,7 @@ export const recordingsApi = {
   async createWithFile(
     data: CreateRecording,
     fileUri: string,
-    contentType = 'audio/mp4',
+    contentType = 'audio/x-m4a',
     options?: { onUploadProgress?: (event: UploadProgressEvent) => void }
   ): Promise<Recording> {
     // Step 1: Create recording record (validates data via this.create)
@@ -152,7 +181,7 @@ export const recordingsApi = {
         fileSizeBytes
       );
       if (warnings?.length) {
-        console.warn('[upload]', ...warnings);
+        if (__DEV__) console.warn('[upload]', ...warnings);
       }
       // Validate the presigned upload URL targets a trusted storage domain
       validateUploadUrl(uploadUrl);
@@ -212,19 +241,20 @@ export const recordingsApi = {
   async createWithSegments(
     data: CreateRecording,
     segments: { uri: string; duration: number }[],
-    contentType = 'audio/mp4',
+    contentType = 'audio/x-m4a',
     options?: { onUploadProgress?: (event: UploadProgressEvent) => void }
   ): Promise<Recording> {
     const recording = await this.create(data);
     let r2UploadComplete = false;
+    const segmentKeys: string[] = [];
+    const totalSegments = segments.length;
+    let completedSegments = 0;
 
     try {
-      const segmentKeys: string[] = [];
-      const totalSegments = segments.length;
-
       for (let i = 0; i < totalSegments; i++) {
         const segment = segments[i];
-        const segmentFileName = `recording_segment_${i}.m4a`;
+        const ext = extensionFromUri(segment.uri);
+        const segmentFileName = `recording_segment_${i}.${ext}`;
 
         // Read local file info
         const fileInfo = await getInfoAsync(segment.uri);
@@ -249,7 +279,7 @@ export const recordingsApi = {
           fileSizeBytes
         );
         if (warnings?.length) {
-          console.warn(`[upload] segment ${i + 1}:`, ...warnings);
+          if (__DEV__) console.warn(`[upload] segment ${i + 1}:`, ...warnings);
         }
         validateUploadUrl(uploadUrl);
 
@@ -292,6 +322,7 @@ export const recordingsApi = {
         }
 
         segmentKeys.push(fileKey);
+        completedSegments++;
       }
 
       r2UploadComplete = true;
@@ -305,6 +336,12 @@ export const recordingsApi = {
     } catch (error) {
       if (!r2UploadComplete) {
         await this.delete(recording.id).catch(() => {});
+      }
+      // Enrich the error message for partial multi-segment failures
+      if (completedSegments > 0 && completedSegments < totalSegments && error instanceof Error) {
+        throw new Error(
+          `${error.message} (${completedSegments} of ${totalSegments} segments had uploaded successfully — the recording has been removed and will need to be re-recorded.)`
+        );
       }
       throw error;
     }

@@ -266,7 +266,7 @@ Use these commands to interact with the emulator for testing. All use the Window
 - `src/types/multiPatient.ts` — type definitions: `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`.
 - `src/auth/AuthProvider.tsx` — `handleSignOut` awaits PHI cleanup before clearing state. Calls `setStashUserId()` in `fetchUser()`. Calls `registerDevice()` on both sign-in and session restore. Stash cleanup runs only after user ID is set.
 - `src/api/client.ts` — sends `X-Device-Id` header on all requests. Caches device ID in memory. Handles `DEVICE_REVOKED` and `DEVICE_ID_REQUIRED` 401 codes before attempting token refresh.
-- `src/api/recordings.ts` — `createWithFile()` for single-segment upload, `createWithSegments()` for multi-segment. Both validate via `getInfoAsync()`, enforce 500MB limit, 10-minute timeout.
+- `src/api/recordings.ts` — `createWithFile()` for single-segment upload, `createWithSegments()` for multi-segment. Both validate via `getInfoAsync()`, enforce 250MB limit, 10-minute timeout.
 - `src/components/AppLockGuard.tsx` — requires biometric on cold start (not just background resume). Defaults to `isLocked=true` with blank screen until biometric check completes, preventing brief PHI flash. Sign-out button available as escape hatch.
 - `src/components/PatientSlotCard.tsx` — per-patient card with form fields, recording controls, and upload status. "Finish" button (not "Stop") with checkmark icon for ending recordings. "Delete & Start Over" is a de-emphasized text link.
 - `src/components/PatientTabStrip.tsx` — horizontal scrollable tab strip for switching between patient slots. Shows status badges (recording, paused, stopped, uploaded).

@@ -94,14 +94,19 @@ export async function trimAudio(
     throw new Error(`FFmpeg trim failed (code ${returnCode.getValue()}): ${logs.slice(0, 200)}`);
   }
 
-  // Verify output exists and get duration
+  // Verify output exists and get duration — clean up output on any failure
   const outputInfo = await getInfoAsync(outputUri);
   if (!outputInfo.exists) {
     throw new Error('FFmpeg trim produced no output file');
   }
 
-  const duration = await getAudioDuration(outputUri);
-  return { uri: outputUri, duration };
+  try {
+    const duration = await getAudioDuration(outputUri);
+    return { uri: outputUri, duration };
+  } catch (err) {
+    await audioTempFiles.cleanupFile(outputUri);
+    throw err;
+  }
 }
 
 /**
@@ -152,8 +157,14 @@ export async function concatenateAudio(
       throw new Error('FFmpeg concat produced no output file');
     }
 
-    const duration = await getAudioDuration(outputUri);
-    return { uri: outputUri, duration };
+    // Clean up output on duration query failure — listPath is always cleaned by finally
+    try {
+      const duration = await getAudioDuration(outputUri);
+      return { uri: outputUri, duration };
+    } catch (err) {
+      await audioTempFiles.cleanupFile(outputUri);
+      throw err;
+    }
   } finally {
     await audioTempFiles.cleanupFile(listPath);
   }

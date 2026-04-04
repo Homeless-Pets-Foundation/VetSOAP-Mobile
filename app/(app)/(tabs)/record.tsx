@@ -251,6 +251,10 @@ function RecordingSession() {
                 safeDeleteFile(seg.uri);
               });
             });
+            // Clean up any in-flight recording that was never saved to a slot
+            if (recorder.audioUri) {
+              safeDeleteFile(recorder.audioUri);
+            }
             navigation.dispatch(data.action);
           },
         },

@@ -8,11 +8,14 @@ const CACHE_DIR = `${Paths.cache.uri}waveform-peaks/`;
  * When a file is trimmed, the URI changes — so the old cache auto-invalidates.
  */
 function cacheKey(fileUri: string, fileSize: number): string {
-  // Use the last path segment + size as the key. Replace non-alphanumeric chars
-  // to produce a safe filename. Truncate to avoid hitting filesystem path limits.
-  const base = fileUri.split('/').pop() ?? 'audio';
-  const safe = base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-  return `${safe}_${fileSize}.json`;
+  // Hash the full URI so two files with the same filename but different paths
+  // don't collide (e.g. after trim operations produce same-size outputs).
+  let hash = 5381;
+  for (let i = 0; i < fileUri.length; i++) {
+    hash = ((hash << 5) + hash) ^ fileUri.charCodeAt(i);
+    hash = hash >>> 0; // keep unsigned 32-bit
+  }
+  return `wf_${hash.toString(16)}_${fileSize}.json`;
 }
 
 /**

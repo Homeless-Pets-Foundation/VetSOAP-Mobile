@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { safeDeleteFile } from '../../../src/lib/fileOps';
+import { extractWaveformPeaks, SHORT_FILE_THRESHOLD_S } from '../../../src/lib/ffmpeg';
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
@@ -162,6 +163,13 @@ function RecordingSession() {
       audioCaptureDoneRef.current = true;
       saveAudio(session.recorderBoundToSlotId, recorder.audioUri, recorder.duration);
       unbindRecorder();
+
+      // Pre-warm waveform cache for long recordings so the editor opens instantly
+      if (recorder.duration >= SHORT_FILE_THRESHOLD_S) {
+        extractWaveformPeaks(recorder.audioUri, 150, {
+          knownDuration: recorder.duration,
+        }).catch(() => {});
+      }
 
       // If there's a pending stash, just reset the recorder here.
       // Don't call executeStash() yet — saveAudio dispatch hasn't been processed,

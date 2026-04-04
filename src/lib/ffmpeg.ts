@@ -475,10 +475,10 @@ async function readBatchPcm(
 /**
  * Extract waveform peak amplitudes for visualization.
  *
- * For short files (< 60s): decodes the entire file to 500Hz mono PCM, then
+ * For short files (< 480s / 8 min): decodes the entire file to 500Hz mono PCM, then
  * computes max-amplitude windows in JS. Returns normalized values (0.0 - 1.0).
  *
- * For long files (>= 60s): uses seek-based sampling — jumps to evenly-spaced
+ * For long files (>= 480s / 8 min): uses seek-based sampling — jumps to evenly-spaced
  * positions and decodes only SAMPLE_DURATION_S seconds at each, batching 10
  * positions per FFmpeg call. For a 120-minute file this reduces decoded audio
  * from 7,200s to 120s (60x improvement).

@@ -275,7 +275,7 @@ async function extractPeaksSampled(
   duration: number,
   onProgress?: (partialPeaks: number[]) => void
 ): Promise<number[]> {
-  await audioTempFiles.ensureDir();
+  audioTempFiles.ensureDir();
   // Number of evenly-spaced sample positions across the file
   const numPositions = Math.ceil(numberOfPeaks / SAMPLES_PER_POSITION);
   // Peaks per position — may exceed SAMPLES_PER_POSITION for odd numberOfPeaks
@@ -514,7 +514,9 @@ export async function extractWaveformPeaks(
   if (cached !== null) return cached;
 
   // Get duration to decide which extraction strategy to use
-  const duration = (options?.knownDuration && options.knownDuration > 0)
+  const duration = (options?.knownDuration != null &&
+                    Number.isFinite(options.knownDuration) &&
+                    options.knownDuration > 0)
     ? options.knownDuration
     : await getAudioDuration(inputUri);
 
@@ -525,7 +527,7 @@ export async function extractWaveformPeaks(
     peaks = await extractPeaksSampled(inputUri, numberOfPeaks, duration, options?.onProgress);
   } else {
     // Short file: full decode at low sample rate (500Hz is sufficient for visuals)
-    await audioTempFiles.ensureDir();
+    audioTempFiles.ensureDir();
     const pcmPath = audioTempFiles.getPcmTempPath(0);
 
     try {

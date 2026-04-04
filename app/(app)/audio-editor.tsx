@@ -131,7 +131,22 @@ export default function AudioEditorScreen() {
 
     (async () => {
       try {
-        const peakData = await extractWaveformPeaks(selectedUri, 150);
+        let progressFired = false;
+        const peakData = await extractWaveformPeaks(selectedUri, 150, {
+          knownDuration: selectedDuration,
+          onProgress: (partialPeaks) => {
+            if (!progressFired) {
+              progressFired = true;
+              // Dismiss skeleton as soon as first partial data arrives
+              setPeaksLoading((prev) => {
+                const next = new Set(prev);
+                next.delete(index);
+                return next;
+              });
+            }
+            setPeaks((prev) => new Map(prev).set(index, partialPeaks));
+          },
+        });
         setPeaks((prev) => new Map(prev).set(index, peakData));
       } catch (error) {
         if (__DEV__) console.error('[Editor] peak extraction failed:', error);
@@ -144,7 +159,7 @@ export default function AudioEditorScreen() {
         });
       }
     })().catch(() => {});
-  }, [selectedIndex, selectedUri]);
+  }, [selectedIndex, selectedUri, selectedDuration]);
 
   // Navigation guard for unsaved changes
   usePreventRemove(hasChanges, ({ data }) => {

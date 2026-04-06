@@ -57,6 +57,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
                       accessibilityState={{ selected: isSelected }}
                       accessibilityLabel={template.name}
                       accessibilityHint={template.description || undefined}
+                      hitSlop={8}
                       className={`px-3.5 min-h-[44px] justify-center rounded-pill border ${
                         isSelected
                           ? 'border-brand-500 bg-brand-500'
@@ -195,6 +196,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
                 accessibilityRole="radio"
                 accessibilityState={{ selected: isSelected }}
                 accessibilityLabel={type}
+                hitSlop={8}
                 className={`min-h-[44px] items-center justify-center rounded-btn border ${
                   isSelected
                     ? 'border-brand-500 bg-brand-500'

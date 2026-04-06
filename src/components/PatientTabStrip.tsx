@@ -157,6 +157,7 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
             accessibilityState={{ selected: isActive }}
             accessibilityLabel={`${label}, ${status}`}
             accessibilityLiveRegion="polite"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             className={`px-3.5 min-h-[44px] flex-row items-center justify-center rounded-pill border ${
               isActive
                 ? 'border-brand-500 bg-brand-500'
@@ -183,7 +184,7 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
             onPress={handleAddPress}
             accessibilityRole="button"
             accessibilityLabel="Add patient"
-            hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             className="w-[44px] h-[44px] items-center justify-center rounded-full border border-dashed border-stone-400 bg-white"
           >
             <Plus color="#78716c" size={18} />

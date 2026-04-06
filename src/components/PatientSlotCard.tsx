@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, ScrollView, Pressable } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
+import { ScrollView } from 'react-native-gesture-handler';
 import Animated, {
   FadeIn,
   FadeInUp,

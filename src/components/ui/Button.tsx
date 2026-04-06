@@ -88,6 +88,8 @@ export function Button({
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       disabled={disabled || loading}
+      hitSlop={12}
+      pressRetentionOffset={{ top: 10, bottom: 10, left: 10, right: 10 }}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || children}
       accessibilityState={{ disabled: disabled || loading }}

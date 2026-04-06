@@ -61,9 +61,25 @@ export const RecordingCard = React.memo(function RecordingCard({ recording }: Re
     >
       <View className="flex-row justify-between items-center">
         <View className="flex-1 mr-3">
-          <Text className="text-body-lg font-semibold text-stone-900" numberOfLines={1}>
-            {recording.patientName}
-          </Text>
+          {recording.patientId ? (
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation();
+                router.push(`/patient/${recording.patientId}` as `/patient/${string}`);
+              }}
+              hitSlop={4}
+              accessibilityRole="link"
+              accessibilityLabel={`View patient history for ${recording.patientName}`}
+            >
+              <Text className="text-body-lg font-semibold text-brand-600" numberOfLines={1}>
+                {recording.patientName}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text className="text-body-lg font-semibold text-stone-900" numberOfLines={1}>
+              {recording.patientName}
+            </Text>
+          )}
           {description ? (
             <Text
               className="text-body-sm text-stone-500 mt-0.5"

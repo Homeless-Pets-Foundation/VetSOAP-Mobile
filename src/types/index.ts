@@ -30,6 +30,8 @@ export interface Recording {
   species: string | null;
   breed: string | null;
   appointmentType: string | null;
+  pimsPatientId: string | null;
+  patientId: string | null;
   status: RecordingStatus;
   audioFileUrl: string | null;
   audioFileName: string | null;
@@ -57,6 +59,7 @@ export interface Recording {
 }
 
 export interface CreateRecording {
+  pimsPatientId?: string;
   patientName: string;
   clientName: string;
   species: string;
@@ -64,6 +67,33 @@ export interface CreateRecording {
   appointmentType?: string;
   templateId?: string;
   foreignLanguage?: boolean;
+}
+
+export interface Patient {
+  id: string;
+  organizationId: string;
+  pimsPatientId: string;
+  name: string;
+  species: string | null;
+  breed: string | null;
+  dateOfBirth: string | null;
+  knownAllergies: string | null;
+  ongoingMedications: string | null;
+  clinicalNotes: string | null;
+  aiHistorySummary: string | null;
+  aiHistoryUpdatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpdatePatient {
+  name?: string;
+  species?: string | null;
+  breed?: string | null;
+  dateOfBirth?: string | null;
+  knownAllergies?: string | null;
+  ongoingMedications?: string | null;
+  clinicalNotes?: string | null;
 }
 
 export interface SoapSection {

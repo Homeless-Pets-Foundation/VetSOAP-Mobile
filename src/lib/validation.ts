@@ -13,6 +13,11 @@ export const recordingIdSchema = z
   .regex(uuidPattern, 'Invalid recording ID format');
 
 export const createRecordingSchema = z.object({
+  pimsPatientId: z
+    .string()
+    .optional()
+    .transform((v) => (v ? sanitize(v) : v))
+    .pipe(z.string().max(100, 'PIMS ID too long').optional()),
   patientName: z
     .string()
     .transform(sanitize)

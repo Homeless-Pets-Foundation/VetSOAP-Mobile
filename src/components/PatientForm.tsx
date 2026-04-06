@@ -85,6 +85,17 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
       </Text>
 
       <TextInputField
+        label="PIMS Patient ID (optional)"
+        value={formData.pimsPatientId || ''}
+        onChangeText={(v) => onUpdate('pimsPatientId', v)}
+        placeholder="e.g., P-10042"
+        maxLength={100}
+        autoCorrect={false}
+        autoComplete="off"
+        autoCapitalize="characters"
+      />
+
+      <TextInputField
         label="Patient Name"
         required
         value={formData.patientName}

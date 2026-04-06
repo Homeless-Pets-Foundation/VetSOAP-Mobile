@@ -60,9 +60,13 @@ export default function TabsLayout() {
           tabBarAccessibilityLabel: 'View all recordings',
         }}
       />
-      {/* Hide settings from tab bar */}
+      {/* Hide settings and patient from tab bar */}
       <Tabs.Screen
         name="settings"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="patient"
         options={{ href: null }}
       />
     </Tabs>

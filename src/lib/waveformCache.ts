@@ -1,5 +1,4 @@
-import { Paths } from 'expo-file-system';
-import { File as ExpoFile, Directory } from 'expo-file-system';
+import { Paths, File as ExpoFile, Directory } from 'expo-file-system';
 
 const CACHE_DIR = `${Paths.cache.uri}waveform-peaks/`;
 

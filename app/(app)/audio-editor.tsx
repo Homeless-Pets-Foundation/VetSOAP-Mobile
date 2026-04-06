@@ -79,6 +79,7 @@ export default function AudioEditorScreen() {
   const initialSegmentCountRef = useRef(input?.segments.length ?? 0);
 
   const playback = useAudioPlayback();
+  const { seekTo, pause, play, toggle, loadSource, isLoaded, isPlaying, currentTimeSV, currentTimeRef } = playback;
 
   // Re-read bridge input when screen regains focus (Tab screens stay mounted between visits)
   useFocusEffect(
@@ -136,8 +137,8 @@ export default function AudioEditorScreen() {
   // Load audio source when segment changes
   const selectedUri = selectedSegment?.uri;
   const selectedDuration = selectedSegment?.duration ?? 0;
-  const loadSourceRef = useRef(playback.loadSource);
-  loadSourceRef.current = playback.loadSource;
+  const loadSourceRef = useRef(loadSource);
+  loadSourceRef.current = loadSource;
   useEffect(() => {
     if (selectedUri) {
       loadSourceRef.current(selectedUri).catch(() => {});
@@ -213,29 +214,29 @@ export default function AudioEditorScreen() {
 
   const handleSeek = useCallback(
     (seconds: number) => {
-      playback.seekTo(seconds).catch(() => {});
+      seekTo(seconds).catch(() => {});
     },
-    [playback.seekTo]
+    [seekTo]
   );
 
   const handleSkipBack = useCallback(() => {
-    playback.seekTo(Math.max(0, (playback.currentTimeRef.current ?? 0) - 10)).catch(() => {});
-  }, [playback.seekTo, playback.currentTimeRef]);
+    seekTo(Math.max(0, (currentTimeRef.current ?? 0) - 10)).catch(() => {});
+  }, [seekTo, currentTimeRef]);
 
   const handleSkipForward = useCallback(() => {
     const maxTime = selectedSegment?.duration ?? 0;
-    playback.seekTo(Math.min(maxTime, (playback.currentTimeRef.current ?? 0) + 10)).catch(() => {});
-  }, [playback.seekTo, playback.currentTimeRef, selectedSegment?.duration]);
+    seekTo(Math.min(maxTime, (currentTimeRef.current ?? 0) + 10)).catch(() => {});
+  }, [seekTo, currentTimeRef, selectedSegment?.duration]);
 
   // Preview: play only the trimmed region
   const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   const handlePreview = useCallback(() => {
     setIsPreviewMode(true);
-    playback.seekTo(trimStart).then(() => {
-      playback.play();
+    seekTo(trimStart).then(() => {
+      play();
     }).catch(() => {});
-  }, [playback.seekTo, playback.play, trimStart]);
+  }, [seekTo, play, trimStart]);
 
   // Stop playback at trim end during preview (with 0.15s tolerance for timing jitter).
   // Uses setInterval to check currentTimeRef so this only runs during the brief preview period
@@ -243,19 +244,19 @@ export default function AudioEditorScreen() {
   useEffect(() => {
     if (!isPreviewMode) return;
     // Clear preview flag if user paused manually before the interval fires
-    if (!playback.isPlaying) {
+    if (!isPlaying) {
       setIsPreviewMode(false);
       return;
     }
     const interval = setInterval(() => {
-      const time = playback.currentTimeRef.current ?? 0;
+      const time = currentTimeRef.current ?? 0;
       if (time >= trimEnd - 0.15 && trimEnd < selectedDuration) {
-        playback.pause();
+        pause();
         setIsPreviewMode(false);
       }
     }, 100);
     return () => clearInterval(interval);
-  }, [isPreviewMode, playback.isPlaying, trimEnd, selectedDuration, playback.pause, playback.currentTimeRef]);
+  }, [isPreviewMode, isPlaying, trimEnd, selectedDuration, pause, currentTimeRef]);
 
   // Apply trim via FFmpeg
   const handleApplyTrim = useCallback(() => {
@@ -281,7 +282,7 @@ export default function AudioEditorScreen() {
       return;
     }
 
-    playback.pause();
+    pause();
     setIsTrimming(true);
 
     (async () => {
@@ -320,7 +321,7 @@ export default function AudioEditorScreen() {
         setHasChanges(true);
 
         // Load new source BEFORE deleting old file — prevents playback stutter
-        playback.loadSource(result.uri).catch(() => {});
+        loadSource(result.uri).catch(() => {});
 
         // Now safe to delete the old file
         safeDeleteFile(oldUri);
@@ -336,7 +337,7 @@ export default function AudioEditorScreen() {
     })().catch(() => {
       setIsTrimming(false);
     });
-  }, [selectedSegment, selectedIndex, segments, trimStart, trimEnd, isTrimming, playback.pause, playback.loadSource]);
+  }, [selectedSegment, selectedIndex, segments, trimStart, trimEnd, isTrimming, pause, loadSource]);
 
   // Delete a segment
   const handleDeleteSegment = useCallback(
@@ -356,7 +357,7 @@ export default function AudioEditorScreen() {
             text: 'Delete',
             style: 'destructive',
             onPress: () => {
-              playback.pause();
+              pause();
               safeDeleteFile(seg.uri);
               // Use functional updater to avoid stale closure over `segments` —
               // a concurrent trim between alert-show and confirm would otherwise
@@ -386,7 +387,7 @@ export default function AudioEditorScreen() {
         ]
       );
     },
-    [segments, selectedIndex, playback.pause]
+    [segments, selectedIndex, pause]
   );
 
   // Reset trim handles to full range
@@ -399,7 +400,7 @@ export default function AudioEditorScreen() {
 
   // Done — emit result and pop back to Record screen
   const handleDone = useCallback(() => {
-    playback.pause();
+    pause();
     if (hasChanges) {
       savedResultRef.current = true; // Prevent temp file cleanup — session needs trimmed files
       if (__DEV__) console.log('[Editor] emitting result:', slotId, segments.length, 'segs, durations:', segments.map(s => s.duration));
@@ -409,7 +410,7 @@ export default function AudioEditorScreen() {
     }
     setHasChanges(false); // Prevent navigation guard from firing
     router.back();
-  }, [hasChanges, slotId, segments, playback.pause, router]);
+  }, [hasChanges, slotId, segments, pause, router]);
 
   // Go back without saving
   const handleBack = useCallback(() => {
@@ -423,7 +424,7 @@ export default function AudioEditorScreen() {
             text: 'Discard',
             style: 'destructive',
             onPress: () => {
-              playback.pause();
+              pause();
               audioEditorBridge.emitResult(null);
               setHasChanges(false);
               router.back();
@@ -432,11 +433,11 @@ export default function AudioEditorScreen() {
         ]
       );
     } else {
-      playback.pause();
+      pause();
       audioEditorBridge.emitResult(null);
       router.back();
     }
-  }, [hasChanges, playback.pause, router]);
+  }, [hasChanges, pause, router]);
 
   const currentPeaks = peaks.get(selectedIndex) ?? [];
   const isPeaksLoading = peaksLoading.has(selectedIndex);
@@ -509,7 +510,7 @@ export default function AudioEditorScreen() {
                   key={i}
                   disabled={isTrimming}
                   onPress={() => {
-                    playback.pause();
+                    pause();
                     setSelectedIndex(i);
                   }}
                   onLongPress={segments.length > 1 ? () => {
@@ -553,7 +554,7 @@ export default function AudioEditorScreen() {
           <WaveformEditor
             peaks={currentPeaks}
             duration={selectedSegment?.duration ?? 0}
-            currentTimeSV={playback.currentTimeSV}
+            currentTimeSV={currentTimeSV}
             trimStart={trimStart}
             trimEnd={trimEnd}
             onTrimChange={handleTrimChange}
@@ -582,14 +583,14 @@ export default function AudioEditorScreen() {
             <SkipBack color="#44403c" size={24} />
           </Pressable>
           <Pressable
-            onPress={() => playback.toggle()}
-            disabled={!playback.isLoaded}
+            onPress={() => toggle()}
+            disabled={!isLoaded}
             accessibilityRole="button"
-            accessibilityLabel={playback.isPlaying ? 'Pause' : 'Play'}
+            accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
             accessibilityHint="Double-tap to start or stop audio playback"
-            className={`w-14 h-14 rounded-full items-center justify-center shadow-btn ${playback.isLoaded ? 'bg-brand-500' : 'bg-stone-300'}`}
+            className={`w-14 h-14 rounded-full items-center justify-center shadow-btn ${isLoaded ? 'bg-brand-500' : 'bg-stone-300'}`}
           >
-            {playback.isPlaying
+            {isPlaying
               ? <Pause color="#fff" size={24} fill="#fff" />
               : <Play color="#fff" size={24} fill="#fff" />
             }
@@ -607,7 +608,7 @@ export default function AudioEditorScreen() {
 
         {/* Current time display — isolated component, re-renders only once per second */}
         <PlaybackTimeDisplay
-          currentTimeSV={playback.currentTimeSV}
+          currentTimeSV={currentTimeSV}
           duration={selectedSegment?.duration ?? 0}
         />
         {isPreviewMode && (

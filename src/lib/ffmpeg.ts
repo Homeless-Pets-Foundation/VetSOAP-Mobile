@@ -1,4 +1,3 @@
-// eslint-disable-next-line import/no-unresolved -- native module resolved during EAS build, not in node_modules
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 import {
   getInfoAsync,

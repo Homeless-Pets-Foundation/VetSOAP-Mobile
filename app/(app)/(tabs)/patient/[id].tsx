@@ -213,7 +213,7 @@ export default function PatientDetailScreen() {
           className="flex-1"
           contentContainerStyle={{ padding: 20, maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor="#0d8775" />
+            <RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} tintColor="#0d8775" />
           }
         >
           {/* SUMMARY TAB */}
@@ -371,7 +371,10 @@ export default function PatientDetailScreen() {
                     label="Date of Birth"
                     value={
                       patient.dateOfBirth
-                        ? new Date(patient.dateOfBirth).toLocaleDateString()
+                        ? (() => {
+                            const d = new Date(patient.dateOfBirth);
+                            return isNaN(d.getTime()) ? null : d.toLocaleDateString();
+                          })()
                         : null
                     }
                   />

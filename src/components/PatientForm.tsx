@@ -13,9 +13,11 @@ interface PatientFormProps {
   templates?: Template[];
   templatesLoading?: boolean;
   clientNameDisabled?: boolean;
+  onPimsIdBlur?: () => void;
+  pimsLookupLoading?: boolean;
 }
 
-export function PatientForm({ formData, onUpdate, templates, templatesLoading, clientNameDisabled }: PatientFormProps) {
+export function PatientForm({ formData, onUpdate, templates, templatesLoading, clientNameDisabled, onPimsIdBlur, pimsLookupLoading }: PatientFormProps) {
   const handleTemplateSelect = (template: Template) => {
     Haptics.selectionAsync().catch(() => {});
     const newId = formData.templateId === template.id ? undefined : template.id;
@@ -88,11 +90,13 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
         label="PIMS Patient ID (optional)"
         value={formData.pimsPatientId || ''}
         onChangeText={(v) => onUpdate('pimsPatientId', v)}
+        onBlur={onPimsIdBlur}
         placeholder="e.g., P-10042"
         maxLength={100}
         autoCorrect={false}
         autoComplete="off"
-        autoCapitalize="characters"
+        autoCapitalize="none"
+        rightAccessory={pimsLookupLoading ? <ActivityIndicator size="small" color="#78716c" /> : undefined}
       />
 
       <TextInputField

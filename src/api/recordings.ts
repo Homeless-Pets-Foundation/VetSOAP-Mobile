@@ -24,7 +24,12 @@ const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
 
 function generateIdempotencyKey(): string {
   const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    // Math.random fallback for Hermes runtimes without crypto polyfill
+    for (let i = 0; i < 16; i++) bytes[i] = (Math.random() * 256) | 0;
+  }
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');

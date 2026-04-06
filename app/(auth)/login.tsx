@@ -90,7 +90,7 @@ export default function LoginScreen() {
             accessibilityLabel="Captivet"
           />
           <Text className="text-body text-stone-500 mt-3">
-            Sign into your Account
+            Sign in to your account
           </Text>
         </Animated.View>
 

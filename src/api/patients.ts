@@ -1,5 +1,12 @@
-import { apiClient } from './client';
+import { apiClient, ApiError } from './client';
 import type { Patient, UpdatePatient, PaginatedResponse, Recording } from '../types';
+
+export interface PimsLookupResult {
+  patientName: string;
+  clientName: string | null;
+  species: string | null;
+  breed: string | null;
+}
 
 export interface ListPatientRecordingsParams {
   page?: number;
@@ -27,5 +34,14 @@ export const patientsApi = {
 
   async regenerateSummary(id: string): Promise<void> {
     await apiClient.request(`/api/patients/${id}/regenerate-summary`, { method: 'POST', body: {} });
+  },
+
+  async lookupByPimsId(pimsId: string): Promise<PimsLookupResult | null> {
+    try {
+      return await apiClient.get<PimsLookupResult>('/api/patients/lookup', { pimsId });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
   },
 };

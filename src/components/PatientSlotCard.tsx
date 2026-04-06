@@ -21,6 +21,7 @@ import type { PatientSlot } from '../types/multiPatient';
 import type { CreateRecording, Template } from '../types';
 import type { UseAudioRecorderReturn } from '../hooks/useAudioRecorder';
 import { useResponsive } from '../hooks/useResponsive';
+import { patientsApi } from '../api/patients';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -105,6 +106,24 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     transform: [{ scale: recordBtnScale.value }],
   }));
 
+  const [pimsLookupLoading, setPimsLookupLoading] = React.useState(false);
+
+  const handlePimsBlur = React.useCallback(() => {
+    const pimsId = slot.formData.pimsPatientId?.trim();
+    if (!pimsId) return;
+    setPimsLookupLoading(true);
+    patientsApi.lookupByPimsId(pimsId)
+      .then((result) => {
+        if (!result) return;
+        onUpdateForm('patientName', result.patientName);
+        if (result.clientName) onUpdateForm('clientName', result.clientName);
+        if (result.species) onUpdateForm('species', result.species);
+        if (result.breed) onUpdateForm('breed', result.breed);
+      })
+      .catch(() => {})
+      .finally(() => setPimsLookupLoading(false));
+  }, [slot.formData.pimsPatientId, onUpdateForm]);
+
   const hasRequiredFields =
     slot.formData.patientName.trim().length > 0 &&
     slot.formData.clientName.trim().length > 0 &&
@@ -160,6 +179,8 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           onUpdate={onUpdateForm}
           templates={templates}
           templatesLoading={templatesLoading}
+          onPimsIdBlur={handlePimsBlur}
+          pimsLookupLoading={pimsLookupLoading}
         />
       </Card>
 
@@ -435,6 +456,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   if (ps.formData.breed !== ns.formData.breed) return false;
   if (ps.formData.templateId !== ns.formData.templateId) return false;
   if (ps.formData.foreignLanguage !== ns.formData.foreignLanguage) return false;
+  if (ps.formData.pimsPatientId !== ns.formData.pimsPatientId) return false;
 
   return true;
 });

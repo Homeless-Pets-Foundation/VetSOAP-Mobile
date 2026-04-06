@@ -124,7 +124,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const metering = isRecorderOwner ? recorder.metering : -160;
 
   // Allow recording when idle (even with existing segments — for continuation)
-  const canStartRecording = hasRequiredFields && audioState === 'idle';
+  const canStartRecording = hasRequiredFields && audioState === 'idle' && !recorder.isStarting;
   const canSubmitSingle = hasRequiredFields && slot.segments.length > 0 && slot.uploadStatus !== 'success' && slot.uploadStatus !== 'uploading';
 
   return (
@@ -412,6 +412,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   // Only compare recorder when this slot owns it
   if (next.isRecorderOwner) {
     if (prev.recorder.state !== next.recorder.state) return false;
+    if (prev.recorder.isStarting !== next.recorder.isStarting) return false;
     if (prev.recorder.duration !== next.recorder.duration) return false;
     if (prev.recorder.metering !== next.recorder.metering) return false;
   }

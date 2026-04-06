@@ -15,6 +15,7 @@ export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped';
 
 export interface UseAudioRecorderReturn {
   state: RecordingState;
+  isStarting: boolean;
   duration: number;
   metering: number;
   audioUri: string | null;
@@ -58,6 +59,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const [audioUri, setAudioUri] = useState<string | null>(null);
   const [finalDuration, setFinalDuration] = useState(0);
 
+  const [isStarting, setIsStarting] = useState(false);
   const stoppingRef = useRef(false);
   const isStartingRef = useRef(false);
   const mediaResetAlertedRef = useRef(false);
@@ -85,8 +87,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const recorderState = useAudioRecorderState(recorder, 500);
 
   const start = useCallback(async () => {
-    if (isStartingRef.current || state !== 'idle') return;
+    if (isStartingRef.current || state !== 'idle') {
+      throw new Error(`Recorder not ready (state: ${state})`);
+    }
     isStartingRef.current = true;
+    setIsStarting(true);
     try {
       // Android 13+ requires POST_NOTIFICATIONS for the foreground service notification.
       // Without it the background recording service may fail to start silently.
@@ -118,6 +123,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       mediaResetAlertedRef.current = false;
     } finally {
       isStartingRef.current = false;
+      setIsStarting(false);
     }
   }, [state, recorder]);
 
@@ -200,6 +206,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   return {
     state,
+    isStarting,
     duration: state === 'stopped' ? finalDuration : Math.floor(recorderState.durationMillis / 1000),
     metering: recorderState.metering ?? -160,
     audioUri,

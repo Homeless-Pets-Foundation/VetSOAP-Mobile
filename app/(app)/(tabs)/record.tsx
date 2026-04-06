@@ -378,11 +378,13 @@ function RecordingSession() {
           setAudioState(slotId, 'recording');
         } catch (error) {
           unbindRecorder();
-          const msg =
-            error instanceof Error && error.message.toLowerCase().includes('permission')
-              ? 'Microphone permission is required. Please grant access in Settings.'
+          const errMsg = error instanceof Error ? error.message.toLowerCase() : '';
+          const msg = errMsg.includes('permission')
+            ? 'Microphone permission is required. Please grant access in Settings.'
+            : errMsg.includes('not ready')
+              ? 'The recorder is still finishing a previous recording. Please try again in a moment.'
               : 'Could not start recording. Please check that your device has a microphone and it is not in use by another app.';
-          Alert.alert('Microphone Error', msg);
+          Alert.alert('Recording Error', msg);
         }
       })().catch(() => {});
     },

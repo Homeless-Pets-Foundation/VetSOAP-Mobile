@@ -51,7 +51,7 @@
     "babel-plugin-transform-remove-console": "^6.9.4",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~55.0.0",
-    "expo-dev-client": "~55.0.19",
+    "expo-dev-client": "~55.0.22",
     "react-refresh": "^0.18.0",
     "sharp": "^0.34.5",
     "typescript": "~5.9.2"

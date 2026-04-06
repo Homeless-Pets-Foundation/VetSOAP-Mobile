@@ -113,6 +113,13 @@ export default function PatientDetailScreen() {
     },
   });
 
+  const regenerateSummaryMutation = useMutation({
+    mutationFn: () => patientsApi.regenerateSummary(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['patient', id] });
+    },
+  });
+
   const startEdit = useCallback(() => {
     if (!patient) return;
     setProfileDraft({
@@ -214,25 +221,61 @@ export default function PatientDetailScreen() {
             <View>
               {/* AI History Summary */}
               <Card className="mb-4">
-                <View className="flex-row items-center mb-3">
-                  <View className="w-2 h-2 rounded-full bg-amber-400 mr-2" />
-                  <Text className="text-body-sm font-semibold text-stone-700">AI Patient Summary</Text>
+                <View className="flex-row items-center justify-between mb-3">
+                  <View className="flex-row items-center">
+                    <View className="w-2 h-2 rounded-full bg-amber-400 mr-2" />
+                    <Text className="text-body-sm font-semibold text-stone-700">AI Patient Summary</Text>
+                  </View>
+                  {patient.aiHistoryUpdatedAt && Date.now() - new Date(patient.aiHistoryUpdatedAt).getTime() > 30 * 24 * 60 * 60 * 1000 && (
+                    <View className="bg-amber-100 rounded px-2 py-0.5">
+                      <Text className="text-caption font-medium text-amber-700">Outdated</Text>
+                    </View>
+                  )}
                 </View>
                 {patient.aiHistorySummary ? (
                   <>
                     <Text className="text-body text-stone-800 leading-relaxed">
                       {patient.aiHistorySummary}
                     </Text>
-                    {patient.aiHistoryUpdatedAt && (
-                      <Text className="text-caption text-stone-400 mt-2">
-                        Updated {new Date(patient.aiHistoryUpdatedAt).toLocaleDateString()}
-                      </Text>
-                    )}
+                    <View className="flex-row items-center justify-between mt-2">
+                      {patient.aiHistoryUpdatedAt && (
+                        <Text className="text-caption text-stone-400">
+                          {(() => {
+                            const diffMs = Date.now() - new Date(patient.aiHistoryUpdatedAt).getTime();
+                            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                            if (diffDays === 0) return 'Updated today';
+                            if (diffDays === 1) return 'Updated yesterday';
+                            if (diffDays < 30) return `Updated ${diffDays}d ago`;
+                            return `Updated ${Math.floor(diffDays / 30)}mo ago`;
+                          })()}
+                        </Text>
+                      )}
+                      <Pressable
+                        onPress={() => regenerateSummaryMutation.mutate()}
+                        disabled={regenerateSummaryMutation.isPending}
+                        hitSlop={8}
+                      >
+                        <Text className="text-caption font-medium text-brand-600">
+                          {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'}
+                        </Text>
+                      </Pressable>
+                    </View>
                   </>
                 ) : (
-                  <Text className="text-body text-stone-500 italic">
-                    No summary yet. Summaries are generated automatically after completed visits.
-                  </Text>
+                  <>
+                    <Text className="text-body text-stone-500 italic mb-2">
+                      No summary yet. Summaries are generated automatically after completed visits.
+                    </Text>
+                    <Pressable
+                      onPress={() => regenerateSummaryMutation.mutate()}
+                      disabled={regenerateSummaryMutation.isPending}
+                      hitSlop={8}
+                    >
+                      <Text className="text-caption font-medium text-brand-600">
+                        {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'}
+                      </Text>
+                    </Pressable>
+                  </>
                 )}
               </Card>
 

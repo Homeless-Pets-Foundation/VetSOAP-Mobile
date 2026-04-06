@@ -21,6 +21,7 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
   return {
     id: `slot-${Date.now()}-${slotCounter}`,
     formData: {
+      pimsPatientId: '',
       patientName: '',
       clientName,
       species: '',

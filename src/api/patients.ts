@@ -24,4 +24,8 @@ export const patientsApi = {
     if (params.limit !== undefined) queryParams.limit = params.limit;
     return apiClient.get(`/api/patients/${patientId}/recordings`, queryParams);
   },
+
+  async regenerateSummary(id: string): Promise<void> {
+    await apiClient.request(`/api/patients/${id}/regenerate-summary`, { method: 'POST', body: {} });
+  },
 };

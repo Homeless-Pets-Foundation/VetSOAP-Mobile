@@ -218,13 +218,13 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               className={`text-timer font-bold font-mono mb-5 ${
                 isRecording ? 'text-brand-500' : 'text-stone-900'
               }`}
-              style={{ paddingRight: 4 }}
+              style={{ alignSelf: 'stretch', textAlign: 'center' }}
             >
               {formatDuration(duration)}
             </Text>
           </>
         ) : isStopped ? (
-          <Text className="text-body text-stone-600 mb-3">
+          <Text className="text-body text-stone-600 mb-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             {slot.segments.length > 1
               ? `${slot.segments.length} segments · ${formatDuration(slot.audioDuration)}`
               : formatDuration(slot.audioDuration)}
@@ -232,7 +232,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         ) : (
           <>
             <AudioWaveform isActive={false} />
-            <Text className="text-timer font-bold font-mono mb-5 text-stone-900" style={{ paddingRight: 4 }}>
+            <Text className="text-timer font-bold font-mono mb-5 text-stone-900" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
               {formatDuration(duration)}
             </Text>
           </>

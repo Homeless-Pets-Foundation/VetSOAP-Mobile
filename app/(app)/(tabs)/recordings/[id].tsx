@@ -212,7 +212,7 @@ export default function RecordingDetailScreen() {
             {error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'}
           </Text>
           <View className="flex-row gap-3">
-            <Button variant="primary" onPress={() => router.back()}>
+            <Button variant="primary" onPress={() => router.navigate('/recordings')}>
               Go Back
             </Button>
             <Button variant="secondary" onPress={() => { refetchRecording().catch(() => {}); }}>
@@ -256,7 +256,7 @@ export default function RecordingDetailScreen() {
         {/* Header */}
         <View className="flex-row items-center px-5 pt-5">
           <Pressable
-            onPress={() => router.back()}
+            onPress={() => router.navigate('/recordings')}
             accessibilityRole="button"
             accessibilityLabel="Go back"
             className="mr-3 w-11 h-11 items-center justify-center"

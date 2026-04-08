@@ -40,6 +40,7 @@ firebase-debug.log
 
 # Claude Code local settings
 .claude/settings.local.json
+AGENTS.local.md
 
 # sensitive config (credentials, keys)
 credentials.json

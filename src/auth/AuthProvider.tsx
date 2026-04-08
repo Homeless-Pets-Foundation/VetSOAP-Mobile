@@ -78,18 +78,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(fetchedUser);
       // Set user ID for stash scoping as soon as we know it
       if (fetchedUser?.id) {
-        setStashUserId(fetchedUser.id);
+        const scopedUserId = fetchedUser.id;
+        const isRecoveryScopeCurrent = () =>
+          stashStorage.getUserId() === scopedUserId &&
+          stashAudioManager.getUserId() === scopedUserId;
+
+        setStashUserId(scopedUserId);
         // Now that user ID is set, safe to clean up orphaned stash data.
         // Must run AFTER setStashUserId or getStashedSessions returns []
         // and all stash audio dirs get deleted as "orphaned".
         stashStorage.clearLegacyGlobalStashes().catch(() => {});
         stashAudioManager.deleteAllStashedAudioGlobal().catch(() => {});
         stashStorage.getStashedSessions().then(async (sessions) => {
+          if (!isRecoveryScopeCurrent()) return;
           const validIds = sessions.map((s) => s.id);
           const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
+          if (!isRecoveryScopeCurrent()) return;
           // If orphaned sessions were recovered from manifests, save them to SecureStore
           for (const session of recovered) {
+            if (!isRecoveryScopeCurrent()) return;
             const added = await stashStorage.addStashedSession(session);
+            if (!isRecoveryScopeCurrent()) return;
             if (added) {
               await stashAudioManager.deleteRecoveryManifest(session.id);
             }

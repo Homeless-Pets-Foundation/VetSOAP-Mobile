@@ -24,55 +24,91 @@ export function useStashedSessions(userId: string | null) {
   const [stashes, setStashes] = useState<StashedSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  const isScopeCurrent = useCallback(
+    (scopedUserId: string | null) =>
+      scopedUserId !== null &&
+      stashStorage.getUserId() === scopedUserId &&
+      stashAudioManager.getUserId() === scopedUserId,
+    []
+  );
+
   const refreshStashes = useCallback(async () => {
+    const scopedUserId = userId;
+    if (!scopedUserId || !isScopeCurrent(scopedUserId)) {
+      setStashes([]);
+      return;
+    }
+
     try {
       const sessions = await stashStorage.getStashedSessions();
+      if (!isScopeCurrent(scopedUserId)) return;
       setStashes(sessions);
     } catch {
+      if (!isScopeCurrent(scopedUserId)) return;
       setStashes([]);
     }
-  }, []);
+  }, [userId, isScopeCurrent]);
 
   // On init: load stashes, then recover any orphaned directories with recovery manifests
   useEffect(() => {
+    let cancelled = false;
+    const scopedUserId = userId;
+
     if (!userId) {
       setStashes([]);
       setIsLoading(false);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
     setIsLoading(true);
     (async () => {
       try {
         const sessions = await stashStorage.getStashedSessions();
+        if (cancelled || !isScopeCurrent(scopedUserId)) return;
         setStashes(sessions);
 
         // Recover orphaned stash directories that have recovery manifests
         const validIds = sessions.map((s) => s.id);
         const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
+        if (cancelled || !isScopeCurrent(scopedUserId)) return;
         if (recovered.length > 0) {
           for (const session of recovered) {
+            if (cancelled || !isScopeCurrent(scopedUserId)) return;
             const added = await stashStorage.addStashedSession(session);
+            if (cancelled || !isScopeCurrent(scopedUserId)) return;
             if (added) {
               await stashAudioManager.deleteRecoveryManifest(session.id);
             }
           }
           // Refresh to show recovered sessions
           const updated = await stashStorage.getStashedSessions();
+          if (cancelled || !isScopeCurrent(scopedUserId)) return;
           setStashes(updated);
         }
       } catch {
+        if (cancelled || !isScopeCurrent(scopedUserId)) return;
         setStashes([]);
       } finally {
+        if (cancelled || !isScopeCurrent(scopedUserId)) return;
         setIsLoading(false);
       }
     })().catch(() => {
+      if (cancelled || !isScopeCurrent(scopedUserId)) return;
       setIsLoading(false);
     });
-  }, [userId]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, isScopeCurrent]);
 
   const stashSession = useCallback(
     async (sessionState: SessionState): Promise<boolean> => {
+      const scopedUserId = userId;
+      if (!scopedUserId || !isScopeCurrent(scopedUserId)) return false;
+
       try {
         // Only stash slots that have unsubmitted recordings or form data worth saving
         const slotsToStash = sessionState.slots.filter(
@@ -98,6 +134,10 @@ export function useStashedSessions(userId: string | null) {
           sessionId,
           slotsToStash
         );
+        if (!isScopeCurrent(scopedUserId)) {
+          await stashAudioManager.deleteStashedAudio(sessionId);
+          return false;
+        }
 
         const totalSegments = stashedSlots.reduce(
           (sum, s) => sum + s.segments.length,
@@ -134,8 +174,13 @@ export function useStashedSessions(userId: string | null) {
         // Write recovery manifest BEFORE SecureStore — if the app crashes between
         // here and addStashedSession, the manifest allows recovery on next launch
         await stashAudioManager.writeRecoveryManifest(sessionId, stashedSession);
+        if (!isScopeCurrent(scopedUserId)) {
+          await stashAudioManager.deleteStashedAudio(sessionId);
+          return false;
+        }
 
         const saved = await stashStorage.addStashedSession(stashedSession);
+        if (!isScopeCurrent(scopedUserId)) return false;
         if (!saved) {
           // Metadata write did not commit, so keep the active session intact and
           // remove the temporary stash copy to avoid duplicate recovery.
@@ -167,7 +212,7 @@ export function useStashedSessions(userId: string | null) {
         return false;
       }
     },
-    [refreshStashes]
+    [userId, isScopeCurrent, refreshStashes]
   );
 
   /**
@@ -177,18 +222,25 @@ export function useStashedSessions(userId: string | null) {
    */
   const confirmResume = useCallback(
     async (stashId: string): Promise<void> => {
+      const scopedUserId = userId;
+      if (!scopedUserId || !isScopeCurrent(scopedUserId)) return;
+
       try {
         await stashStorage.removeStashedSession(stashId);
+        if (!isScopeCurrent(scopedUserId)) return;
         await refreshStashes();
       } catch {
         // Best-effort — stash list may show a phantom entry until next refresh
       }
     },
-    [refreshStashes]
+    [userId, isScopeCurrent, refreshStashes]
   );
 
   const resumeSession = useCallback(
     async (stashId: string): Promise<PatientSlot[] | null> => {
+      const scopedUserId = userId;
+      if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
+
       const convertToPatientSlots = (
         stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number }[]; audioDuration: number }[]
       ): PatientSlot[] => {
@@ -208,12 +260,14 @@ export function useStashedSessions(userId: string | null) {
 
       try {
         const sessions = await stashStorage.getStashedSessions();
+        if (!isScopeCurrent(scopedUserId)) return null;
         const stash = sessions.find((s) => s.id === stashId);
         if (!stash) return null;
 
         // Validate audio files still exist
         const { validSlots, allValid, missingCount } =
           await stashAudioManager.validateStashedAudio(stash.slots);
+        if (!isScopeCurrent(scopedUserId)) return null;
 
         if (!allValid) {
           const totalSegments = stash.slots.reduce(
@@ -262,20 +316,25 @@ export function useStashedSessions(userId: string | null) {
         return null;
       }
     },
-    [refreshStashes]
+    [userId, isScopeCurrent, refreshStashes]
   );
 
   const deleteStash = useCallback(
     async (stashId: string): Promise<void> => {
+      const scopedUserId = userId;
+      if (!scopedUserId || !isScopeCurrent(scopedUserId)) return;
+
       try {
         await stashAudioManager.deleteStashedAudio(stashId);
+        if (!isScopeCurrent(scopedUserId)) return;
         await stashStorage.removeStashedSession(stashId);
+        if (!isScopeCurrent(scopedUserId)) return;
         await refreshStashes();
       } catch (error) {
         if (__DEV__) console.error('[Stash] deleteStash failed:', error);
       }
     },
-    [refreshStashes]
+    [userId, isScopeCurrent, refreshStashes]
   );
 
   return {

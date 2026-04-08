@@ -147,6 +147,8 @@ function RecordingSession() {
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
   // Guard: prevent the audio-capture effect from saving twice for the same stop
   const audioCaptureDoneRef = useRef(false);
+  // Suppress the next stopped-audio capture when the current segment is being discarded.
+  const skipNextAudioCaptureRef = useRef(false);
 
   // Auto-select default template for first slot once templates load
   useEffect(() => {
@@ -163,6 +165,13 @@ function RecordingSession() {
     if (recorder.state !== 'stopped') {
       // Reset guard when recorder leaves stopped state (e.g. after reset → new recording)
       audioCaptureDoneRef.current = false;
+      return () => { if (timerId) clearTimeout(timerId); };
+    }
+    if (skipNextAudioCaptureRef.current && !audioCaptureDoneRef.current) {
+      audioCaptureDoneRef.current = true;
+      skipNextAudioCaptureRef.current = false;
+      unbindRecorder();
+      recorder.reset();
       return () => { if (timerId) clearTimeout(timerId); };
     }
     if (recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
@@ -234,6 +243,39 @@ function RecordingSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- guard runs only when recorder ownership changes, reading slots is intentionally from current render
   }, [session.recorderBoundToSlotId]);
 
+  const discardCurrentSession = useCallback(async () => {
+    pendingStartSlotRef.current = null;
+    pendingStashRef.current = false;
+
+    const shouldResetRecorder =
+      session.recorderBoundToSlotId !== null ||
+      recorder.audioUri !== null ||
+      recorder.state === 'recording' ||
+      recorder.state === 'paused' ||
+      recorder.state === 'stopped';
+
+    if (shouldResetRecorder) {
+      skipNextAudioCaptureRef.current = true;
+      if (recorder.state === 'recording' || recorder.state === 'paused') {
+        try {
+          await recorder.stop();
+        } catch {
+          // stop() already performs internal cleanup
+        }
+      }
+      unbindRecorder();
+      recorder.reset();
+    }
+
+    session.slots.forEach((slot) => {
+      slot.segments.forEach((seg) => {
+        safeDeleteFile(seg.uri);
+      });
+    });
+
+    resetSession();
+  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession]);
+
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
     (s) => (s.segments.length > 0 && s.uploadStatus !== 'success') ||
@@ -252,17 +294,10 @@ function RecordingSession() {
           text: 'Discard',
           style: 'destructive',
           onPress: () => {
-            // Clean up all segment audio files
-            session.slots.forEach((slot) => {
-              slot.segments.forEach((seg) => {
-                safeDeleteFile(seg.uri);
-              });
-            });
-            // Clean up any in-flight recording that was never saved to a slot
-            if (recorder.audioUri) {
-              safeDeleteFile(recorder.audioUri);
-            }
-            navigation.dispatch(data.action);
+            (async () => {
+              await discardCurrentSession();
+              navigation.dispatch(data.action);
+            })().catch(() => {});
           },
         },
       ]
@@ -523,6 +558,7 @@ function RecordingSession() {
                   try {
                     // Stop recording if this slot owns the recorder
                     if (session.recorderBoundToSlotId === slotId) {
+                      skipNextAudioCaptureRef.current = true;
                       try { await recorder.stop(); } catch {}
                       unbindRecorder();
                       recorder.reset();
@@ -834,13 +870,10 @@ function RecordingSession() {
               text: 'Replace',
               style: 'destructive',
               onPress: () => {
-                // Clean up current session audio files before restoring
-                session.slots.forEach((slot) => {
-                  slot.segments.forEach((seg) => {
-                    safeDeleteFile(seg.uri);
-                  });
-                });
-                doResume();
+                (async () => {
+                  await discardCurrentSession();
+                  doResume();
+                })().catch(() => {});
               },
             },
           ]
@@ -849,7 +882,7 @@ function RecordingSession() {
         doResume();
       }
     },
-    [hasUnsavedRecordings, session.slots, resumeStashedSession, confirmResume, restoreSession]
+    [hasUnsavedRecordings, discardCurrentSession, resumeStashedSession, confirmResume, restoreSession]
   );
 
   const handleDeleteStash = useCallback(

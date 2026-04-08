@@ -14,9 +14,8 @@ const BASE_STASH_DIR = `${Paths.document.uri}stashed-audio/`;
 /** Current user ID — set by AuthProvider to scope audio files per-user. */
 let currentUserId: string | null = null;
 
-function userStashDir(): string {
-  if (!currentUserId) throw new Error('Stash audio manager: no user ID set');
-  return `${BASE_STASH_DIR}${currentUserId}/`;
+function userStashDirForUser(userId: string): string {
+  return `${BASE_STASH_DIR}${userId}/`;
 }
 
 /** Validate sessionId to prevent path traversal attacks. */
@@ -26,15 +25,20 @@ function validateSessionId(sessionId: string): void {
   }
 }
 
-function sessionDir(sessionId: string): string {
+function sessionDirForUser(userId: string, sessionId: string): string {
   validateSessionId(sessionId);
-  return `${userStashDir()}${sessionId}/`;
+  return `${userStashDirForUser(userId)}${sessionId}/`;
 }
 
 export const stashAudioManager = {
   /** Set the current user ID. Must be called before any stash operations. */
   setUserId(userId: string | null): void {
     currentUserId = userId;
+  },
+
+  /** Read the currently scoped user ID. Used to guard async recovery flows. */
+  getUserId(): string | null {
+    return currentUserId;
   },
 
   /**
@@ -47,7 +51,10 @@ export const stashAudioManager = {
     sessionId: string,
     slots: PatientSlot[]
   ): Promise<StashedSlot[]> {
-    const dir = sessionDir(sessionId);
+    const userId = currentUserId;
+    if (!userId) throw new Error('Stash audio manager: no user ID set');
+
+    const dir = sessionDirForUser(userId, sessionId);
     try {
       ensureDirectory(dir);
 
@@ -129,8 +136,11 @@ export const stashAudioManager = {
   },
 
   async deleteStashedAudio(sessionId: string): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+
     try {
-      const dir = sessionDir(sessionId);
+      const dir = sessionDirForUser(userId, sessionId);
       safeDeleteDirectory(dir);
     } catch {
       // Best-effort cleanup
@@ -139,9 +149,11 @@ export const stashAudioManager = {
 
   /** Delete all stashed audio for the current user. */
   async deleteAllStashedAudio(): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+
     try {
-      if (!currentUserId) return;
-      const dir = userStashDir();
+      const dir = userStashDirForUser(userId);
       safeDeleteDirectory(dir);
     } catch {
       // Best-effort cleanup
@@ -174,8 +186,11 @@ export const stashAudioManager = {
    * allows the stash to be recovered on next launch.
    */
   async writeRecoveryManifest(sessionId: string, session: StashedSession): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+
     try {
-      const path = `${sessionDir(sessionId)}recovery.json`;
+      const path = `${sessionDirForUser(userId, sessionId)}recovery.json`;
       new ExpoFile(path).write(JSON.stringify(session));
     } catch {
       // Best-effort — stash still works if manifest write fails
@@ -184,8 +199,11 @@ export const stashAudioManager = {
 
   /** Delete the recovery manifest after SecureStore write succeeds. */
   async deleteRecoveryManifest(sessionId: string): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+
     try {
-      const path = `${sessionDir(sessionId)}recovery.json`;
+      const path = `${sessionDirForUser(userId, sessionId)}recovery.json`;
       safeDeleteFile(path);
     } catch {
       // Best-effort cleanup
@@ -193,9 +211,12 @@ export const stashAudioManager = {
   },
 
   /** Read a recovery manifest from a stash directory. Returns null if missing or corrupt. */
-  async readRecoveryManifest(sessionId: string): Promise<StashedSession | null> {
+  async readRecoveryManifest(sessionId: string, scopedUserId?: string): Promise<StashedSession | null> {
+    const userId = scopedUserId ?? currentUserId;
+    if (!userId) return null;
+
     try {
-      const path = `${sessionDir(sessionId)}recovery.json`;
+      const path = `${sessionDirForUser(userId, sessionId)}recovery.json`;
       if (!fileExists(path)) return null;
       const raw = await new ExpoFile(path).text();
       const parsed = JSON.parse(raw) as StashedSession;
@@ -217,9 +238,10 @@ export const stashAudioManager = {
   async recoverOrCleanupOrphans(validSessionIds: string[]): Promise<StashedSession[]> {
     if (this._cleanupInProgress) return [];
     this._cleanupInProgress = true;
+    const userId = currentUserId;
     try {
-      if (!currentUserId) return [];
-      const dir = userStashDir();
+      if (!userId) return [];
+      const dir = userStashDirForUser(userId);
       if (!directoryExists(dir)) return [];
 
       const dirEntries = new Directory(dir).list();
@@ -228,7 +250,7 @@ export const stashAudioManager = {
       const recovered: StashedSession[] = [];
 
       for (const orphan of orphanDirs) {
-        const manifest = await this.readRecoveryManifest(orphan.name);
+        const manifest = await this.readRecoveryManifest(orphan.name, userId);
         if (manifest) {
           // Validate that audio files still exist before recovering
           const { validSlots } = await this.validateStashedAudio(manifest.slots);

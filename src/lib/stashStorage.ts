@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
 
 const MAX_STASHES = 5;
+type Generation = 'a' | 'b';
 
 // Android SecureStore limit is 2048 bytes per value.
 // Use 1900 to leave margin for encoding overhead.
@@ -14,14 +15,66 @@ const STORE_OPTIONS = {
 /** Current user ID — set by AuthProvider to scope stash data per-user. */
 let currentUserId: string | null = null;
 
-function keyPrefix(): string {
-  if (!currentUserId) throw new Error('Stash storage: no user ID set');
-  return `captivet_stash_${currentUserId}_chunk_`;
+function activeGenerationKeyForUser(userId: string): string {
+  return `captivet_stash_${userId}_active`;
 }
 
-function countKey(): string {
-  if (!currentUserId) throw new Error('Stash storage: no user ID set');
-  return `captivet_stash_${currentUserId}_count`;
+function generationPrefixForUser(userId: string, generation: Generation): string {
+  return `captivet_stash_${userId}_${generation}_chunk_`;
+}
+
+function generationCountKeyForUser(userId: string, generation: Generation): string {
+  return `captivet_stash_${userId}_${generation}_count`;
+}
+
+function legacyPrefixForUser(userId: string): string {
+  return `captivet_stash_${userId}_chunk_`;
+}
+
+function legacyCountKeyForUser(userId: string): string {
+  return `captivet_stash_${userId}_count`;
+}
+
+function parseSessions(raw: string): StashedSession[] {
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) return [];
+
+  // Validate shape of each stashed session to guard against corrupted data
+  return parsed.filter(
+    (s): s is StashedSession =>
+      s != null &&
+      typeof s === 'object' &&
+      typeof s.id === 'string' &&
+      typeof s.stashedAt === 'string' &&
+      Array.isArray(s.slots) &&
+      s.slots.every(
+        (slot: unknown) =>
+          slot != null &&
+          typeof slot === 'object' &&
+          typeof (slot as Record<string, unknown>).id === 'string' &&
+          Array.isArray((slot as Record<string, unknown>).segments)
+      )
+  );
+}
+
+async function readSessionsForKeys(
+  scopedCountKey: string,
+  scopedPrefix: string
+): Promise<StashedSession[] | null> {
+  const countStr = await SecureStore.getItemAsync(scopedCountKey);
+  if (!countStr) return null;
+
+  const count = parseInt(countStr, 10);
+  if (isNaN(count) || count <= 0) return [];
+
+  const chunks: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const chunk = await SecureStore.getItemAsync(`${scopedPrefix}${i}`);
+    if (chunk === null) return [];
+    chunks.push(chunk);
+  }
+
+  return parseSessions(chunks.join(''));
 }
 
 /**
@@ -39,64 +92,87 @@ export const stashStorage = {
     currentUserId = userId;
   },
 
+  /** Read the currently scoped user ID. Used to guard async recovery flows. */
+  getUserId(): string | null {
+    return currentUserId;
+  },
+
   async getStashedSessions(): Promise<StashedSession[]> {
+    const userId = currentUserId;
+    if (!userId) return [];
+
     try {
-      if (!currentUserId) return [];
-      const countStr = await SecureStore.getItemAsync(countKey());
-      if (!countStr) return [];
-
-      const count = parseInt(countStr, 10);
-      if (isNaN(count) || count <= 0) return [];
-
-      const prefix = keyPrefix();
-      const chunks: string[] = [];
-      for (let i = 0; i < count; i++) {
-        const chunk = await SecureStore.getItemAsync(`${prefix}${i}`);
-        if (chunk === null) return []; // Corrupted — missing chunk
-        chunks.push(chunk);
+      const activeGeneration = await SecureStore.getItemAsync(activeGenerationKeyForUser(userId));
+      if (activeGeneration === 'a' || activeGeneration === 'b') {
+        const activeSessions = await readSessionsForKeys(
+          generationCountKeyForUser(userId, activeGeneration),
+          generationPrefixForUser(userId, activeGeneration)
+        );
+        if (activeSessions !== null) return activeSessions;
       }
 
-      const raw = chunks.join('');
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      // Validate shape of each stashed session to guard against corrupted data
-      return parsed.filter(
-        (s): s is StashedSession =>
-          s != null &&
-          typeof s === 'object' &&
-          typeof s.id === 'string' &&
-          typeof s.stashedAt === 'string' &&
-          Array.isArray(s.slots) &&
-          s.slots.every(
-            (slot: unknown) =>
-              slot != null &&
-              typeof slot === 'object' &&
-              typeof (slot as Record<string, unknown>).id === 'string' &&
-              Array.isArray((slot as Record<string, unknown>).segments)
-          )
+      const legacySessions = await readSessionsForKeys(
+        legacyCountKeyForUser(userId),
+        legacyPrefixForUser(userId)
       );
+      if (legacySessions !== null) return legacySessions;
+
+      // Last-resort recovery if the active pointer is missing but one generation is intact.
+      const genBSessions = await readSessionsForKeys(
+        generationCountKeyForUser(userId, 'b'),
+        generationPrefixForUser(userId, 'b')
+      );
+      const genASessions = await readSessionsForKeys(
+        generationCountKeyForUser(userId, 'a'),
+        generationPrefixForUser(userId, 'a')
+      );
+
+      if (genBSessions !== null && genBSessions.length > 0) return genBSessions;
+      if (genASessions !== null && genASessions.length > 0) return genASessions;
+      if (genBSessions !== null) return genBSessions;
+      if (genASessions !== null) return genASessions;
+      return [];
     } catch {
       return [];
     }
   },
 
   async saveStashedSessions(sessions: StashedSession[]): Promise<boolean> {
+    const userId = currentUserId;
+    if (!userId) return false;
+
     try {
-      // First delete old chunks
-      await this.deleteAllChunks();
+      const activeGenerationRaw = await SecureStore.getItemAsync(activeGenerationKeyForUser(userId));
+      const activeGeneration: Generation = activeGenerationRaw === 'b' ? 'b' : 'a';
+      const nextGeneration: Generation = activeGeneration === 'a' ? 'b' : 'a';
+      const nextCountKey = generationCountKeyForUser(userId, nextGeneration);
+      const nextPrefix = generationPrefixForUser(userId, nextGeneration);
+
+      // Always write into the inactive generation first. The active pointer
+      // switches only after the new payload is fully written.
+      await this.deleteGeneration(nextGeneration, userId);
 
       const raw = JSON.stringify(sessions);
       const chunkCount = Math.ceil(raw.length / CHUNK_SIZE);
-      const prefix = keyPrefix();
 
       // Write chunks
       for (let i = 0; i < chunkCount; i++) {
         const chunk = raw.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        await SecureStore.setItemAsync(`${prefix}${i}`, chunk, STORE_OPTIONS);
+        await SecureStore.setItemAsync(`${nextPrefix}${i}`, chunk, STORE_OPTIONS);
       }
 
-      // Write count last (acts as a commit flag)
-      await SecureStore.setItemAsync(countKey(), String(chunkCount), STORE_OPTIONS);
+      // Write count, then atomically switch the active pointer to the new generation.
+      await SecureStore.setItemAsync(nextCountKey, String(chunkCount), STORE_OPTIONS);
+      await SecureStore.setItemAsync(
+        activeGenerationKeyForUser(userId),
+        nextGeneration,
+        STORE_OPTIONS
+      );
+
+      // Cleanup is best-effort after the pointer flips. A failure here should
+      // not invalidate the committed generation.
+      await this.deleteGeneration(activeGeneration, userId);
+      await this.deleteLegacyUserScopedChunks(userId);
       return true;
     } catch {
       return false;
@@ -134,23 +210,51 @@ export const stashStorage = {
 
   /** Delete all chunk keys and the count key from SecureStore. */
   async deleteAllChunks(): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+
     try {
-      if (!currentUserId) return;
-      const ck = countKey();
-      const countStr = await SecureStore.getItemAsync(ck);
-      if (countStr) {
-        const count = parseInt(countStr, 10);
-        if (!isNaN(count)) {
-          const prefix = keyPrefix();
-          for (let i = 0; i < count; i++) {
-            try { await SecureStore.deleteItemAsync(`${prefix}${i}`); } catch { /* ignore */ }
-          }
-        }
+      await this.deleteGeneration('a', userId);
+      await this.deleteGeneration('b', userId);
+      await this.deleteLegacyUserScopedChunks(userId);
+      try {
+        await SecureStore.deleteItemAsync(activeGenerationKeyForUser(userId));
+      } catch {
+        /* ignore */
       }
-      try { await SecureStore.deleteItemAsync(ck); } catch { /* ignore */ }
     } catch {
       // Best-effort
     }
+  },
+
+  async deleteGeneration(generation: Generation, userId: string): Promise<void> {
+    const scopedCountKey = generationCountKeyForUser(userId, generation);
+    const countStr = await SecureStore.getItemAsync(scopedCountKey);
+    if (countStr) {
+      const count = parseInt(countStr, 10);
+      if (!isNaN(count)) {
+        const scopedPrefix = generationPrefixForUser(userId, generation);
+        for (let i = 0; i < count; i++) {
+          try { await SecureStore.deleteItemAsync(`${scopedPrefix}${i}`); } catch { /* ignore */ }
+        }
+      }
+    }
+    try { await SecureStore.deleteItemAsync(scopedCountKey); } catch { /* ignore */ }
+  },
+
+  async deleteLegacyUserScopedChunks(userId: string): Promise<void> {
+    const scopedCountKey = legacyCountKeyForUser(userId);
+    const countStr = await SecureStore.getItemAsync(scopedCountKey);
+    if (countStr) {
+      const count = parseInt(countStr, 10);
+      if (!isNaN(count)) {
+        const scopedPrefix = legacyPrefixForUser(userId);
+        for (let i = 0; i < count; i++) {
+          try { await SecureStore.deleteItemAsync(`${scopedPrefix}${i}`); } catch { /* ignore */ }
+        }
+      }
+    }
+    try { await SecureStore.deleteItemAsync(scopedCountKey); } catch { /* ignore */ }
   },
 
   /**

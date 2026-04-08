@@ -108,7 +108,7 @@ export default function PatientDetailScreen() {
       return patientsApi.update(id!, payload);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['patient', id] });
+      queryClient.invalidateQueries({ queryKey: ['patient', id] }).catch(() => {});
       setEditMode(false);
     },
   });
@@ -116,7 +116,7 @@ export default function PatientDetailScreen() {
   const regenerateSummaryMutation = useMutation({
     mutationFn: () => patientsApi.regenerateSummary(id!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['patient', id] });
+      queryClient.invalidateQueries({ queryKey: ['patient', id] }).catch(() => {});
     },
   });
 

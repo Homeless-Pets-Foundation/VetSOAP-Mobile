@@ -8,9 +8,10 @@ interface SubmitPanelProps {
   slots: PatientSlot[];
   isSubmitting: boolean;
   onSubmitAll: () => void;
+  hasActiveRecording: boolean;
 }
 
-export function SubmitPanel({ slots, isSubmitting, onSubmitAll }: SubmitPanelProps) {
+export function SubmitPanel({ slots, isSubmitting, onSubmitAll, hasActiveRecording }: SubmitPanelProps) {
   const recorded = slots.filter((s) => s.segments.length > 0).length;
   const uploaded = slots.filter((s) => s.uploadStatus === 'success').length;
   const readyToUpload = slots.filter(
@@ -42,12 +43,18 @@ export function SubmitPanel({ slots, isSubmitting, onSubmitAll }: SubmitPanelPro
         </Text>
       )}
 
+      {hasActiveRecording && (
+        <Text className="text-caption text-warning-600 mb-2">
+          Finish or discard all active recording segments before submitting all patients.
+        </Text>
+      )}
+
       <Button
         variant="primary"
         size="lg"
         onPress={onSubmitAll}
         loading={isSubmitting}
-        disabled={isSubmitting}
+        disabled={isSubmitting || hasActiveRecording}
         accessibilityLabel={`Submit ${readyToUpload} recording${readyToUpload > 1 ? 's' : ''}`}
       >
         {isSubmitting ? 'Uploading...' : `Submit All Recordings (${readyToUpload})`}

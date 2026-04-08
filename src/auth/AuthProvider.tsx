@@ -89,8 +89,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
           // If orphaned sessions were recovered from manifests, save them to SecureStore
           for (const session of recovered) {
-            await stashStorage.addStashedSession(session);
-            await stashAudioManager.deleteRecoveryManifest(session.id);
+            const added = await stashStorage.addStashedSession(session);
+            if (added) {
+              await stashAudioManager.deleteRecoveryManifest(session.id);
+            }
           }
         }).catch(() => {});
       }

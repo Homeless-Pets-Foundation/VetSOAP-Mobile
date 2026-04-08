@@ -46,6 +46,7 @@ interface PatientSlotCardProps {
   onRemove: () => void;
   onSubmitSingle: () => void;
   onEditRecording: () => void;
+  submitBlockedByLiveRecording: boolean;
 }
 
 function PulsingDot() {
@@ -100,6 +101,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   onRemove,
   onSubmitSingle,
   onEditRecording,
+  submitBlockedByLiveRecording,
 }: PatientSlotCardProps) {
   const { scale } = useResponsive();
   const recordBtnScale = useSharedValue(1);
@@ -145,7 +147,8 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
   // Allow recording when idle (even with existing segments — for continuation)
   const canStartRecording = hasRequiredFields && audioState === 'idle' && !recorder.isStarting;
-  const canSubmitSingle = hasRequiredFields && slot.segments.length > 0 && slot.uploadStatus !== 'success' && slot.uploadStatus !== 'uploading';
+  const showSubmitCard = hasRequiredFields && slot.segments.length > 0 && slot.uploadStatus !== 'success';
+  const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading';
 
   return (
     <ScrollView
@@ -353,13 +356,25 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       </Card>
 
       {/* Per-patient Submit */}
-      {canSubmitSingle && (
+      {showSubmitCard && (
         <Animated.View entering={FadeInUp.duration(300)}>
           <Card className="mb-4">
             <Text className="text-body-lg font-semibold text-stone-900 mb-2">Submit</Text>
             <Text className="text-body-sm text-stone-500 mb-4">
               Upload this patient&apos;s recording and generate a SOAP note.
             </Text>
+
+            {submitBlockedByLiveRecording && (
+              <View
+                className="mb-4 p-3 rounded-lg bg-warning-50"
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+              >
+                <Text className="text-body-sm text-warning-700">
+                  Finish or discard the active recording segment before submitting.
+                </Text>
+              </View>
+            )}
 
             {slot.uploadStatus === 'uploading' && (
               <View
@@ -399,7 +414,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               size="lg"
               onPress={onSubmitSingle}
               loading={slot.uploadStatus === 'uploading'}
-              disabled={slot.uploadStatus === 'uploading'}
+              disabled={!canSubmitSingle}
               accessibilityLabel="Submit and generate SOAP note"
             >
               {slot.uploadStatus === 'uploading' ? 'Uploading...' : slot.uploadStatus === 'error' ? 'Retry Upload' : 'Submit & Generate SOAP Note'}
@@ -430,6 +445,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   if (prev.width !== next.width) return false;
   if (prev.templatesLoading !== next.templatesLoading) return false;
   if (prev.templates !== next.templates) return false;
+  if (prev.submitBlockedByLiveRecording !== next.submitBlockedByLiveRecording) return false;
 
   // Only compare recorder when this slot owns it
   if (next.isRecorderOwner) {

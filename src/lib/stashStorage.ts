@@ -80,7 +80,7 @@ export const stashStorage = {
     }
   },
 
-  async saveStashedSessions(sessions: StashedSession[]): Promise<void> {
+  async saveStashedSessions(sessions: StashedSession[]): Promise<boolean> {
     try {
       // First delete old chunks
       await this.deleteAllChunks();
@@ -97,8 +97,9 @@ export const stashStorage = {
 
       // Write count last (acts as a commit flag)
       await SecureStore.setItemAsync(countKey(), String(chunkCount), STORE_OPTIONS);
+      return true;
     } catch {
-      // Best-effort persistence
+      return false;
     }
   },
 
@@ -107,8 +108,7 @@ export const stashStorage = {
       const existing = await this.getStashedSessions();
       if (existing.length >= MAX_STASHES) return false;
       existing.push(session);
-      await this.saveStashedSessions(existing);
-      return true;
+      return await this.saveStashedSessions(existing);
     } catch {
       return false;
     }

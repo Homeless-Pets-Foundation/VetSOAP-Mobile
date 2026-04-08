@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Alert } from 'react-native';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
+import { safeDeleteFile } from '../lib/fileOps';
 import type { StashedSession } from '../types/stash';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
 
@@ -19,7 +20,7 @@ function buildPatientSummary(slots: PatientSlot[]): string {
   return `${names[0]}, ${names[1]} (+${names.length - 2} more)`;
 }
 
-export function useStashedSessions() {
+export function useStashedSessions(userId: string | null) {
   const [stashes, setStashes] = useState<StashedSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -34,6 +35,13 @@ export function useStashedSessions() {
 
   // On init: load stashes, then recover any orphaned directories with recovery manifests
   useEffect(() => {
+    if (!userId) {
+      setStashes([]);
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
     (async () => {
       try {
         const sessions = await stashStorage.getStashedSessions();
@@ -44,8 +52,10 @@ export function useStashedSessions() {
         const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
         if (recovered.length > 0) {
           for (const session of recovered) {
-            await stashStorage.addStashedSession(session);
-            await stashAudioManager.deleteRecoveryManifest(session.id);
+            const added = await stashStorage.addStashedSession(session);
+            if (added) {
+              await stashAudioManager.deleteRecoveryManifest(session.id);
+            }
           }
           // Refresh to show recovered sessions
           const updated = await stashStorage.getStashedSessions();
@@ -59,7 +69,7 @@ export function useStashedSessions() {
     })().catch(() => {
       setIsLoading(false);
     });
-  }, []);
+  }, [userId]);
 
   const stashSession = useCallback(
     async (sessionState: SessionState): Promise<boolean> => {
@@ -94,11 +104,14 @@ export function useStashedSessions() {
           0
         );
 
-        // Post-move safety net: if file copies failed and no segments survived,
-        // clean up the empty stash directory and abort.
-        if (totalSegments === 0) {
-          if (__DEV__) console.error('[Stash] all segment copies failed — no audio in stash directory');
+        // Require every segment to copy successfully before we commit the stash.
+        // Otherwise keep the active session intact and discard the temporary copy.
+        if (totalSegments !== preStashSegmentCount) {
           await stashAudioManager.deleteStashedAudio(sessionId);
+          Alert.alert(
+            'Stash Failed',
+            'Some audio files could not be saved. Your recordings are still active.'
+          );
           return false;
         }
 
@@ -124,17 +137,23 @@ export function useStashedSessions() {
 
         const saved = await stashStorage.addStashedSession(stashedSession);
         if (!saved) {
-          // Max stashes reached — shouldn't happen if UI disables button, but guard
-          Alert.alert(
-            'Stash Limit Reached',
-            'You can have up to 5 stashed sessions. Please delete one to make room.'
-          );
-          // Clean up the moved audio files since we couldn't save
+          // Metadata write did not commit, so keep the active session intact and
+          // remove the temporary stash copy to avoid duplicate recovery.
           await stashAudioManager.deleteStashedAudio(sessionId);
+          Alert.alert(
+            'Stash Failed',
+            'Could not save your session. Your recordings are still active.'
+          );
           return false;
         }
 
-        // SecureStore is now authoritative — clean up the recovery manifest
+        // SecureStore is now authoritative — remove the old cache copies and
+        // clean up the recovery manifest.
+        slotsToStash.forEach((slot) => {
+          slot.segments.forEach((segment) => {
+            safeDeleteFile(segment.uri);
+          });
+        });
         await stashAudioManager.deleteRecoveryManifest(sessionId);
 
         await refreshStashes();

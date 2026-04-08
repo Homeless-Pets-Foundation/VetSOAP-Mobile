@@ -63,6 +63,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const stoppingRef = useRef(false);
   const isStartingRef = useRef(false);
   const mediaResetAlertedRef = useRef(false);
+  const latestAudioUriRef = useRef<string | null>(null);
   // Capture duration before pause/stop — native pause can reset the polled durationMillis to 0
   const capturedDurationRef = useRef(0);
 
@@ -119,6 +120,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
       setState('recording');
       setAudioUri(null);
+      latestAudioUriRef.current = null;
       capturedDurationRef.current = 0;
       mediaResetAlertedRef.current = false;
     } finally {
@@ -138,7 +140,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       // Native handle is broken — clean up so user can start fresh
       setFinalDuration(capturedDurationRef.current);
       try { await recorder.stop(); } catch {}
-      setAudioUri(recorder.uri ?? null);
+      const stoppedUri = recorder.uri ?? null;
+      latestAudioUriRef.current = stoppedUri;
+      setAudioUri(stoppedUri);
       setState('stopped');
       await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
       throw error;
@@ -156,7 +160,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       const polledDuration = Math.floor(recorderState.durationMillis / 1000);
       setFinalDuration(polledDuration > 0 ? polledDuration : capturedDurationRef.current);
       try { await recorder.stop(); } catch {}
-      setAudioUri(recorder.uri ?? null);
+      const stoppedUri = recorder.uri ?? null;
+      latestAudioUriRef.current = stoppedUri;
+      setAudioUri(stoppedUri);
       setState('stopped');
       await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
       throw error;
@@ -174,7 +180,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] stop failed:', error);
     }
-    setAudioUri(recorder.uri ?? null);
+    const stoppedUri = recorder.uri ?? null;
+    latestAudioUriRef.current = stoppedUri;
+    setAudioUri(stoppedUri);
     setState('stopped');
     stoppingRef.current = false;
 
@@ -184,20 +192,22 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   }, [recorder, recorderState.durationMillis]);
 
   const reset = useCallback(() => {
-    if (audioUri) {
-      safeDeleteFile(audioUri);
+    if (latestAudioUriRef.current) {
+      safeDeleteFile(latestAudioUriRef.current);
     }
     setState('idle');
     setAudioUri(null);
+    latestAudioUriRef.current = null;
     setFinalDuration(0);
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
-  }, [audioUri]);
+  }, []);
 
   const resetWithoutDelete = useCallback(() => {
     setState('idle');
     setAudioUri(null);
+    latestAudioUriRef.current = null;
     setFinalDuration(0);
     capturedDurationRef.current = 0;
     stoppingRef.current = false;

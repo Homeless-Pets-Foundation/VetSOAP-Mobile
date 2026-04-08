@@ -39,7 +39,8 @@ export const stashAudioManager = {
 
   /**
    * Move audio segment files from cacheDirectory to persistent stash directory.
-   * Uses copy-then-delete for safety — if copy fails, original is untouched.
+   * Uses copy-only semantics until stash metadata is durably committed.
+   * Callers delete the originals only after SecureStore persistence succeeds.
    * Returns StashedSlot[] with updated URIs pointing to documentDirectory.
    */
   async moveSegmentsToStashDir(
@@ -67,14 +68,12 @@ export const stashAudioManager = {
             continue;
           }
 
-          // Verify copy succeeded before deleting original
+          // Verify copy succeeded before exposing the new URI.
           if (fileExists(destUri)) {
-            safeDeleteFile(segment.uri);
             stashedSegments.push({ uri: destUri, duration: segment.duration });
           }
-          // If copy failed, skip this segment entirely. The original is in
-          // cacheDirectory which gets cleaned up — keeping that URI would
-          // create a stash that silently loses audio on restore.
+          // If copy failed, skip this segment entirely. The caller still has the
+          // original cache URI available in the active session until commit.
           segmentIndex++;
         }
 

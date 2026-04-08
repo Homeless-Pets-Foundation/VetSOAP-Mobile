@@ -11,6 +11,7 @@ import {
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
+import { useAuth } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
 import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
 import { useResponsive } from '../../../src/hooks/useResponsive';
@@ -88,10 +89,15 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
   );
 }
 
+function isSlotActivelyRecording(slot: PatientSlot): boolean {
+  return slot.audioState === 'recording' || slot.audioState === 'paused';
+}
+
 function RecordingSession() {
   const router = useRouter();
   const navigation = useNavigation();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const recorder = useAudioRecorder();
   const { width: screenWidth } = useWindowDimensions();
   const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
@@ -119,11 +125,12 @@ function RecordingSession() {
     stashes,
     stashCount,
     isAtCapacity,
+    isLoading: stashesLoading,
     stashSession,
     resumeSession: resumeStashedSession,
     confirmResume,
     deleteStash,
-  } = useStashedSessions();
+  } = useStashedSessions(user?.id ?? null);
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
@@ -498,7 +505,7 @@ function RecordingSession() {
       const slot = session.slots.find((s) => s.id === slotId);
       if (!slot) return;
 
-      const hasRecording = slot.segments.length > 0 || slot.audioState === 'recording' || slot.audioState === 'paused';
+      const hasRecording = slot.segments.length > 0 || isSlotActivelyRecording(slot);
 
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
@@ -535,6 +542,14 @@ function RecordingSession() {
       }
     },
     [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder]
+  );
+
+  const slotHasLiveRecorder = useCallback(
+    (slot: PatientSlot) =>
+      isSlotActivelyRecording(slot) ||
+      (session.recorderBoundToSlotId === slot.id &&
+        (recorder.state === 'recording' || recorder.state === 'paused')),
+    [session.recorderBoundToSlotId, recorder.state]
   );
 
   // -- Upload handlers --
@@ -605,6 +620,13 @@ function RecordingSession() {
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
       if (!slot) return;
+      if (slotHasLiveRecorder(slot)) {
+        Alert.alert(
+          'Finish Recording First',
+          'Finish or discard the active recording segment before submitting this patient.'
+        );
+        return;
+      }
 
       setSubmittingSlotId(slotId);
       setTotalSlotsToUpload(1);
@@ -638,12 +660,23 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [session.slots, uploadSlot, queryClient, resetSession, router]
+    [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router]
   );
 
   const handleSubmitAll = useCallback(() => {
+    if (session.slots.some(slotHasLiveRecorder)) {
+      Alert.alert(
+        'Finish Active Recordings',
+        'Finish or discard all active recording segments before submitting all patients.'
+      );
+      return;
+    }
+
     const slotsToUpload = session.slots.filter(
-      (s) => s.segments.length > 0 && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
+      (s) => s.segments.length > 0 &&
+        s.uploadStatus !== 'success' &&
+        s.uploadStatus !== 'uploading' &&
+        !slotHasLiveRecorder(s)
     );
 
     if (slotsToUpload.length === 0) return;
@@ -688,7 +721,7 @@ function RecordingSession() {
       setSubmittingSlotId(null);
       setTotalSlotsToUpload(0);
     });
-  }, [session.slots, uploadSlot, queryClient, router, resetSession]);
+  }, [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();
@@ -874,7 +907,7 @@ function RecordingSession() {
   );
 
   // Show stash list when session is clean and stashes exist
-  const showStashList = stashCount > 0 && !hasUnsavedRecordings;
+  const showStashList = !stashesLoading && stashCount > 0 && !hasUnsavedRecordings;
 
   // Show stash button when there are unsaved recordings to stash
   const canStash = hasUnsavedRecordings && !isSubmittingAll && !isStashing;
@@ -892,6 +925,7 @@ function RecordingSession() {
   const recorderBusy =
     session.recorderBoundToSlotId !== null &&
     (recorder.state === 'recording' || recorder.state === 'paused');
+  const hasActiveRecording = session.slots.some(slotHasLiveRecorder);
 
   const renderSlotCard = useCallback(
     ({ item, index }: { item: PatientSlot; index: number }) => {
@@ -917,6 +951,7 @@ function RecordingSession() {
           onRemove={() => handleRemove(item.id)}
           onSubmitSingle={() => handleSubmitSingle(item.id)}
           onEditRecording={() => handleEditRecording(item.id)}
+          submitBlockedByLiveRecording={slotHasLiveRecorder(item)}
         />
       );
     },
@@ -938,6 +973,7 @@ function RecordingSession() {
       handleRemove,
       handleSubmitSingle,
       handleEditRecording,
+      slotHasLiveRecorder,
     ]
   );
 
@@ -1074,6 +1110,7 @@ function RecordingSession() {
         slots={session.slots}
         isSubmitting={isSubmittingAll}
         onSubmitAll={handleSubmitAll}
+        hasActiveRecording={hasActiveRecording}
       />
 
       {/* Upload overlay */}

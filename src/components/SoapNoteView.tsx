@@ -118,7 +118,7 @@ function AccordionSection({
             className="self-end mt-2.5 flex-row items-center gap-1.5 px-3 py-1 rounded border border-stone-300 min-h-[44px]"
           >
             <Copy color="#57534e" size={12} />
-            <Text className="text-caption text-stone-600">Copy</Text>
+            <Text className="text-caption text-stone-600" style={{ paddingRight: 4 }}>Copy</Text>
           </Pressable>
         </Animated.View>
       )}

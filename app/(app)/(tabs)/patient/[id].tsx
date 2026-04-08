@@ -241,12 +241,9 @@ export default function PatientDetailScreen() {
                       {patient.aiHistoryUpdatedAt && (
                         <Text className="text-caption text-stone-400">
                           {(() => {
-                            const diffMs = Date.now() - new Date(patient.aiHistoryUpdatedAt).getTime();
-                            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-                            if (diffDays === 0) return 'Updated today';
-                            if (diffDays === 1) return 'Updated yesterday';
-                            if (diffDays < 30) return `Updated ${diffDays}d ago`;
-                            return `Updated ${Math.floor(diffDays / 30)}mo ago`;
+                            const d = new Date(patient.aiHistoryUpdatedAt);
+                            if (isNaN(d.getTime())) return '';
+                            return `Updated ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
                           })()}
                         </Text>
                       )}
@@ -360,7 +357,7 @@ export default function PatientDetailScreen() {
                       className="flex-row items-center"
                     >
                       <Edit2 color="#0d8775" size={14} />
-                      <Text className="text-body-sm text-brand-600 ml-1">Edit</Text>
+                      <Text className="text-body-sm text-brand-600 ml-1" style={{ paddingRight: 4 }}>Edit</Text>
                     </Pressable>
                   </View>
                   <ProfileField label="Name" value={patient.name} />

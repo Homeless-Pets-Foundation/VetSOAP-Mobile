@@ -3,6 +3,7 @@ import type { CreateRecording } from './index';
 export interface AudioSegment {
   uri: string;
   duration: number; // seconds
+  peakMetering?: number; // dBFS, closer to 0 means louder
 }
 
 export interface PatientSlot {
@@ -24,7 +25,7 @@ export type SessionAction =
   | { type: 'SET_ACTIVE_INDEX'; index: number }
   | { type: 'UPDATE_FORM'; slotId: string; field: keyof CreateRecording; value: string | boolean | undefined }
   | { type: 'SET_AUDIO_STATE'; slotId: string; audioState: PatientSlot['audioState'] }
-  | { type: 'SAVE_AUDIO'; slotId: string; audioUri: string; duration: number }
+  | { type: 'SAVE_AUDIO'; slotId: string; audioUri: string; duration: number; peakMetering?: number }
   | { type: 'CLEAR_AUDIO'; slotId: string }
   | { type: 'CONTINUE_RECORDING'; slotId: string }
   | { type: 'BIND_RECORDER'; slotId: string }
@@ -32,7 +33,7 @@ export type SessionAction =
   | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null }
   | { type: 'RESET_SESSION'; defaultTemplateId?: string }
   | { type: 'RESTORE_SESSION'; slots: PatientSlot[] }
-  | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number }
+  | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }
   | { type: 'DELETE_SEGMENT'; slotId: string; segmentIndex: number }
   | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] };
 

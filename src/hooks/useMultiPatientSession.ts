@@ -11,7 +11,10 @@ function isLocalFileUri(uri: string): boolean {
 function validateSegments(segments: AudioSegment[]): AudioSegment[] {
   return segments.filter(
     (s) => s && typeof s.uri === 'string' && isLocalFileUri(s.uri) && typeof s.duration === 'number'
-  );
+  ).map((s) => ({
+    ...s,
+    peakMetering: typeof s.peakMetering === 'number' ? s.peakMetering : undefined,
+  }));
 }
 
 let slotCounter = 0;
@@ -114,7 +117,14 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) => {
           if (slot.id !== action.slotId) return slot;
-          const newSegments = [...slot.segments, { uri: action.audioUri, duration: action.duration }];
+          const newSegments = [
+            ...slot.segments,
+            {
+              uri: action.audioUri,
+              duration: action.duration,
+              peakMetering: typeof action.peakMetering === 'number' ? action.peakMetering : undefined,
+            },
+          ];
           return {
             ...slot,
             segments: newSegments,
@@ -193,7 +203,13 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         slots: state.slots.map((slot) => {
           if (slot.id !== action.slotId) return slot;
           const newSegments = slot.segments.map((seg, i) =>
-            i === action.segmentIndex ? { uri: action.uri, duration: action.duration } : seg
+            i === action.segmentIndex
+              ? {
+                  uri: action.uri,
+                  duration: action.duration,
+                  peakMetering: typeof action.peakMetering === 'number' ? action.peakMetering : seg.peakMetering,
+                }
+              : seg
           );
           const newDuration = newSegments.reduce((sum, s) => sum + s.duration, 0);
           return {
@@ -296,8 +312,8 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
     []
   );
 
-  const saveAudio = useCallback((slotId: string, audioUri: string, duration: number) => {
-    dispatch({ type: 'SAVE_AUDIO', slotId, audioUri, duration });
+  const saveAudio = useCallback((slotId: string, audioUri: string, duration: number, peakMetering?: number) => {
+    dispatch({ type: 'SAVE_AUDIO', slotId, audioUri, duration, peakMetering });
   }, []);
 
   const clearAudio = useCallback((slotId: string) => {
@@ -339,8 +355,8 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
   }, []);
 
   const updateSegment = useCallback(
-    (slotId: string, segmentIndex: number, uri: string, duration: number) => {
-      dispatch({ type: 'UPDATE_SEGMENT', slotId, segmentIndex, uri, duration });
+    (slotId: string, segmentIndex: number, uri: string, duration: number, peakMetering?: number) => {
+      dispatch({ type: 'UPDATE_SEGMENT', slotId, segmentIndex, uri, duration, peakMetering });
     },
     []
   );

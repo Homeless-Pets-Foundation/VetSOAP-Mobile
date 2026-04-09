@@ -3,6 +3,7 @@ import type { CreateRecording } from './index';
 export interface StashedSegment {
   uri: string; // documentDirectory path after move
   duration: number; // seconds
+  peakMetering?: number; // dBFS, closer to 0 means louder
 }
 
 export interface StashedSlot {

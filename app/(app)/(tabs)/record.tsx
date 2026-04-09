@@ -19,6 +19,7 @@ import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi } from '../../../src/api/recordings';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
+import { isAudioEffectivelySilent } from '../../../src/lib/ffmpeg';
 import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../../src/components/SubmitPanel';
@@ -91,6 +92,14 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
 
 function isSlotActivelyRecording(slot: PatientSlot): boolean {
   return slot.audioState === 'recording' || slot.audioState === 'paused';
+}
+
+async function hasSilentAudioOnly(slot: PatientSlot): Promise<boolean> {
+  if (slot.segments.length === 0) return false;
+  const checks = await Promise.all(
+    slot.segments.map(async (segment) => isAudioEffectivelySilent(segment.uri))
+  );
+  return checks.every(Boolean);
 }
 
 function RecordingSession() {
@@ -176,7 +185,12 @@ function RecordingSession() {
     }
     if (recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
       audioCaptureDoneRef.current = true;
-      saveAudio(session.recorderBoundToSlotId, recorder.audioUri, recorder.duration);
+      saveAudio(
+        session.recorderBoundToSlotId,
+        recorder.audioUri,
+        recorder.duration,
+        recorder.maxMetering
+      );
       unbindRecorder();
 
       // If there's a pending stash, just reset the recorder here.
@@ -594,9 +608,14 @@ function RecordingSession() {
     async (slot: PatientSlot): Promise<string | null> => {
       if (slot.segments.length === 0 || slot.uploadStatus === 'uploading') return null;
       if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
-
-      setUploadStatus(slot.id, 'uploading', { progress: 5 });
       try {
+        if (await hasSilentAudioOnly(slot)) {
+          throw new Error(
+            'This recording appears silent. Please verify microphone input and record again before uploading.'
+          );
+        }
+
+        setUploadStatus(slot.id, 'uploading', { progress: 5 });
         // Throttle progress updates to avoid dispatching state on every native chunk
         let lastProgressUpdate = 0;
         const onUploadProgress = ({ percent }: { percent: number }) => {

@@ -195,6 +195,53 @@ export async function getAudioDuration(uri: string): Promise<number> {
 }
 
 /**
+ * Detect whether an audio file is effectively silent by inspecting FFmpeg's
+ * `volumedetect` output. Returns false if analysis cannot complete so we fail open.
+ */
+export async function isAudioEffectivelySilent(
+  uri: string,
+  thresholds: { maxVolumeDb?: number; meanVolumeDb?: number } = {}
+): Promise<boolean> {
+  const maxVolumeThresholdDb = thresholds.maxVolumeDb ?? -20;
+  const meanVolumeThresholdDb = thresholds.meanVolumeDb ?? -60;
+  validateFileUri(uri, 'Silence check');
+
+  const info = await getInfoAsync(uri);
+  if (!info.exists) {
+    throw new Error('Audio file does not exist for silence check');
+  }
+
+  const session = await FFmpegKit.execute(
+    `-i "${uri}" -af volumedetect -f null -`
+  );
+  const returnCode = await session.getReturnCode();
+  if (!ReturnCode.isSuccess(returnCode)) {
+    return false;
+  }
+
+  const logs = (await session.getLogsAsString()) ?? '';
+  const meanVolumeMatch = logs.match(/mean_volume:\s*(-?(?:inf|\d+(?:\.\d+)?)?)\s*dB/i);
+  const maxVolumeMatch = logs.match(/max_volume:\s*(-?(?:inf|\d+(?:\.\d+)?)?)\s*dB/i);
+  if (!meanVolumeMatch || !maxVolumeMatch) {
+    return false;
+  }
+
+  const rawMean = meanVolumeMatch[1]?.toLowerCase();
+  const raw = maxVolumeMatch[1]?.toLowerCase();
+  if (!rawMean || !raw || rawMean === '-inf' || raw === '-inf' || rawMean === 'inf' || raw === 'inf') {
+    return true;
+  }
+
+  const meanVolume = Number.parseFloat(rawMean);
+  const maxVolume = Number.parseFloat(raw);
+  if (!Number.isFinite(meanVolume) || !Number.isFinite(maxVolume)) {
+    return false;
+  }
+
+  return meanVolume <= meanVolumeThresholdDb && maxVolume <= maxVolumeThresholdDb;
+}
+
+/**
  * Read raw 16-bit little-endian PCM from a file and compute `peakCount`
  * max-amplitude windows. Returns normalized values (0.0 - 1.0).
  *

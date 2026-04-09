@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Alert, Platform, PermissionsAndroid } from 'react-native';
 import {
   useAudioRecorder as useExpoAudioRecorder,
@@ -18,6 +18,7 @@ export interface UseAudioRecorderReturn {
   isStarting: boolean;
   duration: number;
   metering: number;
+  maxMetering?: number;
   audioUri: string | null;
   mimeType: string;
   start: () => Promise<void>;
@@ -64,6 +65,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const isStartingRef = useRef(false);
   const mediaResetAlertedRef = useRef(false);
   const latestAudioUriRef = useRef<string | null>(null);
+  const maxMeteringRef = useRef(-160);
+  const hasMeteringSampleRef = useRef(false);
   // Capture duration before pause/stop — native pause can reset the polled durationMillis to 0
   const capturedDurationRef = useRef(0);
 
@@ -86,6 +89,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   // Poll for status (duration, metering) — 500ms balances responsiveness with CPU usage on weak hardware
   const recorderState = useAudioRecorderState(recorder, 500);
+
+  useEffect(() => {
+    if (state !== 'recording' && state !== 'paused') return;
+    const currentMetering = recorderState.metering;
+    if (typeof currentMetering === 'number' && currentMetering > maxMeteringRef.current) {
+      hasMeteringSampleRef.current = true;
+      maxMeteringRef.current = currentMetering;
+    }
+  }, [recorderState.metering, state]);
 
   const start = useCallback(async () => {
     if (isStartingRef.current || state !== 'idle') {
@@ -121,6 +133,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       setState('recording');
       setAudioUri(null);
       latestAudioUriRef.current = null;
+      maxMeteringRef.current = -160;
+      hasMeteringSampleRef.current = false;
       capturedDurationRef.current = 0;
       mediaResetAlertedRef.current = false;
     } finally {
@@ -198,6 +212,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setState('idle');
     setAudioUri(null);
     latestAudioUriRef.current = null;
+    maxMeteringRef.current = -160;
+    hasMeteringSampleRef.current = false;
     setFinalDuration(0);
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
@@ -208,6 +224,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setState('idle');
     setAudioUri(null);
     latestAudioUriRef.current = null;
+    maxMeteringRef.current = -160;
+    hasMeteringSampleRef.current = false;
     setFinalDuration(0);
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
@@ -219,6 +237,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     isStarting,
     duration: state === 'stopped' ? finalDuration : Math.floor(recorderState.durationMillis / 1000),
     metering: recorderState.metering ?? -160,
+    maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     audioUri,
     mimeType: 'audio/x-m4a',
     start,

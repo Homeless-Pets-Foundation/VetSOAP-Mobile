@@ -88,7 +88,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
       </Text>
 
       <TextInputField
-        label="PIMS Patient ID (optional)"
+        label="Patient ID (optional)"
         value={formData.pimsPatientId || ''}
         onChangeText={(v) => onUpdate('pimsPatientId', v)}
         onBlur={onPimsIdBlur}
@@ -101,7 +101,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
       />
 
       <TextInputField
-        label="Patient Name"
+        label="Patient's Name"
         required
         value={formData.patientName}
         onChangeText={(v) => onUpdate('patientName', v)}
@@ -112,7 +112,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
       />
 
       <TextInputField
-        label="Client Name"
+        label="Client's Last Name"
         required
         value={formData.clientName || ''}
         onChangeText={(v) => onUpdate('clientName', v)}

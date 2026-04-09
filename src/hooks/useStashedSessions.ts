@@ -242,13 +242,13 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
 
       const convertToPatientSlots = (
-        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number }[]; audioDuration: number }[]
+        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number }[]
       ): PatientSlot[] => {
         return stashedSlots.map((slot) => ({
           id: slot.id,
           formData: { ...slot.formData },
           audioState: slot.segments.length > 0 ? ('stopped' as const) : ('idle' as const),
-          segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration })),
+          segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration, peakMetering: s.peakMetering })),
           audioUri: slot.segments.length > 0 ? slot.segments[slot.segments.length - 1].uri : null,
           audioDuration: slot.audioDuration,
           uploadStatus: 'pending' as const,

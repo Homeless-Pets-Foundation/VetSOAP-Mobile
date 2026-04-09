@@ -110,12 +110,22 @@ export default function AudioEditorScreen() {
     setIsConcatenating(true);
     const segmentUris = segments.map((s) => s.uri);
     const segmentCount = initialSegmentCountRef.current;
+    const mergedPeakMetering = segments.reduce(
+      (max, segment) => typeof segment.peakMetering === 'number' && segment.peakMetering > max
+        ? segment.peakMetering
+        : max,
+      -160
+    );
     (async () => {
       try {
         await audioTempFiles.ensureDir();
         const outputPath = audioTempFiles.getConcatOutputPath();
         const result = await concatenateAudio(segmentUris, outputPath);
-        setSegments([{ uri: result.uri, duration: result.duration }]);
+        setSegments([{
+          uri: result.uri,
+          duration: result.duration,
+          peakMetering: mergedPeakMetering > -160 ? mergedPeakMetering : undefined,
+        }]);
         setSelectedIndex(0);
         setHasChanges(true);
         Alert.alert('Segments Merged', `${segmentCount} recording segments have been combined into one.`);
@@ -305,7 +315,11 @@ export default function AudioEditorScreen() {
         // Update segments with trimmed file
         const newSegments = [...segments];
         const oldUri = newSegments[selectedIndex].uri;
-        newSegments[selectedIndex] = { uri: result.uri, duration: result.duration };
+        newSegments[selectedIndex] = {
+          uri: result.uri,
+          duration: result.duration,
+          peakMetering: undefined,
+        };
         setSegments(newSegments);
 
         // Clear cached peaks for this segment (they're now stale)

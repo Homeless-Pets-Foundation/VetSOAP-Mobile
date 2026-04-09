@@ -62,7 +62,7 @@ export const stashAudioManager = {
       let segmentIndex = 0;
 
       for (const slot of slots) {
-        const stashedSegments: { uri: string; duration: number }[] = [];
+        const stashedSegments: { uri: string; duration: number; peakMetering?: number }[] = [];
 
         for (const segment of slot.segments) {
           if (!fileExists(segment.uri)) continue;
@@ -77,7 +77,7 @@ export const stashAudioManager = {
 
           // Verify copy succeeded before exposing the new URI.
           if (fileExists(destUri)) {
-            stashedSegments.push({ uri: destUri, duration: segment.duration });
+            stashedSegments.push({ uri: destUri, duration: segment.duration, peakMetering: segment.peakMetering });
           }
           // If copy failed, skip this segment entirely. The caller still has the
           // original cache URI available in the active session until commit.
@@ -111,7 +111,7 @@ export const stashAudioManager = {
     const validSlots: StashedSlot[] = [];
 
     for (const slot of slots) {
-      const validSegments: { uri: string; duration: number }[] = [];
+      const validSegments: { uri: string; duration: number; peakMetering?: number }[] = [];
       for (const segment of slot.segments) {
         if (fileExists(segment.uri)) {
           validSegments.push(segment);

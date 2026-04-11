@@ -156,6 +156,9 @@ function RecordingSession() {
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
   // Guard: prevent the audio-capture effect from saving twice for the same stop
   const audioCaptureDoneRef = useRef(false);
+  // Guard: track which slot IDs are actively uploading to prevent double-submission
+  // across React render batches (useRef is synchronous; useState is not).
+  const uploadingSlotIdsRef = useRef<Set<string>>(new Set());
   // Suppress the next stopped-audio capture when the current segment is being discarded.
   const skipNextAudioCaptureRef = useRef(false);
 
@@ -608,6 +611,10 @@ function RecordingSession() {
     async (slot: PatientSlot): Promise<string | null> => {
       if (slot.segments.length === 0 || slot.uploadStatus === 'uploading') return null;
       if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
+      // Synchronous ref guard — prevents a second concurrent upload of the same slot
+      // during the window between button tap and React state update disabling the button.
+      if (uploadingSlotIdsRef.current.has(slot.id)) return null;
+      uploadingSlotIdsRef.current.add(slot.id);
       try {
         if (await hasSilentAudioOnly(slot)) {
           throw new Error(
@@ -666,6 +673,8 @@ function RecordingSession() {
         }
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
         return null;
+      } finally {
+        uploadingSlotIdsRef.current.delete(slot.id);
       }
     },
     [setUploadStatus]

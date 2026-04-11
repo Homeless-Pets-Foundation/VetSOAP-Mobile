@@ -58,5 +58,12 @@
     "sharp": "^0.34.5",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "@xmldom/xmldom": "0.8.12",
+    "yaml": "2.8.3",
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.14"
+    }
+  }
 }

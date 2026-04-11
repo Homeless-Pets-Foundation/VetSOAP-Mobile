@@ -148,10 +148,6 @@ export function useStashedSessions(userId: string | null) {
         // Otherwise keep the active session intact and discard the temporary copy.
         if (totalSegments !== preStashSegmentCount) {
           await stashAudioManager.deleteStashedAudio(sessionId);
-          Alert.alert(
-            'Stash Failed',
-            'Some audio files could not be saved. Your recordings are still active.'
-          );
           return false;
         }
 
@@ -185,10 +181,6 @@ export function useStashedSessions(userId: string | null) {
           // Metadata write did not commit, so keep the active session intact and
           // remove the temporary stash copy to avoid duplicate recovery.
           await stashAudioManager.deleteStashedAudio(sessionId);
-          Alert.alert(
-            'Stash Failed',
-            'Could not save your session. Your recordings are still active.'
-          );
           return false;
         }
 
@@ -205,10 +197,6 @@ export function useStashedSessions(userId: string | null) {
         return true;
       } catch (error) {
         if (__DEV__) console.error('[Stash] stashSession failed:', error);
-        Alert.alert(
-          'Stash Failed',
-          'Could not save your session. Your recordings are still active.'
-        );
         return false;
       }
     },

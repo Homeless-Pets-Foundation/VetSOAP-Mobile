@@ -803,9 +803,16 @@ function RecordingSession() {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           Alert.alert('Session Saved', 'Your recordings have been saved. You can resume them anytime from this screen.');
         } else {
-          // stashSession returns false if no slots have audio or max stashes reached.
-          // The session is NOT reset, so recordings are still in the active session.
-          Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
+          // Only show the error dialog when there are recordings to recover.
+          // If no segments exist the recording failed at the native level and a
+          // 'Recording Error' alert was already shown — avoid a second misleading dialog.
+          // stashSession returns false if no slots have audio, max stashes reached,
+          // file copy failed, or SecureStore write failed. In all cases the active
+          // session is untouched, so recordings (if any) are still here.
+          const hasRecordings = session.slots.some((s) => s.segments.length > 0);
+          if (hasRecordings) {
+            Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
+          }
         }
       } catch (error) {
         if (__DEV__) console.error('[Record] stash failed:', error);

@@ -64,6 +64,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const stoppingRef = useRef(false);
   const isStartingRef = useRef(false);
   const mediaResetAlertedRef = useRef(false);
+  const hasErrorAlertedRef = useRef(false);
   const latestAudioUriRef = useRef<string | null>(null);
   const maxMeteringRef = useRef(-160);
   const hasMeteringSampleRef = useRef(false);
@@ -79,8 +80,13 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         'The audio input was lost (e.g. headphones disconnected). Please stop and start a new recording.'
       );
     }
-    if (status.hasError) {
+    if (status.hasError && !hasErrorAlertedRef.current && !mediaResetAlertedRef.current) {
+      hasErrorAlertedRef.current = true;
       if (__DEV__) console.error('[AudioRecorder] Recording error:', status.error);
+      Alert.alert(
+        'Recording Issue',
+        'An error occurred during recording. The audio may be incomplete or silent — please stop, check your recording, and re-record if needed.'
+      );
     }
   }, []);
 
@@ -137,6 +143,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       hasMeteringSampleRef.current = false;
       capturedDurationRef.current = 0;
       mediaResetAlertedRef.current = false;
+      hasErrorAlertedRef.current = false;
     } finally {
       isStartingRef.current = false;
       setIsStarting(false);
@@ -218,6 +225,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
+    hasErrorAlertedRef.current = false;
   }, []);
 
   const resetWithoutDelete = useCallback(() => {
@@ -230,6 +238,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
+    hasErrorAlertedRef.current = false;
   }, []);
 
   return {

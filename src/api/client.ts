@@ -69,6 +69,7 @@ export class ApiClient {
       );
     }
     if (status === 401) return 'Your session has expired. Please sign in again.';
+    if (status === 402) return (errorBody.error as string) || 'Payment required.';
     if (status === 403) return 'You do not have permission to perform this action.';
     if (status === 404) return 'The requested resource was not found.';
     if (status === 422 && details.length) return details.map((d) => d.message).join(', ');

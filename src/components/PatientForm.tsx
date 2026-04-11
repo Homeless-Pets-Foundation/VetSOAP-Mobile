@@ -116,7 +116,7 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
         required
         value={formData.clientName || ''}
         onChangeText={(v) => onUpdate('clientName', v)}
-        placeholder="e.g., John Smith"
+        placeholder="e.g., Smith"
         maxLength={100}
         autoCorrect={false}
         autoComplete="off"

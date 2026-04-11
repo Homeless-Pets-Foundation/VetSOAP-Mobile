@@ -14,6 +14,7 @@ import { queryClient } from '../lib/queryClient';
 import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
 import { clearPeakCache } from '../lib/waveformCache';
+import { setLogoutReason } from '../lib/logoutReason';
 import type { User } from '../types';
 
 interface AuthContextType {
@@ -197,13 +198,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (__DEV__) console.log('[Auth] onUnauthorized: attempting token refresh');
           const { error } = await supabase.auth.refreshSession();
           if (error) {
-            if (__DEV__) console.log('[Auth] onUnauthorized: refresh failed, signing out');
-            await handleSignOut();
+            // Retry once after 3s — guards against transient network blips
+            if (__DEV__) console.log('[Auth] onUnauthorized: first refresh failed, retrying in 3s');
+            await new Promise<void>(resolve => setTimeout(resolve, 3000));
+            const { error: retryError } = await supabase.auth.refreshSession();
+            if (retryError) {
+              if (__DEV__) console.log('[Auth] onUnauthorized: retry also failed, signing out');
+              setLogoutReason('session_expired');
+              await handleSignOut();
+            } else {
+              if (__DEV__) console.log('[Auth] onUnauthorized: retry succeeded');
+            }
           } else {
             if (__DEV__) console.log('[Auth] onUnauthorized: refresh succeeded');
           }
         } catch {
           if (__DEV__) console.log('[Auth] onUnauthorized: refresh threw, signing out');
+          setLogoutReason('session_expired');
           handleSignOut().catch(() => {});
         } finally {
           refreshPromiseRef.current = null;

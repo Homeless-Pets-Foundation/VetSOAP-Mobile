@@ -1,13 +1,14 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, Image, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
-import { AlertCircle, Eye, EyeOff } from 'lucide-react-native';
+import { AlertCircle, Eye, EyeOff, Info } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
 import { emailSchema, passwordSchema } from '../../src/lib/validation';
+import { consumeLogoutReason } from '../../src/lib/logoutReason';
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 60_000; // 1 minute
@@ -21,8 +22,15 @@ export default function LoginScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
+  const [sessionExpired, setSessionExpired] = useState(false);
   const failedAttemptsRef = useRef(0);
   const lockoutUntilRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (consumeLogoutReason() === 'session_expired') {
+      setSessionExpired(true);
+    }
+  }, []);
 
   const handleSignIn = useCallback(async () => {
     // Check lockout
@@ -47,6 +55,7 @@ export default function LoginScreen() {
     }
 
     setError(null);
+    setSessionExpired(false);
     setIsLoading(true);
 
     try {
@@ -99,6 +108,18 @@ export default function LoginScreen() {
           entering={FadeInUp.duration(500).delay(200)}
           className="card p-6"
         >
+          {sessionExpired && !error && (
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              className="bg-amber-50 p-3 rounded-input mb-4 flex-row items-center gap-2"
+              accessibilityRole="alert"
+              accessibilityLiveRegion="assertive"
+            >
+              <Info color="#92400e" size={16} />
+              <Text className="text-body-sm text-amber-800 flex-1">Your session expired. Please sign in again.</Text>
+            </Animated.View>
+          )}
+
           {error && (
             <Animated.View
               entering={FadeIn.duration(200)}

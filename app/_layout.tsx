@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, Pressable } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
+import * as Linking from 'expo-linking';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from '../src/auth/AuthProvider';
 import { StatusBar } from 'expo-status-bar';
 import { CONFIG_MISSING } from '../src/config';
+import { supabase } from '../src/auth/supabase';
 import { queryClient } from '../src/lib/queryClient';
 import '../global.css';
 
@@ -47,6 +49,57 @@ class ErrorBoundary extends React.Component<
 }
 
 export default function RootLayout() {
+  const router = useRouter();
+
+  useEffect(() => {
+    // Handle deep link for password reset
+    const handleUrl = async (url: string) => {
+      try {
+        if (!url.includes('reset-password')) {
+          return;
+        }
+
+        const parsed = Linking.parse(url);
+        const access_token = parsed.queryParams?.access_token;
+        const refresh_token = parsed.queryParams?.refresh_token;
+
+        if (
+          typeof access_token === 'string' &&
+          typeof refresh_token === 'string'
+        ) {
+          await supabase.auth.setSession({
+            access_token,
+            refresh_token,
+          });
+
+          router.push('/(auth)/reset-password');
+        }
+      } catch (error) {
+        if (__DEV__) {
+          console.error('Error handling password reset deep link:', error);
+        }
+      }
+    };
+
+    // Handle initial URL (app launched via deep link)
+    Linking.getInitialURL()
+      .then((url) => {
+        if (url != null) {
+          handleUrl(url).catch(() => {});
+        }
+      })
+      .catch(() => {});
+
+    // Listen for URL changes while app is open
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      handleUrl(url).catch(() => {});
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [router]);
+
   if (CONFIG_MISSING) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#fef2f2' }}>

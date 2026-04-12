@@ -560,6 +560,52 @@ export default function RecordingDetailScreen() {
           </Animated.View>
         )}
 
+        {/* Transcript */}
+        {recording.status === 'completed' && recording.transcriptText && (
+          <View className="px-5 mb-4">
+            <Text className="text-heading font-bold text-stone-900 mb-2" accessibilityRole="header">
+              Transcript
+            </Text>
+            <Card>
+              <Text className="text-body-sm text-stone-600 leading-relaxed">
+                {recording.transcriptText}
+              </Text>
+            </Card>
+          </View>
+        )}
+
+        {/* Export status */}
+        {recording.status === 'completed' && recording.isExported && (
+          <View className="px-5 mb-4">
+            <Card className="border-brand-100 bg-brand-50">
+              <Text className="text-body-sm text-brand-700 font-medium">
+                Exported{recording.exportedTo ? ` to ${recording.exportedTo}` : ''}
+                {recording.exportedBy ? ` by ${recording.exportedBy.fullName}` : ''}
+                {recording.exportedAt
+                  ? (() => {
+                      const exportDate = new Date(recording.exportedAt);
+                      return !isNaN(exportDate.getTime())
+                        ? ` on ${exportDate.toLocaleDateString()}`
+                        : '';
+                    })()
+                  : ''}
+              </Text>
+            </Card>
+          </View>
+        )}
+
+        {/* Cost breakdown */}
+        {recording.status === 'completed' && recording.costBreakdown && (
+          <View className="px-5 mb-4">
+            <Card>
+              <Text className="text-caption text-stone-400 font-medium uppercase mb-1">Processing Cost</Text>
+              <Text className="text-body-sm text-stone-600">
+                ${((recording.costBreakdown.totalCostCents ?? 0) / 100).toFixed(4)}
+              </Text>
+            </Card>
+          </View>
+        )}
+
         {/* SOAP Note */}
         {recording.status === 'completed' && (
           <View className="px-5 pb-8">

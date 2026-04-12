@@ -89,6 +89,29 @@ export interface CompleteMetadataPayload {
   foreignLanguage?: boolean;
 }
 
+export interface TranslatePayload {
+  targetLanguage: string;
+}
+
+export interface TranslateResult {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
+}
+
+export type EmailDraftMode = 'visit_summary' | 'home_care' | 'custom';
+
+export interface EmailDraftPayload {
+  mode?: EmailDraftMode;
+  customInstructions?: string;
+}
+
+export interface EmailDraftResult {
+  subject: string;
+  body: string;
+}
+
 export const recordingsApi = {
   async list(params: ListRecordingsParams = {}): Promise<PaginatedResponse<Recording>> {
     const sanitized = { ...params } as Record<string, string | number | undefined>;
@@ -375,6 +398,20 @@ export const recordingsApi = {
   async completeMetadata(id: string, payload: CompleteMetadataPayload): Promise<Recording> {
     return apiClient.request(`/api/recordings/${id}/complete-metadata`, {
       method: 'PATCH',
+      body: payload,
+    });
+  },
+
+  async translate(id: string, payload: TranslatePayload): Promise<TranslateResult> {
+    return apiClient.request(`/api/recordings/${id}/translate`, {
+      method: 'POST',
+      body: payload,
+    });
+  },
+
+  async generateEmailDraft(id: string, payload: EmailDraftPayload = {}): Promise<EmailDraftResult> {
+    return apiClient.request(`/api/recordings/${id}/email-draft`, {
+      method: 'POST',
       body: payload,
     });
   },

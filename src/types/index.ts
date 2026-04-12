@@ -105,6 +105,7 @@ export interface SoapSection {
 export interface SoapNote {
   id: string;
   recordingId: string;
+  organizationId: string;
   subjective: SoapSection;
   objective: SoapSection;
   assessment: SoapSection;
@@ -125,6 +126,7 @@ export interface SoapNote {
   exportedAt?: string | null;
   exportedTo?: string | null;
   exportedById?: string | null;
+  exportedByUser?: { id: string; fullName: string } | null;
   templateId?: string | null;
   createdAt: string;
   updatedAt: string;

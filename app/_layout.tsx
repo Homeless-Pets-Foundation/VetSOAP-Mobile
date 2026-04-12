@@ -98,7 +98,8 @@ export default function RootLayout() {
     return () => {
       sub.remove();
     };
-  }, [router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (CONFIG_MISSING) {
     return (

@@ -84,6 +84,13 @@ export interface Patient {
   aiHistoryUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  _count?: { recordings: number };
+}
+
+export interface ListPatientsParams {
+  page?: number;
+  limit?: number;
+  search?: string;
 }
 
 export interface UpdatePatient {

@@ -185,7 +185,7 @@ function MetadataForm({ recording, onSuccess }: MetadataFormProps) {
         onPress={handleSubmit}
         loading={completeMetadataMutation.isPending}
       >
-        Complete Metadata
+        Start Processing
       </Button>
     </Card>
   );

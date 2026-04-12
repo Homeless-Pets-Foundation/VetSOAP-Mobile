@@ -62,7 +62,7 @@ export default function ResetPasswordScreen() {
       <View className="flex-1 justify-center px-6">
         <View className="mb-8">
           <Text className="text-heading-lg font-bold text-stone-900 mb-2">
-            Reset password
+            Set new password
           </Text>
           <Text className="text-body text-stone-600">
             Enter your new password below.
@@ -108,7 +108,7 @@ export default function ResetPasswordScreen() {
             loading={isLoading}
             variant="primary"
           >
-            Reset password
+            Update password
           </Button>
           <Button
             onPress={() => {

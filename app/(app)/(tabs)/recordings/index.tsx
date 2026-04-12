@@ -8,6 +8,7 @@ import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
 import { recordingsApi } from '../../../../src/api/recordings';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
+import type { RecordingStatus } from '../../../../src/types';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { RecordingCard } from '../../../../src/components/RecordingCard';
 import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
@@ -16,11 +17,10 @@ import { Button } from '../../../../src/components/ui/Button';
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
 
-type StatusFilter = 'all' | 'processing' | 'completed' | 'failed' | 'pending_metadata';
+type StatusFilter = 'all' | RecordingStatus;
 
 const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'processing', label: 'Processing' },
   { key: 'completed', label: 'Completed' },
   { key: 'failed', label: 'Failed' },
   { key: 'pending_metadata', label: 'Awaiting Details' },
@@ -54,10 +54,10 @@ export default function RecordingsListScreen() {
   } = useInfiniteQuery({
     queryKey: ['recordings', 'list', debouncedSearch, selectedStatus],
     queryFn: ({ pageParam = 1 }) => {
-      const statusParam: string | undefined =
-        selectedStatus === 'all' || selectedStatus === 'processing'
+      const statusParam: RecordingStatus | undefined =
+        selectedStatus === 'all'
           ? undefined
-          : selectedStatus;
+          : (selectedStatus as RecordingStatus);
       return recordingsApi.list({
         search: debouncedSearch || undefined,
         status: statusParam,

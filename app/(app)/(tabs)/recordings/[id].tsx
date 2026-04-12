@@ -9,7 +9,9 @@ import { ChevronLeft, Check, AlertTriangle } from 'lucide-react-native';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { recordingsApi, type CompleteMetadataPayload } from '../../../../src/api/recordings';
-import { ApiError } from '../../../../src/api/client';
+import { ApiError, apiClient } from '../../../../src/api/client';
+import { soapNotesApi, type SoapNoteSection } from '../../../../src/api/soapNotes';
+import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import type { Recording } from '../../../../src/types';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { SoapNoteView } from '../../../../src/components/SoapNoteView';
@@ -366,6 +368,46 @@ export default function RecordingDetailScreen() {
     },
   });
 
+  const permissions = useRecordingPermissions(recording ?? null);
+
+  const editMutation = useMutation({
+    mutationFn: ({ section, content }: { section: SoapNoteSection; content: string }) =>
+      soapNotesApi.update(soapNote!.id, { [section]: content }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['soapNote', id] }).catch(() => {});
+    },
+    onError: (error: Error) => {
+      Alert.alert('Save Failed', error instanceof ApiError ? error.message : 'Could not save changes.');
+    },
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: (target: 'clipboard' | 'manual') =>
+      soapNotesApi.export(soapNote!.id, { exportedTo: target }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: ['soapNote', id] }).catch(() => {});
+    },
+    onError: (error: Error) => {
+      Alert.alert('Export Failed', error instanceof ApiError ? error.message : 'Could not mark as exported.');
+    },
+  });
+
+  const regenerateMutation = useMutation({
+    mutationFn: (section?: SoapNoteSection) =>
+      apiClient.request(`/api/recordings/${id}/regenerate-soap`, {
+        method: 'POST',
+        body: section ? { section } : {},
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: ['soapNote', id] }).catch(() => {});
+    },
+    onError: (error: Error) => {
+      Alert.alert('Regenerate Failed', error instanceof ApiError ? error.message : 'Could not regenerate SOAP note.');
+    },
+  });
+
   if (isError) {
     return (
       <SafeAreaView className="screen justify-center items-center p-5">
@@ -655,7 +697,36 @@ export default function RecordingDetailScreen() {
                 </Button>
               </View>
             ) : soapNote ? (
-              <SoapNoteView soapNote={soapNote} />
+              <SoapNoteView
+                soapNote={soapNote}
+                editable={permissions.canEdit}
+                isSaving={editMutation.isPending}
+                onSave={(section, content) => {
+                  Alert.alert(
+                    'Save Changes',
+                    'This will overwrite the current section content.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Save', onPress: () => editMutation.mutate({ section, content }) },
+                    ]
+                  );
+                }}
+                onExport={permissions.canExport ? (target) => exportMutation.mutate(target) : undefined}
+                isExporting={exportMutation.isPending}
+                onRegenerate={permissions.canEdit ? (section) => {
+                  Alert.alert(
+                    'Regenerate',
+                    section
+                      ? `Regenerate the ${section} section? This will overwrite your current content.`
+                      : 'Regenerate the full SOAP note? This will overwrite all sections.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Regenerate', onPress: () => regenerateMutation.mutate(section) },
+                    ]
+                  );
+                } : undefined}
+                isRegenerating={regenerateMutation.isPending}
+              />
             ) : (
               <View className="py-5 items-center">
                 <Text className="text-body text-stone-500">

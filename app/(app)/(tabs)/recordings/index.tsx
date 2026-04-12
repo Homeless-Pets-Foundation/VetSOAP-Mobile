@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useInfiniteQuery } from '@tanstack/react-query';
+import * as Haptics from 'expo-haptics';
 import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
 import { recordingsApi } from '../../../../src/api/recordings';
@@ -15,12 +16,23 @@ import { Button } from '../../../../src/components/ui/Button';
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
 
+type StatusFilter = 'all' | 'processing' | 'completed' | 'failed' | 'pending_metadata';
+
+const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'processing', label: 'Processing' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'pending_metadata', label: 'Awaiting Details' },
+];
+
 export default function RecordingsListScreen() {
   const router = useRouter();
   const { iconSm, iconLg } = useResponsive();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const [selectedStatus, setSelectedStatus] = useState<StatusFilter>('all');
   const isInitialMountRef = useRef(true);
 
   useEffect(() => {
@@ -40,15 +52,21 @@ export default function RecordingsListScreen() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ['recordings', 'list', debouncedSearch],
-    queryFn: ({ pageParam = 1 }) =>
-      recordingsApi.list({
+    queryKey: ['recordings', 'list', debouncedSearch, selectedStatus],
+    queryFn: ({ pageParam = 1 }) => {
+      const statusParam: string | undefined =
+        selectedStatus === 'all' || selectedStatus === 'processing'
+          ? undefined
+          : selectedStatus;
+      return recordingsApi.list({
         search: debouncedSearch || undefined,
+        status: statusParam,
         page: pageParam,
         limit: PAGE_SIZE,
         sortBy: 'createdAt',
         sortOrder: 'desc',
-      }),
+      });
+    },
     initialPageParam: 1,
     getNextPageParam: (lastPage) => {
       if (!lastPage.pagination) return undefined;
@@ -94,6 +112,40 @@ export default function RecordingsListScreen() {
         >
           Recordings
         </Text>
+
+        {/* Status Filter Strip */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          className="mb-3 -mx-5 px-5"
+          contentContainerStyle={{ gap: 8 }}
+        >
+          {STATUS_FILTERS.map((f) => (
+            <Pressable
+              key={f.key}
+              onPress={() => {
+                setSelectedStatus(f.key);
+                Haptics.selectionAsync().catch(() => {});
+              }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: selectedStatus === f.key }}
+              accessibilityLabel={`Filter by ${f.label}`}
+              className={`px-4 py-2 rounded-full border ${
+                selectedStatus === f.key
+                  ? 'bg-brand-500 border-brand-500'
+                  : 'bg-white border-stone-300'
+              }`}
+            >
+              <Text
+                className={`text-body-sm font-medium ${
+                  selectedStatus === f.key ? 'text-white' : 'text-stone-700'
+                }`}
+              >
+                {f.label}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
 
         {/* Search */}
         <View

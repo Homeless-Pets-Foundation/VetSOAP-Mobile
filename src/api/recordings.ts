@@ -79,6 +79,16 @@ export interface ListRecordingsParams {
   search?: string;
 }
 
+export interface CompleteMetadataPayload {
+  patientName?: string;
+  clientName?: string;
+  species?: string;
+  breed?: string;
+  appointmentType?: string;
+  templateId?: string | null;
+  foreignLanguage?: boolean;
+}
+
 export const recordingsApi = {
   async list(params: ListRecordingsParams = {}): Promise<PaginatedResponse<Recording>> {
     const sanitized = { ...params } as Record<string, string | number | undefined>;
@@ -360,5 +370,12 @@ export const recordingsApi = {
   async getSoapNote(recordingId: string): Promise<SoapNote> {
     recordingIdSchema.parse(recordingId);
     return apiClient.get(`/api/recordings/${recordingId}/soap-note`);
+  },
+
+  async completeMetadata(id: string, payload: CompleteMetadataPayload): Promise<Recording> {
+    return apiClient.request(`/api/recordings/${id}/complete-metadata`, {
+      method: 'PATCH',
+      body: payload,
+    });
   },
 };

@@ -5,7 +5,7 @@ import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { ChevronLeft, Check, AlertTriangle } from 'lucide-react-native';
+import { ChevronLeft, Check, AlertTriangle, Trash2 } from 'lucide-react-native';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { recordingsApi, type CompleteMetadataPayload } from '../../../../src/api/recordings';
@@ -408,6 +408,17 @@ export default function RecordingDetailScreen() {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: () => recordingsApi.delete(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recordings', 'list'] }).catch(() => {});
+      router.navigate('/recordings');
+    },
+    onError: (error: Error) => {
+      Alert.alert('Delete Failed', error instanceof ApiError ? error.message : 'Could not delete recording.');
+    },
+  });
+
   if (isError) {
     return (
       <SafeAreaView className="screen justify-center items-center p-5">
@@ -476,6 +487,29 @@ export default function RecordingDetailScreen() {
             </Text>
           </View>
           <StatusBadge status={recording.status} />
+          {permissions.canDelete && (
+            <Pressable
+              onPress={() => {
+                Alert.alert(
+                  'Delete Recording',
+                  'This will permanently delete the recording and its SOAP note. This cannot be undone.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Delete',
+                      style: 'destructive',
+                      onPress: () => deleteMutation.mutate(),
+                    },
+                  ]
+                );
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Delete recording"
+              className="ml-2 w-11 h-11 items-center justify-center"
+            >
+              <Trash2 color="#dc2626" size={iconMd} />
+            </Pressable>
+          )}
         </View>
 
         {/* Patient Info */}

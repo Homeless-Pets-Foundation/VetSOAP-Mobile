@@ -36,7 +36,7 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
           text: 'Sign Out',
           style: 'destructive',
           onPress: () => {
-            signOut().then(() => setIsLocked(false)).catch(() => { setIsLocked(false); });
+            signOut().catch(() => {});
           },
         },
       ]

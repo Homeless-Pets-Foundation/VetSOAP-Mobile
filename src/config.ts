@@ -61,6 +61,34 @@ if (__DEV__ && !R2_BUCKET_HOSTNAME) {
   );
 }
 
+// Google OAuth client IDs for native Sign-In.
+// Optional — missing values disable Google sign-in gracefully (the button
+// renders an error instead of crashing). Apple has no client-side config;
+// the iOS bundle identifier IS the Apple audience.
+// - WEB_CLIENT_ID: Web-application OAuth client registered in Google Cloud
+//   and paired with the Supabase Google provider. All ID tokens must be
+//   signed for this audience, regardless of platform, or Supabase rejects them.
+// - IOS_CLIENT_ID: iOS OAuth client registered in Google Cloud with
+//   bundleId = com.captivet.mobile. Only used on iOS by GoogleSignin.configure().
+export const GOOGLE_WEB_CLIENT_ID =
+  process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '';
+export const GOOGLE_IOS_CLIENT_ID =
+  process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || '';
+
+if (__DEV__ && !GOOGLE_WEB_CLIENT_ID) {
+  console.warn(
+    '[Config] EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID is not set. ' +
+    'Google Sign-In button will show an error until it is configured.'
+  );
+}
+
+if (__DEV__ && !GOOGLE_IOS_CLIENT_ID) {
+  console.warn(
+    '[Config] EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID is not set. ' +
+    'Google Sign-In will remain disabled on iOS builds until it is configured.'
+  );
+}
+
 export const CONFIG_MISSING = configErrors.length > 0;
 
 if (CONFIG_MISSING) {

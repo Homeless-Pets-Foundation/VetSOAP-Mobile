@@ -46,7 +46,14 @@ export default function SettingsScreen() {
         );
         if (!success) return;
       }
-      await biometrics.setEnabled(value);
+      const saved = await biometrics.setEnabled(value);
+      if (!saved) {
+        Alert.alert(
+          'Update Failed',
+          `Could not ${value ? 'enable' : 'disable'} biometric lock. Please try again.`
+        );
+        return;
+      }
       setBiometricEnabled(value);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (error) {

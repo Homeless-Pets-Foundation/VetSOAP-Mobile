@@ -4,10 +4,19 @@ import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from '../src/auth/AuthProvider';
+import { configureGoogleSignIn } from '../src/auth/socialAuth';
 import { StatusBar } from 'expo-status-bar';
 import { CONFIG_MISSING } from '../src/config';
 import { queryClient } from '../src/lib/queryClient';
 import '../global.css';
+
+// Initialize native Google Sign-In once at module load, before any component
+// renders. Safe to call with missing/empty client IDs — configureGoogleSignIn
+// no-ops and logs a dev warning, and the Google button later surfaces a
+// user-friendly error if pressed.
+if (!CONFIG_MISSING) {
+  configureGoogleSignIn();
+}
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },

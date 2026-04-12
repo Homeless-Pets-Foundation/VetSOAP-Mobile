@@ -134,7 +134,7 @@ This applies everywhere including the shared `Button` component (`src/components
 
 Without this recovery, a single native failure permanently corrupts the hook — subsequent interactions crash.
 
-The recorder is created via expo-audio's `useAudioRecorder` hook which auto-releases native resources on unmount. Status polling uses `useAudioRecorderState(recorder, 250)` for duration and metering updates.
+The recorder is created via expo-audio's `useAudioRecorder` hook which auto-releases native resources on unmount. Status polling uses `useAudioRecorderState(recorder, 500)` for duration and metering updates (500ms balances responsiveness with CPU usage on weak hardware).
 
 ### 12. Validate local file reads before upload
 
@@ -185,21 +185,70 @@ The mobile app sends an `X-Device-Id` header on every API request. The device ID
 - **Lock file:** Must stay in sync — run `npm install --legacy-peer-deps` before EAS builds if dependencies change. EAS uses `npm ci` which fails on mismatch. The `.npmrc` file sets `legacy-peer-deps=true` to handle the `@config-plugins/ffmpeg-kit-react-native` peer dep conflict with Expo SDK 55.
 - **Secrets sync:** After changing `.env`, run `eas secret:push --scope project --env-file .env --force` to update EAS build secrets. A stale EAS secret will override the local `.env` in production builds.
 - **Metro cache:** After changing `.env`, restart Metro with `npx expo start --clear`. Metro inlines `EXPO_PUBLIC_*` values at build time — a stale cache silently uses the old values. In dev mode, `config.ts` logs a warning if Supabase vars are empty.
-- **FFmpeg Maven repo:** The `com.arthenica:ffmpeg-kit-min:6.0-2` Android artifact was removed from Maven Central. It's self-hosted via GitHub Pages at `https://homeless-pets-foundation.github.io/ffmpeg-kit-maven`. This is configured in `app.config.ts` via `extraMavenRepos` in `expo-build-properties`, which injects it at the Gradle settings level (required by Gradle 9).
+- **FFmpeg Maven repo:** The `com.arthenica:ffmpeg-kit-min` Android artifact was removed from Maven Central. It's self-hosted via GitHub Pages at `https://homeless-pets-foundation.github.io/ffmpeg-kit-maven`. Configured in `app.config.ts` via `extraMavenRepos` in `expo-build-properties` (required by Gradle 9). **Current version is `6.0-3`** (16KB page-size compliant, built from `arthenica/ffmpeg-kit` `development` branch). To rebuild: go to `Homeless-Pets-Foundation/ffmpeg-kit-maven` → Actions → "Build FFmpeg Kit min (16KB page size)" → Run workflow.
+- **ffmpeg-kit-react-native patch:** `patches/ffmpeg-kit-react-native+6.0.2.patch` overrides the AAR version in the npm package's `gradle.properties` from `6.0-2` → `6.0-3`. Applied automatically by `postinstall: patch-package` after `npm ci`. If bumping to a new AAR version in the future, update the patch file to reference the new version string.
 - **Expo doctor:** Always run `npx expo-doctor` before triggering an EAS build. A pre-build Claude hook (`.claude/hooks/pre-eas-build.sh`) enforces this automatically. If Dependabot bumps packages beyond Expo SDK compatibility, run `npx expo install --fix` to restore correct versions.
 - **APP_VARIANT:** `app.config.ts` exposes `extra.isProduction` based on `APP_VARIANT=production`. Used at runtime to gate production-only features (e.g., screen capture prevention, when re-enabled).
 
-## Local Machine Notes
+## Emulator Testing (WSL2)
 
-- Keep machine-specific setup, SDK paths, emulator launch commands, and workstation quirks in `AGENTS.local.md`.
-- `AGENTS.local.md` is intentionally gitignored. `AGENTS.md` should stay portable across machines.
+The dev environment runs Metro in WSL2 while the Android emulator runs on the Windows host. All `adb` commands that target the emulator must use the **Windows** ADB binary (`adb.exe`), not the WSL2 `adb`.
 
-## Manual Test Flows
+### Setup & Launch
+
+1. **Start the emulator:**
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/emulator/emulator.exe" -avd Medium_Phone_API_36.1 -no-snapshot-load &>/dev/null &
+   ```
+2. **Wait for the emulator to appear** (check with Windows ADB):
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" devices
+   ```
+3. **ADB reverse** (emulator localhost → Windows localhost):
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" reverse tcp:8081 tcp:8081
+   ```
+4. **Port proxy** (Windows localhost → WSL2 IP, requires admin):
+   ```bash
+   WSL_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+   powershell.exe -Command "Start-Process powershell -ArgumentList '-Command netsh interface portproxy delete v4tov4 listenport=8081 listenaddress=127.0.0.1; netsh interface portproxy add v4tov4 listenport=8081 listenaddress=127.0.0.1 connectport=8081 connectaddress=$WSL_IP' -Verb RunAs"
+   ```
+5. **Start Metro** (clean cache recommended after code changes):
+   ```bash
+   npx expo start --clear
+   ```
+6. **Deep-link the app** to connect to the dev server:
+   ```bash
+   "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" shell am start -a android.intent.action.VIEW -d 'captivet://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081'
+   ```
+
+If Metro was already running on port 8081, kill it first: `lsof -ti:8081 | xargs kill -9`
+
+### ADB UI Interaction
+
+Use these commands to interact with the emulator for testing. All use the Windows ADB binary.
+
+| Action | Command |
+|--------|---------|
+| **Screenshot** | `adb.exe exec-out screencap -p > /tmp/screen.png` (then use Read tool to view) |
+| **Tap** | `adb.exe shell input tap <x> <y>` (coordinates in device pixels, 1080x2400) |
+| **Swipe/Scroll** | `adb.exe shell input swipe <x1> <y1> <x2> <y2> <duration_ms>` |
+| **Type text** | `adb.exe shell input text "hello"` (no spaces — use `%s` for spaces) |
+| **Press back** | `adb.exe shell input keyevent KEYCODE_BACK` |
+| **Dismiss keyboard** | `adb.exe shell input keyevent KEYCODE_ESCAPE` |
+| **UI hierarchy** | `adb.exe shell uiautomator dump /sdcard/ui.xml && adb.exe shell cat /sdcard/ui.xml` |
+
+### Finding Tap Coordinates
+
+1. **Preferred: `uiautomator dump`** — returns XML with `bounds="[left,top][right,bottom]"` for every element. Calculate center: `x = (left + right) / 2`, `y = (top + bottom) / 2`. Filter with `grep -iE "button_text\|content_desc"`.
+2. **Fallback: screenshot** — if `uiautomator dump` fails (it can't dump during animations), take a screenshot, view it with the Read tool, and estimate coordinates. The screen is 1080x2400 pixels.
+
+### Key App Flows for Testing
 
 - **Record:** Home → Record tab or "Record Appointment" → fill Patient Name, Client Name, select Species + Appointment Type → scroll down → tap "Start recording" → wait → "Finish"
 - **Stash:** While recording or stopped → "Save for Later" (top right) → "SAVE" in dialog → session appears under "Saved Sessions" with "Resume Session" button
 - **Edit:** After recording completes → scroll to "Edit Recording" → opens audio editor with waveform, trim handles, playback, and "Apply Trim" / "Done"
-- **App package:** `com.captivet.mobile`
+- **App package:** `com.captivet.mobile`, launch with: `adb.exe shell am start -n com.captivet.mobile/.MainActivity`
 
 ## File Conventions
 
@@ -284,207 +333,3 @@ Per-slot upload lifecycle: `pending` → `uploading` → `success` | `error`.
 - **`usePreventRemove`** — blocks navigation when `unsavedCount > 0` (slots with segments but not yet uploaded, or actively recording/paused). Shows discard confirmation with precise count.
 - **Discard cleanup** — on confirm, iterates all slots and deletes all segment files via `FileSystem.deleteAsync`.
 - **`resetSession`** — dispatches `RESET_SESSION` to the reducer, creating a fresh initial state. Required because the record tab stays mounted across navigations — without explicit reset, stale state persists.
-
-
-<!-- TRIGGER.DEV basic START -->
-# Trigger.dev Basic Tasks (v4)
-
-**MUST use `@trigger.dev/sdk`, NEVER `client.defineJob`**
-
-## Basic Task
-
-```ts
-import { task } from "@trigger.dev/sdk";
-
-export const processData = task({
-  id: "process-data",
-  retry: {
-    maxAttempts: 10,
-    factor: 1.8,
-    minTimeoutInMs: 500,
-    maxTimeoutInMs: 30_000,
-    randomize: false,
-  },
-  run: async (payload: { userId: string; data: any[] }) => {
-    // Task logic - runs for long time, no timeouts
-    console.log(`Processing ${payload.data.length} items for user ${payload.userId}`);
-    return { processed: payload.data.length };
-  },
-});
-```
-
-## Schema Task (with validation)
-
-```ts
-import { schemaTask } from "@trigger.dev/sdk";
-import { z } from "zod";
-
-export const validatedTask = schemaTask({
-  id: "validated-task",
-  schema: z.object({
-    name: z.string(),
-    age: z.number(),
-    email: z.string().email(),
-  }),
-  run: async (payload) => {
-    // Payload is automatically validated and typed
-    return { message: `Hello ${payload.name}, age ${payload.age}` };
-  },
-});
-```
-
-## Triggering Tasks
-
-### From Backend Code
-
-```ts
-import { tasks } from "@trigger.dev/sdk";
-import type { processData } from "./trigger/tasks";
-
-// Single trigger
-const handle = await tasks.trigger<typeof processData>("process-data", {
-  userId: "123",
-  data: [{ id: 1 }, { id: 2 }],
-});
-
-// Batch trigger (up to 1,000 items, 3MB per payload)
-const batchHandle = await tasks.batchTrigger<typeof processData>("process-data", [
-  { payload: { userId: "123", data: [{ id: 1 }] } },
-  { payload: { userId: "456", data: [{ id: 2 }] } },
-]);
-```
-
-### Debounced Triggering
-
-Consolidate multiple triggers into a single execution:
-
-```ts
-// Multiple rapid triggers with same key = single execution
-await myTask.trigger(
-  { userId: "123" },
-  {
-    debounce: {
-      key: "user-123-update",  // Unique key for debounce group
-      delay: "5s",              // Wait before executing
-    },
-  }
-);
-
-// Trailing mode: use payload from LAST trigger
-await myTask.trigger(
-  { data: "latest-value" },
-  {
-    debounce: {
-      key: "trailing-example",
-      delay: "10s",
-      mode: "trailing",  // Default is "leading" (first payload)
-    },
-  }
-);
-```
-
-**Debounce modes:**
-- `leading` (default): Uses payload from first trigger, subsequent triggers only reschedule
-- `trailing`: Uses payload from most recent trigger
-
-### From Inside Tasks (with Result handling)
-
-```ts
-export const parentTask = task({
-  id: "parent-task",
-  run: async (payload) => {
-    // Trigger and continue
-    const handle = await childTask.trigger({ data: "value" });
-
-    // Trigger and wait - returns Result object, NOT task output
-    const result = await childTask.triggerAndWait({ data: "value" });
-    if (result.ok) {
-      console.log("Task output:", result.output); // Actual task return value
-    } else {
-      console.error("Task failed:", result.error);
-    }
-
-    // Quick unwrap (throws on error)
-    const output = await childTask.triggerAndWait({ data: "value" }).unwrap();
-
-    // Batch trigger and wait
-    const results = await childTask.batchTriggerAndWait([
-      { payload: { data: "item1" } },
-      { payload: { data: "item2" } },
-    ]);
-
-    for (const run of results) {
-      if (run.ok) {
-        console.log("Success:", run.output);
-      } else {
-        console.log("Failed:", run.error);
-      }
-    }
-  },
-});
-
-export const childTask = task({
-  id: "child-task",
-  run: async (payload: { data: string }) => {
-    return { processed: payload.data };
-  },
-});
-```
-
-> Never wrap triggerAndWait or batchTriggerAndWait calls in a Promise.all or Promise.allSettled as this is not supported in Trigger.dev tasks.
-
-## Waits
-
-```ts
-import { task, wait } from "@trigger.dev/sdk";
-
-export const taskWithWaits = task({
-  id: "task-with-waits",
-  run: async (payload) => {
-    console.log("Starting task");
-
-    // Wait for specific duration
-    await wait.for({ seconds: 30 });
-    await wait.for({ minutes: 5 });
-    await wait.for({ hours: 1 });
-    await wait.for({ days: 1 });
-
-    // Wait until specific date
-    await wait.until({ date: new Date("2024-12-25") });
-
-    // Wait for token (from external system)
-    await wait.forToken({
-      token: "user-approval-token",
-      timeoutInSeconds: 3600, // 1 hour timeout
-    });
-
-    console.log("All waits completed");
-    return { status: "completed" };
-  },
-});
-```
-
-> Never wrap wait calls in a Promise.all or Promise.allSettled as this is not supported in Trigger.dev tasks.
-
-## Key Points
-
-- **Result vs Output**: `triggerAndWait()` returns a `Result` object with `ok`, `output`, `error` properties - NOT the direct task output
-- **Type safety**: Use `import type` for task references when triggering from backend
-- **Waits > 5 seconds**: Automatically checkpointed, don't count toward compute usage
-- **Debounce + idempotency**: Idempotency keys take precedence over debounce settings
-
-## NEVER Use (v2 deprecated)
-
-```ts
-// BREAKS APPLICATION
-client.defineJob({
-  id: "job-id",
-  run: async (payload, io) => {
-    /* ... */
-  },
-});
-```
-
-Use SDK (`@trigger.dev/sdk`), check `result.ok` before accessing `result.output`
-
-<!-- TRIGGER.DEV basic END -->

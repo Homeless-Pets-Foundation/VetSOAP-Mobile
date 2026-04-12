@@ -43,7 +43,7 @@ export const biometrics = {
     }
   },
 
-  async setEnabled(enabled: boolean): Promise<void> {
+  async setEnabled(enabled: boolean): Promise<boolean> {
     try {
       if (enabled) {
         await SecureStore.setItemAsync(BIOMETRIC_ENABLED_KEY, 'true', {
@@ -52,8 +52,10 @@ export const biometrics = {
       } else {
         await SecureStore.deleteItemAsync(BIOMETRIC_ENABLED_KEY);
       }
+      return true;
     } catch (error) {
       if (__DEV__) console.error('[Biometrics] setEnabled failed:', error);
+      return false;
     }
   },
 

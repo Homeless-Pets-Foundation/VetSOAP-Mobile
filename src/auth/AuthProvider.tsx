@@ -5,11 +5,18 @@ import type { Session } from '@supabase/supabase-js';
 import { Paths, Directory, File as ExpoFile } from 'expo-file-system';
 import { safeDeleteFile } from '../lib/fileOps';
 import { supabase } from './supabase';
+import {
+  signInWithGoogleNative,
+  signInWithAppleNative,
+  signOutNativeGoogle,
+  waitForPendingAppleProfileSync,
+  type AuthResult,
+} from './socialAuth';
 import { secureStorage } from '../lib/secureStorage';
+import { apiClient, ApiError } from '../api/client';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { audioTempFiles } from '../lib/audioTempFiles';
-import { apiClient } from '../api/client';
 import { queryClient } from '../lib/queryClient';
 import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
@@ -22,7 +29,9 @@ interface AuthContextType {
   session: Session | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
+  signIn: (email: string, password: string) => Promise<AuthResult>;
+  signInWithGoogle: () => Promise<AuthResult>;
+  signInWithApple: () => Promise<AuthResult>;
   signOut: () => Promise<void>;
 }
 
@@ -32,6 +41,8 @@ export const AuthContext = createContext<AuthContextType>({
   isAuthenticated: false,
   isLoading: true,
   signIn: async () => ({ error: null }),
+  signInWithGoogle: async () => ({ error: null }),
+  signInWithApple: async () => ({ error: null }),
   signOut: async () => {},
 });
 
@@ -69,47 +80,79 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
+  const handleSignOutRef = useRef<() => Promise<void>>(async () => {});
+
+  const applyFetchedUser = useCallback((fetchedUser: User | null) => {
+    setUser(fetchedUser);
+    if (!fetchedUser?.id) return;
+    const scopedUserId = fetchedUser.id;
+    const isRecoveryScopeCurrent = () =>
+      stashStorage.getUserId() === scopedUserId &&
+      stashAudioManager.getUserId() === scopedUserId;
+
+    setStashUserId(scopedUserId);
+    // Now that user ID is set, safe to clean up orphaned stash data.
+    // Must run AFTER setStashUserId or getStashedSessions returns []
+    // and all stash audio dirs get deleted as "orphaned".
+    stashStorage.clearLegacyGlobalStashes().catch(() => {});
+    stashAudioManager.deleteAllStashedAudioGlobal().catch(() => {});
+    stashStorage.getStashedSessions().then(async (sessions) => {
+      if (!isRecoveryScopeCurrent()) return;
+      const validIds = sessions.map((s) => s.id);
+      const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
+      if (!isRecoveryScopeCurrent()) return;
+      // If orphaned sessions were recovered from manifests, save them to SecureStore
+      for (const session of recovered) {
+        if (!isRecoveryScopeCurrent()) return;
+        const added = await stashStorage.addStashedSession(session);
+        if (!isRecoveryScopeCurrent()) return;
+        if (added) {
+          await stashAudioManager.deleteRecoveryManifest(session.id);
+        }
+      }
+    }).catch(() => {});
+  }, []);
 
   const fetchUser = useCallback(async () => {
+    const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
     try {
       if (__DEV__) console.log('[Auth] fetchUser: requesting /auth/me');
-      const body = await apiClient.get<{ user: User }>('/auth/me');
+      const body = await requestMe();
       if (__DEV__) console.log('[Auth] fetchUser: success, user:', body.user?.email ?? 'null');
-      const fetchedUser = body.user ?? null;
-      setUser(fetchedUser);
-      // Set user ID for stash scoping as soon as we know it
-      if (fetchedUser?.id) {
-        const scopedUserId = fetchedUser.id;
-        const isRecoveryScopeCurrent = () =>
-          stashStorage.getUserId() === scopedUserId &&
-          stashAudioManager.getUserId() === scopedUserId;
-
-        setStashUserId(scopedUserId);
-        // Now that user ID is set, safe to clean up orphaned stash data.
-        // Must run AFTER setStashUserId or getStashedSessions returns []
-        // and all stash audio dirs get deleted as "orphaned".
-        stashStorage.clearLegacyGlobalStashes().catch(() => {});
-        stashAudioManager.deleteAllStashedAudioGlobal().catch(() => {});
-        stashStorage.getStashedSessions().then(async (sessions) => {
-          if (!isRecoveryScopeCurrent()) return;
-          const validIds = sessions.map((s) => s.id);
-          const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
-          if (!isRecoveryScopeCurrent()) return;
-          // If orphaned sessions were recovered from manifests, save them to SecureStore
-          for (const session of recovered) {
-            if (!isRecoveryScopeCurrent()) return;
-            const added = await stashStorage.addStashedSession(session);
-            if (!isRecoveryScopeCurrent()) return;
-            if (added) {
-              await stashAudioManager.deleteRecoveryManifest(session.id);
-            }
-          }
-        }).catch(() => {});
-      }
+      applyFetchedUser(body.user ?? null);
     } catch (error) {
+      // A brand-new Google/Apple user has no app User row yet — /auth/me
+      // returns 404. Bootstrap via the idempotent /auth/register endpoint
+      // (server derives fullName/orgName from Supabase user_metadata), then
+      // retry /auth/me. Existing users never hit this path.
+      if (error instanceof ApiError && error.status === 404) {
+        if (__DEV__) console.log('[Auth] fetchUser: 404, waiting for pending Apple profile sync');
+        await waitForPendingAppleProfileSync();
+        try {
+          const retryBody = await requestMe();
+          if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
+          applyFetchedUser(retryBody.user ?? null);
+          return;
+        } catch (retryError) {
+          if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync still missing user', retryError);
+        }
+
+        if (__DEV__) console.log('[Auth] fetchUser: 404, bootstrapping via /auth/register');
+        try {
+          await apiClient.post('/auth/register', {});
+          const body = await requestMe();
+          if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
+          applyFetchedUser(body.user ?? null);
+        } catch (bootstrapError) {
+          if (__DEV__) console.log('[Auth] fetchUser: bootstrap failed', bootstrapError);
+          setLogoutReason('session_expired');
+          await handleSignOutRef.current();
+        }
+        return;
+      }
       if (__DEV__) console.log('[Auth] fetchUser: failed', error);
     }
-  }, []);
+  }, [applyFetchedUser]);
 
   const registerDevice = useCallback(async () => {
     try {
@@ -134,6 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       if (__DEV__) console.error('[Auth] supabase.auth.signOut failed:', error);
     }
+    await signOutNativeGoogle();
     try {
       await secureStorage.clearAll();
     } catch (error) {
@@ -307,6 +351,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             } catch {}
             audioEditorBridge.clear();
             clearClipboard();
+            await signOutNativeGoogle();
             await secureStorage.clearAll();
             // Clear cached PHI so the next user on this shared tablet
             // doesn't briefly see the previous user's recording list.
@@ -386,6 +431,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error: null };
   }, [registerDevice]);
 
+  const signInWithGoogle = useCallback(async () => {
+    if (__DEV__) console.log('[Auth] signInWithGoogle: attempting');
+    const result = await signInWithGoogleNative();
+    if (!result.error && !result.cancelled) {
+      if (__DEV__) console.log('[Auth] signInWithGoogle: success');
+      registerDevice().catch(() => {});
+    } else if (__DEV__) {
+      console.log('[Auth] signInWithGoogle: failed or cancelled', result.error);
+    }
+    return result;
+  }, [registerDevice]);
+
+  const signInWithApple = useCallback(async () => {
+    if (__DEV__) console.log('[Auth] signInWithApple: attempting');
+    const result = await signInWithAppleNative();
+    if (!result.error && !result.cancelled) {
+      if (__DEV__) console.log('[Auth] signInWithApple: success');
+      registerDevice().catch(() => {});
+    } else if (__DEV__) {
+      console.log('[Auth] signInWithApple: failed or cancelled', result.error);
+    }
+    return result;
+  }, [registerDevice]);
+
+  handleSignOutRef.current = handleSignOut;
+
   const isAuthenticated = !!session?.access_token;
   if (__DEV__ && session?.access_token) {
     const tokenExpired = isTokenExpired(session?.expires_at);
@@ -402,6 +473,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isAuthenticated,
         isLoading,
         signIn,
+        signInWithGoogle,
+        signInWithApple,
         signOut: handleSignOut,
       }}
     >

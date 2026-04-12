@@ -6,6 +6,7 @@
  * Requires: sharp (npm install --save-dev sharp)
  */
 import sharp from 'sharp';
+import { Buffer } from 'node:buffer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 

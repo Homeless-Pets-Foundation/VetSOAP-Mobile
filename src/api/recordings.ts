@@ -79,6 +79,18 @@ export interface ListRecordingsParams {
   search?: string;
 }
 
+export interface TranslateResult {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
+}
+
+export interface EmailDraftResult {
+  subject: string;
+  body: string;
+}
+
 export const recordingsApi = {
   async list(params: ListRecordingsParams = {}): Promise<PaginatedResponse<Recording>> {
     const sanitized = { ...params } as Record<string, string | number | undefined>;
@@ -360,5 +372,25 @@ export const recordingsApi = {
   async getSoapNote(recordingId: string): Promise<SoapNote> {
     recordingIdSchema.parse(recordingId);
     return apiClient.get(`/api/recordings/${recordingId}/soap-note`);
+  },
+
+  async translate(
+    recordingId: string,
+    opts: { targetLanguage: string }
+  ): Promise<TranslateResult> {
+    recordingIdSchema.parse(recordingId);
+    return apiClient.post(`/api/recordings/${recordingId}/translate`, {
+      targetLanguage: opts.targetLanguage,
+    });
+  },
+
+  async generateEmailDraft(
+    recordingId: string,
+    opts: { mode: 'visit_summary' }
+  ): Promise<EmailDraftResult> {
+    recordingIdSchema.parse(recordingId);
+    return apiClient.post(`/api/recordings/${recordingId}/email-draft`, {
+      mode: opts.mode,
+    });
   },
 };

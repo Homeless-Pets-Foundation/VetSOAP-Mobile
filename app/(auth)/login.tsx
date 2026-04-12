@@ -2,11 +2,12 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, Image, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
-import { AlertCircle, Eye, EyeOff, Info } from 'lucide-react-native';
+import { AlertCircle, Eye, EyeOff, Info, Apple } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
+import { GoogleGlyph } from '../../src/components/ui/GoogleGlyph';
 import { emailSchema, passwordSchema } from '../../src/lib/validation';
 import { consumeLogoutReason } from '../../src/lib/logoutReason';
 
@@ -14,12 +15,13 @@ const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 60_000; // 1 minute
 
 export default function LoginScreen() {
-  const { signIn } = useAuth();
+  const { signIn, signInWithGoogle, signInWithApple } = useAuth();
   const { scale, iconSm } = useResponsive();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [socialProvider, setSocialProvider] = useState<'google' | 'apple' | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -81,6 +83,47 @@ export default function LoginScreen() {
       setIsLoading(false);
     }
   }, [email, password, signIn]);
+
+  const handleSocial = useCallback(
+    async (provider: 'google' | 'apple') => {
+      // Respect the same brute-force lockout that guards the password form.
+      // A cancelled social prompt is a silent no-op and does not count against
+      // the attempt budget (socialAuth returns { error: null } on cancel).
+      if (lockoutUntilRef.current > Date.now()) {
+        const remaining = Math.ceil((lockoutUntilRef.current - Date.now()) / 1000);
+        setError(`Too many failed attempts. Please try again in ${remaining}s.`);
+        return;
+      }
+
+      setError(null);
+      setSessionExpired(false);
+      setSocialProvider(provider);
+      try {
+        const result =
+          provider === 'google' ? await signInWithGoogle() : await signInWithApple();
+        if (result.cancelled) {
+          return;
+        }
+        if (result.error) {
+          failedAttemptsRef.current += 1;
+          if (failedAttemptsRef.current >= MAX_LOGIN_ATTEMPTS) {
+            lockoutUntilRef.current = Date.now() + LOCKOUT_DURATION_MS;
+            failedAttemptsRef.current = 0;
+            setError('Too many failed attempts. Please try again in 60s.');
+          } else {
+            setError(result.error);
+          }
+        } else {
+          failedAttemptsRef.current = 0;
+        }
+      } catch {
+        setError('A network error occurred. Please check your connection and try again.');
+      } finally {
+        setSocialProvider(null);
+      }
+    },
+    [signInWithGoogle, signInWithApple]
+  );
 
   return (
     <SafeAreaView className="screen">
@@ -170,10 +213,45 @@ export default function LoginScreen() {
               size="lg"
               onPress={() => { handleSignIn().catch(() => {}); }}
               loading={isLoading}
+              disabled={socialProvider !== null}
               accessibilityLabel="Sign into your Account"
             >
               Sign In
             </Button>
+          </View>
+
+          <View className="flex-row items-center my-5">
+            <View className="flex-1 h-px bg-stone-200" />
+            <Text className="px-3 text-body-sm text-stone-500">or continue with</Text>
+            <View className="flex-1 h-px bg-stone-200" />
+          </View>
+
+          <View className="gap-3">
+            <Button
+              variant="secondary"
+              size="lg"
+              icon={<GoogleGlyph size={iconSm + 2} />}
+              onPress={() => { handleSocial('google').catch(() => {}); }}
+              loading={socialProvider === 'google'}
+              disabled={isLoading || socialProvider === 'apple'}
+              accessibilityLabel="Continue with Google"
+            >
+              Continue with Google
+            </Button>
+
+            {Platform.OS === 'ios' && (
+              <Button
+                variant="secondary"
+                size="lg"
+                icon={<Apple color="#000" size={iconSm + 2} fill="#000" />}
+                onPress={() => { handleSocial('apple').catch(() => {}); }}
+                loading={socialProvider === 'apple'}
+                disabled={isLoading || socialProvider === 'google'}
+                accessibilityLabel="Continue with Apple"
+              >
+                Continue with Apple
+              </Button>
+            )}
           </View>
         </Animated.View>
         </View>

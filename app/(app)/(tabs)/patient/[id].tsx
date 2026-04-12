@@ -7,6 +7,7 @@ import {
   RefreshControl,
   ActivityIndicator,
   TextInput,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -117,6 +118,12 @@ export default function PatientDetailScreen() {
     mutationFn: () => patientsApi.regenerateSummary(id!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['patient', id] }).catch(() => {});
+    },
+    onError: (mutationError) => {
+      const message = mutationError instanceof Error
+        ? mutationError.message
+        : 'Could not queue patient summary generation. Please try again.';
+      Alert.alert('Unable to Regenerate Summary', message);
     },
   });
 

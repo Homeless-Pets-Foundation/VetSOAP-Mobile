@@ -15,17 +15,22 @@ interface PatientFormProps {
   clientNameDisabled?: boolean;
   onPimsIdBlur?: () => void;
   pimsLookupLoading?: boolean;
+  onTemplatePreview?: (template: Template) => void;
 }
 
-export function PatientForm({ formData, onUpdate, templates, templatesLoading, clientNameDisabled, onPimsIdBlur, pimsLookupLoading }: PatientFormProps) {
+export function PatientForm({ formData, onUpdate, templates, templatesLoading, clientNameDisabled, onPimsIdBlur, pimsLookupLoading, onTemplatePreview }: PatientFormProps) {
   const handleTemplateSelect = (template: Template) => {
     Haptics.selectionAsync().catch(() => {});
-    const newId = formData.templateId === template.id ? undefined : template.id;
-    onUpdate('templateId', newId);
+    if (onTemplatePreview) {
+      onTemplatePreview(template);
+    } else {
+      const newId = formData.templateId === template.id ? undefined : template.id;
+      onUpdate('templateId', newId);
 
-    // Auto-fill species if the template targets exactly one species
-    if (newId && template.species?.length === 1 && !formData.species) {
-      onUpdate('species', template.species[0]);
+      // Auto-fill species if the template targets exactly one species
+      if (newId && template.species?.length === 1 && !formData.species) {
+        onUpdate('species', template.species[0]);
+      }
     }
   };
 

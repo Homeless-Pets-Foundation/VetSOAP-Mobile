@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Modal } from 'react-native';
 import { ScrollView } from 'react-native-gesture-handler';
 import Animated, {
   FadeIn,
@@ -110,6 +110,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   }));
 
   const [pimsLookupLoading, setPimsLookupLoading] = React.useState(false);
+  const [templatePreview, setTemplatePreview] = React.useState<Template | null>(null);
 
   const handlePimsBlur = React.useCallback(() => {
     const pimsId = slot.formData.pimsPatientId?.trim();
@@ -126,6 +127,18 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       .catch(() => {})
       .finally(() => setPimsLookupLoading(false));
   }, [slot.formData.pimsPatientId, onUpdateForm]);
+
+  const handleConfirmTemplateSelection = React.useCallback((template: Template) => {
+    const newId = slot.formData.templateId === template.id ? undefined : template.id;
+    onUpdateForm('templateId', newId);
+
+    // Auto-fill species if the template targets exactly one species
+    if (newId && template.species?.length === 1 && !slot.formData.species) {
+      onUpdateForm('species', template.species[0]);
+    }
+
+    setTemplatePreview(null);
+  }, [slot.formData.templateId, slot.formData.species, onUpdateForm]);
 
   const hasRequiredFields =
     slot.formData.patientName.trim().length > 0 &&
@@ -185,6 +198,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           templatesLoading={templatesLoading}
           onPimsIdBlur={handlePimsBlur}
           pimsLookupLoading={pimsLookupLoading}
+          onTemplatePreview={setTemplatePreview}
         />
       </Card>
 
@@ -434,6 +448,53 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           </Card>
         </Animated.View>
       )}
+
+      {/* Template Preview Modal */}
+      <Modal
+        visible={templatePreview !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setTemplatePreview(null)}
+      >
+        <Pressable className="flex-1 bg-black/40" onPress={() => setTemplatePreview(null)} />
+        <View className="bg-white rounded-t-2xl p-6 pb-10">
+          <Text className="text-heading font-bold text-stone-900 mb-1">{templatePreview?.name}</Text>
+          {templatePreview?.description ? (
+            <Text className="text-body-sm text-stone-500 mb-3">{templatePreview.description}</Text>
+          ) : null}
+          <View className="flex-row flex-wrap gap-2 mb-4">
+            {templatePreview?.species?.map((s) => (
+              <View key={s} className="px-2 py-1 bg-stone-100 rounded">
+                <Text className="text-caption text-stone-600">{s}</Text>
+              </View>
+            ))}
+            {templatePreview?.appointmentTypes?.map((a) => (
+              <View key={a} className="px-2 py-1 bg-brand-50 rounded">
+                <Text className="text-caption text-brand-700">{a}</Text>
+              </View>
+            ))}
+          </View>
+          <View className="flex-row gap-3">
+            <View className="flex-1">
+              <Button variant="ghost" onPress={() => setTemplatePreview(null)}>
+                Cancel
+              </Button>
+            </View>
+            <View className="flex-1">
+              <Button
+                variant="primary"
+                onPress={() => {
+                  if (templatePreview) {
+                    handleConfirmTemplateSelection(templatePreview);
+                  }
+                }}
+              >
+                Use template
+              </Button>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }, (prev, next) => {

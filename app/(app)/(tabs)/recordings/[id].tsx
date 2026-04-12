@@ -852,7 +852,9 @@ export default function RecordingDetailScreen() {
                       onPress={() => {
                         copyWithAutoClear(translatedSections.subjective).catch(() => {});
                       }}
-                      className="self-start"
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy subjective translation"
+                      className="self-start min-h-[44px] flex-row items-center px-1"
                     >
                       <Text className="text-body-sm font-medium text-brand-600">
                         Copy
@@ -871,7 +873,9 @@ export default function RecordingDetailScreen() {
                       onPress={() => {
                         copyWithAutoClear(translatedSections.objective).catch(() => {});
                       }}
-                      className="self-start"
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy objective translation"
+                      className="self-start min-h-[44px] flex-row items-center px-1"
                     >
                       <Text className="text-body-sm font-medium text-brand-600">
                         Copy
@@ -890,7 +894,9 @@ export default function RecordingDetailScreen() {
                       onPress={() => {
                         copyWithAutoClear(translatedSections.assessment).catch(() => {});
                       }}
-                      className="self-start"
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy assessment translation"
+                      className="self-start min-h-[44px] flex-row items-center px-1"
                     >
                       <Text className="text-body-sm font-medium text-brand-600">
                         Copy
@@ -909,7 +915,9 @@ export default function RecordingDetailScreen() {
                       onPress={() => {
                         copyWithAutoClear(translatedSections.plan).catch(() => {});
                       }}
-                      className="self-start"
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy plan translation"
+                      className="self-start min-h-[44px] flex-row items-center px-1"
                     >
                       <Text className="text-body-sm font-medium text-brand-600">
                         Copy
@@ -950,7 +958,9 @@ export default function RecordingDetailScreen() {
                       onPress={() => {
                         copyWithAutoClear(emailDraft.subject).catch(() => {});
                       }}
-                      className="self-start"
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy email subject"
+                      className="self-start min-h-[44px] flex-row items-center px-1"
                     >
                       <Text className="text-body-sm font-medium text-brand-600">
                         Copy
@@ -969,7 +979,9 @@ export default function RecordingDetailScreen() {
                       onPress={() => {
                         copyWithAutoClear(emailDraft.body).catch(() => {});
                       }}
-                      className="self-start"
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy email body"
+                      className="self-start min-h-[44px] flex-row items-center px-1"
                     >
                       <Text className="text-body-sm font-medium text-brand-600">
                         Copy Body

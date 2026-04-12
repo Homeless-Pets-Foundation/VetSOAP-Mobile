@@ -8,9 +8,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Check, AlertTriangle, Trash2 } from 'lucide-react-native';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
-import { recordingsApi, type CompleteMetadataPayload } from '../../../../src/api/recordings';
+import { recordingsApi, type CompleteMetadataPayload, type TranslateResult, type EmailDraftResult } from '../../../../src/api/recordings';
 import { ApiError, apiClient } from '../../../../src/api/client';
 import { soapNotesApi, type SoapNoteSection } from '../../../../src/api/soapNotes';
+import { copyWithAutoClear } from '../../../../src/lib/secureClipboard';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import type { Recording } from '../../../../src/types';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
@@ -423,6 +424,46 @@ export default function RecordingDetailScreen() {
     },
   });
 
+  // Translation state and mutation
+  const [targetLanguage, setTargetLanguage] = useState('');
+  const [translatedSections, setTranslatedSections] = useState<TranslateResult | null>(null);
+
+  const translationMutation = useMutation({
+    mutationFn: async () => {
+      if (!id) throw new Error('Recording ID not available');
+      if (!targetLanguage.trim()) throw new Error('Please enter a target language');
+      return recordingsApi.translate(id, { targetLanguage });
+    },
+    onSuccess: (result) => {
+      setTranslatedSections(result);
+    },
+    onError: (error: Error) => {
+      Alert.alert(
+        'Translation Failed',
+        error instanceof ApiError ? error.message : 'Could not translate SOAP note.'
+      );
+    },
+  });
+
+  // Email draft state and mutation
+  const [emailDraft, setEmailDraft] = useState<EmailDraftResult | null>(null);
+
+  const emailDraftMutation = useMutation({
+    mutationFn: async () => {
+      if (!id) throw new Error('Recording ID not available');
+      return recordingsApi.generateEmailDraft(id, {});
+    },
+    onSuccess: (result) => {
+      setEmailDraft(result);
+    },
+    onError: (error: Error) => {
+      Alert.alert(
+        'Email Draft Failed',
+        error instanceof ApiError ? error.message : 'Could not generate email draft.'
+      );
+    },
+  });
+
   if (isError) {
     return (
       <SafeAreaView className="screen justify-center items-center p-5">
@@ -772,6 +813,173 @@ export default function RecordingDetailScreen() {
                 </Text>
               </View>
             )}
+
+            {/* Translation Section */}
+            <View className="mt-8">
+            <Text className="text-heading font-bold text-stone-900 mb-3" accessibilityRole="header">
+              Translation
+            </Text>
+            <Card className="mb-4">
+              <View className="mb-4">
+                <TextInputField
+                  label="Target Language"
+                  placeholder="e.g., Spanish"
+                  value={targetLanguage}
+                  onChangeText={setTargetLanguage}
+                />
+                <View className="mb-2">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onPress={() => translationMutation.mutate()}
+                    loading={translationMutation.isPending}
+                  >
+                    Translate
+                  </Button>
+                </View>
+              </View>
+
+              {translatedSections && (
+                <View>
+                  <View className="mb-3 p-3 bg-stone-50 rounded-input">
+                    <Text className="text-body-sm font-medium text-stone-700 mb-1">
+                      Subjective
+                    </Text>
+                    <Text className="text-body-sm text-stone-600 mb-2">
+                      {translatedSections.subjective}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        copyWithAutoClear(translatedSections.subjective).catch(() => {});
+                      }}
+                      className="self-start"
+                    >
+                      <Text className="text-body-sm font-medium text-brand-600">
+                        Copy
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  <View className="mb-3 p-3 bg-stone-50 rounded-input">
+                    <Text className="text-body-sm font-medium text-stone-700 mb-1">
+                      Objective
+                    </Text>
+                    <Text className="text-body-sm text-stone-600 mb-2">
+                      {translatedSections.objective}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        copyWithAutoClear(translatedSections.objective).catch(() => {});
+                      }}
+                      className="self-start"
+                    >
+                      <Text className="text-body-sm font-medium text-brand-600">
+                        Copy
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  <View className="mb-3 p-3 bg-stone-50 rounded-input">
+                    <Text className="text-body-sm font-medium text-stone-700 mb-1">
+                      Assessment
+                    </Text>
+                    <Text className="text-body-sm text-stone-600 mb-2">
+                      {translatedSections.assessment}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        copyWithAutoClear(translatedSections.assessment).catch(() => {});
+                      }}
+                      className="self-start"
+                    >
+                      <Text className="text-body-sm font-medium text-brand-600">
+                        Copy
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  <View className="p-3 bg-stone-50 rounded-input">
+                    <Text className="text-body-sm font-medium text-stone-700 mb-1">
+                      Plan
+                    </Text>
+                    <Text className="text-body-sm text-stone-600 mb-2">
+                      {translatedSections.plan}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        copyWithAutoClear(translatedSections.plan).catch(() => {});
+                      }}
+                      className="self-start"
+                    >
+                      <Text className="text-body-sm font-medium text-brand-600">
+                        Copy
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            </Card>
+          </View>
+
+            {/* Email Draft Section */}
+            <View className="mt-8">
+            <Text className="text-heading font-bold text-stone-900 mb-3" accessibilityRole="header">
+              Client Email Draft
+            </Text>
+            <Card className="mb-4">
+              {!emailDraft && (
+                <Button
+                  variant="primary"
+                  onPress={() => emailDraftMutation.mutate()}
+                  loading={emailDraftMutation.isPending}
+                >
+                  Generate Email Draft
+                </Button>
+              )}
+
+              {emailDraft && (
+                <View>
+                  <View className="mb-4 p-3 bg-stone-50 rounded-input">
+                    <Text className="text-body-sm font-medium text-stone-700 mb-1">
+                      Subject
+                    </Text>
+                    <Text className="text-body-sm text-stone-600 mb-2">
+                      {emailDraft.subject}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        copyWithAutoClear(emailDraft.subject).catch(() => {});
+                      }}
+                      className="self-start"
+                    >
+                      <Text className="text-body-sm font-medium text-brand-600">
+                        Copy
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  <View className="p-3 bg-stone-50 rounded-input mb-3">
+                    <Text className="text-body-sm font-medium text-stone-700 mb-2">
+                      Body
+                    </Text>
+                    <Text className="text-body-sm text-stone-600 mb-3 leading-relaxed">
+                      {emailDraft.body}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        copyWithAutoClear(emailDraft.body).catch(() => {});
+                      }}
+                      className="self-start"
+                    >
+                      <Text className="text-body-sm font-medium text-brand-600">
+                        Copy Body
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            </Card>
+            </View>
           </View>
         )}
         </View>

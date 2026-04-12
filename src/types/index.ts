@@ -109,12 +109,23 @@ export interface SoapNote {
   objective: SoapSection;
   assessment: SoapSection;
   plan: SoapSection;
+  additionalNotes?: string | null;
   generatedAt: string;
   modelUsed: string;
+  modelsUsed?: Record<string, unknown> | null;
   promptTokens: number;
   completionTokens: number;
+  totalCostCents: number;
+  transcriptionCostCents: number;
+  generationCostCents: number;
+  tokensByModel?: Record<string, unknown> | null;
+  transcriptionModel?: string | null;
+  platformKeyUsed: boolean;
   isExported: boolean;
-  exportedTo: string | null;
+  exportedAt?: string | null;
+  exportedTo?: string | null;
+  exportedById?: string | null;
+  templateId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -8,6 +8,7 @@ export interface UpdateSoapNotePayload {
   objective?: string;
   assessment?: string;
   plan?: string;
+  additionalNotes?: string | null;
 }
 
 export type ExportTarget =

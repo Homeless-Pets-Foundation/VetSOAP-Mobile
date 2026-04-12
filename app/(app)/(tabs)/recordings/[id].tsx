@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, Pressable, Alert, RefreshControl, AppState } from 'react-native';
+import { View, Text, ScrollView, Pressable, Alert, RefreshControl, AppState, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -8,13 +8,16 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Check, AlertTriangle } from 'lucide-react-native';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
-import { recordingsApi } from '../../../../src/api/recordings';
+import { recordingsApi, type CompleteMetadataPayload } from '../../../../src/api/recordings';
 import { ApiError } from '../../../../src/api/client';
+import type { Recording } from '../../../../src/types';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { SoapNoteView } from '../../../../src/components/SoapNoteView';
 import { Button } from '../../../../src/components/ui/Button';
 import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
+import { TextInputField } from '../../../../src/components/ui/TextInputField';
+import { useTemplates } from '../../../../src/hooks/useTemplates';
 
 const PROCESSING_STEPS = [
   { status: 'uploading', label: 'Uploading' },
@@ -25,6 +28,168 @@ const PROCESSING_STEPS = [
 ] as const;
 
 const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'generating', 'completed'];
+
+interface MetadataFormProps {
+  recording: Recording;
+  onSuccess: () => void;
+}
+
+function MetadataForm({ recording, onSuccess }: MetadataFormProps) {
+  const queryClient = useQueryClient();
+  const { templates } = useTemplates();
+
+  const [patientName, setPatientName] = useState(recording.patientName || '');
+  const [clientName, setClientName] = useState(recording.clientName || '');
+  const [species, setSpecies] = useState(recording.species || '');
+  const [breed, setBreed] = useState(recording.breed || '');
+  const [appointmentType, setAppointmentType] = useState(recording.appointmentType || '');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [foreignLanguage, setForeignLanguage] = useState(false);
+
+  const completeMetadataMutation = useMutation({
+    mutationFn: async () => {
+      if (!patientName.trim()) {
+        throw new Error('Patient name is required');
+      }
+      const payload: CompleteMetadataPayload = {
+        patientName,
+        clientName,
+        species,
+        breed,
+        appointmentType,
+        templateId: selectedTemplateId,
+        foreignLanguage,
+      };
+      return recordingsApi.completeMetadata(recording.id, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recording', recording.id] }).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: ['recordings', 'list'] }).catch(() => {});
+      onSuccess();
+    },
+    onError: (error: Error) => {
+      Alert.alert('Error', error.message);
+    },
+  });
+
+  const handleSubmit = () => {
+    if (!patientName.trim()) {
+      Alert.alert('Required Field', 'Please enter a patient name');
+      return;
+    }
+    completeMetadataMutation.mutate();
+  };
+
+  return (
+    <Card className="mx-5 mb-4">
+      <Text className="text-body-lg font-semibold text-stone-900 mb-3">
+        Complete Recording Details
+      </Text>
+
+      <TextInputField
+        label="Patient Name"
+        required
+        placeholder="Enter patient name"
+        value={patientName}
+        onChangeText={setPatientName}
+      />
+
+      <TextInputField
+        label="Client Name"
+        placeholder="Enter client name"
+        value={clientName}
+        onChangeText={setClientName}
+      />
+
+      <TextInputField
+        label="Species"
+        placeholder="e.g., Dog, Cat"
+        value={species}
+        onChangeText={setSpecies}
+      />
+
+      <TextInputField
+        label="Breed"
+        placeholder="Enter breed"
+        value={breed}
+        onChangeText={setBreed}
+      />
+
+      <TextInputField
+        label="Appointment Type"
+        placeholder="e.g., Consultation, Surgery"
+        value={appointmentType}
+        onChangeText={setAppointmentType}
+      />
+
+      {templates.length > 0 && (
+        <View className="mb-3.5">
+          <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
+            Template
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row gap-2">
+            <Pressable
+              onPress={() => setSelectedTemplateId(null)}
+              className={`px-4 py-2 rounded-full border-2 ${
+                selectedTemplateId === null
+                  ? 'border-brand-500 bg-brand-50'
+                  : 'border-stone-300 bg-stone-50'
+              }`}
+            >
+              <Text
+                className={`text-body-sm font-medium ${
+                  selectedTemplateId === null ? 'text-brand-700' : 'text-stone-600'
+                }`}
+              >
+                Default
+              </Text>
+            </Pressable>
+            {templates.map((template) => (
+              <Pressable
+                key={template.id}
+                onPress={() => setSelectedTemplateId(template.id)}
+                className={`px-4 py-2 rounded-full border-2 ${
+                  selectedTemplateId === template.id
+                    ? 'border-brand-500 bg-brand-50'
+                    : 'border-stone-300 bg-stone-50'
+                }`}
+              >
+                <Text
+                  className={`text-body-sm font-medium ${
+                    selectedTemplateId === template.id ? 'text-brand-700' : 'text-stone-600'
+                  }`}
+                  numberOfLines={1}
+                >
+                  {template.name}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      <View className="mb-4 flex-row items-center justify-between">
+        <Text className="text-body-sm font-medium text-stone-700">
+          Foreign Language
+        </Text>
+        <Switch
+          value={foreignLanguage}
+          onValueChange={(v) => {
+            setForeignLanguage(v);
+          }}
+        />
+      </View>
+
+      <Button
+        variant="primary"
+        onPress={handleSubmit}
+        loading={completeMetadataMutation.isPending}
+      >
+        Complete Metadata
+      </Button>
+    </Card>
+  );
+}
 
 function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
   if (currentStatus === 'failed') return null;
@@ -344,19 +509,7 @@ export default function RecordingDetailScreen() {
 
         {/* Pending Metadata (Google Drive import awaiting details) */}
         {recording.status === 'pending_metadata' && (
-          <Card className="mx-5 mb-4 border-warning-200">
-            <View className="flex-row items-start">
-              <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
-              <View className="flex-1">
-                <Text className="text-body font-semibold text-warning-700 mb-1">
-                  Awaiting Patient Details
-                </Text>
-                <Text className="text-body-sm text-stone-500">
-                  This recording was imported and needs patient details before processing can begin. Complete the details on the web app.
-                </Text>
-              </View>
-            </View>
-          </Card>
+          <MetadataForm recording={recording} onSuccess={() => { refetchRecording().catch(() => {}); }} />
         )}
 
         {/* Failed */}

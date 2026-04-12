@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, Image, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
 import { AlertCircle, Eye, EyeOff, Info } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
@@ -16,6 +17,7 @@ const LOCKOUT_DURATION_MS = 60_000; // 1 minute
 export default function LoginScreen() {
   const { signIn } = useAuth();
   const { scale, iconSm } = useResponsive();
+  const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -163,6 +165,15 @@ export default function LoginScreen() {
               </Pressable>
             }
           />
+
+          <Pressable
+            onPress={() => router.push('/(auth)/forgot-password')}
+            accessibilityRole="link"
+            accessibilityLabel="Forgot password"
+            className="self-end mb-4 min-h-[44px] justify-center"
+          >
+            <Text className="text-body-sm text-brand-600">Forgot password?</Text>
+          </Pressable>
 
           <View className="mt-2">
             <Button

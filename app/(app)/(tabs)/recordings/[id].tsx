@@ -371,8 +371,10 @@ export default function RecordingDetailScreen() {
   const permissions = useRecordingPermissions(recording ?? null);
 
   const editMutation = useMutation({
-    mutationFn: ({ section, content }: { section: SoapNoteSection; content: string }) =>
-      soapNotesApi.update(soapNote!.id, { [section]: content }),
+    mutationFn: ({ section, content }: { section: SoapNoteSection; content: string }) => {
+      if (!soapNote) return Promise.reject(new Error('SOAP note not available'));
+      return soapNotesApi.update(soapNote.id, { [section]: content });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['soapNote', id] }).catch(() => {});
     },
@@ -382,8 +384,10 @@ export default function RecordingDetailScreen() {
   });
 
   const exportMutation = useMutation({
-    mutationFn: (target: 'clipboard' | 'manual') =>
-      soapNotesApi.export(soapNote!.id, { exportedTo: target }),
+    mutationFn: (target: 'clipboard' | 'manual') => {
+      if (!soapNote) return Promise.reject(new Error('SOAP note not available'));
+      return soapNotesApi.export(soapNote.id, { exportedTo: target });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ['soapNote', id] }).catch(() => {});

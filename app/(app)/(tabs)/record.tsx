@@ -19,7 +19,6 @@ import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi } from '../../../src/api/recordings';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
-import { isAudioEffectivelySilent } from '../../../src/lib/ffmpeg';
 import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../../src/components/SubmitPanel';
@@ -94,12 +93,15 @@ function isSlotActivelyRecording(slot: PatientSlot): boolean {
   return slot.audioState === 'recording' || slot.audioState === 'paused';
 }
 
-async function hasSilentAudioOnly(slot: PatientSlot): Promise<boolean> {
+function hasSilentAudioOnly(slot: PatientSlot): boolean {
   if (slot.segments.length === 0) return false;
-  const checks = await Promise.all(
-    slot.segments.map(async (segment) => isAudioEffectivelySilent(segment.uri))
+  // Use peakMetering stored at record-time (sampled every 500ms) instead of running
+  // FFmpeg volumedetect on the entire file. On A7 Lite, FFmpeg decoding a 45-minute
+  // recording takes 10-20s and blocks the upload modal from appearing.
+  // Fail open: if any segment lacks metering data, assume not silent.
+  return slot.segments.every(
+    (seg) => seg.peakMetering !== undefined && seg.peakMetering <= -20
   );
-  return checks.every(Boolean);
 }
 
 function RecordingSession() {
@@ -616,7 +618,7 @@ function RecordingSession() {
       if (uploadingSlotIdsRef.current.has(slot.id)) return null;
       uploadingSlotIdsRef.current.add(slot.id);
       try {
-        if (await hasSilentAudioOnly(slot)) {
+        if (hasSilentAudioOnly(slot)) {
           throw new Error(
             'This recording appears silent. Please verify microphone input and record again before uploading.'
           );
@@ -982,7 +984,7 @@ function RecordingSession() {
   const isAnyUploading = session.slots.some((s) => s.uploadStatus === 'uploading');
 
   // Upload overlay visibility
-  const showOverlay = isSubmittingAll || session.slots.some((s) => s.uploadStatus === 'uploading');
+  const showOverlay = isSubmittingAll || submittingSlotId !== null || session.slots.some((s) => s.uploadStatus === 'uploading');
 
   // Pagination indicator
   const paginationText =

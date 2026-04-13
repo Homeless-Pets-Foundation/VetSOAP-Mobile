@@ -28,16 +28,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       '@config-plugins/ffmpeg-kit-react-native',
       { package: 'min' },
     ],
-    // Native Google Sign-In (Android + iOS).
-    // iosUrlScheme is the reversed iOS client ID from Google Cloud Console —
-    // configured at EAS build time via EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME so the
-    // value lives in EAS secrets, not in the repo.
-    [
-      '@react-native-google-signin/google-signin',
-      {
-        iosUrlScheme: process.env.EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME || undefined,
-      },
-    ],
     // Native Apple Sign-In (iOS only at runtime; plugin adds the capability).
     'expo-apple-authentication',
     // Android: disable cleartext (HTTP) traffic in production,
@@ -62,6 +52,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       },
     ],
   ];
+
+  // Native Google Sign-In — iOS URL scheme required; skip plugin when not configured
+  // (Android dev sessions don't need the iOS URL scheme registration).
+  // iosUrlScheme is the reversed iOS client ID from Google Cloud Console,
+  // set at EAS build time via EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME.
+  if (process.env.EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME) {
+    plugins.push([
+      '@react-native-google-signin/google-signin',
+      { iosUrlScheme: process.env.EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME },
+    ]);
+  }
 
   // Only include dev-client in development builds
   if (IS_DEV) {

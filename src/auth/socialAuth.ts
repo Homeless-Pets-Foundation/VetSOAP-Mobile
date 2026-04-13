@@ -1,13 +1,22 @@
 import { Platform } from 'react-native';
-import {
-  GoogleSignin,
-  statusCodes,
-  type NativeModuleError,
-} from '@react-native-google-signin/google-signin';
-import * as AppleAuthentication from 'expo-apple-authentication';
-import * as Crypto from 'expo-crypto';
 import { supabase } from './supabase';
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID } from '../config';
+
+// Lazy-load social auth native modules to avoid crashing on dev client APKs
+// built before these dependencies were added. Each module is only required
+// the first time the corresponding sign-in path is actually invoked.
+function getGoogleSignin() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('@react-native-google-signin/google-signin') as typeof import('@react-native-google-signin/google-signin');
+}
+function getAppleAuthentication() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('expo-apple-authentication') as typeof import('expo-apple-authentication');
+}
+function getCrypto() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('expo-crypto') as typeof import('expo-crypto');
+}
 
 export type AuthResult = {
   error: string | null;
@@ -25,7 +34,7 @@ function isGoogleSignInConfiguredForCurrentPlatform(): boolean {
 }
 
 async function persistAppleProfileMetadata(
-  credential: AppleAuthentication.AppleAuthenticationCredential
+  credential: { email?: string | null; fullName?: { givenName?: string | null; familyName?: string | null } | null }
 ): Promise<void> {
   const metadata: Record<string, string> = {};
 
@@ -34,7 +43,8 @@ async function persistAppleProfileMetadata(
   }
 
   if (credential.fullName) {
-    const formattedName = AppleAuthentication.formatFullName(credential.fullName).trim();
+    const AppleAuthentication = getAppleAuthentication();
+    const formattedName = AppleAuthentication.formatFullName(credential.fullName as Parameters<typeof AppleAuthentication.formatFullName>[0]).trim();
     if (formattedName) {
       metadata.fullName = formattedName;
     }
@@ -71,6 +81,7 @@ export function configureGoogleSignIn(): void {
   }
 
   try {
+    const { GoogleSignin } = getGoogleSignin();
     GoogleSignin.configure({
       webClientId: GOOGLE_WEB_CLIENT_ID,
       iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
@@ -99,6 +110,7 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
   }
 
   try {
+    const { GoogleSignin, statusCodes } = getGoogleSignin();
     if (!googleConfigured) configureGoogleSignIn();
 
     if (Platform.OS === 'android') {
@@ -125,7 +137,8 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
     }
     return { error: null };
   } catch (error) {
-    const code = (error as NativeModuleError)?.code;
+    const { statusCodes } = getGoogleSignin();
+    const code = (error as { code?: string })?.code;
     if (code === statusCodes.SIGN_IN_CANCELLED) {
       return { error: null, cancelled: true };
     }
@@ -162,6 +175,9 @@ export async function signInWithAppleNative(): Promise<AuthResult> {
   }
 
   try {
+    const AppleAuthentication = getAppleAuthentication();
+    const Crypto = getCrypto();
+
     const available = await AppleAuthentication.isAvailableAsync();
     if (!available) {
       return { error: 'Apple Sign-In is not available on this device.' };
@@ -227,6 +243,7 @@ export async function signInWithAppleNative(): Promise<AuthResult> {
 
 export async function signOutNativeGoogle(): Promise<void> {
   try {
+    const { GoogleSignin } = getGoogleSignin();
     if (!GoogleSignin.hasPreviousSignIn()) return;
     await GoogleSignin.signOut();
   } catch (error) {

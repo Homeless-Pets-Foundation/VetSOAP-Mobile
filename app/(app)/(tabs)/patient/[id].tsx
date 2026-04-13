@@ -233,7 +233,7 @@ export default function PatientDetailScreen() {
                     <View className="w-2 h-2 rounded-full bg-amber-400 mr-2" />
                     <Text className="text-body-sm font-semibold text-stone-700">AI Patient Summary</Text>
                   </View>
-                  {patient.aiHistoryUpdatedAt && Date.now() - new Date(patient.aiHistoryUpdatedAt).getTime() > 30 * 24 * 60 * 60 * 1000 && (
+                  {patient.aiHistoryUpdatedAt && (() => { const d = new Date(patient.aiHistoryUpdatedAt); return !isNaN(d.getTime()) && Date.now() - d.getTime() > 30 * 24 * 60 * 60 * 1000; })() && (
                     <View className="bg-amber-100 rounded px-2 py-0.5">
                       <Text className="text-caption font-medium text-amber-700">Outdated</Text>
                     </View>

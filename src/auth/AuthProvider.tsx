@@ -325,15 +325,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (event === 'INITIAL_SESSION') return;
 
         try {
-          setSession(newSession);
-
           if (newSession?.access_token) {
+            setSession(newSession);
             sessionTimestampRef.current = Date.now();
             if (__DEV__) console.log('[Auth] session established, storing token');
             apiClient.setToken(newSession.access_token);
             await fetchUser();
             if (__DEV__) console.log('[Auth] sign-in flow complete');
           } else {
+            // Hold isLoading=true during PHI cleanup so the route guard doesn't
+            // redirect to login before stash/audio deletion finishes. setSession(null)
+            // is deferred until after all cleanup — mirrors handleSignOut ordering.
+            setIsLoading(true);
             if (__DEV__) console.log('[Auth] no access_token, clearing session');
             apiClient.setToken(null);
             // Await stash PHI cleanup before clearing auth state — mirrors handleSignOut.
@@ -358,6 +361,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             queryClient.clear();
             setStashUserId(null);
             setUser(null);
+            setSession(null);
           }
         } catch (error) {
           if (__DEV__) console.error('[Auth] onAuthStateChange error:', error);

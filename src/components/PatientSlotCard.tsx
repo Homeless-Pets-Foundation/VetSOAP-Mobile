@@ -110,13 +110,16 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   }));
 
   const [pimsLookupLoading, setPimsLookupLoading] = React.useState(false);
+  const lookupIdRef = React.useRef(0);
 
   const handlePimsBlur = React.useCallback(() => {
     const pimsId = slot.formData.pimsPatientId?.trim();
     if (!pimsId) return;
+    const lookupId = ++lookupIdRef.current;
     setPimsLookupLoading(true);
     patientsApi.lookupByPimsId(pimsId)
       .then((result) => {
+        if (lookupIdRef.current !== lookupId) return;
         if (!result) return;
         onUpdateForm('patientName', result.patientName);
         if (result.clientName) onUpdateForm('clientName', result.clientName);
@@ -124,7 +127,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         if (result.breed) onUpdateForm('breed', result.breed);
       })
       .catch(() => {})
-      .finally(() => setPimsLookupLoading(false));
+      .finally(() => {
+        if (lookupIdRef.current === lookupId) setPimsLookupLoading(false);
+      });
   }, [slot.formData.pimsPatientId, onUpdateForm]);
 
   const hasRequiredFields =

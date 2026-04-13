@@ -152,7 +152,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, audioState: 'idle' }
+            ? { ...slot, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null }
             : slot
         ),
       };
@@ -265,6 +265,10 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             audioDuration: newDuration,
             audioUri: validatedSegments.length > 0 ? validatedSegments[validatedSegments.length - 1].uri : null,
             audioState: validatedSegments.length > 0 ? 'stopped' : 'idle',
+            uploadStatus: 'pending',
+            uploadProgress: 0,
+            uploadError: null,
+            serverRecordingId: null,
           };
         }),
       };

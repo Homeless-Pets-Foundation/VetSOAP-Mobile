@@ -24,7 +24,7 @@ const PROCESSING_STEPS = [
   { status: 'completed', label: 'Complete' },
 ] as const;
 
-const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'generating', 'completed'];
+const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'transcribed', 'generating', 'completed'];
 
 function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
   if (currentStatus === 'failed') return null;

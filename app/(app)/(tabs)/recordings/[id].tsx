@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, Pressable, Alert, RefreshControl, AppState, TextInput } from 'react-native';
+import { View, Text, ScrollView, Pressable, Alert, RefreshControl, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -8,9 +8,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Check, AlertTriangle } from 'lucide-react-native';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
-import { recordingsApi, TranslateResult, EmailDraftResult } from '../../../../src/api/recordings';
+import { recordingsApi } from '../../../../src/api/recordings';
 import { ApiError } from '../../../../src/api/client';
-import { copyWithAutoClear } from '../../../../src/lib/secureClipboard';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { SoapNoteView } from '../../../../src/components/SoapNoteView';
 import { Button } from '../../../../src/components/ui/Button';
@@ -137,7 +136,9 @@ export default function RecordingDetailScreen() {
       appStateRef.current = nextState;
       setIsAppActive(nextState === 'active');
     });
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+    };
   }, []);
 
   const { data: recording, isLoading, isError, error, refetch: refetchRecording, isRefetching: isRefetchingRecording } = useQuery({
@@ -198,33 +199,6 @@ export default function RecordingDetailScreen() {
       Alert.alert(
         'Retry Failed',
         error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'
-      );
-    },
-  });
-
-  const [translatedSections, setTranslatedSections] = useState<TranslateResult | null>(null);
-  const [targetLanguage, setTargetLanguage] = useState('Spanish');
-
-  const translationMutation = useMutation({
-    mutationFn: () => recordingsApi.translate(id!, { targetLanguage }),
-    onSuccess: (data) => setTranslatedSections(data),
-    onError: (error: Error) => {
-      Alert.alert(
-        'Translation Failed',
-        error instanceof ApiError ? error.message : 'Could not translate. Check org API key configuration.'
-      );
-    },
-  });
-
-  const [emailDraft, setEmailDraft] = useState<EmailDraftResult | null>(null);
-
-  const emailDraftMutation = useMutation({
-    mutationFn: () => recordingsApi.generateEmailDraft(id!, { mode: 'visit_summary' }),
-    onSuccess: (data) => setEmailDraft(data),
-    onError: (error: Error) => {
-      Alert.alert(
-        'Email Draft Failed',
-        error instanceof ApiError ? error.message : 'Could not generate email draft. Check org API key configuration.'
       );
     },
   });
@@ -493,75 +467,6 @@ export default function RecordingDetailScreen() {
               </View>
             )}
 
-            {/* Translation Section */}
-            {soapNote && (
-              <View className="px-5 pb-4">
-                <Text className="text-heading font-bold text-stone-900 mb-2" accessibilityRole="header">
-                  Translation
-                </Text>
-                <View className="flex-row items-center gap-3 mb-3">
-                  <TextInput
-                    value={targetLanguage}
-                    onChangeText={setTargetLanguage}
-                    placeholder="Target language (e.g. Spanish)"
-                    className="flex-1 border border-stone-300 rounded-input px-3 py-2 text-body text-stone-900"
-                  />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onPress={() => translationMutation.mutate()}
-                    loading={translationMutation.isPending}
-                  >
-                    Translate
-                  </Button>
-                </View>
-                {translatedSections && (
-                  <Card>
-                    {(['subjective', 'objective', 'assessment', 'plan'] as const).map((key) => (
-                      <View key={key} className="mb-3">
-                        <Text className="text-caption font-semibold text-stone-400 uppercase mb-1">{key}</Text>
-                        <Text className="text-body-sm text-stone-700">{translatedSections[key]}</Text>
-                      </View>
-                    ))}
-                  </Card>
-                )}
-              </View>
-            )}
-
-            {/* Email Draft Section */}
-            {soapNote && (
-              <View className="px-5 pb-8">
-                <View className="flex-row justify-between items-center mb-2">
-                  <Text className="text-heading font-bold text-stone-900" accessibilityRole="header">
-                    Client Email Draft
-                  </Text>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onPress={() => emailDraftMutation.mutate()}
-                    loading={emailDraftMutation.isPending}
-                  >
-                    Generate
-                  </Button>
-                </View>
-                {emailDraft && (
-                  <Card>
-                    <Text className="text-caption font-semibold text-stone-400 uppercase mb-1">Subject</Text>
-                    <Text className="text-body text-stone-900 mb-3">{emailDraft.subject}</Text>
-                    <Text className="text-caption font-semibold text-stone-400 uppercase mb-1">Body</Text>
-                    <Text className="text-body-sm text-stone-700 leading-relaxed">{emailDraft.body}</Text>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onPress={() => { copyWithAutoClear(`Subject: ${emailDraft.subject}\n\n${emailDraft.body}`).catch(() => {}); }}
-                      className="mt-3 self-start"
-                    >
-                      Copy draft
-                    </Button>
-                  </Card>
-                )}
-              </View>
-            )}
           </View>
         )}
         </View>

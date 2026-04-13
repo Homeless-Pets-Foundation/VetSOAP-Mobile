@@ -73,6 +73,9 @@ export default function AudioEditorScreen() {
   const [peakErrors, setPeakErrors] = useState<Set<number>>(new Set());
   // Track whether we emitted trimmed segments — if so, skip temp file cleanup on unmount
   const savedResultRef = useRef(false);
+  // URIs provided by the caller when this editing session opened. Only the caller
+  // (record.tsx setResultCallback) may delete these — the editor must not touch them.
+  const inputUrisRef = useRef<Set<string>>(new Set());
   const [isConcatenating, setIsConcatenating] = useState(false);
   // Bumped each time the screen opens with new input — triggers concatenation effect
   const [sessionKey, setSessionKey] = useState(0);
@@ -89,6 +92,7 @@ export default function AudioEditorScreen() {
       if (__DEV__) console.log('[Editor] focus: new input for slot', bridgeInput.slotId, bridgeInput.segments.length, 'segs');
       setInput(bridgeInput);
       setSegments(bridgeInput.segments);
+      inputUrisRef.current = new Set(bridgeInput.segments.map((s) => s.uri));
       setSelectedIndex(0);
       setPeaks(new Map());
       setPeaksLoading(new Set());
@@ -337,8 +341,12 @@ export default function AudioEditorScreen() {
         // Load new source BEFORE deleting old file — prevents playback stutter
         loadSource(result.uri).catch(() => {});
 
-        // Now safe to delete the old file
-        safeDeleteFile(oldUri);
+        // Only delete intermediate temp files the editor itself created (from earlier trims
+        // in this same session). Original caller-provided URIs (stash files, fresh recordings)
+        // are owned by record.tsx — its setResultCallback deletes them after Done.
+        if (!inputUrisRef.current.has(oldUri)) {
+          safeDeleteFile(oldUri);
+        }
 
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         Alert.alert('Trim Applied', `Recording trimmed to ${formatTime(result.duration)}.`);
@@ -554,7 +562,8 @@ export default function AudioEditorScreen() {
       )}
 
       {/* Waveform editor — OUTSIDE ScrollView so gestures have no competition */}
-      <View className="mb-4 px-5" style={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}>
+      {/* px-7 (28dp) keeps the left trim handle clear of Android's ~20dp back gesture zone */}
+      <View className="mb-4 px-7" style={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}>
         {hasPeakError && !isPeaksLoading ? (
           <View className="rounded-lg bg-stone-100 p-4 items-center" style={{ height: 120, justifyContent: 'center' }}>
             <Text className="text-body-sm text-stone-600 mb-2">

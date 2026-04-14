@@ -46,6 +46,7 @@
     "production-apk": {
       "distribution": "internal",
       "credentialsSource": "remote",
+      "environment": "production",
       "env": {
         "APP_VARIANT": "production"
       },

@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList } from 'react-native';
-import { useRouter, useNavigation } from 'expo-router';
+import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { safeDeleteFile } from '../../../src/lib/fileOps';
+import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
+import { File } from 'expo-file-system';
+import { draftStorage } from '../../../src/lib/draftStorage';
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
@@ -130,6 +133,7 @@ function RecordingSession() {
     resetSession,
     restoreSession,
     replaceAllSegments,
+    dispatch,
   } = useMultiPatientSession(defaultTemplate?.id);
 
   const {
@@ -147,6 +151,8 @@ function RecordingSession() {
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
   const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
   const [isStashing, setIsStashing] = useState(false);
+  const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
+  const { isConnected } = useNetInfo();
   const pagerRef = useRef<FlatList>(null);
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
@@ -154,6 +160,8 @@ function RecordingSession() {
   const pendingStartSlotRef = useRef<string | null>(null);
   // Track pending stash for "stop recorder then stash" flow
   const pendingStashRef = useRef(false);
+  // Track pending draft for "stop recorder then auto-save draft" flow
+  const pendingDraftSlotIdRef = useRef<string | null>(null);
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
   // Guard: prevent the audio-capture effect from saving twice for the same stop
@@ -190,13 +198,15 @@ function RecordingSession() {
     }
     if (recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
       audioCaptureDoneRef.current = true;
+      const slotId = session.recorderBoundToSlotId;
       saveAudio(
-        session.recorderBoundToSlotId,
+        slotId,
         recorder.audioUri,
         recorder.duration,
         recorder.maxMetering
       );
       unbindRecorder();
+      pendingDraftSlotIdRef.current = slotId;
 
       // If there's a pending stash, just reset the recorder here.
       // Don't call executeStash() yet — saveAudio dispatch hasn't been processed,
@@ -644,7 +654,7 @@ function RecordingSession() {
             slot.formData,
             slot.segments[0].uri,
             'audio/x-m4a',
-            { onUploadProgress }
+            { onUploadProgress, ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}) }
           );
         } else {
           // Multi-segment: upload all segments
@@ -652,7 +662,7 @@ function RecordingSession() {
             slot.formData,
             slot.segments,
             'audio/x-m4a',
-            { onUploadProgress }
+            { onUploadProgress, ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}) }
           );
         }
         setUploadStatus(slot.id, 'success', {
@@ -663,6 +673,10 @@ function RecordingSession() {
         slot.segments.forEach((seg) => {
           safeDeleteFile(seg.uri);
         });
+        // Clean up local draft after successful upload
+        if (slot.draftSlotId) {
+          draftStorage.deleteDraft(slot.draftSlotId).catch(() => {});
+        }
         return result.id;
       } catch (error) {
         let msg: string;
@@ -680,6 +694,25 @@ function RecordingSession() {
       }
     },
     [setUploadStatus]
+  );
+
+  const autoSaveDraft = useCallback(
+    async (slot: PatientSlot) => {
+      try {
+        const draftSlotId = await draftStorage.saveDraft(slot);
+        dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: null });
+        if (isConnected) {
+          const result = await recordingsApi.create(slot.formData, { isDraft: true });
+          dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: result.id });
+          await draftStorage.updateServerDraftId(draftSlotId, result.id);
+        }
+      } catch (error) {
+        // Draft save is best-effort — never surface errors to the user.
+        // The recording is still in session state and can still be submitted.
+        if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
+      }
+    },
+    [dispatch, isConnected]
   );
 
   const handleSubmitSingle = useCallback(
@@ -839,6 +872,20 @@ function RecordingSession() {
     }
   }, [session, executeStash]);
 
+  // Effect: auto-save draft after SAVE_AUDIO has been processed by React.
+  // pendingDraftSlotIdRef is set in the audio-capture effect but the actual save
+  // is deferred here so session.slots includes the just-saved segment.
+  useEffect(() => {
+    if (pendingDraftSlotIdRef.current && !session.recorderBoundToSlotId) {
+      const slotId = pendingDraftSlotIdRef.current;
+      pendingDraftSlotIdRef.current = null;
+      const slot = session.slots.find((s) => s.id === slotId);
+      if (slot && slot.segments.length > 0) {
+        autoSaveDraft(slot).catch(() => {});
+      }
+    }
+  }, [session, autoSaveDraft]);
+
   const handleStashSession = useCallback(() => {
     // If recorder is active, stop it first — the effect will trigger executeStash
     if (session.recorderBoundToSlotId && (recorder.state === 'recording' || recorder.state === 'paused')) {
@@ -877,6 +924,114 @@ function RecordingSession() {
       ]
     );
   }, [session.recorderBoundToSlotId, recorder, executeStash]);
+
+  const loadDraft = useCallback(
+    async (slotId: string) => {
+      try {
+        const draft = await draftStorage.getDraft(slotId);
+        if (!draft) {
+          Alert.alert('Draft Not Found', 'This draft recording could not be found.');
+          return;
+        }
+        // Validate all segment files still exist
+        for (const seg of draft.segments) {
+          const file = new File(seg.uri);
+          if (!file.exists) {
+            Alert.alert(
+              'Audio Not Found',
+              'The recording audio was not found on this device. Would you like to start a new recording with the same patient details pre-filled?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Re-record',
+                  onPress: () => {
+                    if (draft.serverDraftId) {
+                      recordingsApi.delete(draft.serverDraftId).catch(() => {});
+                    }
+                    draftStorage.deleteDraft(slotId).catch(() => {});
+                    resetSession();
+                    // Navigate to clear the param so this effect doesn't re-fire
+                    router.replace('/(tabs)/record' as any);
+                  },
+                },
+              ]
+            );
+            return;
+          }
+        }
+        // All files present — restore into session
+        const restoredSlot: PatientSlot = {
+          id: draft.slotId,
+          formData: draft.formData,
+          audioState: 'stopped',
+          segments: draft.segments,
+          audioUri: draft.segments.at(-1)?.uri ?? null,
+          audioDuration: draft.audioDuration,
+          uploadStatus: 'pending',
+          uploadProgress: 0,
+          uploadError: null,
+          serverRecordingId: null,
+          draftSlotId: draft.slotId,
+          serverDraftId: draft.serverDraftId,
+        };
+        restoreSession([restoredSlot]);
+      } catch (error) {
+        if (__DEV__) console.warn('[Record] loadDraft failed:', error);
+        Alert.alert('Error', 'Could not load the draft recording.');
+      }
+    },
+    [draftStorage, resetSession, restoreSession, router]
+  );
+
+  const { draftSlotId } = useLocalSearchParams<{ draftSlotId?: string }>();
+
+  useEffect(() => {
+    if (!draftSlotId) return;
+    if (unsavedCount > 0) {
+      Alert.alert(
+        'Replace Current Session?',
+        'You have unsaved recordings in progress. Loading this draft will replace them.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Load Draft',
+            style: 'destructive',
+            onPress: () => {
+              (async () => {
+                await discardCurrentSession();
+                await loadDraft(draftSlotId);
+              })().catch(() => {});
+            },
+          },
+        ]
+      );
+      return;
+    }
+    loadDraft(draftSlotId).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally omit unsavedCount, discardCurrentSession, loadDraft; effect should only fire when route param changes, not on every state change
+  }, [draftSlotId]);
+
+  // Effect: check for pending drafts and update banner state
+  useEffect(() => {
+    draftStorage.listDrafts().then((drafts) => {
+      setHasPendingDrafts(drafts.some((d) => d.pendingSync));
+    }).catch(() => {});
+  }, [session]);
+
+  // Effect: sync pending drafts when network becomes available
+  useEffect(() => {
+    if (!user?.id) return;
+    const unsubscribe = NetInfo.addEventListener((state: any) => {
+      if (state.isConnected) {
+        draftStorage.syncPending(user.id, (formData) => recordingsApi.create(formData, { isDraft: true })).catch(() => {});
+      }
+    });
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [user?.id]);
 
   const handleResumeStash = useCallback(
     (stashId: string) => {
@@ -1113,6 +1268,15 @@ function RecordingSession() {
               onDelete={() => handleDeleteStash(stash.id)}
             />
           ))}
+        </View>
+      )}
+
+      {/* Pending Drafts Banner */}
+      {hasPendingDrafts && (
+        <View className="mx-5 mb-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg flex-row items-center">
+          <Text className="text-body-sm text-amber-700 flex-1">
+            Draft recording pending upload — connect to Wi-Fi to sync
+          </Text>
         </View>
       )}
 

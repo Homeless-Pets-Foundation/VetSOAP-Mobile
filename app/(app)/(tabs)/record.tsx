@@ -29,6 +29,7 @@ import { UploadOverlay } from '../../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
 import type { PatientSlot } from '../../../src/types/multiPatient';
+import type { CreateRecording } from '../../../src/types';
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
   const { scale } = useResponsive();
@@ -170,6 +171,35 @@ function RecordingSession() {
     if (!recordingId) return;
     recordingsApi.delete(recordingId).catch(() => {});
   }, []);
+
+  /**
+   * Editing metadata on a slot with a pendingConfirm hint invalidates it: the
+   * server record the hint points to was created with the OLD formData, and
+   * the retry path in the API short-circuits to confirmUpload without
+   * re-sending formData. The reducer drops the hint on UPDATE_FORM; this
+   * wrapper best-effort deletes the now-orphaned server record before
+   * dispatching, matching the existing pattern from continueRecording/
+   * clearAudio/replaceAllSegments. For clientName edits — which fan out to
+   * all slots — we walk every slot and delete each orphan.
+   */
+  const handleUpdateForm = useCallback(
+    (slotId: string, field: keyof CreateRecording, value: string | boolean | undefined) => {
+      if (field === 'clientName') {
+        session.slots.forEach((s) => {
+          if (s.pendingConfirm && s.uploadStatus !== 'success') {
+            deleteOrphanServerRecording(s);
+          }
+        });
+      } else {
+        const target = session.slots.find((s) => s.id === slotId);
+        if (target && target.pendingConfirm && target.uploadStatus !== 'success') {
+          deleteOrphanServerRecording(target);
+        }
+      }
+      updateForm(slotId, field, value);
+    },
+    [session.slots, updateForm, deleteOrphanServerRecording]
+  );
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
@@ -705,6 +735,24 @@ function RecordingSession() {
           });
         };
 
+        // If we'd reuse a server draft and the user edited formData after the
+        // draft was created, flush the edits to the server. On ANY failure
+        // (404 = old server without PATCH route, 409 NOT_DRAFT, 5xx, network,
+        // 401/403 after refresh) we best-effort delete the stale draft and
+        // force the fresh-create path. This is the entire backwards-compat
+        // strategy — try Tier 3, fall back to Tier 1.
+        let useExistingDraft = !!slot.serverDraftId;
+        const serverDraftId = slot.serverDraftId;
+        if (useExistingDraft && serverDraftId && slot.draftMetadataDirty) {
+          try {
+            await recordingsApi.updateDraftMetadata(serverDraftId, slot.formData);
+            dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
+          } catch {
+            recordingsApi.delete(serverDraftId).catch(() => {});
+            useExistingDraft = false;
+          }
+        }
+
         let result;
         if (slot.segments.length === 1) {
           // Single segment: use existing single-file upload
@@ -716,7 +764,7 @@ function RecordingSession() {
               onUploadProgress,
               onR2Complete,
               resume: slot.pendingConfirm ?? undefined,
-              ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}),
+              ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
             }
           );
         } else {
@@ -729,7 +777,7 @@ function RecordingSession() {
               onUploadProgress,
               onR2Complete,
               resume: slot.pendingConfirm ?? undefined,
-              ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}),
+              ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
             }
           );
         }
@@ -761,7 +809,7 @@ function RecordingSession() {
         uploadingSlotIdsRef.current.delete(slot.id);
       }
     },
-    [setUploadStatus]
+    [setUploadStatus, dispatch]
   );
 
   const autoSaveDraft = useCallback(
@@ -1058,6 +1106,7 @@ function RecordingSession() {
           serverRecordingId: null,
           draftSlotId: draft.slotId,
           serverDraftId: draft.serverDraftId,
+          draftMetadataDirty: false,
           pendingConfirm: null,
         };
         restoreSession([restoredSlot]);
@@ -1267,7 +1316,7 @@ function RecordingSession() {
           templates={templates}
           templatesLoading={templatesLoading}
           width={screenWidth}
-          onUpdateForm={(field, value) => updateForm(item.id, field, value)}
+          onUpdateForm={(field, value) => handleUpdateForm(item.id, field, value)}
           onStart={() => handleStart(item.id)}
           onPause={() => handlePause(item.id)}
           onResume={() => handleResume(item.id)}
@@ -1289,7 +1338,7 @@ function RecordingSession() {
       templates,
       templatesLoading,
       screenWidth,
-      updateForm,
+      handleUpdateForm,
       handleStart,
       handlePause,
       handleResume,

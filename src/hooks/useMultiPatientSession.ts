@@ -42,6 +42,7 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
     serverRecordingId: null,
     draftSlotId: null,
     serverDraftId: null,
+    draftMetadataDirty: false,
     pendingConfirm: null,
   };
 }
@@ -87,21 +88,58 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
       };
 
     case 'UPDATE_FORM': {
+      // Editing metadata on a slot with a pendingConfirm hint invalidates it:
+      // the server record the hint points to was committed via create(data)
+      // with the OLD formData, and the retry path in createWithFile /
+      // createWithSegments short-circuits to confirmUpload without re-sending
+      // formData. Drop the hint and reset the upload state so the next submit
+      // creates a fresh server record with the edited data. Callers are
+      // expected to best-effort delete the orphaned server record before
+      // dispatching. Slots already at uploadStatus 'success' are untouched —
+      // once committed, metadata edits don't retroactively change the record.
+      const invalidateIfPending = (slot: PatientSlot): PatientSlot =>
+        slot.pendingConfirm && slot.uploadStatus !== 'success'
+          ? {
+              ...slot,
+              pendingConfirm: null,
+              uploadStatus: 'pending',
+              uploadProgress: 0,
+              uploadError: null,
+              serverRecordingId: null,
+            }
+          : slot;
+
+      // If the slot already has a server draft, a metadata edit makes the
+      // draft's server-side formData stale. Flag it so uploadSlot knows to
+      // PATCH (or fall back to delete + fresh create) before confirming.
+      const markDirtyIfHasServerDraft = (slot: PatientSlot): PatientSlot =>
+        slot.serverDraftId && slot.uploadStatus !== 'success' && !slot.draftMetadataDirty
+          ? { ...slot, draftMetadataDirty: true }
+          : slot;
+
+      const applyInvariants = (slot: PatientSlot) =>
+        markDirtyIfHasServerDraft(invalidateIfPending(slot));
+
       // clientName propagates to all slots
       if (action.field === 'clientName') {
         return {
           ...state,
-          slots: state.slots.map((slot) => ({
-            ...slot,
-            formData: { ...slot.formData, clientName: action.value as string },
-          })),
+          slots: state.slots.map((slot) =>
+            applyInvariants({
+              ...slot,
+              formData: { ...slot.formData, clientName: action.value as string },
+            })
+          ),
         };
       }
       return {
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, formData: { ...slot.formData, [action.field]: action.value } }
+            ? applyInvariants({
+                ...slot,
+                formData: { ...slot.formData, [action.field]: action.value },
+              })
             : slot
         ),
       };
@@ -210,6 +248,11 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             // Stashes don't persist pendingConfirm, so restored slots always start
             // without one. Force null in case an older slot shape leaked through.
             pendingConfirm: null,
+            // Likewise the draftMetadataDirty flag is in-session only — a
+            // restored slot has never had an in-session edit after draft
+            // creation. If a serverDraftId is present, any subsequent
+            // UPDATE_FORM will set the flag correctly.
+            draftMetadataDirty: false,
           };
         }),
         activeIndex: 0,
@@ -299,12 +342,27 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
     }
 
     case 'SET_DRAFT_IDS':
+      // A fresh draft supersedes any prior dirty flag — the server draft
+      // either didn't exist before or has been replaced.
       return {
         ...state,
         slots: state.slots.map((s) =>
           s.id === action.slotId
-            ? { ...s, draftSlotId: action.draftSlotId, serverDraftId: action.serverDraftId }
+            ? {
+                ...s,
+                draftSlotId: action.draftSlotId,
+                serverDraftId: action.serverDraftId,
+                draftMetadataDirty: false,
+              }
             : s
+        ),
+      };
+
+    case 'CLEAR_DRAFT_DIRTY':
+      return {
+        ...state,
+        slots: state.slots.map((s) =>
+          s.id === action.slotId ? { ...s, draftMetadataDirty: false } : s
         ),
       };
 

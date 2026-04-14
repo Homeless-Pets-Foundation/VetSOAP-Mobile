@@ -296,6 +296,7 @@ export function useStashedSessions(userId: string | null) {
           serverRecordingId: null,
           draftSlotId: null,
           serverDraftId: null,
+          draftMetadataDirty: false,
           pendingConfirm: null,
         }));
       };

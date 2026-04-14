@@ -34,6 +34,11 @@ export interface PatientSlot {
   serverRecordingId: string | null;
   draftSlotId: string | null;      // local SecureStore key for this draft
   serverDraftId: string | null;    // server Recording.id created on Finish (draft status)
+  // True once formData has been edited after serverDraftId was assigned.
+  // uploadSlot flushes the edits via PATCH /draft-metadata before confirming;
+  // on any PATCH failure it falls back to delete + fresh create so correctness
+  // holds regardless of server version.
+  draftMetadataDirty: boolean;
   pendingConfirm: PendingConfirm | null;  // resume hint captured post-R2 upload
 }
 
@@ -54,7 +59,8 @@ export type SessionAction =
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }
   | { type: 'DELETE_SEGMENT'; slotId: string; segmentIndex: number }
   | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] }
-  | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null };
+  | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null }
+  | { type: 'CLEAR_DRAFT_DIRTY'; slotId: string };
 
 export interface SessionState {
   slots: PatientSlot[];

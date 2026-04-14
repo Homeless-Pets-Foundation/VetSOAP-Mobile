@@ -133,6 +133,31 @@ export const recordingsApi = {
     return apiClient.delete(`/api/recordings/${id}`);
   },
 
+  /**
+   * PATCH metadata on a recording still in `draft` status. Used by the
+   * draft-save-on-finish upload flow to flush edited formData to the server
+   * before confirm-upload commits the draft into processing.
+   *
+   * The server accepts any subset of the create fields; only sent keys are
+   * updated. Returns the refreshed Recording. Server-side contract:
+   *   200 — updated.
+   *   400 — malformed body or cross-org templateId.
+   *   403 — caller is not the recording owner and not an admin/owner.
+   *   404 — recording not found in caller's org.
+   *   409 `{ code: 'NOT_DRAFT' }` — recording has moved past draft.
+   *
+   * Callers are expected to catch ALL failures and fall back to delete +
+   * fresh create, so an old server (no route → 404) or any transient issue
+   * degrades to the Tier 1 behavior rather than committing stale metadata.
+   */
+  async updateDraftMetadata(
+    recordingId: string,
+    data: Partial<CreateRecording>
+  ): Promise<Recording> {
+    recordingIdSchema.parse(recordingId);
+    return apiClient.patch(`/api/recordings/${recordingId}/draft-metadata`, data);
+  },
+
   async getUploadUrl(
     recordingId: string,
     fileName: string,

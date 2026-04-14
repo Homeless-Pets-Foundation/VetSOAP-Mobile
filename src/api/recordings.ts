@@ -18,6 +18,7 @@ import {
   searchQuerySchema,
 } from '../lib/validation';
 import { validateUploadUrl } from '../lib/sslPinning';
+import type { PendingConfirm } from '../types/multiPatient';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
@@ -43,11 +44,24 @@ function extensionFromUri(uri: string, fallback = 'm4a'): string {
 
 /**
  * Race a promise against a timeout. Rejects with a user-friendly message
- * if the timeout fires first.
+ * if the timeout fires first. Callers pass `onTimeout` to cancel the native
+ * work (e.g. `uploadTask.cancelAsync()`) — otherwise the task keeps running
+ * after the wrapper has rejected, which caused orphaned R2 objects and
+ * deleted-but-still-uploading server records.
  */
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+  onTimeout?: () => void
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timeoutId = setTimeout(() => reject(new Error(message)), ms);
+    const timeoutId = setTimeout(() => {
+      if (onTimeout) {
+        try { onTimeout(); } catch { /* best-effort */ }
+      }
+      reject(new Error(message));
+    }, ms);
     promise.then(
       (value) => { clearTimeout(timeoutId); resolve(value); },
       (error) => { clearTimeout(timeoutId); reject(error); }
@@ -163,7 +177,12 @@ export const recordingsApi = {
   },
 
   /**
-   * Full upload flow: create record → get presigned URL → upload file → confirm
+   * Full upload flow: create record → get presigned URL → upload file → confirm.
+   *
+   * Pass `options.resume` (obtained from a previous `onR2Complete` callback)
+   * to skip recording creation and R2 upload on a retry — only the confirm is
+   * retried. This prevents duplicate server recordings when the first attempt
+   * uploaded to R2 but failed at confirm time.
    */
   async createWithFile(
     data: CreateRecording,
@@ -171,10 +190,18 @@ export const recordingsApi = {
     contentType = 'audio/x-m4a',
     options?: {
       onUploadProgress?: (event: UploadProgressEvent) => void;
+      onR2Complete?: (hint: PendingConfirm) => void;
+      resume?: PendingConfirm;
       existingRecordingId?: string;
     }
   ): Promise<Recording> {
-    // Step 1: Create recording record (validates data via this.create) or use existing
+    // Retry path: R2 already holds the file; just re-run confirm.
+    if (options?.resume) {
+      const { recordingId, fileKey, segmentKeys, segmentCount } = options.resume;
+      return this.confirmUpload(recordingId, fileKey, segmentKeys ? { segmentKeys, segmentCount } : undefined);
+    }
+
+    // Step 1: Create recording record (validates data via this.create) or use existing draft
     let recording: Recording;
     let isExistingRecording = false;
     if (options?.existingRecordingId) {
@@ -242,7 +269,8 @@ export const recordingsApi = {
       const uploadResult = await withTimeout(
         uploadTask.uploadAsync(),
         R2_UPLOAD_TIMEOUT_MS,
-        'Upload timed out. Please check your connection and try again.'
+        'Upload timed out. Please check your connection and try again.',
+        () => { uploadTask.cancelAsync().catch(() => {}); }
       );
       if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
         throw new Error(
@@ -251,6 +279,17 @@ export const recordingsApi = {
       }
 
       r2UploadComplete = true;
+
+      // Notify caller that the bytes are safe on R2 — they can now persist a
+      // resume hint so a failed confirm below can be retried without creating
+      // a second server recording.
+      if (options?.onR2Complete) {
+        try {
+          options.onR2Complete({ recordingId: recording.id, fileKey });
+        } catch {
+          // Best-effort — caller's persistence failure shouldn't block confirm.
+        }
+      }
 
       // Step 4: Confirm upload and trigger processing
       const confirmed = await this.confirmUpload(recording.id, fileKey);
@@ -268,7 +307,14 @@ export const recordingsApi = {
   },
 
   /**
-   * Multi-segment upload flow: create record → upload each segment → confirm with segment keys
+   * Multi-segment upload flow: create record → upload each segment → confirm with segment keys.
+   *
+   * See `createWithFile` for the semantics of `options.resume` and
+   * `options.onR2Complete`. Resume is only supported once ALL segments have
+   * been uploaded to R2 — partial resumes are not attempted because the
+   * server-side tracking would get complex and the partial-failure path
+   * already cleans up. For a partial failure the catch block deletes the
+   * server record and the retry starts fresh.
    */
   async createWithSegments(
     data: CreateRecording,
@@ -276,9 +322,17 @@ export const recordingsApi = {
     contentType = 'audio/x-m4a',
     options?: {
       onUploadProgress?: (event: UploadProgressEvent) => void;
+      onR2Complete?: (hint: PendingConfirm) => void;
+      resume?: PendingConfirm;
       existingRecordingId?: string;
     }
   ): Promise<Recording> {
+    // Retry path: all segments already on R2, just re-run confirm.
+    if (options?.resume) {
+      const { recordingId, fileKey, segmentKeys, segmentCount } = options.resume;
+      return this.confirmUpload(recordingId, fileKey, segmentKeys ? { segmentKeys, segmentCount } : undefined);
+    }
+
     // Use provided draft recording ID or create a new one
     let recording: Recording;
     let isExistingRecording = false;
@@ -357,7 +411,8 @@ export const recordingsApi = {
         const uploadResult = await withTimeout(
           uploadTask.uploadAsync(),
           R2_UPLOAD_TIMEOUT_MS,
-          `Upload of segment ${i + 1} timed out. Please check your connection and try again.`
+          `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
+          () => { uploadTask.cancelAsync().catch(() => {}); }
         );
         if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
           throw new Error(
@@ -370,6 +425,22 @@ export const recordingsApi = {
       }
 
       r2UploadComplete = true;
+
+      // All segments are on R2. Let the caller persist a resume hint before we
+      // attempt confirm — if confirm fails, retry will skip straight to confirm
+      // rather than re-uploading every segment.
+      if (options?.onR2Complete) {
+        try {
+          options.onR2Complete({
+            recordingId: recording.id,
+            fileKey: segmentKeys[0],
+            segmentKeys,
+            segmentCount: segmentKeys.length,
+          });
+        } catch {
+          // Best-effort — caller's persistence failure shouldn't block confirm.
+        }
+      }
 
       // Confirm upload with all segment keys
       const confirmed = await this.confirmUpload(recording.id, segmentKeys[0], {

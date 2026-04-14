@@ -42,6 +42,7 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
     serverRecordingId: null,
     draftSlotId: null,
     serverDraftId: null,
+    pendingConfirm: null,
   };
 }
 
@@ -144,17 +145,21 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, segments: [], audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null }
+            ? { ...slot, segments: [], audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null }
             : slot
         ),
       };
 
     case 'CONTINUE_RECORDING':
+      // Adding a new segment invalidates any pendingConfirm hint — the server
+      // recording the hint points to covers only the old segment(s). Drop it so
+      // the next submit creates a fresh recording with the full segment list.
+      // Caller deletes the orphan server record before dispatching.
       return {
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null }
+            ? { ...slot, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, pendingConfirm: null }
             : slot
         ),
       };
@@ -168,17 +173,26 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
     case 'SET_UPLOAD_STATUS':
       return {
         ...state,
-        slots: state.slots.map((slot) =>
-          slot.id === action.slotId
-            ? {
-                ...slot,
-                uploadStatus: action.status,
-                uploadProgress: action.progress ?? slot.uploadProgress,
-                uploadError: action.error ?? slot.uploadError,
-                serverRecordingId: action.serverRecordingId ?? slot.serverRecordingId,
-              }
-            : slot
-        ),
+        slots: state.slots.map((slot) => {
+          if (slot.id !== action.slotId) return slot;
+          // Preserve the pendingConfirm hint across retries so a failed confirm
+          // doesn't cause us to recreate the server recording. Clear it only on
+          // success (the upload is committed) or when explicitly passed null.
+          let nextPendingConfirm = slot.pendingConfirm;
+          if (action.pendingConfirm !== undefined) {
+            nextPendingConfirm = action.pendingConfirm;
+          } else if (action.status === 'success') {
+            nextPendingConfirm = null;
+          }
+          return {
+            ...slot,
+            uploadStatus: action.status,
+            uploadProgress: action.progress ?? slot.uploadProgress,
+            uploadError: action.error ?? slot.uploadError,
+            serverRecordingId: action.serverRecordingId ?? slot.serverRecordingId,
+            pendingConfirm: nextPendingConfirm,
+          };
+        }),
       };
 
     case 'RESET_SESSION':
@@ -193,6 +207,9 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             segments: validSegments,
             audioDuration: validSegments.reduce((sum, s) => sum + s.duration, 0),
             audioUri: validSegments.length > 0 ? validSegments[validSegments.length - 1].uri : null,
+            // Stashes don't persist pendingConfirm, so restored slots always start
+            // without one. Force null in case an older slot shape leaked through.
+            pendingConfirm: null,
           };
         }),
         activeIndex: 0,
@@ -241,14 +258,18 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
               uploadProgress: 0,
               uploadError: null,
               serverRecordingId: null,
+              pendingConfirm: null,
             };
           }
           const newDuration = newSegments.reduce((sum, s) => sum + s.duration, 0);
+          // Segment set changed — the old pendingConfirm no longer matches. Clear it.
+          // Caller best-effort-deletes the orphan server record before dispatching.
           return {
             ...slot,
             segments: newSegments,
             audioDuration: newDuration,
             audioUri: newSegments[newSegments.length - 1].uri,
+            pendingConfirm: null,
           };
         }),
       };
@@ -271,6 +292,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             uploadProgress: 0,
             uploadError: null,
             serverRecordingId: null,
+            pendingConfirm: null,
           };
         }),
       };
@@ -348,7 +370,12 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
     (
       slotId: string,
       status: PatientSlot['uploadStatus'],
-      opts?: { progress?: number; error?: string | null; serverRecordingId?: string | null }
+      opts?: {
+        progress?: number;
+        error?: string | null;
+        serverRecordingId?: string | null;
+        pendingConfirm?: PatientSlot['pendingConfirm'];
+      }
     ) => {
       dispatch({
         type: 'SET_UPLOAD_STATUS',
@@ -357,6 +384,7 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
         progress: opts?.progress,
         error: opts?.error,
         serverRecordingId: opts?.serverRecordingId,
+        pendingConfirm: opts?.pendingConfirm,
       });
     },
     []

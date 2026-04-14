@@ -21,7 +21,10 @@ function buildPatientSummary(slots: PatientSlot[]): string {
 }
 
 export function useStashedSessions(userId: string | null) {
-  const [stashes, setStashes] = useState<StashedSession[]>([]);
+  // Internal state holds the full list from SecureStore, including entries pinned
+  // by an active resumed session. The exported `stashes` filters those out so the
+  // UI never shows a stash that would cause a double-resume.
+  const [allStashes, setAllStashes] = useState<StashedSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const isScopeCurrent = useCallback(
@@ -35,27 +38,29 @@ export function useStashedSessions(userId: string | null) {
   const refreshStashes = useCallback(async () => {
     const scopedUserId = userId;
     if (!scopedUserId || !isScopeCurrent(scopedUserId)) {
-      setStashes([]);
+      setAllStashes([]);
       return;
     }
 
     try {
       const sessions = await stashStorage.getStashedSessions();
       if (!isScopeCurrent(scopedUserId)) return;
-      setStashes(sessions);
+      setAllStashes(sessions);
     } catch {
       if (!isScopeCurrent(scopedUserId)) return;
-      setStashes([]);
+      setAllStashes([]);
     }
   }, [userId, isScopeCurrent]);
 
-  // On init: load stashes, then recover any orphaned directories with recovery manifests
+  // On init: clear any stale `resumedAt` flags (the previous app session may have
+  // been killed mid-resume), load stashes, then recover any orphaned directories
+  // with recovery manifests.
   useEffect(() => {
     let cancelled = false;
     const scopedUserId = userId;
 
     if (!userId) {
-      setStashes([]);
+      setAllStashes([]);
       setIsLoading(false);
       return () => {
         cancelled = true;
@@ -65,11 +70,24 @@ export function useStashedSessions(userId: string | null) {
     setIsLoading(true);
     (async () => {
       try {
-        const sessions = await stashStorage.getStashedSessions();
+        let sessions = await stashStorage.getStashedSessions();
         if (cancelled || !isScopeCurrent(scopedUserId)) return;
-        setStashes(sessions);
 
-        // Recover orphaned stash directories that have recovery manifests
+        // Clear stale `resumedAt` flags from a prior app session. The active session
+        // that set them is gone (React state did not survive), so the stash should
+        // be user-visible again.
+        if (sessions.some((s) => s.resumedAt)) {
+          const cleared = sessions.map(({ resumedAt: _resumedAt, ...rest }) => rest);
+          await stashStorage.saveStashedSessions(cleared);
+          if (cancelled || !isScopeCurrent(scopedUserId)) return;
+          sessions = cleared;
+        }
+
+        setAllStashes(sessions);
+
+        // Recover orphaned stash directories that have recovery manifests.
+        // Entries with `resumedAt` count as valid — their dirs must be preserved
+        // because the active session is still using them.
         const validIds = sessions.map((s) => s.id);
         const recovered = await stashAudioManager.recoverOrCleanupOrphans(validIds);
         if (cancelled || !isScopeCurrent(scopedUserId)) return;
@@ -85,11 +103,11 @@ export function useStashedSessions(userId: string | null) {
           // Refresh to show recovered sessions
           const updated = await stashStorage.getStashedSessions();
           if (cancelled || !isScopeCurrent(scopedUserId)) return;
-          setStashes(updated);
+          setAllStashes(updated);
         }
       } catch {
         if (cancelled || !isScopeCurrent(scopedUserId)) return;
-        setStashes([]);
+        setAllStashes([]);
       } finally {
         if (cancelled || !isScopeCurrent(scopedUserId)) return;
         setIsLoading(false);
@@ -204,21 +222,54 @@ export function useStashedSessions(userId: string | null) {
   );
 
   /**
-   * Remove stash from SecureStore after the caller has confirmed restore succeeded.
-   * Called by record.tsx AFTER restoreSession dispatches, so if the app crashes
-   * before this point, the stash is still in SecureStore for recovery.
+   * Pin a stash entry after it has been restored into an active session.
+   * Keeps the entry (and therefore its audio directory) alive across orphan
+   * cleanup sweeps, but hides it from the user-visible list via `resumedAt`.
+   * The entry is removed by `releaseResumedStash` when the active session is
+   * resolved (uploaded, discarded, or re-stashed). If the app is killed in
+   * between, the flag is cleared on next launch so the user can resume again.
    */
-  const confirmResume = useCallback(
+  const markResumed = useCallback(
     async (stashId: string): Promise<void> => {
       const scopedUserId = userId;
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return;
 
       try {
+        const existing = await stashStorage.getStashedSessions();
+        if (!isScopeCurrent(scopedUserId)) return;
+        const updated = existing.map((s) =>
+          s.id === stashId ? { ...s, resumedAt: new Date().toISOString() } : s
+        );
+        await stashStorage.saveStashedSessions(updated);
+        if (!isScopeCurrent(scopedUserId)) return;
+        setAllStashes(updated);
+      } catch {
+        // Best-effort — if the write fails, the next orphan sweep could delete
+        // the stash dir. That is still better than the prior behavior (entry
+        // already removed and dir definitely orphaned).
+      }
+    },
+    [userId, isScopeCurrent]
+  );
+
+  /**
+   * Fully remove a resumed stash. Used when the active session derived from it
+   * is resolved (upload success, user discard, or re-stash). Deletes both the
+   * audio directory and the SecureStore entry.
+   */
+  const releaseResumedStash = useCallback(
+    async (stashId: string): Promise<void> => {
+      const scopedUserId = userId;
+      if (!scopedUserId || !isScopeCurrent(scopedUserId)) return;
+
+      try {
+        await stashAudioManager.deleteStashedAudio(stashId);
+        if (!isScopeCurrent(scopedUserId)) return;
         await stashStorage.removeStashedSession(stashId);
         if (!isScopeCurrent(scopedUserId)) return;
         await refreshStashes();
       } catch {
-        // Best-effort — stash list may show a phantom entry until next refresh
+        // Best-effort — next orphan sweep will clean the dir.
       }
     },
     [userId, isScopeCurrent, refreshStashes]
@@ -245,6 +296,7 @@ export function useStashedSessions(userId: string | null) {
           serverRecordingId: null,
           draftSlotId: null,
           serverDraftId: null,
+          pendingConfirm: null,
         }));
       };
 
@@ -327,14 +379,20 @@ export function useStashedSessions(userId: string | null) {
     [userId, isScopeCurrent, refreshStashes]
   );
 
+  // Hide pinned (resumed) stashes from the user-visible list so a single stash
+  // cannot be resumed twice in parallel. Capacity is measured against the full
+  // underlying set since SecureStore enforces MAX_STASHES on the total.
+  const visibleStashes = allStashes.filter((s) => !s.resumedAt);
+
   return {
-    stashes,
+    stashes: visibleStashes,
     isLoading,
-    stashCount: stashes.length,
-    isAtCapacity: stashes.length >= 5,
+    stashCount: visibleStashes.length,
+    isAtCapacity: allStashes.length >= 5,
     stashSession,
     resumeSession,
-    confirmResume,
+    markResumed,
+    releaseResumedStash,
     deleteStash,
     refreshStashes,
   };

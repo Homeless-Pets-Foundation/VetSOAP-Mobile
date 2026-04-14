@@ -142,9 +142,34 @@ function RecordingSession() {
     isLoading: stashesLoading,
     stashSession,
     resumeSession: resumeStashedSession,
-    confirmResume,
+    markResumed,
+    releaseResumedStash,
     deleteStash,
   } = useStashedSessions(user?.id ?? null);
+
+  // Tracks the stash ID the current active session was restored from. Kept in
+  // a ref so resolution paths (upload, discard, re-stash) can fully release the
+  // pinned stash entry and audio directory. See Finding 1 in the audit.
+  const resumedFromStashIdRef = useRef<string | null>(null);
+
+  const releaseResumedStashIfAny = useCallback(() => {
+    const stashId = resumedFromStashIdRef.current;
+    if (!stashId) return;
+    resumedFromStashIdRef.current = null;
+    releaseResumedStash(stashId).catch(() => {});
+  }, [releaseResumedStash]);
+
+  /**
+   * Best-effort delete a server recording that was left dangling because the
+   * segment set it covered was replaced or extended (e.g. continueRecording,
+   * clearAudio, replaceAllSegments). The server also has its own cleanup for
+   * abandoned "uploading" rows, so failures here are non-fatal.
+   */
+  const deleteOrphanServerRecording = useCallback((slot: PatientSlot) => {
+    const recordingId = slot.pendingConfirm?.recordingId;
+    if (!recordingId) return;
+    recordingsApi.delete(recordingId).catch(() => {});
+  }, []);
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
@@ -299,10 +324,18 @@ function RecordingSession() {
       slot.segments.forEach((seg) => {
         safeDeleteFile(seg.uri);
       });
+      // Best-effort delete any server recording left mid-confirm — the user is
+      // abandoning this session entirely.
+      deleteOrphanServerRecording(slot);
     });
 
+    // Release the pinned stash (if any) so the SecureStore entry and audio dir
+    // are fully cleaned up. Must run before resetSession — after reset the
+    // segment refs are gone, but releaseResumedStash works off the stored id.
+    releaseResumedStashIfAny();
+
     resetSession();
-  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession]);
+  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording]);
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
@@ -525,9 +558,11 @@ function RecordingSession() {
       if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
         recorder.resetWithoutDelete();
       }
+      const slot = session.slots.find((s) => s.id === slotId);
+      if (slot) deleteOrphanServerRecording(slot);
       continueRecording(slotId);
     },
-    [session.recorderBoundToSlotId, continueRecording, recorder]
+    [session.recorderBoundToSlotId, session.slots, continueRecording, recorder, deleteOrphanServerRecording]
   );
 
   const handleRecordAgain = useCallback(
@@ -549,6 +584,7 @@ function RecordingSession() {
                 slot.segments.forEach((seg) => {
                   safeDeleteFile(seg.uri);
                 });
+                deleteOrphanServerRecording(slot);
               }
               clearAudio(slotId);
               // Only reset recorder if it's not actively recording another patient
@@ -560,7 +596,7 @@ function RecordingSession() {
         ]
       );
     },
-    [session.slots, session.recorderBoundToSlotId, clearAudio, recorder]
+    [session.slots, session.recorderBoundToSlotId, clearAudio, recorder, deleteOrphanServerRecording]
   );
 
   const handleRemove = useCallback(
@@ -594,6 +630,7 @@ function RecordingSession() {
                     slot.segments.forEach((seg) => {
                       safeDeleteFile(seg.uri);
                     });
+                    deleteOrphanServerRecording(slot);
                     removeSlot(slotId);
                   } catch {}
                 })().catch(() => {});
@@ -602,10 +639,11 @@ function RecordingSession() {
           ]
         );
       } else {
+        deleteOrphanServerRecording(slot);
         removeSlot(slotId);
       }
     },
-    [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder]
+    [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder, deleteOrphanServerRecording]
   );
 
   const slotHasLiveRecorder = useCallback(
@@ -646,6 +684,27 @@ function RecordingSession() {
           }
         };
 
+        // Persist the resume hint as soon as R2 is done but before confirm. If the
+        // confirm fails or is interrupted, a user-driven retry will flow through
+        // the `resume:` branch on the API — calling only confirmUpload again
+        // rather than creating a second server recording.
+        const onR2Complete = (hint: {
+          recordingId: string;
+          fileKey: string;
+          segmentKeys?: string[];
+          segmentCount?: number;
+        }) => {
+          setUploadStatus(slot.id, 'uploading', {
+            progress: 95,
+            pendingConfirm: {
+              recordingId: hint.recordingId,
+              fileKey: hint.fileKey,
+              segmentKeys: hint.segmentKeys,
+              segmentCount: hint.segmentCount,
+            },
+          });
+        };
+
         let result;
         if (slot.segments.length === 1) {
           // Single segment: use existing single-file upload
@@ -653,7 +712,12 @@ function RecordingSession() {
             slot.formData,
             slot.segments[0].uri,
             'audio/x-m4a',
-            { onUploadProgress, ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}) }
+            {
+              onUploadProgress,
+              onR2Complete,
+              resume: slot.pendingConfirm ?? undefined,
+              ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}),
+            }
           );
         } else {
           // Multi-segment: upload all segments
@@ -661,7 +725,12 @@ function RecordingSession() {
             slot.formData,
             slot.segments,
             'audio/x-m4a',
-            { onUploadProgress, ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}) }
+            {
+              onUploadProgress,
+              onR2Complete,
+              resume: slot.pendingConfirm ?? undefined,
+              ...(slot.serverDraftId ? { existingRecordingId: slot.serverDraftId } : {}),
+            }
           );
         }
         setUploadStatus(slot.id, 'success', {
@@ -747,8 +816,12 @@ function RecordingSession() {
             );
 
             if (otherSlotsWithRecordings) {
-              // Stay on the record screen — uploaded slot already shows success badge
+              // Stay on the record screen — uploaded slot already shows success badge.
+              // Do NOT release the pinned stash here: remaining slots may still be
+              // reading audio files from the stash directory. Release runs only
+              // after the whole session is resolved.
             } else {
+              releaseResumedStashIfAny();
               resetSession();
               router.push(`/recordings/${serverRecordingId}` as `/recordings/${string}`);
             }
@@ -762,7 +835,7 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router]
+    [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny]
   );
 
   const handleSubmitAll = useCallback(() => {
@@ -805,6 +878,7 @@ function RecordingSession() {
         queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
 
         if (allSuccess) {
+          releaseResumedStashIfAny();
           resetSession();
           router.push('/recordings');
         } else {
@@ -823,7 +897,7 @@ function RecordingSession() {
       setSubmittingSlotId(null);
       setTotalSlotsToUpload(0);
     });
-  }, [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession]);
+  }, [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();
@@ -837,6 +911,15 @@ function RecordingSession() {
       try {
         const success = await stashSession(session);
         if (success) {
+          // The stashed form of the session does not persist pendingConfirm, so
+          // any half-confirmed server recording is now unreachable. Best-effort
+          // delete each one so they don't linger as orphaned 'uploading' rows.
+          session.slots.forEach((slot) => deleteOrphanServerRecording(slot));
+          // The new stash supersedes the one we resumed from — release it so the
+          // old SecureStore entry and audio dir don't linger. Done only after the
+          // new stash has committed successfully, so the active session's data is
+          // never orphaned between the two.
+          releaseResumedStashIfAny();
           resetSession();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           Alert.alert('Session Saved', 'Your recordings have been saved. You can resume them anytime from this screen.');
@@ -861,7 +944,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [session, stashSession, resetSession]);
+  }, [session, stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,
@@ -975,6 +1058,7 @@ function RecordingSession() {
           serverRecordingId: null,
           draftSlotId: draft.slotId,
           serverDraftId: draft.serverDraftId,
+          pendingConfirm: null,
         };
         restoreSession([restoredSlot]);
       } catch (error) {
@@ -1043,9 +1127,13 @@ function RecordingSession() {
             const slots = await resumeStashedSession(stashId);
             if (slots) {
               restoreSession(slots);
-              // Remove from SecureStore AFTER restoreSession dispatches.
-              // If the app crashes before this, the stash survives for retry.
-              confirmResume(stashId).catch(() => {});
+              // Pin the stash entry so orphan cleanup cannot delete the audio
+              // directory the active session is still reading from. The pin is
+              // released when the session is resolved (upload / discard / re-stash);
+              // if the app is killed first, the pin is cleared on next launch so
+              // the user can resume again.
+              resumedFromStashIdRef.current = stashId;
+              markResumed(stashId).catch(() => {});
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
             }
           } catch (error) {
@@ -1076,7 +1164,7 @@ function RecordingSession() {
         doResume();
       }
     },
-    [hasUnsavedRecordings, discardCurrentSession, resumeStashedSession, confirmResume, restoreSession]
+    [hasUnsavedRecordings, discardCurrentSession, resumeStashedSession, markResumed, restoreSession]
   );
 
   const handleDeleteStash = useCallback(
@@ -1128,6 +1216,11 @@ function RecordingSession() {
               safeDeleteFile(seg.uri);
             }
           });
+          // Segment set is about to change — the pendingConfirm (if any) no
+          // longer matches the audio. Best-effort delete the orphan before
+          // the reducer clears the hint.
+          const editedSlot = session.slots.find((s) => s.id === result.slotId);
+          if (editedSlot) deleteOrphanServerRecording(editedSlot);
           replaceAllSegments(result.slotId, result.segments);
         }
       });
@@ -1136,7 +1229,7 @@ function RecordingSession() {
 
       router.push('/(app)/audio-editor' as any);
     },
-    [session.slots, router, replaceAllSegments]
+    [session.slots, router, replaceAllSegments, deleteOrphanServerRecording]
   );
 
   // Show stash list when session is clean and stashes exist

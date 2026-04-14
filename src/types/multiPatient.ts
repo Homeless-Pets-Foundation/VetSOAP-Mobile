@@ -6,6 +6,21 @@ export interface AudioSegment {
   peakMetering?: number; // dBFS, closer to 0 means louder
 }
 
+/**
+ * Resume hint captured once an R2 upload completes but before the server has
+ * confirmed. If a later step (confirm request / network / response parsing)
+ * fails, a retry can use this hint to skip re-creating the recording and
+ * re-uploading audio — preventing duplicate server recordings.
+ */
+export interface PendingConfirm {
+  recordingId: string;
+  fileKey: string;
+  // Multi-segment uploads need the full key list to confirm. For single-file
+  // uploads these are omitted and `fileKey` is sufficient.
+  segmentKeys?: string[];
+  segmentCount?: number;
+}
+
 export interface PatientSlot {
   id: string;
   formData: CreateRecording;
@@ -19,6 +34,7 @@ export interface PatientSlot {
   serverRecordingId: string | null;
   draftSlotId: string | null;      // local SecureStore key for this draft
   serverDraftId: string | null;    // server Recording.id created on Finish (draft status)
+  pendingConfirm: PendingConfirm | null;  // resume hint captured post-R2 upload
 }
 
 export type SessionAction =
@@ -32,7 +48,7 @@ export type SessionAction =
   | { type: 'CONTINUE_RECORDING'; slotId: string }
   | { type: 'BIND_RECORDER'; slotId: string }
   | { type: 'UNBIND_RECORDER' }
-  | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null }
+  | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null; pendingConfirm?: PendingConfirm | null }
   | { type: 'RESET_SESSION'; defaultTemplateId?: string }
   | { type: 'RESTORE_SESSION'; slots: PatientSlot[] }
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }

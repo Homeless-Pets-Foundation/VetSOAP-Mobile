@@ -22,4 +22,9 @@ export interface StashedSession {
   totalDuration: number; // sum of all segment durations across all slots
   totalSegments: number;
   slots: StashedSlot[];
+  // Set when the stash has been resumed into an active session. Keeps the entry
+  // in SecureStore so orphan cleanup preserves the audio directory, but hides it
+  // from the stash list UI so it cannot be double-resumed. Cleared on app launch
+  // (so a crashed resumed session can be recovered by the user again).
+  resumedAt?: string; // ISO timestamp
 }

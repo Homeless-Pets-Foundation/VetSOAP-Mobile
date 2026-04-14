@@ -17,7 +17,7 @@ Mobile, web (Captivet Connect), prod API — **all** auth vs same Supabase proje
 |---|---|
 | Supabase ref | `shdzitupjltfyembqowp` |
 | Supabase URL | `https://shdzitupjltfyembqowp.supabase.co` |
-| Prod API | `https://api-production-8e5e.up.railway.app` |
+| Prod API | `https://api.captivet.com` (was `https://api-production-8e5e.up.railway.app` — switched after Railway-provided domain started returning 428 from the Fastly edge for the mobile app's TLS fingerprint) |
 
 Source of truth. `.env` + EAS secrets must match.
 

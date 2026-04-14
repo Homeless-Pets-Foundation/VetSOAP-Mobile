@@ -8,6 +8,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Mic, ChevronRight, FileText, Settings } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
@@ -27,12 +28,16 @@ export default function HomeScreen() {
   const { user } = useAuth();
   const { iconMd, iconLg } = useResponsive();
   const ctaScale = useSharedValue(1);
+  const isTabFocused = useIsFocused();
 
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['recordings', 'recent'],
     queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc' }),
     enabled: !!user,  // Don't fire until fetchUser has completed
     refetchInterval: (query) => {
+      // Tabs stay mounted across navigations; pause polling when user is on
+      // another tab so we don't burn through the per-user rate-limit budget.
+      if (!isTabFocused) return false;
       const allRecordings = query.state.data?.data;
       const hasProcessing = allRecordings?.some(
         (r) => !['completed', 'failed', 'pending_metadata'].includes(r.status)

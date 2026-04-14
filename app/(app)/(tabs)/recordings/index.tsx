@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
@@ -22,6 +23,7 @@ export default function RecordingsListScreen() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const isInitialMountRef = useRef(true);
+  const isTabFocused = useIsFocused();
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -56,6 +58,9 @@ export default function RecordingsListScreen() {
       return page < totalPages ? page + 1 : undefined;
     },
     refetchInterval: (query) => {
+      // Pause polling when the tab is not focused — other mounted tabs
+      // (home, detail) would otherwise compound into the same rate-limit budget.
+      if (!isTabFocused) return false;
       const allRecordings = query.state.data?.pages.flatMap((p) => p.data);
       const hasProcessing = allRecordings?.some(
         (r) => !['completed', 'failed', 'pending_metadata'].includes(r.status)

@@ -25,11 +25,28 @@ import { clearPeakCache } from '../lib/waveformCache';
 import { setLogoutReason } from '../lib/logoutReason';
 import type { User } from '../types';
 
+/**
+ * Tracks the bootstrap state of the user profile fetched from /auth/me after
+ * Supabase establishes a session.
+ *
+ * - `idle`    — no fetch has run yet in the current session lifecycle.
+ * - `loading` — fetch in flight (or retry in progress).
+ * - `success` — user loaded; app is fully usable.
+ * - `error`   — all retries failed. The app must surface a recovery UI
+ *               (retry / sign out) because `isAuthenticated` is true but
+ *               `user === null`, which disables gated queries and breaks
+ *               user-scoped storage.
+ */
+type UserFetchState = 'idle' | 'loading' | 'success' | 'error';
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  userFetchState: UserFetchState;
+  userFetchError: string | null;
+  retryFetchUser: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<AuthResult>;
   signInWithGoogle: () => Promise<AuthResult>;
   signInWithApple: () => Promise<AuthResult>;
@@ -41,6 +58,9 @@ export const AuthContext = createContext<AuthContextType>({
   session: null,
   isAuthenticated: false,
   isLoading: true,
+  userFetchState: 'idle',
+  userFetchError: null,
+  retryFetchUser: async () => {},
   signIn: async () => ({ error: null }),
   signInWithGoogle: async () => ({ error: null }),
   signInWithApple: async () => ({ error: null }),
@@ -74,10 +94,38 @@ function setStashUserId(userId: string | null): void {
   stashAudioManager.setUserId(userId);
 }
 
+/**
+ * Transient-looking errors from /auth/me that deserve a retry. Deliberately
+ * narrow: a 401 is already handled by apiClient's refresh flow, a 403 /
+ * 404 / 422 shouldn't be retried, and anything not matching here lands
+ * directly in the error state.
+ */
+function isRetryableFetchUserError(error: unknown): boolean {
+  if (error instanceof TypeError && /network/i.test(error.message)) return true;
+  if (error instanceof ApiError) {
+    // 5xx and network-layer 0 both warrant a retry.
+    return error.status === 0 || error.status >= 500;
+  }
+  return false;
+}
+
+function fetchUserErrorMessage(error: unknown): string {
+  if (error instanceof TypeError && /network/i.test(error.message)) {
+    return 'No internet connection. Check your network and try again.';
+  }
+  if (error instanceof ApiError) {
+    return error.message || `Server error (HTTP ${error.status}).`;
+  }
+  if (error instanceof Error) return error.message;
+  return 'Failed to load your account.';
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [userFetchState, setUserFetchState] = useState<UserFetchState>('idle');
+  const [userFetchError, setUserFetchError] = useState<string | null>(null);
 
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
@@ -121,43 +169,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchUser = useCallback(async () => {
     const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
-    try {
-      if (__DEV__) console.log('[Auth] fetchUser: requesting /auth/me');
-      const body = await requestMe();
-      if (__DEV__) console.log('[Auth] fetchUser: success, user:', body.user?.email ?? 'null');
-      applyFetchedUser(body.user ?? null);
-    } catch (error) {
-      // A brand-new Google/Apple user has no app User row yet — /auth/me
-      // returns 404. Bootstrap via the idempotent /auth/register endpoint
-      // (server derives fullName/orgName from Supabase user_metadata), then
-      // retry /auth/me. Existing users never hit this path.
-      if (error instanceof ApiError && error.status === 404) {
-        if (__DEV__) console.log('[Auth] fetchUser: 404, waiting for pending Apple profile sync');
-        await waitForPendingAppleProfileSync();
-        try {
-          const retryBody = await requestMe();
-          if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
-          applyFetchedUser(retryBody.user ?? null);
-          return;
-        } catch (retryError) {
-          if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync still missing user', retryError);
-        }
+    setUserFetchState('loading');
+    setUserFetchError(null);
 
-        if (__DEV__) console.log('[Auth] fetchUser: 404, bootstrapping via /auth/register');
-        try {
-          await apiClient.post('/auth/register', {});
-          const body = await requestMe();
-          if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
-          applyFetchedUser(body.user ?? null);
-        } catch (bootstrapError) {
-          if (__DEV__) console.log('[Auth] fetchUser: bootstrap failed', bootstrapError);
-          setLogoutReason('session_expired');
-          await handleSignOutRef.current();
+    // One attempt: returns true on success. Throws on failure.
+    // The 404 bootstrap path is self-contained: it either succeeds and returns
+    // true, forces sign-out and returns true, or throws a retryable error.
+    const attempt = async (): Promise<boolean> => {
+      try {
+        if (__DEV__) console.log('[Auth] fetchUser: requesting /auth/me');
+        const body = await requestMe();
+        if (__DEV__) console.log('[Auth] fetchUser: success, user:', body.user?.email ?? 'null');
+        applyFetchedUser(body.user ?? null);
+        return true;
+      } catch (error) {
+        // A brand-new Google/Apple user has no app User row yet — /auth/me
+        // returns 404. Bootstrap via the idempotent /auth/register endpoint
+        // (server derives fullName/orgName from Supabase user_metadata), then
+        // retry /auth/me. Existing users never hit this path.
+        if (error instanceof ApiError && error.status === 404) {
+          if (__DEV__) console.log('[Auth] fetchUser: 404, waiting for pending Apple profile sync');
+          await waitForPendingAppleProfileSync();
+          try {
+            const retryBody = await requestMe();
+            if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
+            applyFetchedUser(retryBody.user ?? null);
+            return true;
+          } catch (retryError) {
+            if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync still missing user', retryError);
+          }
+
+          if (__DEV__) console.log('[Auth] fetchUser: 404, bootstrapping via /auth/register');
+          try {
+            await apiClient.post('/auth/register', {});
+            const body = await requestMe();
+            if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
+            applyFetchedUser(body.user ?? null);
+            return true;
+          } catch (bootstrapError) {
+            if (__DEV__) console.log('[Auth] fetchUser: bootstrap failed', bootstrapError);
+            setLogoutReason('session_expired');
+            await handleSignOutRef.current();
+            return true;
+          }
         }
-        return;
+        throw error;
       }
-      if (__DEV__) console.log('[Auth] fetchUser: failed', error);
+    };
+
+    // Retry transient failures with 1s / 2s / 4s backoff before surfacing an
+    // error state. The user is stranded in a half-authenticated state until
+    // this resolves, so a couple of retries cover brief outages without
+    // forcing the user to tap a recovery button.
+    const delays = [1000, 2000, 4000];
+    let lastError: unknown;
+    for (let attemptIdx = 0; attemptIdx <= delays.length; attemptIdx++) {
+      try {
+        const ok = await attempt();
+        if (ok) {
+          setUserFetchState('success');
+          setUserFetchError(null);
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableFetchUserError(error) || attemptIdx === delays.length) {
+          break;
+        }
+        if (__DEV__) console.log(`[Auth] fetchUser: retryable failure, waiting ${delays[attemptIdx]}ms`);
+        await new Promise((resolve) => setTimeout(resolve, delays[attemptIdx]));
+      }
     }
+
+    if (__DEV__) console.log('[Auth] fetchUser: all attempts failed', lastError);
+    setUserFetchState('error');
+    setUserFetchError(fetchUserErrorMessage(lastError));
   }, [applyFetchedUser]);
 
   const registerDevice = useCallback(async () => {
@@ -221,6 +307,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStashUserId(null);
     setUser(null);
     setSession(null);
+    setUserFetchState('idle');
+    setUserFetchError(null);
   }, []);
 
   // Mutex for token refresh: prevents concurrent 401 handlers from racing
@@ -523,6 +611,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         session,
         isAuthenticated,
         isLoading,
+        userFetchState,
+        userFetchError,
+        retryFetchUser: fetchUser,
         signIn,
         signInWithGoogle,
         signInWithApple,

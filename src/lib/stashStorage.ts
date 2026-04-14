@@ -57,6 +57,19 @@ function parseSessions(raw: string): StashedSession[] {
   );
 }
 
+/**
+ * Read a chunked, JSON-encoded session list for a given count/prefix key pair.
+ *
+ * Returns:
+ *   - `null` when the generation is absent or detected as corrupt — so callers
+ *     can fall through to the other generation or legacy keys.
+ *   - `[]` only when the data is legitimately empty (count === 0 or the parsed
+ *     list contains no valid entries).
+ *
+ * Treating missing chunks or invalid counts as `[]` would defeat the
+ * double-buffer design: one torn write in the active generation would mask all
+ * stashed sessions.
+ */
 async function readSessionsForKeys(
   scopedCountKey: string,
   scopedPrefix: string
@@ -65,16 +78,21 @@ async function readSessionsForKeys(
   if (!countStr) return null;
 
   const count = parseInt(countStr, 10);
-  if (isNaN(count) || count <= 0) return [];
+  if (isNaN(count) || count < 0) return null;
+  if (count === 0) return [];
 
   const chunks: string[] = [];
   for (let i = 0; i < count; i++) {
     const chunk = await SecureStore.getItemAsync(`${scopedPrefix}${i}`);
-    if (chunk === null) return [];
+    if (chunk === null) return null;
     chunks.push(chunk);
   }
 
-  return parseSessions(chunks.join(''));
+  try {
+    return parseSessions(chunks.join(''));
+  } catch {
+    return null;
+  }
 }
 
 /**

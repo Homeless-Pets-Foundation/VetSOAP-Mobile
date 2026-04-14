@@ -275,17 +275,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserFetchError(fetchUserErrorMessage(lastError));
   }, [applyFetchedUser]);
 
-  const registerDevice = useCallback(async () => {
+  const registerDevice = useCallback(async (): Promise<boolean> => {
     try {
       const deviceId = await secureStorage.getDeviceId();
-      if (!deviceId) return;
+      if (!deviceId) return false;
       await apiClient.post('/api/device-sessions/register', {
         deviceId,
         deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
         appVersion: require('../../package.json').version,
       });
+      return true;
     } catch (error) {
-      if (__DEV__) console.log('[Auth] device registration failed (non-fatal):', error);
+      if (__DEV__) console.log('[Auth] device registration failed:', error);
+      return false;
     }
   }, []);
 
@@ -333,6 +335,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     apiClient.setOnDeviceRevoked(() => {
       handleSignOut().catch(() => {});
     });
+    apiClient.setOnDeviceRegistrationRequired(() => registerDevice());
     apiClient.setOnUnauthorized(async () => {
       const sessionAge = Date.now() - sessionTimestampRef.current;
       if (__DEV__) console.log('[Auth] onUnauthorized fired, session age:', sessionAge, 'ms');
@@ -378,7 +381,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       refreshPromiseRef.current = doRefresh();
       await refreshPromiseRef.current;
     });
-  }, [handleSignOut]);
+  }, [handleSignOut, registerDevice]);
 
   useEffect(() => {
     // Restore existing session on startup

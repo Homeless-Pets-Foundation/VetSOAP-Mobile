@@ -17,7 +17,7 @@ Mobile, web (Captivet Connect), prod API — **all** auth vs same Supabase proje
 |---|---|
 | Supabase ref | `shdzitupjltfyembqowp` |
 | Supabase URL | `https://shdzitupjltfyembqowp.supabase.co` |
-| Prod API | `https://api.captivet.com` (was `https://api-production-8e5e.up.railway.app` — switched after Railway-provided domain started returning 428 from the Fastly edge for the mobile app's TLS fingerprint) |
+| Prod API | `https://api.captivet.com` |
 
 Source of truth. `.env` + EAS secrets must match.
 
@@ -200,7 +200,8 @@ Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, 
 
 - `secureStorage.getDeviceId()` — gen + cache UUID
 - `ApiClient.doFetch()` — memory-caches device ID after first SecureStore read
-- `AuthProvider.registerDevice()` — called on sign-in AND session restore
+- `AuthProvider.registerDevice()` — called on sign-in AND session restore; **must return `boolean`** (true on success) so `ApiClient` can retry after auto-register
+- Server → `DEVICE_REGISTRATION_REQUIRED` (428) → `ApiClient` calls `registerDevice()` via `onDeviceRegistrationRequired` callback, retries once. Any `/api/*` call from a never-registered device returns 428 — do NOT treat 428 as a fatal error in new code
 - Server → `DEVICE_REVOKED` (401) → client forces sign-out + msg
 - Server → `DEVICE_ID_REQUIRED` (401) → "restart or reinstall" msg (Keystore fail)
 
@@ -310,7 +311,7 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/types/multiPatient.ts` — `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`. `PatientSlot` incl. `draftSlotId`/`serverDraftId` for auto-saved drafts.
 - `src/types/stash.ts` — `StashedSlot`/`StashedSegment`/`StashedSession`. `StashedSlot` carries optional `serverDraftId`/`draftSlotId` (rule 24).
 - `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set.
-- `src/api/client.ts` — sends `X-Device-Id` header all reqs. Memory-caches device ID. Handles `DEVICE_REVOKED`/`DEVICE_ID_REQUIRED` 401s before token refresh.
+- `src/api/client.ts` — sends `X-Device-Id` header all reqs. Memory-caches device ID. Handles `DEVICE_REGISTRATION_REQUIRED` (428) via `onDeviceRegistrationRequired` callback → `registerDevice()` + retry once. Handles `DEVICE_REVOKED`/`DEVICE_ID_REQUIRED` 401s before token refresh.
 - `src/api/recordings.ts` — `createWithFile()` single-segment, `createWithSegments()` multi. Both validate via `getInfoAsync()`, 250MB limit, 10min timeout. Both take optional `existingRecordingId` → skips `create()`, uses server draft as recording ID (promote path).
 - `src/components/AppLockGuard.tsx` — biometric on cold start (not just bg resume). Defaults `isLocked=true` + blank screen until biometric done (no PHI flash). Sign-out = escape hatch.
 - `src/components/PatientSlotCard.tsx` — per-patient form + recording + upload status. "Finish" (not "Stop") w/ checkmark. "Delete & Start Over" = de-emphasized text link.

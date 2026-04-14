@@ -19,6 +19,7 @@ export class ApiError extends Error {
 export class ApiClient {
   private onUnauthorized?: () => void | Promise<void>;
   private onDeviceRevoked?: () => void | Promise<void>;
+  private onDeviceRegistrationRequired?: () => Promise<boolean>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
   /**
@@ -42,6 +43,17 @@ export class ApiClient {
 
   setOnDeviceRevoked(callback: () => void | Promise<void>) {
     this.onDeviceRevoked = callback;
+  }
+
+  /**
+   * Handler for 428 DEVICE_REGISTRATION_REQUIRED. Must return true if registration
+   * succeeded (caller will retry once) or false if it failed. The server returns
+   * 428 on the first /api/* call after sign-in if the device has never registered;
+   * the client calls POST /api/device-sessions/register (which is exempt from
+   * validateDeviceSession) and retries the original request.
+   */
+  setOnDeviceRegistrationRequired(callback: () => Promise<boolean>) {
+    this.onDeviceRegistrationRequired = callback;
   }
 
   /**
@@ -161,6 +173,21 @@ export class ApiClient {
 
     const serializedBody = body ? JSON.stringify(body) : undefined;
     let response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey);
+
+    // On 428, the server is telling us this device has no session row and we
+    // need to register before /api/* calls are accepted. Only the registration
+    // endpoint itself is exempt from the handshake — calling it from here
+    // would re-enter with the same 428, so we skip the handler for that path.
+    if (response.status === 428 && path !== '/api/device-sessions/register') {
+      const errorPreview = await response.clone().json().catch(() => ({})) ?? {};
+      if (errorPreview.code === 'DEVICE_REGISTRATION_REQUIRED' && this.onDeviceRegistrationRequired) {
+        const registered = await this.onDeviceRegistrationRequired().catch(() => false);
+        if (registered) {
+          if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after device registration');
+          response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey);
+        }
+      }
+    }
 
     // On 401, check for device revocation before attempting refresh
     if (response.status === 401) {

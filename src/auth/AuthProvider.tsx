@@ -196,6 +196,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => {});
   }, []);
 
+  const registerDevice = useCallback(async (): Promise<boolean> => {
+    try {
+      const deviceId = await secureStorage.getDeviceId();
+      if (!deviceId) return false;
+      await apiClient.post('/api/device-sessions/register', {
+        deviceId,
+        deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
+        appVersion: require('../../package.json').version,
+      });
+      return true;
+    } catch (error) {
+      if (__DEV__) console.log('[Auth] device registration failed:', error);
+      return false;
+    }
+  }, []);
+
   const fetchUser = useCallback(async () => {
     const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
     setUserFetchState('loading');
@@ -209,6 +225,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (__DEV__) console.log('[Auth] fetchUser: requesting /auth/me');
         const body = await requestMe();
         if (__DEV__) console.log('[Auth] fetchUser: success, user:', body.user?.email ?? 'null');
+        // Register the device before setting user state so that React Query's
+        // `enabled: !!user`-gated queries don't fire before the device has a
+        // session row. Server rejects /api/* calls from unregistered devices
+        // with 428 DEVICE_REGISTRATION_REQUIRED.
+        await registerDevice();
         applyFetchedUser(body.user ?? null);
         return true;
       } catch (error) {
@@ -222,6 +243,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const retryBody = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
+            await registerDevice();
             applyFetchedUser(retryBody.user ?? null);
             return true;
           } catch (retryError) {
@@ -233,6 +255,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await apiClient.post('/auth/register', {});
             const body = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
+            await registerDevice();
             applyFetchedUser(body.user ?? null);
             return true;
           } catch (bootstrapError) {
@@ -273,23 +296,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (__DEV__) console.log('[Auth] fetchUser: all attempts failed', lastError);
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
-  }, [applyFetchedUser]);
+  }, [applyFetchedUser, registerDevice]);
 
-  const registerDevice = useCallback(async (): Promise<boolean> => {
-    try {
-      const deviceId = await secureStorage.getDeviceId();
-      if (!deviceId) return false;
-      await apiClient.post('/api/device-sessions/register', {
-        deviceId,
-        deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
-        appVersion: require('../../package.json').version,
-      });
-      return true;
-    } catch (error) {
-      if (__DEV__) console.log('[Auth] device registration failed:', error);
-      return false;
-    }
-  }, []);
 
   const handleSignOut = useCallback(async () => {
     if (__DEV__) console.log('[Auth] handleSignOut: starting');

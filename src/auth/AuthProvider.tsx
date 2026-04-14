@@ -81,6 +81,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
   const handleSignOutRef = useRef<() => Promise<void>>(async () => {});
+  // Distinguishes user-initiated sign-out from session expiry in onAuthStateChange.
+  // When Supabase emits SIGNED_OUT due to a failed refresh, this flag is false —
+  // allowing one recovery refresh attempt before clearing auth state.
+  const userInitiatedSignOutRef = useRef<boolean>(false);
 
   const applyFetchedUser = useCallback((fetchedUser: User | null) => {
     setUser(fetchedUser);
@@ -170,6 +174,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const handleSignOut = useCallback(async () => {
     if (__DEV__) console.log('[Auth] handleSignOut: starting');
+    userInitiatedSignOutRef.current = true;
     // Clear in-memory token immediately
     apiClient.setToken(null);
     try {
@@ -217,6 +222,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Mutex for token refresh: prevents concurrent 401 handlers from racing
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
+  // Prevents re-entrant recovery: if refreshSession() fails inside onAuthStateChange,
+  // Supabase may emit a second SIGNED_OUT. This flag ensures we only attempt recovery once.
+  const sessionRecoveryAttemptedRef = useRef<boolean>(false);
 
   // Register the 401 handler: attempt token refresh before signing out
   useEffect(() => {
@@ -326,6 +334,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         try {
           if (newSession?.access_token) {
+            sessionRecoveryAttemptedRef.current = false; // reset for next sign-out cycle
+            userInitiatedSignOutRef.current = false;     // ensure clear regardless of prior sign-out path
             setSession(newSession);
             sessionTimestampRef.current = Date.now();
             if (__DEV__) console.log('[Auth] session established, storing token');
@@ -333,6 +343,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await fetchUser();
             if (__DEV__) console.log('[Auth] sign-in flow complete');
           } else {
+            // Supabase emits SIGNED_OUT both for explicit sign-outs AND for expired/failed
+            // refresh tokens. If this wasn't user-initiated, attempt one recovery refresh
+            // before clearing state — guards against transient network failures during
+            // background auto-refresh causing an unnecessary logout.
+            // sessionRecoveryAttemptedRef guards against a second SIGNED_OUT emitted by
+            // a failing refreshSession() creating an infinite recovery loop.
+            if (!userInitiatedSignOutRef.current && !sessionRecoveryAttemptedRef.current) {
+              sessionRecoveryAttemptedRef.current = true;
+              if (__DEV__) console.log('[Auth] SIGNED_OUT without user action, attempting recovery refresh');
+              const { data: recoveryData, error: recoveryError } = await supabase.auth.refreshSession();
+              if (!recoveryError && recoveryData.session?.access_token) {
+                if (__DEV__) console.log('[Auth] recovery refresh succeeded, session restored');
+                sessionRecoveryAttemptedRef.current = false;
+                setSession(recoveryData.session);
+                sessionTimestampRef.current = Date.now();
+                apiClient.setToken(recoveryData.session.access_token);
+                fetchUser().catch((e) => {
+                  if (__DEV__) console.error('[Auth] fetchUser failed during recovery:', e);
+                });
+                return;
+              }
+              if (__DEV__) console.log('[Auth] recovery refresh failed, proceeding with sign-out cleanup');
+            }
+            userInitiatedSignOutRef.current = false;
             // Hold isLoading=true during PHI cleanup so the route guard doesn't
             // redirect to login before stash/audio deletion finishes. setSession(null)
             // is deferred until after all cleanup — mirrors handleSignOut ordering.
@@ -377,41 +411,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUser, registerDevice]);
 
   // Proactively refresh token when app returns from background.
+  // Uses getSession() rather than the stale closure value of session?.expires_at
+  // so this correctly fires even when expires_at is null (e.g., first sign-in,
+  // or a session restored from SecureStore with a malformed expires_at field).
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState !== 'active') return;
-      if (!session?.expires_at) return;
 
-      const now = Date.now() / 1000;
-      const bufferSeconds = 600;
-      if (now > session.expires_at - bufferSeconds) {
-        if (refreshPromiseRef.current) {
-          if (__DEV__) console.log('[Auth] foreground resume: refresh already in flight, skipping');
-          return;
-        }
+      if (refreshPromiseRef.current) {
+        if (__DEV__) console.log('[Auth] foreground resume: refresh already in flight, skipping');
+        return;
+      }
 
-        if (__DEV__) console.log('[Auth] foreground resume: token expired or near-expiry, refreshing');
-        const doRefresh = async () => {
-          try {
+      const doRefresh = async () => {
+        try {
+          const { data } = await supabase.auth.getSession();
+          if (!data.session?.access_token) {
+            if (__DEV__) console.log('[Auth] foreground resume: no active session');
+            return;
+          }
+          const now = Date.now() / 1000;
+          const bufferSeconds = 600;
+          if (!data.session.expires_at || now > data.session.expires_at - bufferSeconds) {
+            if (__DEV__) console.log('[Auth] foreground resume: token expired or near-expiry, refreshing');
             const { error } = await supabase.auth.refreshSession();
             if (error) {
               if (__DEV__) console.log('[Auth] foreground refresh failed:', error.message);
             } else {
               if (__DEV__) console.log('[Auth] foreground refresh succeeded');
             }
-          } catch (e) {
-            if (__DEV__) console.error('[Auth] foreground refresh threw:', e);
-          } finally {
-            refreshPromiseRef.current = null;
+          } else {
+            if (__DEV__) console.log('[Auth] foreground resume: session still valid');
           }
-        };
-        refreshPromiseRef.current = doRefresh();
-      }
+        } catch (e) {
+          if (__DEV__) console.error('[Auth] foreground refresh threw:', e);
+        } finally {
+          refreshPromiseRef.current = null;
+        }
+      };
+      refreshPromiseRef.current = doRefresh();
     };
 
     const sub = AppState.addEventListener('change', handleAppStateChange);
     return () => sub.remove();
-  }, [session?.expires_at]);
+  // supabase is a module-level singleton; refreshPromiseRef is a ref — safe with empty deps.
+  }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
     if (__DEV__) console.log('[Auth] signIn: attempting for', email);

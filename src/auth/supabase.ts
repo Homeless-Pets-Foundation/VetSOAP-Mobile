@@ -18,7 +18,25 @@ function initSupabase() {
           return secureStorage.getSession();
         },
         async setItem(_key: string, value: string) {
-          await secureStorage.setSession(value);
+          // Write session with read-back verification — critical after refresh token rotation.
+          // Supabase invalidates the old refresh token immediately on rotation. If the write
+          // silently fails (Keystore error, Direct Boot, low storage), the new token is lost
+          // and the next refresh will fail even though rotation succeeded server-side.
+          try {
+            await secureStorage.setSession(value);
+            const readBack = await secureStorage.getSession();
+            if (readBack !== value) {
+              // Write appeared to succeed but read-back differs — retry once
+              await secureStorage.setSession(value);
+            }
+          } catch (error) {
+            if (__DEV__) console.error('[Supabase storage] setSession failed, retrying:', error);
+            await new Promise<void>(resolve => setTimeout(resolve, 1500));
+            try {
+              await secureStorage.setSession(value);
+            } catch { /* best-effort — next refresh will catch if this also failed */ }
+          }
+          // Store access token separately for the API client (best-effort)
           try {
             const session = JSON.parse(value);
             if (typeof session?.access_token === 'string') {

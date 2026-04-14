@@ -168,6 +168,31 @@ On Android, `console.error` output is readable via `adb logcat` even on release 
 
 `RESTORE_SESSION` and `REPLACE_ALL_SEGMENTS` in `useMultiPatientSession.ts` run `validateSegments()` which filters to only local `file://` or absolute `/` paths. This prevents corrupted stash data or a compromised audio editor bridge from injecting remote URLs that would exfiltrate audio during upload.
 
+### 20. Distinguish user-initiated sign-out from session expiry in `onAuthStateChange`
+
+Supabase emits `SIGNED_OUT` both for explicit sign-outs **and** for expired/failed refresh tokens. Clearing auth state on every `SIGNED_OUT` would log users out during transient network failures in background auto-refresh. `AuthProvider.tsx` tracks two refs to disambiguate:
+
+- **`userInitiatedSignOutRef`** — set to `true` inside `handleSignOut()`, reset on the next sign-in. When `SIGNED_OUT` fires with this `false`, the handler attempts one recovery `refreshSession()` before clearing state.
+- **`sessionRecoveryAttemptedRef`** — guards against re-entrant recovery. If `refreshSession()` itself fails inside the handler, Supabase may emit a second `SIGNED_OUT`; this flag ensures recovery runs at most once per sign-out cycle. Reset to `false` on successful sign-in or successful recovery.
+
+Do not remove either ref or collapse the two paths — losing either guard re-introduces the "transient network glitch logs out the user" bug or creates an infinite recovery loop.
+
+### 21. Supabase session storage writes must verify with read-back
+
+After a refresh-token rotation, Supabase immediately invalidates the old refresh token server-side. If the SecureStore write of the new session silently fails (Keystore corruption, Direct Boot, low storage), the app is left with no valid refresh token and the next refresh will fail — logging the user out despite a successful rotation.
+
+The storage adapter in `src/auth/supabase.ts` guards against this: `setItem` writes the session, reads it back, and retries once if the read-back differs. On thrown error, it waits 1.5s and retries. Never simplify this to a bare `await secureStorage.setSession(value)`.
+
+### 22. Foreground-resume token refresh must read the current session, not closure state
+
+The `AppState` `'active'` handler in `AuthProvider.tsx` calls `supabase.auth.getSession()` inside the handler rather than closing over `session?.expires_at`. A stale closure or a session restored from SecureStore with a null/malformed `expires_at` would skip the refresh check entirely. The effect's deps must stay `[]` — `supabase` is a module-level singleton and `refreshPromiseRef` is a ref.
+
+### 23. Lazy-load optional native auth modules
+
+`@react-native-google-signin/google-signin`, `expo-apple-authentication`, and `expo-crypto` are `require()`'d on first use inside `src/auth/socialAuth.ts`, **not** imported at module load time. Dev-client APKs built before these dependencies were added will crash on module load if the imports are static. If you add another optional native auth module, follow the same pattern.
+
+The `@react-native-google-signin/google-signin` Expo config plugin in `app.config.ts` is also conditionally included only when `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` is set — Android builds don't need the iOS URL scheme registration and including the plugin unconditionally fails prebuild on Android-only dev builds.
+
 ## Device Binding
 
 The mobile app sends an `X-Device-Id` header on every API request. The device ID is a UUID v4 generated on first launch and persisted in SecureStore (survives sign-out — it's device-scoped, not user-scoped). The server's `validateDeviceSession` middleware requires this header and can revoke specific devices.

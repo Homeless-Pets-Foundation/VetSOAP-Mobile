@@ -16,6 +16,7 @@ import { secureStorage } from '../lib/secureStorage';
 import { apiClient, ApiError } from '../api/client';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
+import { draftStorage } from '../lib/draftStorage';
 import { audioTempFiles } from '../lib/audioTempFiles';
 import { queryClient } from '../lib/queryClient';
 import { audioEditorBridge } from '../lib/audioEditorBridge';
@@ -91,6 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       stashAudioManager.getUserId() === scopedUserId;
 
     setStashUserId(scopedUserId);
+    draftStorage.setUserId(scopedUserId);
     // Now that user ID is set, safe to clean up orphaned stash data.
     // Must run AFTER setStashUserId or getStashedSessions returns []
     // and all stash audio dirs get deleted as "orphaned".
@@ -197,6 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         stashAudioManager.deleteAllStashedAudio().catch(() =>
           stashAudioManager.deleteAllStashedAudio()
         ).catch(() => {}),
+        draftStorage.clearAll().catch(() => {}),
         Promise.resolve(cleanupAudioCache()),
         Promise.resolve(audioTempFiles.cleanupAll()),
         Promise.resolve(clearPeakCache()),

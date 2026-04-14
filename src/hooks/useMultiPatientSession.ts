@@ -276,6 +276,16 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
       };
     }
 
+    case 'SET_DRAFT_IDS':
+      return {
+        ...state,
+        slots: state.slots.map((s) =>
+          s.id === action.slotId
+            ? { ...s, draftSlotId: action.draftSlotId, serverDraftId: action.serverDraftId }
+            : s
+        ),
+      };
+
     default:
       return state;
   }

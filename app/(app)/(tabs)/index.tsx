@@ -31,7 +31,7 @@ export default function HomeScreen() {
   const ctaScale = useSharedValue(1);
   const isTabFocused = useIsFocused();
 
-  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
+  const { data, error, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['recordings', 'recent'],
     queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc' }),
     enabled: !!user,  // Don't fire until fetchUser has completed
@@ -177,6 +177,11 @@ export default function HomeScreen() {
             <Text className="text-body text-stone-600 mt-3 text-center">
               Could not load recordings.
             </Text>
+            {error?.message ? (
+              <Text className="text-caption text-stone-500 mt-2 text-center px-4" selectable>
+                {error.message}
+              </Text>
+            ) : null}
             <View className="mt-3">
               <Button variant="secondary" size="sm" onPress={() => { refetch().catch(() => {}); }}>
                 Retry

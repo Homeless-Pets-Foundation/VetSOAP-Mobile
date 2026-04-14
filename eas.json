@@ -42,6 +42,19 @@
         "distribution": "store"
       },
       "autoIncrement": true
+    },
+    "production-apk": {
+      "distribution": "internal",
+      "credentialsSource": "remote",
+      "env": {
+        "APP_VARIANT": "production"
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "distribution": "internal"
+      }
     }
   },
   "submit": {

@@ -17,6 +17,8 @@ export interface PatientSlot {
   uploadProgress: number;
   uploadError: string | null;
   serverRecordingId: string | null;
+  draftSlotId: string | null;      // local SecureStore key for this draft
+  serverDraftId: string | null;    // server Recording.id created on Finish (draft status)
 }
 
 export type SessionAction =
@@ -35,7 +37,8 @@ export type SessionAction =
   | { type: 'RESTORE_SESSION'; slots: PatientSlot[] }
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }
   | { type: 'DELETE_SEGMENT'; slotId: string; segmentIndex: number }
-  | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] };
+  | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] }
+  | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null };
 
 export interface SessionState {
   slots: PatientSlot[];

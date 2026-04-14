@@ -40,6 +40,8 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
     uploadProgress: 0,
     uploadError: null,
     serverRecordingId: null,
+    draftSlotId: null,
+    serverDraftId: null,
   };
 }
 

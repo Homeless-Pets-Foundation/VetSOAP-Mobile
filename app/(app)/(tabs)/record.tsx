@@ -5,9 +5,8 @@ import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { safeDeleteFile } from '../../../src/lib/fileOps';
+import { safeDeleteFile, fileExists } from '../../../src/lib/fileOps';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
-import { File } from 'expo-file-system';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import {
   getRecordingPermissionsAsync,
@@ -935,8 +934,7 @@ function RecordingSession() {
         }
         // Validate all segment files still exist
         for (const seg of draft.segments) {
-          const file = new File(seg.uri);
-          if (!file.exists) {
+          if (!fileExists(seg.uri)) {
             Alert.alert(
               'Audio Not Found',
               'The recording audio was not found on this device. Would you like to start a new recording with the same patient details pre-filled?',
@@ -980,7 +978,7 @@ function RecordingSession() {
         Alert.alert('Error', 'Could not load the draft recording.');
       }
     },
-    [draftStorage, resetSession, restoreSession, router]
+    [resetSession, restoreSession, router]
   );
 
   const { draftSlotId } = useLocalSearchParams<{ draftSlotId?: string }>();

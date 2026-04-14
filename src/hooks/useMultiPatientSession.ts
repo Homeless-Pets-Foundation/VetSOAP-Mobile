@@ -373,7 +373,7 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
   );
 
   const replaceAllSegments = useCallback(
-    (slotId: string, segments: { uri: string; duration: number }[]) => {
+    (slotId: string, segments: AudioSegment[]) => {
       dispatch({ type: 'REPLACE_ALL_SEGMENTS', slotId, segments });
     },
     []

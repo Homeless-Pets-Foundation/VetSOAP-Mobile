@@ -21,6 +21,13 @@ export class ApiClient {
   private onDeviceRevoked?: () => void | Promise<void>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
+  /**
+   * True once setToken() has been called at least once. Once initialized, the
+   * in-memory token is authoritative and SecureStore is NOT consulted — this
+   * makes setToken(null) effective immediately (fixes sign-out race where
+   * requests in the window before clearAll() could still send a stale bearer).
+   */
+  private tokenInitialized = false;
   /** Cached device ID — read from SecureStore once, then reused. Only caches non-null values. */
   private cachedDeviceId: string | undefined = undefined; // undefined = not yet loaded/not yet successful
 
@@ -39,18 +46,27 @@ export class ApiClient {
 
   /**
    * Set the access token directly (called by AuthProvider on every session change).
-   * Also persists to SecureStore as a best-effort backup.
+   * Also syncs SecureStore (persist on set, delete on clear) so a later cold-start
+   * read can't resurrect a signed-out token.
    */
   setToken(token: string | null) {
     this.currentToken = token;
+    this.tokenInitialized = true;
     if (token) {
       secureStorage.setToken(token).catch(() => {});
+    } else {
+      secureStorage.deleteToken().catch(() => {});
     }
   }
 
   private async getAuthHeaders(): Promise<Record<string, string>> {
-    // Prefer the in-memory token; fall back to SecureStore
-    const token = this.currentToken ?? (await secureStorage.getToken());
+    // Once AuthProvider has called setToken() (even with null), the in-memory
+    // value is authoritative. Only fall back to SecureStore during the cold-start
+    // window before AuthProvider hydrates — otherwise setToken(null) wouldn't
+    // actually stop authenticated requests.
+    const token = this.tokenInitialized
+      ? this.currentToken
+      : (await secureStorage.getToken());
     if (!token) return {};
     return { Authorization: `Bearer ${token}` };
   }

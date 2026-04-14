@@ -322,7 +322,10 @@ export default function AudioEditorScreen() {
         newSegments[selectedIndex] = {
           uri: result.uri,
           duration: result.duration,
-          peakMetering: undefined,
+          // Inherit source metering — trimming can't raise peak amplitude, so using the
+          // source value is conservative. Prevents edited segments from bypassing the
+          // silent-upload guard in record.tsx (which fails open when metering is missing).
+          peakMetering: selectedSegment.peakMetering,
         };
         setSegments(newSegments);
 
@@ -380,7 +383,11 @@ export default function AudioEditorScreen() {
             style: 'destructive',
             onPress: () => {
               pause();
-              safeDeleteFile(seg.uri);
+              // Do NOT delete the file here. Caller-owned input URIs must only be
+              // removed by record.tsx's setResultCallback after the user taps Done;
+              // editor-produced temp files are cleaned up on unmount via audioTempFiles.
+              // Deleting eagerly broke the Back → Discard path (file gone but session
+              // still referenced it).
               // Use functional updater to avoid stale closure over `segments` —
               // a concurrent trim between alert-show and confirm would otherwise
               // filter the wrong array and potentially delete the wrong segment.

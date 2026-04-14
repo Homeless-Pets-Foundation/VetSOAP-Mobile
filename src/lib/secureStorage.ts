@@ -27,6 +27,14 @@ export const secureStorage = {
     }
   },
 
+  async deleteToken(): Promise<void> {
+    try {
+      await SecureStore.deleteItemAsync(KEYS.ACCESS_TOKEN);
+    } catch (error) {
+      if (__DEV__) console.error('[SecureStorage] deleteToken failed:', error);
+    }
+  },
+
   async getSession(): Promise<string | null> {
     try {
       return await SecureStore.getItemAsync(KEYS.SESSION);

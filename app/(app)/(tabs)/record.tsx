@@ -952,8 +952,14 @@ function RecordingSession() {
         return;
       }
 
-      // Snapshot segments before navigating — avoids stale closure if session changes while editing
-      const originalSegments = slot.segments.map((s) => ({ uri: s.uri, duration: s.duration }));
+      // Snapshot segments before navigating — avoids stale closure if session changes while editing.
+      // Preserve peakMetering so the silent-audio guard (hasSilentAudioOnly) still works for
+      // round-tripped segments that the user opened in the editor but didn't trim.
+      const originalSegments = slot.segments.map((s) => ({
+        uri: s.uri,
+        duration: s.duration,
+        peakMetering: s.peakMetering,
+      }));
 
       // Set callback BEFORE input — editor reads input on mount, callback must be ready
       audioEditorBridge.setResultCallback((result) => {

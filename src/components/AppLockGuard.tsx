@@ -25,6 +25,10 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   const [isReady, setIsReady] = useState(false);
   const backgroundedAtRef = useRef<number | null>(null);
   const isAuthenticatingRef = useRef(false);
+  // Cached "biometric lock is active" state. Drives the bg-resume path so we can
+  // call setIsLocked(true) synchronously — before awaiting biometrics.isAvailable() /
+  // isEnabled() — to prevent PHI from flashing on the screen during the async check.
+  const shouldLockOnBgRef = useRef(false);
 
   const handleLockScreenSignOut = useCallback(() => {
     Alert.alert(
@@ -70,6 +74,7 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
           biometrics.isEnabled(),
         ]);
 
+        shouldLockOnBgRef.current = available && enabled;
         if (available && enabled) {
           // Keep locked and trigger biometric prompt
           setIsReady(true);
@@ -117,27 +122,38 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
             const elapsed = Date.now() - backgroundedAtRef.current;
             backgroundedAtRef.current = null;
 
-            if (elapsed >= BACKGROUND_LOCK_THRESHOLD_MS) {
-              const [available, enabled] = await Promise.all([
-                biometrics.isAvailable(),
-                biometrics.isEnabled(),
-              ]);
+            if (
+              elapsed >= BACKGROUND_LOCK_THRESHOLD_MS &&
+              shouldLockOnBgRef.current &&
+              !isAuthenticatingRef.current
+            ) {
+              // Lock synchronously before any await — keeps PHI off the screen
+              // while we re-verify biometric availability. If the cached value is
+              // stale (biometric disabled between foregrounds), we'll unlock below.
+              isAuthenticatingRef.current = true;
+              setIsLocked(true);
+              setIsAuthenticating(true);
+              try {
+                const [available, enabled] = await Promise.all([
+                  biometrics.isAvailable(),
+                  biometrics.isEnabled(),
+                ]);
+                shouldLockOnBgRef.current = available && enabled;
 
-              if (available && enabled && !isAuthenticatingRef.current) {
-                isAuthenticatingRef.current = true;
-                setIsLocked(true);
-                setIsAuthenticating(true);
-                try {
+                if (!available || !enabled) {
+                  // Cached value was stale — unlock without prompting.
+                  setIsLocked(false);
+                } else {
                   const success = await biometrics.authenticate(
                     'Verify your identity to continue'
                   );
                   if (success) {
                     setIsLocked(false);
                   }
-                } finally {
-                  isAuthenticatingRef.current = false;
-                  setIsAuthenticating(false);
                 }
+              } finally {
+                isAuthenticatingRef.current = false;
+                setIsAuthenticating(false);
               }
             }
           }

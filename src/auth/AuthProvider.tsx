@@ -95,6 +95,35 @@ function setStashUserId(userId: string | null): void {
 }
 
 /**
+ * Delete all per-user PHI from on-device storage. Must run while the scope
+ * user IDs are still set so the clearAll methods can read the correct data.
+ * Every entry is best-effort — a single failure must not block logout.
+ * Called from both the explicit sign-out path and the SIGNED_OUT fallback
+ * in onAuthStateChange so transient session expiry cleans up the same set
+ * of artefacts as a user-initiated sign-out.
+ */
+async function performPhiCleanup(): Promise<void> {
+  try {
+    await Promise.all([
+      stashStorage.clearAllStashes().catch(() =>
+        stashStorage.clearAllStashes()
+      ).catch(() => {}),
+      stashAudioManager.deleteAllStashedAudio().catch(() =>
+        stashAudioManager.deleteAllStashedAudio()
+      ).catch(() => {}),
+      draftStorage.clearAll().catch(() => {}),
+      Promise.resolve(cleanupAudioCache()),
+      Promise.resolve(audioTempFiles.cleanupAll()),
+      Promise.resolve(clearPeakCache()),
+    ]);
+  } catch {
+    // All cleanup is best-effort — don't block sign-out indefinitely
+  }
+  audioEditorBridge.clear();
+  clearClipboard();
+}
+
+/**
  * Transient-looking errors from /auth/me that deserve a retry. Deliberately
  * narrow: a 401 is already handled by apiClient's refresh flow, a 403 /
  * 404 / 422 shouldn't be retried, and anything not matching here lands
@@ -282,29 +311,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Await critical PHI cleanup before clearing auth state.
     // This prevents a race where the next user signs in while the previous
     // user's stash data and audio files are still on disk.
-    try {
-      await Promise.all([
-        stashStorage.clearAllStashes().catch(() =>
-          stashStorage.clearAllStashes()
-        ).catch(() => {}),
-        stashAudioManager.deleteAllStashedAudio().catch(() =>
-          stashAudioManager.deleteAllStashedAudio()
-        ).catch(() => {}),
-        draftStorage.clearAll().catch(() => {}),
-        Promise.resolve(cleanupAudioCache()),
-        Promise.resolve(audioTempFiles.cleanupAll()),
-        Promise.resolve(clearPeakCache()),
-      ]);
-    } catch {
-      // All cleanup is best-effort — don't block sign-out indefinitely
-    }
-
-    // Clear in-memory PHI: audio editor bridge state and clipboard
-    audioEditorBridge.clear();
-    clearClipboard();
+    await performPhiCleanup();
 
     // Now clear stash user scoping and auth state
     setStashUserId(null);
+    draftStorage.setUserId(null);
     setUser(null);
     setSession(null);
     setUserFetchState('idle');
@@ -464,27 +475,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setIsLoading(true);
             if (__DEV__) console.log('[Auth] no access_token, clearing session');
             apiClient.setToken(null);
-            // Await stash PHI cleanup before clearing auth state — mirrors handleSignOut.
-            // Prevents the next user on a shared tablet from seeing stashed patient data
-            // when a session expires or is revoked by the server.
-            try {
-              await Promise.all([
-                stashStorage.clearAllStashes().catch(() =>
-                  stashStorage.clearAllStashes()
-                ).catch(() => {}),
-                stashAudioManager.deleteAllStashedAudio().catch(() =>
-                  stashAudioManager.deleteAllStashedAudio()
-                ).catch(() => {}),
-              ]);
-            } catch {}
-            audioEditorBridge.clear();
-            clearClipboard();
+            // Full PHI cleanup before clearing auth state — mirrors handleSignOut.
+            // Prevents the next user on a shared tablet from seeing stashed patient
+            // data, drafts, cached audio, or waveform peaks when a session expires
+            // or is revoked by the server.
+            await performPhiCleanup();
             await signOutNativeGoogle();
             await secureStorage.clearAll();
             // Clear cached PHI so the next user on this shared tablet
             // doesn't briefly see the previous user's recording list.
             queryClient.clear();
             setStashUserId(null);
+            draftStorage.setUserId(null);
             setUser(null);
             setSession(null);
           }

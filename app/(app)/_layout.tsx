@@ -46,6 +46,19 @@ export default function AppLayout() {
     return <Redirect href="/(auth)/login" />;
   }
 
+  // Half-authenticated loading: session is set but /auth/me is still in flight
+  // (or hasn't started yet). Holding at a spinner keeps user-scoped storage
+  // safely unconfigured — draftStorage/stashStorage both check currentUserId
+  // and a previous user's scope could otherwise leak across sign-out/sign-in
+  // on a shared tablet. Also avoids gated queries firing with the wrong scope.
+  if (!user && userFetchState !== 'error') {
+    return (
+      <View className="flex-1 justify-center items-center bg-stone-50">
+        <ActivityIndicator size="large" color="#0d8775" />
+      </View>
+    );
+  }
+
   // Half-authenticated recovery: session present but the user profile fetch
   // from /auth/me failed. Without this guard the app renders tabs with
   // user === null, which disables gated queries and leaves user-scoped

@@ -12,6 +12,12 @@ const STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
 };
 
+// SecureStore uses EncryptedSharedPreferences on Android which has a ~2KB
+// practical per-value limit. Long multi-segment drafts exceed this easily
+// (~150 bytes per segment URI + duration), so we chunk the metadata JSON
+// across multiple keys. Matches the chunk size used by stashStorage.
+const DRAFT_CHUNK_SIZE = 1900;
+
 const BASE_DRAFTS_DIR = `${Paths.document.uri}drafts/`;
 
 interface DraftMetadata {
@@ -31,7 +37,23 @@ function draftIndexKeyForUser(userId: string): string {
   return `captivet_drafts_index_${userId}`;
 }
 
-function draftMetadataKeyForUser(userId: string, slotId: string): string {
+function draftChunkPrefixForUser(userId: string, slotId: string): string {
+  validateSlotId(slotId);
+  return `captivet_draft_${userId}_${slotId}_chunk_`;
+}
+
+function draftMetaKeyForUser(userId: string, slotId: string): string {
+  validateSlotId(slotId);
+  return `captivet_draft_${userId}_${slotId}_meta`;
+}
+
+/**
+ * Legacy single-key location for draft metadata (pre-chunking). Only ever
+ * read so existing drafts on disk remain accessible after the upgrade;
+ * writes always use the chunked layout.
+ */
+function legacyDraftMetadataKeyForUser(userId: string, slotId: string): string {
+  validateSlotId(slotId);
   return `captivet_draft_${userId}_${slotId}`;
 }
 
@@ -49,6 +71,104 @@ function validateSlotId(slotId: string): void {
   if (!slotId || /[\/\\.]/.test(slotId)) {
     throw new Error('Invalid slot ID');
   }
+}
+
+/**
+ * Write draft metadata as chunked SecureStore entries. Writes all chunks
+ * first, then the meta key last — a crash mid-write leaves the meta key
+ * either absent (read falls back to legacy) or pointing at the complete new
+ * set of chunks. The legacy single-key entry is deleted after a successful
+ * chunked write so getDraft doesn't return stale data.
+ */
+async function writeDraftChunks(
+  userId: string,
+  slotId: string,
+  raw: string,
+): Promise<void> {
+  const prefix = draftChunkPrefixForUser(userId, slotId);
+  const chunkCount = Math.max(1, Math.ceil(raw.length / DRAFT_CHUNK_SIZE));
+
+  for (let i = 0; i < chunkCount; i++) {
+    const chunk = raw.slice(i * DRAFT_CHUNK_SIZE, (i + 1) * DRAFT_CHUNK_SIZE);
+    await SecureStore.setItemAsync(`${prefix}${i}`, chunk, STORE_OPTIONS);
+  }
+  await SecureStore.setItemAsync(
+    draftMetaKeyForUser(userId, slotId),
+    JSON.stringify({ chunks: chunkCount, version: 1 }),
+    STORE_OPTIONS,
+  );
+
+  try {
+    await SecureStore.deleteItemAsync(legacyDraftMetadataKeyForUser(userId, slotId));
+  } catch {
+    // Legacy cleanup is best-effort
+  }
+}
+
+/**
+ * Read draft metadata, trying the chunked layout first and falling back to
+ * the legacy single-key layout for drafts written before chunking existed.
+ * Returns null if either the meta key is missing a referenced chunk (torn
+ * write) or the parsed JSON is not a valid DraftMetadata shape.
+ */
+async function readDraftChunks(
+  userId: string,
+  slotId: string,
+): Promise<DraftMetadata | null> {
+  try {
+    const metaRaw = await SecureStore.getItemAsync(draftMetaKeyForUser(userId, slotId));
+    if (metaRaw) {
+      const meta = JSON.parse(metaRaw) as { chunks?: number };
+      const count = meta.chunks;
+      if (!Number.isInteger(count) || !count || count <= 0) return null;
+      const prefix = draftChunkPrefixForUser(userId, slotId);
+      const parts: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const chunk = await SecureStore.getItemAsync(`${prefix}${i}`);
+        if (chunk === null) return null;
+        parts.push(chunk);
+      }
+      return JSON.parse(parts.join('')) as DraftMetadata;
+    }
+  } catch {
+    return null;
+  }
+
+  try {
+    const legacyRaw = await SecureStore.getItemAsync(
+      legacyDraftMetadataKeyForUser(userId, slotId),
+    );
+    if (!legacyRaw) return null;
+    return JSON.parse(legacyRaw) as DraftMetadata;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delete every SecureStore entry associated with a draft — chunked layout,
+ * the meta key, and the legacy single-key entry. Best-effort on each op.
+ */
+async function deleteDraftChunks(userId: string, slotId: string): Promise<void> {
+  try {
+    const metaRaw = await SecureStore.getItemAsync(draftMetaKeyForUser(userId, slotId));
+    if (metaRaw) {
+      const meta = JSON.parse(metaRaw) as { chunks?: number };
+      const count = meta.chunks;
+      if (Number.isInteger(count) && count && count > 0) {
+        const prefix = draftChunkPrefixForUser(userId, slotId);
+        for (let i = 0; i < count; i++) {
+          await SecureStore.deleteItemAsync(`${prefix}${i}`).catch(() => {});
+        }
+      }
+    }
+  } catch {
+    // Best-effort cleanup
+  }
+  await SecureStore.deleteItemAsync(draftMetaKeyForUser(userId, slotId)).catch(() => {});
+  await SecureStore.deleteItemAsync(
+    legacyDraftMetadataKeyForUser(userId, slotId),
+  ).catch(() => {});
 }
 
 /** Read the draft index for the current user. */
@@ -143,12 +263,7 @@ export const draftStorage = {
         pendingSync: true,
       };
 
-      const metadataKey = draftMetadataKeyForUser(userId, slot.id);
-      await SecureStore.setItemAsync(
-        metadataKey,
-        JSON.stringify(metadata),
-        STORE_OPTIONS
-      );
+      await writeDraftChunks(userId, slot.id, JSON.stringify(metadata));
 
       // Update index
       const index = await readDraftIndex();
@@ -174,15 +289,13 @@ export const draftStorage = {
     if (!userId) return;
 
     try {
-      const metadataKey = draftMetadataKeyForUser(userId, slotId);
-      const raw = await SecureStore.getItemAsync(metadataKey);
-      if (!raw) return;
+      const metadata = await readDraftChunks(userId, slotId);
+      if (!metadata) return;
 
-      const metadata: DraftMetadata = JSON.parse(raw);
       metadata.serverDraftId = serverId;
       metadata.pendingSync = false;
 
-      await SecureStore.setItemAsync(metadataKey, JSON.stringify(metadata), STORE_OPTIONS);
+      await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
     } catch {
       // Best-effort
     }
@@ -195,11 +308,8 @@ export const draftStorage = {
   async getDraft(slotId: string): Promise<DraftMetadata | null> {
     const userId = currentUserId;
     if (!userId) return null;
-
     try {
-      const raw = await SecureStore.getItemAsync(draftMetadataKeyForUser(userId, slotId));
-      if (!raw) return null;
-      return JSON.parse(raw) as DraftMetadata;
+      return await readDraftChunks(userId, slotId);
     } catch {
       return null;
     }
@@ -243,13 +353,8 @@ export const draftStorage = {
       const dir = slotDraftDirForUser(userId, slotId);
       safeDeleteDirectory(dir);
 
-      // Delete metadata
-      const metadataKey = draftMetadataKeyForUser(userId, slotId);
-      try {
-        await SecureStore.deleteItemAsync(metadataKey);
-      } catch {
-        // Ignore deletion errors
-      }
+      // Delete metadata (chunked layout + legacy single key + meta key)
+      await deleteDraftChunks(userId, slotId);
 
       // Remove from index
       const index = await readDraftIndex();

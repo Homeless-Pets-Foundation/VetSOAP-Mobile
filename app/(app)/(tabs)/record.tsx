@@ -173,6 +173,22 @@ function RecordingSession() {
   }, []);
 
   /**
+   * Delete the auto-saved draft tied to a slot — both the local SecureStore
+   * entry and the server Recording row (if one was created). Used when the
+   * user discards or stashes a session: the draft is no longer a useful
+   * representation of the recording and would otherwise linger as a ghost
+   * "Not Submitted" row on Home plus a duplicate PHI copy on disk.
+   */
+  const deleteSlotDraft = useCallback((slot: PatientSlot) => {
+    if (slot.draftSlotId) {
+      draftStorage.deleteDraft(slot.draftSlotId).catch(() => {});
+    }
+    if (slot.serverDraftId && slot.uploadStatus !== 'success') {
+      recordingsApi.delete(slot.serverDraftId).catch(() => {});
+    }
+  }, []);
+
+  /**
    * Editing metadata on a slot with a pendingConfirm hint invalidates it: the
    * server record the hint points to was created with the OLD formData, and
    * the retry path in the API short-circuits to confirmUpload without
@@ -357,6 +373,9 @@ function RecordingSession() {
       // Best-effort delete any server recording left mid-confirm — the user is
       // abandoning this session entirely.
       deleteOrphanServerRecording(slot);
+      // Also delete the auto-saved draft (local + server) so the discarded
+      // recording doesn't linger as a "Not Submitted" row on Home.
+      deleteSlotDraft(slot);
     });
 
     // Release the pinned stash (if any) so the SecureStore entry and audio dir
@@ -365,7 +384,7 @@ function RecordingSession() {
     releaseResumedStashIfAny();
 
     resetSession();
-  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording]);
+  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft]);
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
@@ -815,24 +834,57 @@ function RecordingSession() {
   const autoSaveDraft = useCallback(
     async (slot: PatientSlot) => {
       try {
+        // 1) Persist the local draft (audio + metadata). Always runs regardless
+        //    of connectivity so the user can resume offline.
         const draftSlotId = await draftStorage.saveDraft(slot);
-        dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: null });
-        if (isConnected) {
-          const result = await recordingsApi.create(slot.formData, { isDraft: true });
-          dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: result.id });
-          await draftStorage.updateServerDraftId(draftSlotId, result.id);
-          // Refresh Home/Records recording lists so the new "Not Submitted"
-          // card appears immediately when the user switches tabs, without
-          // waiting for a manual pull-to-refresh or app remount.
-          queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        // Preserve the existing serverDraftId here — the server draft (if any)
+        // still represents this slot's recording. Nulling it would orphan the
+        // server row on every stop/continue cycle.
+        dispatch({
+          type: 'SET_DRAFT_IDS',
+          slotId: slot.id,
+          draftSlotId,
+          serverDraftId: slot.serverDraftId ?? null,
+        });
+
+        if (!isConnected) return;
+
+        // 2) Sync with the server. If a draft row already exists for this
+        //    slot, patch it in place so repeated stop/continue cycles don't
+        //    accumulate orphaned "Not Submitted" rows. On any patch failure
+        //    (older server without the route, draft promoted to completed,
+        //    5xx, network), fall back to a fresh create — correctness holds
+        //    regardless of server version.
+        let serverId: string | null = null;
+        if (slot.serverDraftId) {
+          try {
+            await recordingsApi.updateDraftMetadata(slot.serverDraftId, slot.formData);
+            serverId = slot.serverDraftId;
+          } catch (patchError) {
+            if (__DEV__) console.warn('[Record] autoSaveDraft: updateDraftMetadata failed, creating fresh draft', patchError);
+            // The old server row is now orphaned — delete it best-effort so
+            // it doesn't linger on Home as a ghost "Not Submitted" card.
+            recordingsApi.delete(slot.serverDraftId).catch(() => {});
+          }
         }
+        if (!serverId) {
+          const result = await recordingsApi.create(slot.formData, { isDraft: true });
+          serverId = result.id;
+        }
+
+        dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: serverId });
+        await draftStorage.updateServerDraftId(draftSlotId, serverId);
+        // Refresh Home/Records recording lists so the new "Not Submitted"
+        // card appears immediately when the user switches tabs, without
+        // waiting for a manual pull-to-refresh or app remount.
+        queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       } catch (error) {
         // Draft save is best-effort — never surface errors to the user.
         // The recording is still in session state and can still be submitted.
         if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
       }
     },
-    [dispatch, isConnected]
+    [dispatch, isConnected, queryClient]
   );
 
   const handleSubmitSingle = useCallback(
@@ -962,7 +1014,15 @@ function RecordingSession() {
           // The stashed form of the session does not persist pendingConfirm, so
           // any half-confirmed server recording is now unreachable. Best-effort
           // delete each one so they don't linger as orphaned 'uploading' rows.
-          session.slots.forEach((slot) => deleteOrphanServerRecording(slot));
+          // The auto-saved drafts are also discarded here — the stash becomes
+          // the sole representation of the in-progress session, so keeping a
+          // duplicate draft Recording row on the server would show up twice in
+          // the Home "Not Submitted" list. On resume, autoSaveDraft will
+          // recreate a draft keyed off the restored session.
+          session.slots.forEach((slot) => {
+            deleteOrphanServerRecording(slot);
+            deleteSlotDraft(slot);
+          });
           // The new stash supersedes the one we resumed from — release it so the
           // old SecureStore entry and audio dir don't linger. Done only after the
           // new stash has committed successfully, so the active session's data is
@@ -992,7 +1052,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [session, stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording]);
+  }, [session, stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,

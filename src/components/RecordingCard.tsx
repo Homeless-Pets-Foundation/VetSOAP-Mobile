@@ -14,9 +14,10 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 interface RecordingCardProps {
   recording: Recording;
+  localDraftSlotId?: string;
 }
 
-export const RecordingCard = React.memo(function RecordingCard({ recording }: RecordingCardProps) {
+export const RecordingCard = React.memo(function RecordingCard({ recording, localDraftSlotId }: RecordingCardProps) {
   const router = useRouter();
   const scale = useSharedValue(1);
 
@@ -46,7 +47,9 @@ export const RecordingCard = React.memo(function RecordingCard({ recording }: Re
   return (
     <AnimatedPressable
       onPress={() => {
-        if (recording.id) {
+        if (recording.status === 'draft' && localDraftSlotId) {
+          router.push(`/(tabs)/record?draftSlotId=${localDraftSlotId}` as any);
+        } else if (recording.id) {
           router.push(`/recordings/${recording.id}` as `/recordings/${string}`);
         }
       }}
@@ -118,5 +121,6 @@ export const RecordingCard = React.memo(function RecordingCard({ recording }: Re
   prev.recording.id === next.recording.id &&
   prev.recording.status === next.recording.status &&
   prev.recording.patientName === next.recording.patientName &&
-  prev.recording.clientName === next.recording.clientName
+  prev.recording.clientName === next.recording.clientName &&
+  prev.localDraftSlotId === next.localDraftSlotId
 );

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import Animated, {
   FadeInDown,
@@ -8,6 +8,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Mic, ChevronRight, FileText, Settings } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
@@ -54,7 +55,10 @@ export default function HomeScreen() {
       setDraftMap(map);
     }).catch(() => {});
   }, [user?.id]);
-  useEffect(() => { refreshDraftMap(); }, [refreshDraftMap]);
+  // Refresh on every screen focus — required so drafts created elsewhere
+  // (e.g. after tapping Finish on the Record tab) show up when the user
+  // returns to Home without a full app remount.
+  useFocusEffect(refreshDraftMap);
   const totalRecordings = data?.pagination?.total ?? 0;
   const processingCount = recordings.filter(
     (r) => !['completed', 'failed'].includes(r.status)
@@ -65,7 +69,7 @@ export default function HomeScreen() {
   }));
 
   return (
-    <ScreenContainer refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }}>
+    <ScreenContainer refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); refreshDraftMap(); }}>
       {/* Header */}
       <Animated.View entering={FadeInDown.duration(400)} className="mb-6 flex-row items-start justify-between">
         <View className="flex-1">

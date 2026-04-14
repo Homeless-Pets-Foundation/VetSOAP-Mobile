@@ -704,6 +704,10 @@ function RecordingSession() {
           const result = await recordingsApi.create(slot.formData, { isDraft: true });
           dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: result.id });
           await draftStorage.updateServerDraftId(draftSlotId, result.id);
+          // Refresh Home/Records recording lists so the new "Not Submitted"
+          // card appears immediately when the user switches tabs, without
+          // waiting for a manual pull-to-refresh or app remount.
+          queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
         }
       } catch (error) {
         // Draft save is best-effort — never surface errors to the user.

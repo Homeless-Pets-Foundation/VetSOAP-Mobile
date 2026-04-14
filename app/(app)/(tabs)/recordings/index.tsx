@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
@@ -82,7 +83,10 @@ export default function RecordingsListScreen() {
       setDraftMap(map);
     }).catch(() => {});
   }, [user?.id]);
-  useEffect(() => { refreshDraftMap(); }, [refreshDraftMap]);
+  // Refresh on every screen focus — required so drafts created elsewhere
+  // (e.g. after tapping Finish on the Record tab) show up when the user
+  // returns to this list without a full app remount.
+  useFocusEffect(refreshDraftMap);
 
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
 
@@ -144,7 +148,7 @@ export default function RecordingsListScreen() {
           return <RecordingCard recording={item} localDraftSlotId={draftMap[item.id]} />;
         }}
         contentContainerStyle={FLATLIST_CONTENT_STYLE}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} />}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); refreshDraftMap(); }} />}
         onEndReached={onEndReached}
         onEndReachedThreshold={0.8}
         removeClippedSubviews={true}

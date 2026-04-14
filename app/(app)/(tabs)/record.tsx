@@ -1228,6 +1228,24 @@ function RecordingSession() {
     };
   }, [user?.id]);
 
+  // Effect: on mount (once per user), sweep local drafts whose audio files
+  // are missing on disk. Those are "zombie" drafts — they'll render as "Not
+  // Submitted" on Home but `loadDraft` can never restore them. They happen
+  // when an older client stashed a session before stash preserved
+  // `serverDraftId` (the stash deleted the draft audio on commit). Deleting
+  // the server row + local metadata clears them from the UI.
+  useEffect(() => {
+    if (!user?.id) return;
+    draftStorage
+      .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId))
+      .then((cleaned) => {
+        if (cleaned > 0) {
+          queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }, [user?.id, queryClient]);
+
   const handleResumeStash = useCallback(
     (stashId: string) => {
       const doResume = () => {

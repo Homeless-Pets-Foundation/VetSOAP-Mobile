@@ -260,8 +260,18 @@ Use these commands to interact with the emulator for testing. All use the Window
 | **Swipe/Scroll** | `adb.exe shell input swipe <x1> <y1> <x2> <y2> <duration_ms>` |
 | **Type text** | `adb.exe shell input text "hello"` (no spaces — use `%s` for spaces) |
 | **Press back** | `adb.exe shell input keyevent KEYCODE_BACK` |
-| **Dismiss keyboard** | `adb.exe shell input keyevent KEYCODE_ESCAPE` |
+| **Dismiss keyboard** | `adb.exe shell input keyevent 66` (ENTER — safer than ESCAPE, see below) |
 | **UI hierarchy** | `adb.exe shell uiautomator dump /sdcard/ui.xml && adb.exe shell cat /sdcard/ui.xml` |
+
+#### Keycode gotcha — avoid ESCAPE and MENU during emulator testing
+
+`KEYCODE_ESCAPE` (111) and `KEYCODE_MENU` (82) are wired to the **Expo dev client element inspector**. Sending them from `adb input keyevent` mid-test re-enables the inspector overlay, which intercepts subsequent taps on form fields and makes the whole session unworkable. Prefer:
+
+- **Dismiss keyboard:** tap a neutral area of the screen, or `adb.exe shell input keyevent 66` (ENTER) when in a single-line field.
+- **Reload bundle:** use the `Reload` button in the dev menu (tap at the Reload control inside Expo's dev client) rather than `KEYCODE_MENU`.
+- **Disable the floating Tools button:** from the dev menu → toggle off `Tools button` once at session start; it otherwise intercepts taps near the top-right (where `Save for Later` sits).
+
+If the inspector does re-engage, force-stop + relaunch is the most reliable way to clear it.
 
 ### Finding Tap Coordinates
 

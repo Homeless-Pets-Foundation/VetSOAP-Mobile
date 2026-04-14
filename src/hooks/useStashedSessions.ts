@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Alert } from 'react-native';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
+import { draftStorage } from '../lib/draftStorage';
 import { safeDeleteFile } from '../lib/fileOps';
 import type { StashedSession } from '../types/stash';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
@@ -211,6 +212,18 @@ export function useStashedSessions(userId: string | null) {
         });
         await stashAudioManager.deleteRecoveryManifest(sessionId);
 
+        // If any stashed slot had a local auto-saved draft, remove its local
+        // metadata. The stash now owns the audio (draft audio files live in
+        // the cache paths we just deleted) and the stash payload preserves
+        // `serverDraftId` so submit-on-resume still promotes the server draft.
+        // Leaving the draft metadata behind would strand the Home "Not
+        // Submitted" card pointing at files that no longer exist.
+        for (const slot of slotsToStash) {
+          if (slot.draftSlotId) {
+            await draftStorage.deleteDraft(slot.draftSlotId).catch(() => {});
+          }
+        }
+
         await refreshStashes();
         return true;
       } catch (error) {
@@ -281,7 +294,7 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
 
       const convertToPatientSlots = (
-        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number }[]
+        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null }[]
       ): PatientSlot[] => {
         return stashedSlots.map((slot) => ({
           id: slot.id,
@@ -294,8 +307,8 @@ export function useStashedSessions(userId: string | null) {
           uploadProgress: 0,
           uploadError: null,
           serverRecordingId: null,
-          draftSlotId: null,
-          serverDraftId: null,
+          draftSlotId: slot.draftSlotId ?? null,
+          serverDraftId: slot.serverDraftId ?? null,
           draftMetadataDirty: false,
           pendingConfirm: null,
         }));

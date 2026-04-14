@@ -392,6 +392,46 @@ export const draftStorage = {
   },
 
   /**
+   * Sweep orphaned drafts whose local audio files have been deleted (e.g. by
+   * an older client that stashed a session before stash preserved
+   * serverDraftId, or by filesystem pressure). For each such draft we best-
+   * effort delete the server row and the local metadata.
+   *
+   * Returns the number of drafts cleaned.
+   */
+  async cleanupOrphaned(
+    deleteServerDraft: (serverDraftId: string) => Promise<void>
+  ): Promise<number> {
+    const userId = currentUserId;
+    if (!userId) return 0;
+
+    let cleaned = 0;
+    try {
+      const drafts = await this.listDrafts();
+      for (const draft of drafts) {
+        if (draft.segments.length === 0) continue;
+        const anyMissing = draft.segments.some((s) => !fileExists(s.uri));
+        if (!anyMissing) continue;
+
+        if (draft.serverDraftId) {
+          try {
+            await deleteServerDraft(draft.serverDraftId);
+          } catch {
+            // Best-effort — server may already be gone, or offline. We still
+            // clean up local metadata so the card disappears from the UI;
+            // any still-existing server row becomes a server-side TTL problem.
+          }
+        }
+        await this.deleteDraft(draft.slotId);
+        cleaned++;
+      }
+    } catch {
+      // Best-effort
+    }
+    return cleaned;
+  },
+
+  /**
    * Sync all pending drafts to the server.
    * For each draft with pendingSync=true, calls createFn to create a server Recording.
    * Then updates the draft with the server ID and marks as synced.

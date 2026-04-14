@@ -11,6 +11,11 @@ export interface StashedSlot {
   formData: CreateRecording;
   segments: StashedSegment[];
   audioDuration: number; // sum of all segment durations
+  // Preserve draft linkage across the stash round-trip so Resume → Submit promotes
+  // the existing server draft instead of creating a duplicate recording. Optional
+  // for forward-compat with stashes written by older clients (treat missing as null).
+  serverDraftId?: string | null;
+  draftSlotId?: string | null;
 }
 
 export interface StashedSession {

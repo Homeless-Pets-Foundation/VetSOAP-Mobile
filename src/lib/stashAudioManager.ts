@@ -89,6 +89,8 @@ export const stashAudioManager = {
           formData: { ...slot.formData },
           segments: stashedSegments,
           audioDuration: stashedSegments.reduce((sum, s) => sum + s.duration, 0),
+          serverDraftId: slot.serverDraftId ?? null,
+          draftSlotId: slot.draftSlotId ?? null,
         });
       }
 

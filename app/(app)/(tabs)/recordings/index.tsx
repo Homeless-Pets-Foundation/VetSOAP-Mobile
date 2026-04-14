@@ -182,9 +182,9 @@ export default function RecordingsListScreen() {
               <Text className="text-body text-stone-600 mt-3 text-center">
                 Could not load recordings.
               </Text>
-              {error?.message ? (
+              {error ? (
                 <Text className="text-caption text-stone-500 mt-2 text-center px-4" selectable>
-                  {error.message}
+                  [{error.name ?? 'Error'}{(error as { status?: number })?.status ? ` ${(error as { status?: number }).status}` : ''}] {error.message}
                 </Text>
               ) : null}
               <View className="mt-4">

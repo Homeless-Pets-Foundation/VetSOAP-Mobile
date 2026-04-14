@@ -105,10 +105,13 @@ export const recordingsApi = {
     return apiClient.get(`/api/recordings/${id}`);
   },
 
-  async create(data: CreateRecording): Promise<Recording> {
+  async create(
+    data: CreateRecording,
+    options?: { isDraft?: boolean }
+  ): Promise<Recording> {
     const validated = createRecordingSchema.parse(data);
     const idempotencyKey = generateIdempotencyKey();
-    return apiClient.post('/api/recordings', validated, idempotencyKey);
+    return apiClient.post('/api/recordings', { ...validated, isDraft: options?.isDraft ?? false }, idempotencyKey);
   },
 
   async delete(id: string): Promise<void> {
@@ -166,10 +169,21 @@ export const recordingsApi = {
     data: CreateRecording,
     fileUri: string,
     contentType = 'audio/x-m4a',
-    options?: { onUploadProgress?: (event: UploadProgressEvent) => void }
+    options?: {
+      onUploadProgress?: (event: UploadProgressEvent) => void;
+      existingRecordingId?: string;
+    }
   ): Promise<Recording> {
-    // Step 1: Create recording record (validates data via this.create)
-    const recording = await this.create(data);
+    // Step 1: Create recording record (validates data via this.create) or use existing
+    let recording: Recording;
+    let isExistingRecording = false;
+    if (options?.existingRecordingId) {
+      // Use provided draft recording ID instead of creating a new one
+      recording = await this.get(options.existingRecordingId);
+      isExistingRecording = true;
+    } else {
+      recording = await this.create(data);
+    }
 
     let r2UploadComplete = false;
 
@@ -245,7 +259,8 @@ export const recordingsApi = {
       // Only delete if the file hasn't been uploaded to R2 yet.
       // If R2 upload succeeded but confirm failed, leave the recording
       // in "uploading" state so the user can retry.
-      if (!r2UploadComplete) {
+      // Also, never delete if using an existing recording ID (draft) — let the user retry later.
+      if (!r2UploadComplete && !isExistingRecording) {
         await this.delete(recording.id).catch(() => {});
       }
       throw error;
@@ -259,9 +274,21 @@ export const recordingsApi = {
     data: CreateRecording,
     segments: { uri: string; duration: number }[],
     contentType = 'audio/x-m4a',
-    options?: { onUploadProgress?: (event: UploadProgressEvent) => void }
+    options?: {
+      onUploadProgress?: (event: UploadProgressEvent) => void;
+      existingRecordingId?: string;
+    }
   ): Promise<Recording> {
-    const recording = await this.create(data);
+    // Use provided draft recording ID or create a new one
+    let recording: Recording;
+    let isExistingRecording = false;
+    if (options?.existingRecordingId) {
+      recording = await this.get(options.existingRecordingId);
+      isExistingRecording = true;
+    } else {
+      recording = await this.create(data);
+    }
+
     let r2UploadComplete = false;
     const segmentKeys: string[] = [];
     const totalSegments = segments.length;
@@ -351,13 +378,18 @@ export const recordingsApi = {
       });
       return confirmed;
     } catch (error) {
-      if (!r2UploadComplete) {
+      // Only delete if R2 upload didn't complete and it's a new recording (not a draft).
+      // Never delete existing draft recordings — let the user retry later.
+      if (!r2UploadComplete && !isExistingRecording) {
         await this.delete(recording.id).catch(() => {});
       }
       // Enrich the error message for partial multi-segment failures
       if (completedSegments > 0 && completedSegments < totalSegments && error instanceof Error) {
+        const suffix = isExistingRecording
+          ? ' (segments uploaded were queued for processing)'
+          : ' (the recording has been removed and will need to be re-recorded.)';
         throw new Error(
-          `${error.message} (${completedSegments} of ${totalSegments} segments had uploaded successfully — the recording has been removed and will need to be re-recorded.)`
+          `${error.message} (${completedSegments} of ${totalSegments} segments had uploaded successfully${suffix}`
         );
       }
       throw error;

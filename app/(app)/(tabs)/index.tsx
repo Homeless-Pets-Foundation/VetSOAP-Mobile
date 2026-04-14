@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import Animated, {
   FadeInDown,
@@ -14,6 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { recordingsApi } from '../../../src/api/recordings';
+import { draftStorage } from '../../../src/lib/draftStorage';
 import { RecordingCard } from '../../../src/components/RecordingCard';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { SkeletonCard } from '../../../src/components/ui/Skeleton';
@@ -42,6 +43,18 @@ export default function HomeScreen() {
   });
 
   const recordings = data?.data ?? [];
+
+  const [draftMap, setDraftMap] = useState<Record<string, string>>({});
+  const refreshDraftMap = useCallback(() => {
+    draftStorage.listDrafts().then((drafts) => {
+      const map: Record<string, string> = {};
+      for (const d of drafts) {
+        if (d.serverDraftId) map[d.serverDraftId] = d.slotId;
+      }
+      setDraftMap(map);
+    }).catch(() => {});
+  }, [user?.id]);
+  useEffect(() => { refreshDraftMap(); }, [refreshDraftMap]);
   const totalRecordings = data?.pagination?.total ?? 0;
   const processingCount = recordings.filter(
     (r) => !['completed', 'failed'].includes(r.status)
@@ -171,7 +184,7 @@ export default function HomeScreen() {
           </Card>
         ) : (
           recordings.map((recording) => (
-            <RecordingCard key={recording.id} recording={recording} />
+            <RecordingCard key={recording.id} recording={recording} localDraftSlotId={draftMap[recording.id]} />
           ))
         )}
       </View>

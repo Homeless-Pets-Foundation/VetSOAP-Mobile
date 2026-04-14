@@ -243,6 +243,8 @@ export function useStashedSessions(userId: string | null) {
           uploadProgress: 0,
           uploadError: null,
           serverRecordingId: null,
+          draftSlotId: null,
+          serverDraftId: null,
         }));
       };
 

@@ -13,6 +13,7 @@ import type { RecordingStatus } from '../types';
 type BadgeVariant = 'info' | 'warning' | 'success' | 'danger';
 
 const STATUS_CONFIG: Record<RecordingStatus, { label: string; variant: BadgeVariant; inProgress?: boolean }> = {
+  draft: { label: 'Not Submitted', variant: 'warning' },
   uploading: { label: 'Uploading', variant: 'info', inProgress: true },
   uploaded: { label: 'Uploaded', variant: 'info' },
   transcribing: { label: 'Transcribing', variant: 'warning', inProgress: true },

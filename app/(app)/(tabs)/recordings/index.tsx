@@ -2,11 +2,13 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
 import { recordingsApi } from '../../../../src/api/recordings';
+import { draftStorage } from '../../../../src/lib/draftStorage';
+import { useAuth } from '../../../../src/hooks/useAuth';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { RecordingCard } from '../../../../src/components/RecordingCard';
@@ -18,6 +20,7 @@ const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as c
 
 export default function RecordingsListScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const { iconSm, iconLg } = useResponsive();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -74,6 +77,21 @@ export default function RecordingsListScreen() {
     [data]
   );
 
+  const [draftMap, setDraftMap] = useState<Record<string, string>>({});
+  const refreshDraftMap = useCallback(() => {
+    draftStorage.listDrafts().then((drafts) => {
+      const map: Record<string, string> = {};
+      for (const d of drafts) {
+        if (d.serverDraftId) map[d.serverDraftId] = d.slotId;
+      }
+      setDraftMap(map);
+    }).catch(() => {});
+  }, [user?.id]);
+  // Refresh on every screen focus — required so drafts created elsewhere
+  // (e.g. after tapping Finish on the Record tab) show up when the user
+  // returns to this list without a full app remount.
+  useFocusEffect(refreshDraftMap);
+
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
 
   const onEndReached = useCallback(() => {
@@ -127,14 +145,14 @@ export default function RecordingsListScreen() {
           if (isInitialMountRef.current && index < 3) {
             return (
               <Animated.View entering={FadeInRight.delay(index * 50).duration(250)}>
-                <RecordingCard recording={item} />
+                <RecordingCard recording={item} localDraftSlotId={draftMap[item.id]} />
               </Animated.View>
             );
           }
-          return <RecordingCard recording={item} />;
+          return <RecordingCard recording={item} localDraftSlotId={draftMap[item.id]} />;
         }}
         contentContainerStyle={FLATLIST_CONTENT_STYLE}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} />}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); refreshDraftMap(); }} />}
         onEndReached={onEndReached}
         onEndReachedThreshold={0.8}
         removeClippedSubviews={true}

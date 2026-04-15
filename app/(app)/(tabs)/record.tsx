@@ -181,7 +181,7 @@ function RecordingSession() {
    */
   const deleteSlotDraft = useCallback((slot: PatientSlot) => {
     if (slot.draftSlotId) {
-      draftStorage.deleteDraft(slot.draftSlotId).catch(() => {});
+      draftStorage.deleteDraft(slot.id).catch(() => {});
     }
     if (slot.serverDraftId && slot.uploadStatus !== 'success') {
       recordingsApi.delete(slot.serverDraftId).catch(() => {});
@@ -239,8 +239,27 @@ function RecordingSession() {
   // Guard: track which slot IDs are actively uploading to prevent double-submission
   // across React render batches (useRef is synchronous; useState is not).
   const uploadingSlotIdsRef = useRef<Set<string>>(new Set());
+  // Guard: a slot marked for submission may still finish its deferred local draft save,
+  // but it must not create a new server-side draft row while upload is in flight.
+  const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
+  // Guard: if upload wins the race against deferred local draft persistence, auto-save
+  // must immediately clean up the late draft instead of leaving it behind locally.
+  const completedUploadSlotIdsRef = useRef<Set<string>>(new Set());
   // Suppress the next stopped-audio capture when the current segment is being discarded.
   const skipNextAudioCaptureRef = useRef(false);
+
+  const markSubmitIntent = useCallback((slotIds: string[]) => {
+    slotIds.forEach((slotId) => {
+      submitIntentSlotIdsRef.current.add(slotId);
+      completedUploadSlotIdsRef.current.delete(slotId);
+    });
+  }, []);
+
+  const clearSubmitIntent = useCallback((slotIds: string[]) => {
+    slotIds.forEach((slotId) => {
+      submitIntentSlotIdsRef.current.delete(slotId);
+    });
+  }, []);
 
   // Auto-select default template for first slot once templates load
   useEffect(() => {
@@ -800,6 +819,7 @@ function RecordingSession() {
             }
           );
         }
+        completedUploadSlotIdsRef.current.add(slot.id);
         setUploadStatus(slot.id, 'success', {
           progress: 100,
           serverRecordingId: result.id,
@@ -809,9 +829,7 @@ function RecordingSession() {
           safeDeleteFile(seg.uri);
         });
         // Clean up local draft after successful upload
-        if (slot.draftSlotId) {
-          draftStorage.deleteDraft(slot.draftSlotId).catch(() => {});
-        }
+        draftStorage.deleteDraft(slot.id).catch(() => {});
         return result.id;
       } catch (error) {
         let msg: string;
@@ -847,7 +865,12 @@ function RecordingSession() {
           serverDraftId: slot.serverDraftId ?? null,
         });
 
-        if (!isConnected) return;
+        if (completedUploadSlotIdsRef.current.has(slot.id)) {
+          draftStorage.deleteDraft(slot.id).catch(() => {});
+          return;
+        }
+
+        if (!isConnected || submitIntentSlotIdsRef.current.has(slot.id)) return;
 
         // 2) Sync with the server. If a draft row already exists for this
         //    slot, patch it in place so repeated stop/continue cycles don't
@@ -866,10 +889,26 @@ function RecordingSession() {
             // it doesn't linger on Home as a ghost "Not Submitted" card.
             recordingsApi.delete(slot.serverDraftId).catch(() => {});
           }
+
+          if (completedUploadSlotIdsRef.current.has(slot.id)) {
+            draftStorage.deleteDraft(slot.id).catch(() => {});
+            return;
+          }
+          if (submitIntentSlotIdsRef.current.has(slot.id)) return;
         }
+
         if (!serverId) {
+          if (submitIntentSlotIdsRef.current.has(slot.id)) return;
           const result = await recordingsApi.create(slot.formData, { isDraft: true });
           serverId = result.id;
+
+          if (submitIntentSlotIdsRef.current.has(slot.id) || completedUploadSlotIdsRef.current.has(slot.id)) {
+            recordingsApi.delete(serverId).catch(() => {});
+            if (completedUploadSlotIdsRef.current.has(slot.id)) {
+              draftStorage.deleteDraft(slot.id).catch(() => {});
+            }
+            return;
+          }
         }
 
         dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: serverId });
@@ -899,6 +938,7 @@ function RecordingSession() {
         return;
       }
 
+      markSubmitIntent([slotId]);
       setSubmittingSlotId(slotId);
       setTotalSlotsToUpload(1);
 
@@ -927,15 +967,17 @@ function RecordingSession() {
             }
           }
         } finally {
+          clearSubmitIntent([slotId]);
           setSubmittingSlotId(null);
           setTotalSlotsToUpload(0);
         }
       })().catch(() => {
+        clearSubmitIntent([slotId]);
         setSubmittingSlotId(null);
         setTotalSlotsToUpload(0);
       });
     },
-    [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny]
+    [clearSubmitIntent, markSubmitIntent, session.slots, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny]
   );
 
   const handleSubmitAll = useCallback(() => {
@@ -956,6 +998,8 @@ function RecordingSession() {
 
     if (slotsToUpload.length === 0) return;
 
+    const slotIdsToUpload = slotsToUpload.map((slot) => slot.id);
+    markSubmitIntent(slotIdsToUpload);
     setIsSubmittingAll(true);
     setTotalSlotsToUpload(slotsToUpload.length);
 
@@ -988,16 +1032,18 @@ function RecordingSession() {
           );
         }
       } finally {
+        clearSubmitIntent(slotIdsToUpload);
         setIsSubmittingAll(false);
         setSubmittingSlotId(null);
         setTotalSlotsToUpload(0);
       }
     })().catch(() => {
+      clearSubmitIntent(slotIdsToUpload);
       setIsSubmittingAll(false);
       setSubmittingSlotId(null);
       setTotalSlotsToUpload(0);
     });
-  }, [session.slots, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny]);
+  }, [clearSubmitIntent, markSubmitIntent, session.slots, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();

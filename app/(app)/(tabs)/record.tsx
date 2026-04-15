@@ -180,9 +180,7 @@ function RecordingSession() {
    * "Not Submitted" row on Home plus a duplicate PHI copy on disk.
    */
   const deleteSlotDraft = useCallback((slot: PatientSlot) => {
-    if (slot.draftSlotId) {
-      draftStorage.deleteDraft(slot.id).catch(() => {});
-    }
+    draftStorage.deleteDraft(slot.id).catch(() => {});
     if (slot.serverDraftId && slot.uploadStatus !== 'success') {
       recordingsApi.delete(slot.serverDraftId).catch(() => {});
     }

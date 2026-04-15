@@ -11,6 +11,7 @@ import * as Haptics from 'expo-haptics';
 import { copyWithAutoClear } from '../lib/secureClipboard';
 import { Copy } from 'lucide-react-native';
 import type { SoapNote } from '../types';
+import { SOAP_SECTION_ACTIONS } from '../constants/strings';
 
 const SECTIONS = [
   { key: 'subjective' as const, label: 'Subjective', colorClass: 'bg-soap-subjective' },
@@ -30,7 +31,7 @@ function CopiedToast() {
       exiting={FadeOut.duration(200)}
       className="absolute top-0 right-0 bg-stone-800 px-3 py-1.5 rounded-btn z-10"
     >
-      <Text className="text-caption text-white font-medium">Copied!</Text>
+      <Text className="text-caption text-white font-medium">{SOAP_SECTION_ACTIONS.copied}</Text>
     </Animated.View>
   );
 }
@@ -115,11 +116,18 @@ function AccordionSection({
             onPress={() => { copySection().catch(() => {}); }}
             accessibilityRole="button"
             accessibilityLabel={`Copy ${label} section`}
-            className="self-end mt-2.5 flex-row items-center gap-1.5 px-3 py-1 rounded border border-stone-300"
+            className="self-end mt-2.5 flex-row items-center gap-1.5 px-4 py-1.5 rounded border border-stone-300"
             style={{ minHeight: 44 }}
           >
-            <Copy color="#57534e" size={12} />
-            <Text className="text-caption text-stone-600">Copy</Text>
+            <Copy color="#57534e" size={12} style={{ flexShrink: 0 }} />
+            {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+            <Text
+              className="text-caption text-stone-600"
+              allowFontScaling={false}
+              style={{ flexShrink: 0, paddingRight: 2 }}
+            >
+              {`${SOAP_SECTION_ACTIONS.copy} `}
+            </Text>
           </Pressable>
         </Animated.View>
       )}
@@ -167,10 +175,17 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
           onPress={() => { copyAll().catch(() => {}); }}
           accessibilityRole="button"
           accessibilityLabel="Copy full SOAP note"
-          className="bg-brand-500 px-3 py-1.5 rounded-md flex-row items-center gap-1.5 min-h-[44px]"
+          className="bg-brand-500 px-4 py-1.5 rounded-md flex-row items-center gap-1.5 min-h-[44px]"
         >
-          <Copy color="#fff" size={14} />
-          <Text className="text-body-sm text-white font-semibold">Copy All</Text>
+          <Copy color="#fff" size={14} style={{ flexShrink: 0 }} />
+          {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+          <Text
+            className="text-body-sm text-white font-semibold"
+            allowFontScaling={false}
+            style={{ flexShrink: 0, paddingRight: 2 }}
+          >
+            {`${SOAP_SECTION_ACTIONS.copyAll} `}
+          </Text>
         </Pressable>
       </View>
 

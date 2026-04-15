@@ -12,6 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Upload } from 'lucide-react-native';
 import type { PatientSlot } from '../types/multiPatient';
+import { UPLOAD_OVERLAY_COPY } from '../constants/strings';
 
 interface UploadOverlayProps {
   visible: boolean;
@@ -91,7 +92,7 @@ export function UploadOverlay({
       entering={FadeIn.duration(300)}
       exiting={FadeOut.duration(200)}
       style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]}
-      className="justify-center items-center px-8"
+      className="justify-center items-center px-6"
       accessibilityRole="alert"
       accessibilityLiveRegion="assertive"
       accessibilityLabel={`Upload in progress. ${phaseText} ${overallProgress}%`}
@@ -109,8 +110,8 @@ export function UploadOverlay({
         {/* Title */}
         <Text className="text-lg font-bold text-stone-900 mb-1 text-center">
           {isMulti && totalSlotsToUpload > 1
-            ? 'Uploading Recordings'
-            : 'Uploading Recording'}
+            ? UPLOAD_OVERLAY_COPY.titleMulti
+            : UPLOAD_OVERLAY_COPY.title}
         </Text>
 
         {/* Phase + percentage row */}
@@ -142,8 +143,8 @@ export function UploadOverlay({
         )}
 
         {/* Reassurance text */}
-        <Text className="text-xs text-stone-400 mt-3 text-center">
-          Please wait while your recording is uploaded.
+        <Text className="text-xs text-stone-400 mt-3 text-center px-2">
+          {UPLOAD_OVERLAY_COPY.reassurance}
         </Text>
       </Animated.View>
     </Animated.View>

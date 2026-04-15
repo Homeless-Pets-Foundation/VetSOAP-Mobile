@@ -18,13 +18,14 @@ import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { fileExists } from '../../../../src/lib/fileOps';
+import { PROCESSING_STEP_LABELS } from '../../../../src/constants/strings';
 
 const PROCESSING_STEPS = [
-  { status: 'uploading', label: 'Uploading' },
-  { status: 'uploaded', label: 'Uploaded' },
-  { status: 'transcribing', label: 'Transcribing' },
-  { status: 'generating', label: 'Generating SOAP' },
-  { status: 'completed', label: 'Complete' },
+  { status: 'uploading', label: PROCESSING_STEP_LABELS.uploading },
+  { status: 'uploaded', label: PROCESSING_STEP_LABELS.uploaded },
+  { status: 'transcribing', label: PROCESSING_STEP_LABELS.transcribing },
+  { status: 'generating', label: PROCESSING_STEP_LABELS.generating },
+  { status: 'completed', label: PROCESSING_STEP_LABELS.completed },
 ] as const;
 
 const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'transcribed', 'generating', 'completed'];
@@ -67,7 +68,8 @@ function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
                 )}
               </View>
               <Text
-                className={`text-body ${
+                numberOfLines={2}
+                className={`flex-1 text-body ${
                   isComplete
                     ? 'text-brand-500 font-medium'
                     : isCurrent

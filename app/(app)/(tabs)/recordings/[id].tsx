@@ -5,7 +5,8 @@ import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { ChevronLeft, Check, AlertTriangle } from 'lucide-react-native';
+import { ChevronLeft, Check, AlertTriangle, FileText } from 'lucide-react-native';
+import * as Haptics from 'expo-haptics';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { recordingsApi } from '../../../../src/api/recordings';
@@ -15,6 +16,8 @@ import { SoapNoteView } from '../../../../src/components/SoapNoteView';
 import { Button } from '../../../../src/components/ui/Button';
 import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
+import { draftStorage } from '../../../../src/lib/draftStorage';
+import { fileExists } from '../../../../src/lib/fileOps';
 
 const PROCESSING_STEPS = [
   { status: 'uploading', label: 'Uploading' },
@@ -148,7 +151,7 @@ export default function RecordingDetailScreen() {
     refetchInterval: (query) => {
       if (!isAppActive) return false;
       const status = query.state.data?.status;
-      if (!status || ['completed', 'failed', 'pending_metadata'].includes(status)) {
+      if (!status || ['completed', 'failed', 'pending_metadata', 'draft'].includes(status)) {
         pollingStartedAtRef.current = null;
         return false;
       }
@@ -187,7 +190,7 @@ export default function RecordingDetailScreen() {
   const isPollingStale =
     !!pollingStartedAtRef.current &&
     Date.now() - pollingStartedAtRef.current > 30 * 60 * 1000 &&
-    !['completed', 'failed', 'pending_metadata'].includes(recording?.status ?? '');
+    !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording?.status ?? '');
 
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
@@ -202,6 +205,94 @@ export default function RecordingDetailScreen() {
       );
     },
   });
+
+  // For draft recordings, figure out whether the audio is on THIS device.
+  // If a matching local draft exists and all segments are present, the user
+  // can resume in the Record screen. Otherwise the draft is orphaned (created
+  // on another device, or local storage cleared) and the only sensible action
+  // from here is to delete it.
+  const [draftLocalSlotId, setDraftLocalSlotId] = useState<string | null>(null);
+  const [draftResolved, setDraftResolved] = useState(false);
+
+  useEffect(() => {
+    if (!recording || recording.status !== 'draft' || !id) {
+      setDraftLocalSlotId(null);
+      setDraftResolved(true);
+      return;
+    }
+
+    let cancelled = false;
+    setDraftResolved(false);
+    draftStorage
+      .listDrafts()
+      .then((drafts) => {
+        if (cancelled) return;
+        const match = drafts.find((d) => d.serverDraftId === id);
+        if (match && match.segments.length > 0 && match.segments.every((s) => fileExists(s.uri))) {
+          setDraftLocalSlotId(match.slotId);
+        } else {
+          setDraftLocalSlotId(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDraftLocalSlotId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setDraftResolved(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [recording, id]);
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!id) return;
+      await recordingsApi.delete(id);
+      // If a local draft points at this server row, purge it too so the
+      // "Not Submitted" card won't resurrect on next focus.
+      if (draftLocalSlotId) {
+        await draftStorage.deleteDraft(draftLocalSlotId).catch(() => {});
+      }
+    },
+    onSuccess: () => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      queryClient.removeQueries({ queryKey: ['recording', id] });
+      router.navigate('/recordings');
+    },
+    onError: (error: Error) => {
+      Alert.alert(
+        'Delete Failed',
+        error instanceof ApiError ? error.message : 'Could not delete this draft. Please try again.'
+      );
+    },
+  });
+
+  const confirmDeleteDraft = useCallback(() => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    Alert.alert(
+      'Delete Draft?',
+      'This will permanently remove the draft from your account. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteMutation.mutate();
+          },
+        },
+      ]
+    );
+  }, [deleteMutation]);
+
+  const handleResumeDraft = useCallback(() => {
+    if (!draftLocalSlotId) return;
+    Haptics.selectionAsync().catch(() => {});
+    router.navigate(`/record?draftSlotId=${draftLocalSlotId}` as never);
+  }, [draftLocalSlotId, router]);
 
   if (isError) {
     return (
@@ -230,7 +321,7 @@ export default function RecordingDetailScreen() {
     return <DetailSkeleton />;
   }
 
-  const isProcessing = !['completed', 'failed', 'pending_metadata'].includes(recording.status);
+  const isProcessing = !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording.status);
   const parsedDate = new Date(recording.createdAt);
   const formattedDate = isNaN(parsedDate.getTime())
     ? ''
@@ -359,6 +450,76 @@ export default function RecordingDetailScreen() {
               </View>
             </View>
           </Card>
+        )}
+
+        {/* Draft — two shapes depending on whether the audio is on this device.
+            Resume path is reachable via normal card-tap routing in
+            RecordingCard; this screen shows up when the audio isn't local,
+            or when the user deep-linked here directly. */}
+        {recording.status === 'draft' && draftResolved && (
+          draftLocalSlotId ? (
+            <Card className="mx-5 mb-4">
+              <View className="flex-row items-start">
+                <View className="mr-2 mt-0.5"><FileText color="#0d8775" size={18} /></View>
+                <View className="flex-1">
+                  <Text className="text-body font-semibold text-stone-900 mb-1">
+                    Finish Recording
+                  </Text>
+                  <Text className="text-body-sm text-stone-500 mb-3">
+                    This draft was saved on this device. Continue to review and
+                    submit it for SOAP note generation.
+                  </Text>
+                  <View className="flex-row gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onPress={handleResumeDraft}
+                      disabled={deleteMutation.isPending}
+                      accessibilityLabel="Continue recording"
+                    >
+                      Continue Recording
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onPress={confirmDeleteDraft}
+                      loading={deleteMutation.isPending}
+                      accessibilityLabel="Delete draft"
+                    >
+                      Delete Draft
+                    </Button>
+                  </View>
+                </View>
+              </View>
+            </Card>
+          ) : (
+            <Card className="mx-5 mb-4 border-warning-200">
+              <View className="flex-row items-start">
+                <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+                <View className="flex-1">
+                  <Text className="text-body font-semibold text-warning-700 mb-1">
+                    Audio Not on This Device
+                  </Text>
+                  <Text className="text-body-sm text-stone-500 mb-3">
+                    This draft was started on another device, or its local audio
+                    was cleared from this one. Submit it from the device where
+                    you recorded it, or delete it here to clean up.
+                  </Text>
+                  <View className="self-start">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onPress={confirmDeleteDraft}
+                      loading={deleteMutation.isPending}
+                      accessibilityLabel="Delete draft"
+                    >
+                      Delete Draft
+                    </Button>
+                  </View>
+                </View>
+              </View>
+            </Card>
+          )
         )}
 
         {/* Failed */}

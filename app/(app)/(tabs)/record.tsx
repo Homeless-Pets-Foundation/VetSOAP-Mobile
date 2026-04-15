@@ -368,7 +368,12 @@ function RecordingSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- guard runs only when recorder ownership changes, reading slots is intentionally from current render
   }, [session.recorderBoundToSlotId]);
 
-  const discardCurrentSession = useCallback(async () => {
+  const discardCurrentSession = useCallback(async (opts?: { preserveDraftSlotIds?: string[] }) => {
+    // Callers that are about to load a draft (or that want to keep other
+    // Home-visible drafts alive) pass their ids here so the cleanup loop
+    // below doesn't silently delete the very rows the next step relies on.
+    const preserve = new Set(opts?.preserveDraftSlotIds ?? []);
+
     pendingStartSlotRef.current = null;
     pendingStashRef.current = false;
 
@@ -400,8 +405,12 @@ function RecordingSession() {
       // abandoning this session entirely.
       deleteOrphanServerRecording(slot);
       // Also delete the auto-saved draft (local + server) so the discarded
-      // recording doesn't linger as a "Not Submitted" row on Home.
-      deleteSlotDraft(slot);
+      // recording doesn't linger as a "Not Submitted" row on Home — unless
+      // the caller asked us to keep it (e.g. resume-from-Home is about to
+      // load that draft and would otherwise read a freshly-deleted key).
+      if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {
+        deleteSlotDraft(slot);
+      }
     });
 
     // Release the pinned stash (if any) so the SecureStore entry and audio dir
@@ -1240,7 +1249,42 @@ function RecordingSession() {
 
   useEffect(() => {
     if (!draftSlotId) return;
-    if (unsavedCount > 0) {
+
+    const currentSlots = sessionRef.current.slots;
+
+    // Gather every draft currently represented in the session — these are
+    // all Home-visible "Not Submitted" cards. Any discard path taken below
+    // must preserve them, otherwise switching to one draft silently deletes
+    // the others (they were never the user's intent to throw away).
+    const preserveIds = new Set<string>([draftSlotId]);
+    for (const s of currentSlots) {
+      if (s.draftSlotId) preserveIds.add(s.draftSlotId);
+    }
+    const preserveList = Array.from(preserveIds);
+
+    // If the target draft already lives in the session (user just pressed
+    // Finish → Home → tapped the card for the same slot), the session is
+    // already the draft. Scroll the pager to it, clear the param, done.
+    const alreadyLoadedIndex = currentSlots.findIndex((s) => s.draftSlotId === draftSlotId);
+    if (alreadyLoadedIndex >= 0) {
+      setActiveIndex(alreadyLoadedIndex);
+      router.replace('/(tabs)/record' as any);
+      return;
+    }
+
+    // "Truly unsaved" = work that would actually be lost if we reset the
+    // session: in-memory segments with no draft saved, or a live/paused
+    // recorder. Drafted slots are durable on disk + server, so loading a
+    // different draft doesn't lose them — we skip the warning dialog and
+    // let the preserve list keep their rows intact.
+    const trulyUnsaved = currentSlots.some(
+      (s) =>
+        (s.segments.length > 0 && !s.draftSlotId && s.uploadStatus !== 'success') ||
+        s.audioState === 'recording' ||
+        s.audioState === 'paused'
+    );
+
+    if (trulyUnsaved) {
       Alert.alert(
         'Replace Current Session?',
         'You have unsaved recordings in progress. Loading this draft will replace them.',
@@ -1251,7 +1295,7 @@ function RecordingSession() {
             style: 'destructive',
             onPress: () => {
               (async () => {
-                await discardCurrentSession();
+                await discardCurrentSession({ preserveDraftSlotIds: preserveList });
                 await loadDraft(draftSlotId);
               })().catch(() => {});
             },
@@ -1260,8 +1304,14 @@ function RecordingSession() {
       );
       return;
     }
-    loadDraft(draftSlotId).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally omit unsavedCount, discardCurrentSession, loadDraft; effect should only fire when route param changes, not on every state change
+
+    // No live work to protect. Reset the in-memory session (preserving all
+    // drafts) and load the target.
+    (async () => {
+      await discardCurrentSession({ preserveDraftSlotIds: preserveList });
+      await loadDraft(draftSlotId);
+    })().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally omit unsavedCount, discardCurrentSession, loadDraft, setActiveIndex, router; effect should only fire when route param changes, not on every state change
   }, [draftSlotId]);
 
   // Effect: check for pending drafts and update banner state

@@ -136,6 +136,15 @@ function RecordingSession() {
     dispatch,
   } = useMultiPatientSession(defaultTemplate?.id);
 
+  // Always-current mirror of `session`. Callbacks that need fresh state at
+  // invocation time read from `sessionRef.current` and drop `session.*` from
+  // their deps. This makes handler identity stable, which lets memoized
+  // children (PatientSlotCard) keep them across renders without hiding state
+  // updates behind stale closures. The assignment runs on every render before
+  // any of our effects/handlers fire.
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+
   const {
     stashes,
     stashCount,
@@ -723,7 +732,12 @@ function RecordingSession() {
   // -- Upload handlers --
 
   const uploadSlot = useCallback(
-    async (slot: PatientSlot): Promise<string | null> => {
+    async (slotArg: PatientSlot): Promise<string | null> => {
+      // Re-read the latest slot from state. A stale closure (e.g. held by a
+      // memoized child or an async caller) can pass in a slot object from
+      // before the most recent `SET_DRAFT_IDS` dispatch — reading fresh here
+      // guarantees we see `serverDraftId` / `draftMetadataDirty` / etc.
+      const slot = sessionRef.current.slots.find((s) => s.id === slotArg.id) ?? slotArg;
       if (slot.segments.length === 0 || slot.uploadStatus === 'uploading') return null;
       if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
       // Synchronous ref guard — prevents a second concurrent upload of the same slot
@@ -926,7 +940,7 @@ function RecordingSession() {
 
   const handleSubmitSingle = useCallback(
     (slotId: string) => {
-      const slot = session.slots.find((s) => s.id === slotId);
+      const slot = sessionRef.current.slots.find((s) => s.id === slotId);
       if (!slot) return;
       if (slotHasLiveRecorder(slot)) {
         Alert.alert(
@@ -948,7 +962,7 @@ function RecordingSession() {
             queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
 
             // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
-            const otherSlotsWithRecordings = session.slots.some(
+            const otherSlotsWithRecordings = sessionRef.current.slots.some(
               (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
                 (s.segments.length > 0 || s.audioState === 'recording' || s.audioState === 'paused')
             );
@@ -975,11 +989,11 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [clearSubmitIntent, markSubmitIntent, session.slots, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny]
+    [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny]
   );
 
   const handleSubmitAll = useCallback(() => {
-    if (session.slots.some(slotHasLiveRecorder)) {
+    if (sessionRef.current.slots.some(slotHasLiveRecorder)) {
       Alert.alert(
         'Finish Active Recordings',
         'Finish or discard all active recording segments before submitting all patients.'
@@ -987,7 +1001,7 @@ function RecordingSession() {
       return;
     }
 
-    const slotsToUpload = session.slots.filter(
+    const slotsToUpload = sessionRef.current.slots.filter(
       (s) => s.segments.length > 0 &&
         s.uploadStatus !== 'success' &&
         s.uploadStatus !== 'uploading' &&
@@ -1041,7 +1055,7 @@ function RecordingSession() {
       setSubmittingSlotId(null);
       setTotalSlotsToUpload(0);
     });
-  }, [clearSubmitIntent, markSubmitIntent, session.slots, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny]);
+  }, [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();

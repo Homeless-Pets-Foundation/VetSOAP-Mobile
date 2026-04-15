@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, Pressable, Switch, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { LogOut, User, ChevronLeft, Shield } from 'lucide-react-native';
+import { LogOut, User, ChevronLeft, Shield, Smartphone, ChevronRight } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
@@ -153,6 +153,27 @@ export default function SettingsScreen() {
             />
           </View>
         )}
+
+        <Pressable
+          onPress={() => {
+            Haptics.selectionAsync().catch(() => {});
+            router.push('/devices' as never);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Manage active devices"
+          className="card flex-row items-center min-h-[44px] mb-4"
+        >
+          <Smartphone color="#0d8775" size={iconSm} style={{ marginRight: 12 }} />
+          <View className="flex-1">
+            <Text className="text-body font-medium text-stone-900">
+              Manage Devices
+            </Text>
+            <Text className="text-caption text-stone-500">
+              View and revoke devices signed in to your account
+            </Text>
+          </View>
+          <ChevronRight color="#a8a29e" size={iconSm} />
+        </Pressable>
 
         {/* Sign Out */}
         <Pressable

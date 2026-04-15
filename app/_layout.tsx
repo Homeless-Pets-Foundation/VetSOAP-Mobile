@@ -8,6 +8,7 @@ import { configureGoogleSignIn } from '../src/auth/socialAuth';
 import { StatusBar } from 'expo-status-bar';
 import { CONFIG_MISSING } from '../src/config';
 import { queryClient } from '../src/lib/queryClient';
+import { DeviceLimitModal } from '../src/components/DeviceLimitModal';
 import '../global.css';
 
 // Initialize native Google Sign-In once at module load, before any component
@@ -79,6 +80,7 @@ export default function RootLayout() {
               <Stack.Screen name="(auth)" />
               <Stack.Screen name="(app)" />
             </Stack>
+            <DeviceLimitModal />
           </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>

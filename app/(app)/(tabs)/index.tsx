@@ -10,10 +10,11 @@ import Animated, {
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
-import { Mic, ChevronRight, FileText, Settings } from 'lucide-react-native';
+import { Mic, ChevronRight, FileText, Settings, ShieldAlert } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
+import { useDeviceCapacity } from '../../../src/hooks/useDeviceCapacity';
 import { recordingsApi } from '../../../src/api/recordings';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { RecordingCard } from '../../../src/components/RecordingCard';
@@ -21,6 +22,7 @@ import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { SkeletonCard } from '../../../src/components/ui/Skeleton';
 import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
+import { Banner } from '../../../src/components/ui/Banner';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -30,6 +32,7 @@ export default function HomeScreen() {
   const { iconMd, iconLg } = useResponsive();
   const ctaScale = useSharedValue(1);
   const isTabFocused = useIsFocused();
+  const { capacity } = useDeviceCapacity();
 
   const { data, error, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['recordings', 'recent'],
@@ -100,6 +103,28 @@ export default function HomeScreen() {
           <Settings color="#78716c" size={iconMd} />
         </Pressable>
       </Animated.View>
+
+      {/* Device limit warning */}
+      {capacity && (capacity.isAtLimit || capacity.isNearLimit) ? (
+        <View className="mb-4">
+          <Banner
+            variant={capacity.isAtLimit ? 'error' : 'warning'}
+            icon={ShieldAlert}
+            message={
+              capacity.isAtLimit
+                ? `Device limit reached (${capacity.count}/${capacity.limit}). Remove a device to add a new one.`
+                : `${capacity.count} of ${capacity.limit} devices in use. Manage your devices to free a slot.`
+            }
+            cta={{
+              label: 'Manage',
+              onPress: () => {
+                Haptics.selectionAsync().catch(() => {});
+                router.push('/devices' as never);
+              },
+            }}
+          />
+        </View>
+      ) : null}
 
       {/* Quick Action */}
       <AnimatedPressable

@@ -9,7 +9,11 @@ export class ApiError extends Error {
     message: string,
     public status: number,
     public isRetryable: boolean = false,
-    public details?: { field?: string; message: string }[]
+    public details?: { field?: string; message: string }[],
+    /** Server-supplied error code (e.g. DEVICE_LIMIT_REACHED) for branching. */
+    public code?: string,
+    /** Remaining error-body fields (e.g. capacity, existingDevices). */
+    public data?: Record<string, unknown>
   ) {
     super(message);
     this.name = 'ApiError';
@@ -230,12 +234,20 @@ export class ApiClient {
       const errorBody = await response.json().catch(() => ({})) ?? {};
       const details = Array.isArray(errorBody.details) ? errorBody.details : [];
       const message = this.buildErrorMessage(response.status, errorBody, details);
+      const code = typeof errorBody.code === 'string' ? errorBody.code : undefined;
+
+      // Strip the fields we lift to first-class properties so callers reading
+      // `data` aren't tempted to duplicate-read them.
+      const { error: _err, code: _code, details: _details, ...restData } = errorBody;
+      const hasData = Object.keys(restData).length > 0;
 
       throw new ApiError(
         message,
         response.status,
         response.status === 429 || response.status >= 500,
-        __DEV__ ? details : undefined
+        __DEV__ ? details : undefined,
+        code,
+        hasData ? (restData as Record<string, unknown>) : undefined
       );
     }
 

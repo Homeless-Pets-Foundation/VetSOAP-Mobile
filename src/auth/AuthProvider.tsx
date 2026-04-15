@@ -14,6 +14,7 @@ import {
 } from './socialAuth';
 import { secureStorage } from '../lib/secureStorage';
 import { apiClient, ApiError } from '../api/client';
+import type { DeviceCapacity, DeviceSession } from '../api/devices';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { draftStorage } from '../lib/draftStorage';
@@ -39,6 +40,16 @@ import type { User } from '../types';
  */
 type UserFetchState = 'idle' | 'loading' | 'success' | 'error';
 
+/**
+ * Surfaced when POST /api/device-sessions/register returns 403
+ * DEVICE_LIMIT_REACHED. Carries everything the hard-limit modal needs to
+ * render an actionable revoke list without a follow-up request.
+ */
+export interface DeviceRegistrationBlock {
+  existingDevices: DeviceSession[];
+  capacity: DeviceCapacity | null;
+}
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
@@ -51,6 +62,12 @@ interface AuthContextType {
   signInWithGoogle: () => Promise<AuthResult>;
   signInWithApple: () => Promise<AuthResult>;
   signOut: () => Promise<void>;
+  /** Set when device registration is blocked by the per-user device cap. */
+  deviceRegistrationBlock: DeviceRegistrationBlock | null;
+  /** User dismissed the modal manually (e.g. backdrop tap). */
+  dismissDeviceRegistrationBlock: () => void;
+  /** Retry register after the user revoked one of their devices. */
+  retryDeviceRegistration: () => Promise<boolean>;
 }
 
 export const AuthContext = createContext<AuthContextType>({
@@ -65,6 +82,9 @@ export const AuthContext = createContext<AuthContextType>({
   signInWithGoogle: async () => ({ error: null }),
   signInWithApple: async () => ({ error: null }),
   signOut: async () => {},
+  deviceRegistrationBlock: null,
+  dismissDeviceRegistrationBlock: () => {},
+  retryDeviceRegistration: async () => false,
 });
 
 /** Check if the Supabase session token has expired. */
@@ -155,6 +175,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [userFetchState, setUserFetchState] = useState<UserFetchState>('idle');
   const [userFetchError, setUserFetchError] = useState<string | null>(null);
+  const [deviceRegistrationBlock, setDeviceRegistrationBlock] =
+    useState<DeviceRegistrationBlock | null>(null);
 
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
@@ -205,12 +227,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
         appVersion: require('../../package.json').version,
       });
+      // Successful register clears any prior limit-block state — a revoke
+      // from another device may have freed a slot since the last attempt.
+      setDeviceRegistrationBlock(null);
       return true;
     } catch (error) {
       if (__DEV__) console.log('[Auth] device registration failed:', error);
+      // Surface DEVICE_LIMIT_REACHED to the modal so the user can revoke
+      // an existing device and retry. Other errors stay silent — the next
+      // /api/* call will surface networking or server problems on its own.
+      if (error instanceof ApiError && error.code === 'DEVICE_LIMIT_REACHED') {
+        const data = error.data ?? {};
+        const existingDevices = Array.isArray(data.existingDevices)
+          ? (data.existingDevices as DeviceSession[])
+          : [];
+        const capacity =
+          data.capacity && typeof data.capacity === 'object'
+            ? (data.capacity as DeviceCapacity)
+            : null;
+        setDeviceRegistrationBlock({ existingDevices, capacity });
+      }
       return false;
     }
   }, []);
+
+  const dismissDeviceRegistrationBlock = useCallback(() => {
+    setDeviceRegistrationBlock(null);
+  }, []);
+
+  const retryDeviceRegistration = useCallback(
+    () => registerDevice(),
+    [registerDevice]
+  );
 
   const fetchUser = useCallback(async () => {
     const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
@@ -330,6 +378,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
     setUserFetchState('idle');
     setUserFetchError(null);
+    setDeviceRegistrationBlock(null);
   }, []);
 
   // Mutex for token refresh: prevents concurrent 401 handlers from racing
@@ -500,6 +549,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             draftStorage.setUserId(null);
             setUser(null);
             setSession(null);
+            setDeviceRegistrationBlock(null);
           }
         } catch (error) {
           if (__DEV__) console.error('[Auth] onAuthStateChange error:', error);
@@ -631,6 +681,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signInWithGoogle,
         signInWithApple,
         signOut: handleSignOut,
+        deviceRegistrationBlock,
+        dismissDeviceRegistrationBlock,
+        retryDeviceRegistration,
       }}
     >
       {children}

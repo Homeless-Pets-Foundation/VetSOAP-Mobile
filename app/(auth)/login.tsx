@@ -134,14 +134,19 @@ export default function LoginScreen() {
       >
         <View style={{ width: '100%', maxWidth: scale(400) }}>
         {/* Logo / Brand */}
-        <Animated.View entering={FadeInDown.duration(500)} className="items-center mb-10">
+        <Animated.View entering={FadeInDown.duration(500)} className="items-center mb-10 w-full">
           <Image
             source={require('../../assets/logo-wordmark.png')}
             style={{ width: '70%', maxWidth: 320, aspectRatio: 600 / 139 }}
             resizeMode="contain"
             accessibilityLabel="Captivet"
           />
-          <Text className="text-body text-stone-500 mt-3">
+          <Text
+            className="text-body text-stone-500 mt-3"
+            style={{ textAlign: 'center' }}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+          >
             Sign in to your account
           </Text>
         </Animated.View>

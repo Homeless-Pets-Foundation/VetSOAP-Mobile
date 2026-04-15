@@ -347,14 +347,14 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         </View>
 
         {isStopped && hasSegments && !isRecorderOwner && (
-          <Text className="text-caption text-stone-400 mt-2 text-center">
+          <Text className="text-caption text-stone-400 mt-2" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             Processing usually takes 1-2 minutes.
           </Text>
         )}
 
         {/* Idle with existing segments: show info that new recording will be appended */}
         {audioState === 'idle' && hasSegments && (
-          <Text className="text-caption text-brand-600 mt-3 text-center">
+          <Text className="text-caption text-brand-600 mt-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             {slot.segments.length} segment{slot.segments.length > 1 ? 's' : ''} recorded ({formatDuration(slot.audioDuration)}). New recording will be appended.
           </Text>
         )}

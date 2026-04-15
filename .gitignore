@@ -40,7 +40,12 @@ firebase-debug.log
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 AGENTS.local.md
+
+# Local server-patch workflow (not part of the app)
+.server_patch/
+.server_repo_link
 
 # sensitive config (credentials, keys)
 credentials.json

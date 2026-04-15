@@ -2,38 +2,36 @@
 
 ## Architecture
 
-- **Framework:** Expo SDK 55, React Native 0.83.4, React 19
-- **Routing:** expo-router (file-based, `app/` directory)
-- **State:** React Query for server state, React context for auth, useReducer for multi-patient session
-- **Styling:** NativeWind v4 (Tailwind CSS via `global.css`)
-- **Auth:** Supabase Auth with `expo-secure-store` token persistence
-- **Build:** EAS Build (managed workflow, no bare `android/` or `ios/` committed)
+- **Framework:** Expo SDK 55, RN 0.83.4, React 19
+- **Routing:** expo-router (file-based, `app/`)
+- **State:** React Query = server; Context = auth; useReducer = multi-patient session
+- **Styling:** NativeWind v4 (Tailwind via `global.css`)
+- **Auth:** Supabase + `expo-secure-store` token persist
+- **Build:** EAS managed (no `android/`/`ios/` committed)
 
 ## Shared Infrastructure
 
-The mobile app, web app (Captivet Connect), and production API server **must** all authenticate against the same Supabase project. User accounts exist in one Supabase instance — if any client points to a different project, auth will silently fail.
+Mobile, web (Captivet Connect), prod API — **all** auth vs same Supabase project. Wrong project → silent auth fail.
 
 | Service | Value |
 |---|---|
-| **Supabase project ref** | `shdzitupjltfyembqowp` |
-| **Supabase URL** | `https://shdzitupjltfyembqowp.supabase.co` |
-| **Production API** | `https://api-production-8e5e.up.railway.app` |
+| Supabase ref | `shdzitupjltfyembqowp` |
+| Supabase URL | `https://shdzitupjltfyembqowp.supabase.co` |
+| Prod API | `https://api.captivet.com` |
 
-These are the single sources of truth. The `.env` file and EAS secrets must match these values.
+Source of truth. `.env` + EAS secrets must match.
 
 ## Critical Crash Prevention Rules
 
-These rules come from production crash audits. Violating them will cause crashes on Android APKs.
+From prod crash audits. Break → Android APK crashes.
 
-### 1. Never throw at module load time in production
+### 1. Never throw at module load
 
-`src/config.ts` exports a `CONFIG_MISSING` flag instead of throwing. `src/auth/supabase.ts` uses a placeholder Supabase client when config is missing. Any new module-level initialization that depends on env vars or external state **must** degrade gracefully — never `throw` at the top level.
+`src/config.ts` exports `CONFIG_MISSING`, no throw. `src/auth/supabase.ts` uses placeholder client if config missing. New module-level init on env/external state **must** degrade gracefully — never `throw` at top level.
 
-### 2. Never pass raw `async` functions to void-returning callbacks
+### 2. Never pass async fn to void callback
 
-React Native callbacks (`onPress`, `onValueChange`, `AppState.addEventListener`, `Alert.onPress`, `Switch.onValueChange`, `RefreshControl.onRefresh`) are typed as returning `void`. Passing an `async` function discards the returned Promise. On Hermes (Android production), an unhandled promise rejection from a discarded Promise is a **fatal crash**.
-
-**Always** wrap async work in try/catch when called from these callbacks:
+RN callbacks (`onPress`, `onValueChange`, `AppState.addEventListener`, `Alert.onPress`, `Switch.onValueChange`, `RefreshControl.onRefresh`) typed `() => void` → async fn → discarded Promise. Hermes + unhandled rejection = **fatal crash**.
 
 ```tsx
 // BAD — unhandled rejection crashes Hermes
@@ -51,19 +49,13 @@ const handleChange = async (v: boolean) => {
 <Switch onValueChange={handleChange} />
 ```
 
-### 3. Always wrap SecureStore / Keystore operations in try/catch
+### 3. Always wrap SecureStore / Keystore in try/catch
 
-`expo-secure-store` delegates to Android Keystore which can throw in real-world scenarios:
-- Keystore corruption after failed OS updates
-- Direct Boot mode (before first unlock)
-- Low storage conditions
-- Key permanently invalidated after screen lock changes
-
-`src/lib/secureStorage.ts` and `src/lib/biometrics.ts` wrap every call. **Never** call `SecureStore.*` directly elsewhere — always go through these wrappers.
+`expo-secure-store` → Android Keystore. Throws on: Keystore corruption after failed OS update, Direct Boot (pre-unlock), low storage, key invalidated after screen-lock change. `src/lib/secureStorage.ts` + `src/lib/biometrics.ts` wrap every call. **Never** call `SecureStore.*` direct — always wrappers.
 
 ### 4. Never fire-and-forget Promises without `.catch()`
 
-Any Promise that is not `await`-ed **must** have a `.catch()` or be inside a try/catch. Common offenders:
+Non-awaited Promise **must** have `.catch()` or be inside try/catch.
 
 ```tsx
 // BAD — if setToken rejects, app crashes
@@ -73,12 +65,12 @@ secureStorage.setToken(token);
 secureStorage.setToken(token).catch(() => {});
 
 // GOOD
-await secureStorage.setToken(token); // inside a try/catch block
+await secureStorage.setToken(token); // inside try/catch block
 ```
 
-### 5. Always use `finally` for loading state cleanup
+### 5. Always use `finally` for loading state
 
-If a function sets `isLoading = true`, the `false` reset **must** be in a `finally` block, not after the await. Otherwise, any thrown exception leaves the UI permanently stuck in a loading state.
+`isLoading = true` → reset in `finally`. Throw between → UI stuck loading forever.
 
 ```tsx
 // BAD — isLoading stuck on throw
@@ -95,21 +87,21 @@ try {
 }
 ```
 
-### 6. Guard biometric/auth async flows in AppState handlers
+### 6. Guard biometric/auth in AppState handlers
 
-`AppState.addEventListener('change', handler)` discards async return values. The handler **must** have an outer try/catch, and `isAuthenticating` state must be reset in a `finally` block. Otherwise a biometric hardware error permanently locks the app with no escape.
+`AppState.addEventListener('change', handler)` discards async. Handler **must** have outer try/catch + reset `isAuthenticating` in `finally`. Else biometric hw error → app permanently locked.
 
-### 7. expo-audio recording operations can throw at any time
+### 7. expo-audio ops throw anytime
 
-`pause()`, `record()`, `stop()` throw if the audio session is interrupted (phone call, audio focus lost, permission revoked). Callers in `record.tsx` must wrap in try/catch with user-visible error feedback (Alert). Note: `pause()` and `record()` are synchronous in expo-audio; only `stop()` and `prepareToRecordAsync()` are async. In the `useAudioRecorder` hook, `pause()` and `resume()` catch errors, perform internal cleanup (stop recorder, save URI, reset audio mode), then **rethrow** — callers must handle the rethrown error (typically by showing a "Recording Saved" alert).
+`pause()`, `record()`, `stop()` throw on interrupt (call, focus lost, permission revoked). `record.tsx` wraps in try/catch + Alert. `pause()` + `record()` sync; `stop()` + `prepareToRecordAsync()` async. In `useAudioRecorder`: `pause()`/`resume()` catch, cleanup (stop recorder, save URI, reset audio mode), then **rethrow** — callers handle (show "Recording Saved" alert).
 
-### 8. Keep `validateRequestUrl()` inside the try block in `ApiClient.request()`
+### 8. Keep `validateRequestUrl()` inside try in `ApiClient.request()`
 
-SSL pinning validation must be inside the try/catch so the `finally` block can still run `clearTimeout(timeout)`. Moving it outside causes timer leaks and uncaught exceptions.
+SSL pin validation inside try/catch so `finally` runs `clearTimeout(timeout)`. Move out → timer leak + uncaught throw.
 
-### 9. Always add `.catch(() => {})` to Haptics calls
+### 9. Always `.catch(() => {})` on Haptics
 
-Every `Haptics.*Async()` call (`impactAsync`, `selectionAsync`, `notificationAsync`) returns a Promise that rejects on devices without haptic hardware (tablets, emulators, budget phones). Since Haptics calls are always fire-and-forget inside sync callbacks, the rejected Promise is unhandled — fatal on Hermes.
+`Haptics.*Async()` rejects on devices lacking haptic hw (tablets, emulators, budget phones). Always fire-and-forget in sync callbacks → unhandled → Hermes fatal.
 
 ```tsx
 // BAD — crashes on devices without haptic motor
@@ -119,88 +111,123 @@ Haptics.selectionAsync();
 Haptics.selectionAsync().catch(() => {});
 ```
 
-This applies everywhere including the shared `Button` component (`src/components/ui/Button.tsx`), which runs on every button press in the app.
+Applies everywhere incl. shared `Button` (`src/components/ui/Button.tsx`) — every press.
 
-### 10. Sign-out must await PHI cleanup before clearing auth state
+### 10. Sign-out awaits PHI cleanup before clearing auth
 
-`handleSignOut` in `AuthProvider.tsx` awaits all data cleanup (stash storage, stash audio, cache audio, editor temp files) via `Promise.all` **before** calling `setUser(null)` and `setSession(null)`. This prevents a race where the next user signs in while the previous user's data is still being deleted on the shared tablet. The cleanup has retry logic and `.catch()` to avoid blocking sign-out indefinitely. In-memory state (audio editor bridge, clipboard) is also cleared.
+`handleSignOut` in `AuthProvider.tsx` awaits all cleanup (stash storage, stash audio, cache audio, editor temp, drafts) via `Promise.all` **before** `setUser(null)` + `setSession(null)`. Prevents next-user-signs-in-during-prev-user-cleanup race on shared tablets. Cleanup has retry + `.catch()` to not block. In-memory state (audio editor bridge, clipboard) also cleared.
 
 ### 11. Audio recorder hook must recover from native failures
 
-`useAudioRecorder` operations (`stop`, `pause`, `resume`) call expo-audio methods that can throw at any time. Each has a different error strategy:
+`useAudioRecorder` ops call expo-audio → can throw anytime:
+- **`stop()`** — swallow errors (try/catch, no rethrow). State + URI always cleaned.
+- **`pause()` / `resume()`** — catch, cleanup (capture duration, force `recorder.stop()`, save URI, state → `stopped`, reset audio mode), **rethrow**. Callers catch → show user feedback.
 
-- **`stop()`** — swallows errors (try/catch with no rethrow). State and URI are always cleaned up.
-- **`pause()` / `resume()`** — catch errors, perform cleanup (capture duration, force `recorder.stop()`, save URI, set state to `stopped`, reset audio mode), then **rethrow**. Callers must catch the rethrown error and show user feedback (e.g. "Recording Saved" alert).
+Without → one native fail permanently corrupts hook.
 
-Without this recovery, a single native failure permanently corrupts the hook — subsequent interactions crash.
+Recorder via expo-audio `useAudioRecorder` → auto-releases on unmount. Polling via `useAudioRecorderState(recorder, 500)` (500ms = responsiveness vs CPU on weak hw).
 
-The recorder is created via expo-audio's `useAudioRecorder` hook which auto-releases native resources on unmount. Status polling uses `useAudioRecorderState(recorder, 500)` for duration and metering updates (500ms balances responsiveness with CPU usage on weak hardware).
+### 12. Validate local files before upload
 
-### 12. Validate local file reads before upload
+`recordingsApi.createWithFile()` + `createWithSegments()` — check `getInfoAsync(uri)` pre-upload. 250MB/file client limit (`MAX_FILE_SIZE_BYTES`), 10min timeout (`R2_UPLOAD_TIMEOUT_MS`) via `withTimeout()`. `createWithSegments()` validates each segment. Missing/empty → user-friendly throw, not silent 0-byte upload.
 
-In `recordingsApi.createWithFile()` and `createWithSegments()`, always check file existence and size via `getInfoAsync(uri)` before uploading. Enforce a 250MB per-file limit client-side (`MAX_FILE_SIZE_BYTES`). Both methods use a 10-minute timeout (`R2_UPLOAD_TIMEOUT_MS`) per upload via `withTimeout()`. `createWithSegments()` validates each segment independently. A missing or empty audio file should throw a user-friendly error rather than silently uploading a 0-byte file.
+### 13. Guard `response.json()` against null + unexpected shapes
 
-### 13. Guard `response.json()` results against null and unexpected shapes
+API error body can be literal `null` (valid JSON). Always `?? {}` after `.catch(() => ({}))`. `Array.isArray()` before `.map()` on fields like `details`.
 
-API error bodies can be literal `null` (valid JSON). Always use `?? {}` after `.catch(() => ({}))` on error-path `response.json()` calls. Similarly, use `Array.isArray()` to validate array fields like `details` before calling `.map()`.
+### 14. Guard `new Date()` before Intl
 
-### 14. Guard `new Date()` before calling Intl formatting methods
+`new Date(null)` / `new Date(undefined)` → "Invalid Date". Hermes + `.toLocaleDateString()` w/ Intl options → `RangeError`. Check `isNaN(parsedDate.getTime())` first.
 
-`new Date(null)` or `new Date(undefined)` produces an "Invalid Date" object. On Hermes, calling `.toLocaleDateString()` with Intl options on an Invalid Date throws a `RangeError`. Always check `isNaN(parsedDate.getTime())` before formatting.
+### 15. Wrap `refetch` before RefreshControl/onRefresh
 
-### 15. Wrap `refetch` before passing to RefreshControl/onRefresh
+`refetch()` returns Promise; `RefreshControl.onRefresh` typed `() => void`. Wrap: `() => { refetch().catch(() => {}); }`.
 
-React Query's `refetch()` returns a Promise. `RefreshControl.onRefresh` is typed as `() => void`, so the Promise is discarded. Wrap it: `() => { refetch().catch(() => {}); }`.
+### 16. Gate `console.error` behind `__DEV__`
 
-### 16. Gate all `console.error` behind `__DEV__`
+Android `console.error` visible via `adb logcat` even on release. Shared clinic tablets + USB = PHI leak risk. All `console.error` → `if (__DEV__) console.error(...)`.
 
-On Android, `console.error` output is readable via `adb logcat` even on release builds. On shared clinic tablets, this could leak internal state to anyone with USB access. All `console.error` calls must be wrapped: `if (__DEV__) console.error(...)`.
+### 17. Stash/draft ops require user ID first
 
-### 17. Stash operations require user ID to be set first
+`stashStorage`, `stashAudioManager`, `draftStorage` — all user-scoped to prevent cross-user leak on shared tablets. All expose `setUserId(userId)` — **must** be called before any read/write. Called in `fetchUser()` in `AuthProvider.tsx`. Cleanup (orphaned dirs, legacy migration, orphan drafts) runs **after** `setUserId` — never on timer that could fire before `fetchUser`.
 
-`stashStorage` and `stashAudioManager` scope all data by user ID to prevent cross-user data leakage on shared tablets. Both modules have a `setUserId(userId)` method that **must** be called before any read/write operations. `setUserId` is called inside `fetchUser()` in `AuthProvider.tsx`. Stash cleanup (orphaned directories, legacy migration) must run **after** `setUserId` — never on a timer that could fire before `fetchUser` completes.
+### 18. Upload URL validation fail-closed
 
-### 18. Upload URL validation is fail-closed
+`validateUploadUrl()` in `sslPinning.ts` throws if `R2_BUCKET_HOSTNAME` empty. All uploads fail in prod if EAS secret missing — intentional. Upload to unvalidated URL worse than failing.
 
-`validateUploadUrl()` in `sslPinning.ts` throws if `R2_BUCKET_HOSTNAME` is not configured (empty string). This means all uploads will fail in production if the EAS secret is missing. This is intentional — uploading recordings to an unvalidated URL is worse than failing.
+### 19. Validate segment URIs before accept
 
-### 19. Validate audio segment URIs before accepting them
+`RESTORE_SESSION` + `REPLACE_ALL_SEGMENTS` in `useMultiPatientSession.ts` run `validateSegments()` → keep only local `file://` or absolute `/`. Blocks corrupted stash / compromised editor bridge from injecting remote URL that exfiltrates audio on upload.
 
-`RESTORE_SESSION` and `REPLACE_ALL_SEGMENTS` in `useMultiPatientSession.ts` run `validateSegments()` which filters to only local `file://` or absolute `/` paths. This prevents corrupted stash data or a compromised audio editor bridge from injecting remote URLs that would exfiltrate audio during upload.
+### 20. Distinguish user sign-out from session expiry in `onAuthStateChange`
+
+Supabase emits `SIGNED_OUT` for explicit sign-out **and** expired/failed refresh. Clearing on every `SIGNED_OUT` → logs users out on transient network fail. Two refs in `AuthProvider.tsx`:
+
+- **`userInitiatedSignOutRef`** — `true` inside `handleSignOut()`, reset on next sign-in. `SIGNED_OUT` + this `false` → try one `refreshSession()` before clearing.
+- **`sessionRecoveryAttemptedRef`** — caps recovery at once per cycle. Reset on successful sign-in or recovery.
+
+Don't remove either or collapse paths → reintroduces "transient glitch logs out user" bug OR infinite recovery loop.
+
+### 21. Supabase session storage writes must read-back verify
+
+Post-rotate, old refresh token invalidated server-side. SecureStore silent fail → no valid refresh token → next refresh fails → user logged out despite successful rotation.
+
+Adapter in `src/auth/supabase.ts`: `setItem` writes → reads back → retries once if differ. On throw, wait 1.5s + retry. Never simplify to bare `await secureStorage.setSession(value)`.
+
+### 22. Foreground-resume refresh reads current session, not closure
+
+`AppState` `'active'` handler in `AuthProvider.tsx` calls `supabase.auth.getSession()` inside handler. Closure over `session?.expires_at` → stale / null `expires_at` from SecureStore → refresh skipped entirely. Effect deps stay `[]` — `supabase` module-singleton, `refreshPromiseRef` ref.
+
+### 23. Lazy-load optional native auth modules
+
+`@react-native-google-signin/google-signin`, `expo-apple-authentication`, `expo-crypto` — `require()` on first use in `src/auth/socialAuth.ts`, **not** static import. Old dev-client APKs pre-these-deps → crash on module load if static. New optional native auth module → same pattern.
+
+Google Sign-In Expo config plugin in `app.config.ts` conditionally included only when `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` set — Android builds don't need iOS URL scheme; unconditional → prebuild fails on Android-only dev.
+
+### 24. Propagate new PatientSlot fields through stash round-trip
+
+Fields on `PatientSlot` that affect `uploadSlot` server behavior (`serverRecordingId`, `serverDraftId`, future idempotency keys) **must** land in all three sites:
+
+1. `StashedSlot` type (`src/types/stash.ts`)
+2. `stashAudioManager.moveSegmentsToStashDir()` write (`src/lib/stashAudioManager.ts`)
+3. `useStashedSessions.convertToPatientSlots()` read (`src/hooks/useStashedSessions.ts`) + its local param type
+
+Miss any → Resume strips field → Submit hits fresh-create → duplicate server recording. Fix e.g. `397f109`.
 
 ## Device Binding
 
-The mobile app sends an `X-Device-Id` header on every API request. The device ID is a UUID v4 generated on first launch and persisted in SecureStore (survives sign-out — it's device-scoped, not user-scoped). The server's `validateDeviceSession` middleware requires this header and can revoke specific devices.
+Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, persist in SecureStore (survives sign-out — device-scoped, not user-scoped). Server `validateDeviceSession` requires it, can revoke specific devices.
 
-- `secureStorage.getDeviceId()` — generates and caches the device UUID
-- `ApiClient.doFetch()` — caches the device ID in memory after first SecureStore read
-- `AuthProvider.registerDevice()` — called on sign-in AND session restore to register with server
-- Server returns `DEVICE_REVOKED` (401) — client forces sign-out with specific error message
-- Server returns `DEVICE_ID_REQUIRED` (401) — client shows "restart or reinstall" message (Keystore failure)
+- `secureStorage.getDeviceId()` — gen + cache UUID
+- `ApiClient.doFetch()` — memory-caches device ID after first SecureStore read
+- `AuthProvider.registerDevice()` — called on sign-in AND session restore; **must return `boolean`** (true on success) so `ApiClient` can retry after auto-register
+- Server → `DEVICE_REGISTRATION_REQUIRED` (428) → `ApiClient` calls `registerDevice()` via `onDeviceRegistrationRequired` callback, retries once. Any `/api/*` call from a never-registered device returns 428 — do NOT treat 428 as a fatal error in new code
+- Server → `DEVICE_REVOKED` (401) → client forces sign-out + msg
+- Server → `DEVICE_ID_REQUIRED` (401) → "restart or reinstall" msg (Keystore fail)
 
 ## EAS Build Notes
 
-- **Secrets:** `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` are stored as EAS project-level secrets (not in `eas.json`)
-- **Credentials:** Both preview and production profiles use `credentialsSource: "remote"` (managed by EAS)
-- **Lock file:** Must stay in sync — run `npm install --legacy-peer-deps` before EAS builds if dependencies change. EAS uses `npm ci` which fails on mismatch. The `.npmrc` file sets `legacy-peer-deps=true` to handle the `@config-plugins/ffmpeg-kit-react-native` peer dep conflict with Expo SDK 55.
-- **Secrets sync:** After changing `.env`, run `eas secret:push --scope project --env-file .env --force` to update EAS build secrets. A stale EAS secret will override the local `.env` in production builds.
-- **Metro cache:** After changing `.env`, restart Metro with `npx expo start --clear`. Metro inlines `EXPO_PUBLIC_*` values at build time — a stale cache silently uses the old values. In dev mode, `config.ts` logs a warning if Supabase vars are empty.
-- **FFmpeg Maven repo:** The `com.arthenica:ffmpeg-kit-min` Android artifact was removed from Maven Central. It's self-hosted via GitHub Pages at `https://homeless-pets-foundation.github.io/ffmpeg-kit-maven`. Configured in `app.config.ts` via `extraMavenRepos` in `expo-build-properties` (required by Gradle 9). **Current version is `6.0-3`** (16KB page-size compliant, built from `arthenica/ffmpeg-kit` `development` branch). To rebuild: go to `Homeless-Pets-Foundation/ffmpeg-kit-maven` → Actions → "Build FFmpeg Kit min (16KB page size)" → Run workflow.
-- **ffmpeg-kit-react-native patch:** `patches/ffmpeg-kit-react-native+6.0.2.patch` overrides the AAR version in the npm package's `gradle.properties` from `6.0-2` → `6.0-3`. Applied automatically by `postinstall: patch-package` after `npm ci`. If bumping to a new AAR version in the future, update the patch file to reference the new version string.
-- **Expo doctor:** Always run `npx expo-doctor` before triggering an EAS build. A pre-build Claude hook (`.claude/hooks/pre-eas-build.sh`) enforces this automatically. If Dependabot bumps packages beyond Expo SDK compatibility, run `npx expo install --fix` to restore correct versions.
-- **APP_VARIANT:** `app.config.ts` exposes `extra.isProduction` based on `APP_VARIANT=production`. Used at runtime to gate production-only features (e.g., screen capture prevention, when re-enabled).
+- **Secrets:** `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` — EAS project-level (not `eas.json`).
+- **Credentials:** preview + production → `credentialsSource: "remote"` (EAS-managed).
+- **Lock file:** sync via `npm install --legacy-peer-deps` pre-build if deps change. EAS uses `npm ci` → fails on mismatch. `.npmrc` has `legacy-peer-deps=true` for `@config-plugins/ffmpeg-kit-react-native` peer dep conflict w/ Expo SDK 55.
+- **Secrets sync:** after `.env` edit → `eas secret:push --scope project --env-file .env --force`. Stale EAS secret overrides local `.env` in prod builds.
+- **Metro cache:** after `.env` edit → `npx expo start --clear`. Metro inlines `EXPO_PUBLIC_*` at build time → stale cache silently uses old values. Dev mode: `config.ts` warns if Supabase vars empty.
+- **FFmpeg Maven repo:** `com.arthenica:ffmpeg-kit-min` removed from Maven Central. Self-hosted: `https://homeless-pets-foundation.github.io/ffmpeg-kit-maven`. Wired in `app.config.ts` `extraMavenRepos` (Gradle 9 req). **Current: `6.0-3`** (16KB page-size, built from `arthenica/ffmpeg-kit` `development`). Rebuild: `Homeless-Pets-Foundation/ffmpeg-kit-maven` → Actions → "Build FFmpeg Kit min (16KB page size)" → Run.
+- **ffmpeg-kit-react-native patch:** `patches/ffmpeg-kit-react-native+6.0.2.patch` overrides AAR `6.0-2` → `6.0-3` in npm pkg `gradle.properties`. Applied via `postinstall: patch-package` after `npm ci`. Bump AAR → update patch version string.
+- **Expo doctor:** `npx expo-doctor` before every EAS build. Pre-build hook (`.claude/hooks/pre-eas-build.sh`) enforces auto. Dependabot bumps past Expo SDK compat → `npx expo install --fix`.
+- **APP_VARIANT:** `app.config.ts` exposes `extra.isProduction` from `APP_VARIANT=production`. Gates prod-only features at runtime (e.g. screen capture prevention, when re-enabled).
 
 ## Emulator Testing (WSL2)
 
-The dev environment runs Metro in WSL2 while the Android emulator runs on the Windows host. All `adb` commands that target the emulator must use the **Windows** ADB binary (`adb.exe`), not the WSL2 `adb`.
+Metro in WSL2; emulator on Windows. All `adb` → **Windows** ADB binary (`adb.exe`), not WSL2 `adb`.
 
 ### Setup & Launch
 
-1. **Start the emulator:**
+1. **Start emulator:**
    ```bash
    "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/emulator/emulator.exe" -avd Medium_Phone_API_36.1 -no-snapshot-load &>/dev/null &
    ```
-2. **Wait for the emulator to appear** (check with Windows ADB):
+2. **Wait for emulator** (via Windows ADB):
    ```bash
    "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" devices
    ```
@@ -208,128 +235,172 @@ The dev environment runs Metro in WSL2 while the Android emulator runs on the Wi
    ```bash
    "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" reverse tcp:8081 tcp:8081
    ```
-4. **Port proxy** (Windows localhost → WSL2 IP, requires admin):
+4. **Port proxy** (Windows localhost → WSL2 IP, admin req):
    ```bash
    WSL_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
    powershell.exe -Command "Start-Process powershell -ArgumentList '-Command netsh interface portproxy delete v4tov4 listenport=8081 listenaddress=127.0.0.1; netsh interface portproxy add v4tov4 listenport=8081 listenaddress=127.0.0.1 connectport=8081 connectaddress=$WSL_IP' -Verb RunAs"
    ```
-5. **Start Metro** (clean cache recommended after code changes):
+5. **Start Metro** (clean cache post code change):
    ```bash
    npx expo start --clear
    ```
-6. **Deep-link the app** to connect to the dev server:
+6. **Deep-link app**:
    ```bash
    "/mnt/c/Users/jaxnn/AppData/Local/Android/Sdk/platform-tools/adb.exe" shell am start -a android.intent.action.VIEW -d 'captivet://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081'
    ```
 
-If Metro was already running on port 8081, kill it first: `lsof -ti:8081 | xargs kill -9`
+Port 8081 busy → `lsof -ti:8081 | xargs kill -9`.
 
 ### ADB UI Interaction
 
-Use these commands to interact with the emulator for testing. All use the Windows ADB binary.
+All Windows ADB.
 
 | Action | Command |
 |--------|---------|
-| **Screenshot** | `adb.exe exec-out screencap -p > /tmp/screen.png` (then use Read tool to view) |
-| **Tap** | `adb.exe shell input tap <x> <y>` (coordinates in device pixels, 1080x2400) |
-| **Swipe/Scroll** | `adb.exe shell input swipe <x1> <y1> <x2> <y2> <duration_ms>` |
-| **Type text** | `adb.exe shell input text "hello"` (no spaces — use `%s` for spaces) |
-| **Press back** | `adb.exe shell input keyevent KEYCODE_BACK` |
-| **Dismiss keyboard** | `adb.exe shell input keyevent KEYCODE_ESCAPE` |
-| **UI hierarchy** | `adb.exe shell uiautomator dump /sdcard/ui.xml && adb.exe shell cat /sdcard/ui.xml` |
+| Screenshot | `adb.exe exec-out screencap -p > /tmp/screen.png` (view via Read tool) |
+| Tap | `adb.exe shell input tap <x> <y>` (px, 1080x2400) |
+| Swipe/Scroll | `adb.exe shell input swipe <x1> <y1> <x2> <y2> <ms>` |
+| Type text | `adb.exe shell input text "hello"` (no spaces — use `%s`) |
+| Press back | `adb.exe shell input keyevent KEYCODE_BACK` |
+| Dismiss keyboard | `adb.exe shell input keyevent 66` (ENTER — safer than ESCAPE) |
+| UI hierarchy | `adb.exe shell uiautomator dump /sdcard/ui.xml && adb.exe shell cat /sdcard/ui.xml` |
+
+#### Keycode gotcha — avoid ESCAPE + MENU
+
+`KEYCODE_ESCAPE` (111) + `KEYCODE_MENU` (82) → Expo dev element inspector. Send mid-test → inspector overlay engages → intercepts taps on form fields → session unworkable.
+
+- **Dismiss keyboard:** tap neutral area, or `KEYCODE_ENTER` (66).
+- **Reload bundle:** tap `Reload` in dev menu, not `KEYCODE_MENU`.
+- **Tools button:** dev menu → toggle off `Tools button` at session start (otherwise steals taps near top-right where `Save for Later` sits).
+
+Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only reliable clear.
+
+#### Emulator upload limit
+
+`hasSilentAudioOnly()` uses `peakMetering` sampled at record-time. Emulator mic → peaks ≤ −20 dBFS → every Submit throws "This recording appears silent" **before** API call. Upload-path regressions (e.g. `serverDraftId` promotion) verifiable only by count-doesn't-bump on emulator. Full server-side path = physical device.
 
 ### Finding Tap Coordinates
 
-1. **Preferred: `uiautomator dump`** — returns XML with `bounds="[left,top][right,bottom]"` for every element. Calculate center: `x = (left + right) / 2`, `y = (top + bottom) / 2`. Filter with `grep -iE "button_text\|content_desc"`.
-2. **Fallback: screenshot** — if `uiautomator dump` fails (it can't dump during animations), take a screenshot, view it with the Read tool, and estimate coordinates. The screen is 1080x2400 pixels.
+1. **Preferred: `uiautomator dump`** — XML w/ `bounds="[left,top][right,bottom]"`. Center: `x = (left + right) / 2`, `y = (top + bottom) / 2`. Filter `grep -iE "button_text\|content_desc"`.
+2. **Fallback: screenshot** — dump fails during animations ("could not get idle state"). Screenshot + Read + estimate. Screen 1080x2400.
 
-### Key App Flows for Testing
+### Key App Flows
 
-- **Record:** Home → Record tab or "Record Appointment" → fill Patient Name, Client Name, select Species + Appointment Type → scroll down → tap "Start recording" → wait → "Finish"
-- **Stash:** While recording or stopped → "Save for Later" (top right) → "SAVE" in dialog → session appears under "Saved Sessions" with "Resume Session" button
-- **Edit:** After recording completes → scroll to "Edit Recording" → opens audio editor with waveform, trim handles, playback, and "Apply Trim" / "Done"
-- **App package:** `com.captivet.mobile`, launch with: `adb.exe shell am start -n com.captivet.mobile/.MainActivity`
+- **Record:** Home → Record tab / "Record Appointment" → fill Patient Name, Client Name, Species, Appointment Type → scroll → "Start recording" → wait → "Finish".
+- **Stash:** during/after record → "Save for Later" (top-right) → "SAVE" → appears under "Saved Sessions" w/ "Resume Session".
+- **Edit:** post-record → "Edit Recording" → waveform, trim handles, playback, "Apply Trim" / "Done".
+- **Draft-save-on-finish:** Finish → server `status='draft'` + local draftStorage entry → Home/Records "Not Submitted" (amber) → tap card → reopens Record w/ form + audio. Submit → promotes draft in place (no duplicate).
+- **App package:** `com.captivet.mobile`. Launch: `adb.exe shell am start -n com.captivet.mobile/.MainActivity`.
 
 ## File Conventions
 
-- `src/lib/secureStorage.ts` — sole interface to `expo-secure-store`. All calls wrapped in try/catch. Also provides `getDeviceId()` which generates a persistent UUID v4 on first call (cached in memory after first read). The `DEVICE_ID` key is NOT deleted in `clearAll()` — it's device-scoped, not user-scoped.
-- `src/lib/biometrics.ts` — sole interface to `expo-local-authentication` + biometric SecureStore preference. All calls wrapped in try/catch.
-- `src/lib/fileOps.ts` — safe wrappers around `expo-file-system` `File`/`Directory` classes. All operations wrapped in try/catch. Use `safeDeleteFile`/`safeDeleteDirectory` instead of calling `.delete()` directly. Never import from `expo-file-system/legacy` in new code.
-- `src/lib/secureClipboard.ts` — clipboard with 30-second auto-clear for sensitive data. Exports `clearClipboard()` for sign-out cleanup.
-- `src/lib/audioEditorBridge.ts` — module-level singleton bridging `record.tsx` and `audio-editor.tsx`. Exports `clear()` for sign-out cleanup.
-- `src/lib/stashStorage.ts` — encrypted stash metadata in SecureStore, chunked for Android 2KB limit. **User-scoped**: keys prefixed with user ID. Must call `setUserId()` before any operations. Includes `clearLegacyGlobalStashes()` for one-time migration.
-- `src/lib/stashAudioManager.ts` — manages stashed audio files in `documentDirectory`. **User-scoped**: directories under `stashed-audio/{userId}/`. Must call `setUserId()` before any operations. Session IDs validated against path traversal.
-- `src/config.ts` — env var access with graceful fallback. Exports `CONFIG_MISSING` flag.
-- `app/_layout.tsx` — gates entire app on `CONFIG_MISSING` before any providers mount. Root `ErrorBoundary` wraps entire component tree.
-- `src/components/ui/Button.tsx` — shared button with haptic feedback, optional `icon` prop. `Haptics.impactAsync` has `.catch()`. No shadow on `ghost` variant. Every button press flows through this component.
-- `src/hooks/useAudioRecorder.ts` — wraps expo-audio recording. Uses `audioSource: 'voice_recognition'` on Android for optimal speech capture. `stop()` swallows errors; `pause()`/`resume()` catch, cleanup, then rethrow. Exports `resetWithoutDelete()` (clears state without deleting audio file) and `reset()` (clears state and deletes file). Recorder auto-released on unmount.
-- `src/hooks/useMultiPatientSession.ts` — `useReducer`-based multi-patient session state. Manages up to 10 `PatientSlot`s with `segments[]`, recorder binding, upload status, and `CONTINUE_RECORDING` action for multi-segment recording. `RESTORE_SESSION` and `REPLACE_ALL_SEGMENTS` validate segment URIs via `validateSegments()`.
-- `src/types/multiPatient.ts` — type definitions: `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`.
-- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits PHI cleanup before clearing state. Calls `setStashUserId()` in `fetchUser()`. Calls `registerDevice()` on both sign-in and session restore. Stash cleanup runs only after user ID is set.
-- `src/api/client.ts` — sends `X-Device-Id` header on all requests. Caches device ID in memory. Handles `DEVICE_REVOKED` and `DEVICE_ID_REQUIRED` 401 codes before attempting token refresh.
-- `src/api/recordings.ts` — `createWithFile()` for single-segment upload, `createWithSegments()` for multi-segment. Both validate via `getInfoAsync()`, enforce 250MB limit, 10-minute timeout.
-- `src/components/AppLockGuard.tsx` — requires biometric on cold start (not just background resume). Defaults to `isLocked=true` with blank screen until biometric check completes, preventing brief PHI flash. Sign-out button available as escape hatch.
-- `src/components/PatientSlotCard.tsx` — per-patient card with form fields, recording controls, and upload status. "Finish" button (not "Stop") with checkmark icon for ending recordings. "Delete & Start Over" is a de-emphasized text link.
-- `src/components/PatientTabStrip.tsx` — horizontal scrollable tab strip for switching between patient slots. Shows status badges (recording, paused, stopped, uploaded).
-- `src/components/SubmitPanel.tsx` — bottom panel with "Submit All" button. Visible when multiple slots have recordings ready to upload.
+- `src/lib/secureStorage.ts` — sole `expo-secure-store` interface. All calls try/catch. `getDeviceId()` → persistent UUID v4 on first call (memory-cached). `DEVICE_ID` NOT deleted in `clearAll()` — device-scoped.
+- `src/lib/biometrics.ts` — sole `expo-local-authentication` + biometric pref interface. All wrapped.
+- `src/lib/fileOps.ts` — safe wrappers around `expo-file-system` `File`/`Directory`. Use `safeDeleteFile`/`safeDeleteDirectory`, never `.delete()` direct. Never import `expo-file-system/legacy` in new code.
+- `src/lib/secureClipboard.ts` — 30s auto-clear clipboard for sensitive data. `clearClipboard()` for sign-out.
+- `src/lib/audioEditorBridge.ts` — singleton bridging `record.tsx` ↔ `audio-editor.tsx`. `clear()` for sign-out.
+- `src/lib/stashStorage.ts` — encrypted stash metadata, chunked (Android 2KB limit). **User-scoped**: keys prefixed w/ user ID. `setUserId()` required first. `clearLegacyGlobalStashes()` one-time migration.
+- `src/lib/stashAudioManager.ts` — stashed audio in `documentDirectory/stashed-audio/{userId}/`. `setUserId()` first. Session IDs validated vs path traversal. `moveSegmentsToStashDir` persists `serverDraftId`/`draftSlotId` through round-trip (rule 24).
+- `src/lib/draftStorage.ts` — local audio draft persistence. SecureStore metadata (chunked) + audio at `documentDirectory/drafts/{userId}/{slotId}/`. **User-scoped**: `setUserId()` first. `saveDraft`/`getDraft`/`listDrafts`/`deleteDraft`/`clearAll`. `syncPending(createFn)` retries unsynced server-draft creations on reconnect. `cleanupOrphaned(deleteFn)` runs on Record mount → sweeps entries w/ missing local audio + deletes server row.
+- `src/config.ts` — env var access + graceful fallback. Exports `CONFIG_MISSING`.
+- `app/_layout.tsx` — gates app on `CONFIG_MISSING` before providers mount. Root `ErrorBoundary` wraps tree.
+- `src/components/ui/Button.tsx` — shared button + haptics, optional `icon`. `Haptics.impactAsync` has `.catch()`. No shadow on `ghost`. Every press flows here.
+- `src/hooks/useAudioRecorder.ts` — wraps expo-audio. `audioSource: 'voice_recognition'` on Android. `stop()` swallows; `pause()`/`resume()` catch+cleanup+rethrow. `resetWithoutDelete()` clears state, keeps file; `reset()` clears state + deletes file. Auto-releases on unmount.
+- `src/hooks/useMultiPatientSession.ts` — `useReducer` multi-patient state. ≤10 `PatientSlot`s w/ `segments[]`, recorder binding, upload status, `CONTINUE_RECORDING` for multi-segment. `RESTORE_SESSION` + `REPLACE_ALL_SEGMENTS` validate URIs. `SET_DRAFT_IDS` sets `draftSlotId`+`serverDraftId`.
+- `src/hooks/useStashedSessions.ts` — stash list + resume. `stashSession` moves segments to stash dir, writes metadata, then `draftStorage.deleteDraft()` for every slot w/ `draftSlotId` (stash owns audio post-commit). `convertToPatientSlots` restores `serverDraftId`/`draftSlotId` from stash payload.
+- `src/types/multiPatient.ts` — `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`. `PatientSlot` incl. `draftSlotId`/`serverDraftId` for auto-saved drafts.
+- `src/types/stash.ts` — `StashedSlot`/`StashedSegment`/`StashedSession`. `StashedSlot` carries optional `serverDraftId`/`draftSlotId` (rule 24).
+- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set.
+- `src/api/client.ts` — sends `X-Device-Id` header all reqs. Memory-caches device ID. Handles `DEVICE_REGISTRATION_REQUIRED` (428) via `onDeviceRegistrationRequired` callback → `registerDevice()` + retry once. Handles `DEVICE_REVOKED`/`DEVICE_ID_REQUIRED` 401s before token refresh.
+- `src/api/recordings.ts` — `createWithFile()` single-segment, `createWithSegments()` multi. Both validate via `getInfoAsync()`, 250MB limit, 10min timeout. Both take optional `existingRecordingId` → skips `create()`, uses server draft as recording ID (promote path).
+- `src/components/AppLockGuard.tsx` — biometric on cold start (not just bg resume). Defaults `isLocked=true` + blank screen until biometric done (no PHI flash). Sign-out = escape hatch.
+- `src/components/PatientSlotCard.tsx` — per-patient form + recording + upload status. "Finish" (not "Stop") w/ checkmark. "Delete & Start Over" = de-emphasized text link.
+- `src/components/PatientTabStrip.tsx` — horizontal tab strip to switch slots. Status badges (recording, paused, stopped, uploaded).
+- `src/components/SubmitPanel.tsx` — bottom panel w/ "Submit All". Visible when multiple slots ready.
+- `src/components/RecordingCard.tsx` — list item. `status='draft'` → amber "Not Submitted" badge. Tap → `/(tabs)/record?draftSlotId=X` (resume) if local draft exists, else detail screen.
 
 ## Multi-Patient Recording Architecture
 
-The recording screen (`app/(app)/record.tsx`) supports recording up to 10 patients in a single session. Each patient is a "slot" displayed as a horizontally-pageable card.
+`app/(app)/record.tsx` → ≤10 patients/session. Each = "slot" as horizontally-pageable card.
 
-### Data Model
+### Data Model — `src/types/multiPatient.ts`
 
-Defined in `src/types/multiPatient.ts`:
-
-- **`AudioSegment`** — `{ uri: string; duration: number }`. A single continuous recording file.
-- **`PatientSlot`** — one patient's full state: form data (`CreateRecording`), `audioState` (`idle` | `recording` | `paused` | `stopped`), `segments[]` (array of `AudioSegment`), upload lifecycle fields (`uploadStatus`, `uploadProgress`, `uploadError`, `serverRecordingId`).
+- **`AudioSegment`** — `{ uri: string; duration: number }`. One continuous recording file.
+- **`PatientSlot`** — form data (`CreateRecording`), `audioState` (`idle`|`recording`|`paused`|`stopped`), `segments[]`, upload lifecycle (`uploadStatus`, `uploadProgress`, `uploadError`, `serverRecordingId`), draft linkage (`draftSlotId`, `serverDraftId`).
 - **`SessionState`** — `{ slots: PatientSlot[]; activeIndex: number; recorderBoundToSlotId: string | null }`.
-- **`SessionAction`** — discriminated union of 12 action types dispatched to the session reducer.
+- **`SessionAction`** — discriminated union dispatched to reducer.
 
-Max 10 slots enforced in the `ADD_SLOT` reducer case.
+Max 10 slots enforced in `ADD_SLOT`.
 
-### Recorder Ownership Model
+### Recorder Ownership
 
-There is a single `useAudioRecorder` instance shared across all patient slots. Only one slot can "own" the recorder at a time, tracked by `recorderBoundToSlotId` in `SessionState`.
+Single `useAudioRecorder` shared across slots. One owner at a time via `recorderBoundToSlotId`.
 
-- **`BIND_RECORDER`** — dispatched when starting a recording, sets `recorderBoundToSlotId`.
-- **`UNBIND_RECORDER`** — dispatched after audio is captured (in the `recorder.state === 'stopped'` effect).
-- **Pending-start queue** — if starting a new slot while another is recording/paused, the current slot is stopped first via `pendingStartSlotRef`. After the stop completes and audio is saved, the pending slot auto-starts via `startRecordingRef`.
-- **Auto-pause on swipe** — when swiping away from a recording slot (`handleScrollEnd`), the recorder is paused. If pause fails (rethrown error), the recorder is stopped as fallback.
-- **Consistency guard** — an effect watches `recorderBoundToSlotId` changes and forces any orphaned slot with `audioState: 'recording'` back to `stopped` (if it has segments) or `idle`.
+- **`BIND_RECORDER`** — on start, sets `recorderBoundToSlotId`.
+- **`UNBIND_RECORDER`** — after audio captured (`recorder.state === 'stopped'` effect).
+- **Pending-start queue** — new start while another recording/paused → stop current via `pendingStartSlotRef`. Post-stop + save, pending slot auto-starts via `startRecordingRef`.
+- **Auto-pause on swipe** — swipe away (`handleScrollEnd`) → pause. Pause fail (rethrown) → stop fallback.
+- **Consistency guard** — effect watches `recorderBoundToSlotId` → orphaned slot w/ `audioState: 'recording'` forced back to `stopped` (w/ segments) or `idle`.
 
 ### Multi-Segment Recording
 
-Each slot maintains a `segments[]` array as the source of truth for recorded audio:
+Each slot's `segments[]` = source of truth.
 
-- **`SAVE_AUDIO`** — appends a new segment to the slot's `segments[]` and sums total duration.
-- **`CONTINUE_RECORDING`** — resets the slot's `audioState` to `idle` so the user can record another segment. The recorder's `resetWithoutDelete()` clears hook state without deleting the previously-saved audio file.
-- **Upload** — `uploadSlot()` calls `createWithFile()` for single-segment slots or `createWithSegments()` for multi-segment slots. `createWithSegments()` uploads each segment to its own presigned URL, then confirms with all segment keys.
+- **`SAVE_AUDIO`** — append segment + sum duration.
+- **`CONTINUE_RECORDING`** — `audioState` → `idle`. Hook `resetWithoutDelete()` clears state, keeps file.
+- **Upload** — `uploadSlot()` → `createWithFile()` (single) or `createWithSegments()` (multi). Multi uploads each segment to own presigned URL, confirms w/ all segment keys.
 
-### Concurrency Guards
-
-Six refs in `record.tsx` prevent race conditions:
+### Concurrency Guards (six refs in `record.tsx`)
 
 | Ref | Purpose |
 |---|---|
-| `audioCaptureDoneRef` | Prevents the `recorder.state === 'stopped'` effect from saving the same audio twice |
-| `pendingStartSlotRef` | Queues the next slot to start recording after the current slot's stop completes |
-| `startRecordingRef` | Holds a stable reference to `startRecordingForSlot` for use inside the effect (avoids stale closure) |
-| `stoppingRef` (in hook) | Prevents double-invocation of `stop()` |
-| `isScrollingRef` | Suppresses programmatic `scrollToIndex` during user-initiated swipes |
-| `swipeChangeRef` | Prevents the `activeIndex` sync effect from re-scrolling after a swipe already moved the pager |
+| `audioCaptureDoneRef` | Prevents `recorder.state === 'stopped'` effect double-save |
+| `pendingStartSlotRef` | Queues next slot after current stop completes |
+| `startRecordingRef` | Stable ref to `startRecordingForSlot` inside effect (avoids stale closure) |
+| `stoppingRef` (in hook) | Prevents double-`stop()` |
+| `isScrollingRef` | Suppresses programmatic `scrollToIndex` during user swipe |
+| `swipeChangeRef` | Prevents `activeIndex` effect re-scrolling after swipe moved pager |
 
 ### Upload State Machine
 
-Per-slot upload lifecycle: `pending` → `uploading` → `success` | `error`.
+Per-slot: `pending` → `uploading` → `success` | `error`.
 
-- **`uploadSlot(slot)`** — returns `string | null` (server recording ID or null on failure). Skips if already uploading or already succeeded.
-- **Single submit** (`handleSubmitSingle`) — uploads one slot. If other slots still have unsaved recordings, stays on the record screen; otherwise resets session and navigates to the recording detail.
-- **Submit all** (`handleSubmitAll`) — uploads all eligible slots **sequentially** (avoids network saturation). On full success, resets session and navigates to recordings list. On partial failure, shows alert and stays on screen.
-- **Post-upload cleanup** — after successful upload, local audio files are deleted via `FileSystem.deleteAsync`.
+- **`uploadSlot(slot)`** → `string | null` (server recording ID or null on fail). Skip if uploading/succeeded. `slot.serverDraftId` set → spreads `existingRecordingId` into `createWithFile`/`createWithSegments` → promotes draft in place (no duplicate).
+- **Single submit** (`handleSubmitSingle`) — other slots still unsaved → stay on record; else reset + nav to detail.
+- **Submit all** (`handleSubmitAll`) — all eligible slots **sequentially** (no network saturation). Full success → reset + nav to list. Partial fail → alert + stay.
+- **Post-upload cleanup** — local audio + local draft metadata (if `draftSlotId` set) deleted.
 
 ### Navigation & Cleanup
 
-- **`usePreventRemove`** — blocks navigation when `unsavedCount > 0` (slots with segments but not yet uploaded, or actively recording/paused). Shows discard confirmation with precise count.
-- **Discard cleanup** — on confirm, iterates all slots and deletes all segment files via `FileSystem.deleteAsync`.
-- **`resetSession`** — dispatches `RESET_SESSION` to the reducer, creating a fresh initial state. Required because the record tab stays mounted across navigations — without explicit reset, stale state persists.
+- **`usePreventRemove`** — blocks nav when `unsavedCount > 0` (segments not yet uploaded, or recording/paused). Discard confirm w/ precise count.
+- **Discard cleanup** — on confirm, iterate slots + delete all segment files via `FileSystem.deleteAsync`.
+- **`resetSession`** — dispatches `RESET_SESSION`. Required because record tab stays mounted across navigations → no reset = stale state.
+
+## Draft-Save-on-Finish
+
+Finish tap → server `status='draft'` + local `draftStorage` entry → Home/Records "Not Submitted" (amber). Tap card → Record w/ form + audio preloaded via `loadDraft(draftSlotId)`.
+
+### Lifecycle
+
+1. **Finish** → `autoSaveDraft(slot)` in `record.tsx`:
+   - `draftStorage.saveDraft(slot)` → copies audio to `drafts/{userId}/{slotId}/`, writes SecureStore metadata (`pendingSync: true`).
+   - Online → `recordingsApi.create(formData, { isDraft: true })` → `updateServerDraftId()` + `pendingSync: false`. Offline → stays `pendingSync: true`; retried on NetInfo reconnect via `draftStorage.syncPending()`.
+   - `dispatch SET_DRAFT_IDS` → slot gets `draftSlotId` + `serverDraftId`.
+
+2. **Save for Later (stash)** — `stashSession` moves segments to stash dir, writes stash payload (incl. `serverDraftId`/`draftSlotId`), **then** `draftStorage.deleteDraft(draftSlotId)` → stash owns audio, local draft metadata removed. Server draft row stays (referenced via stash).
+
+3. **Resume** — `useStashedSessions.resumeSession` → `convertToPatientSlots` restores `draftSlotId` + `serverDraftId` from stash payload (rule 24). Session `audioState: stopped`, ready to submit.
+
+4. **Submit** — `uploadSlot()` sees `slot.serverDraftId` → adds `existingRecordingId` in `createWithFile`/`createWithSegments` → server promotes draft in place (no duplicate). Post-success: `draftStorage.deleteDraft(draftSlotId)` + local audio delete.
+
+5. **Orphan sweep** — Record tab mount runs `draftStorage.cleanupOrphaned(recordingsApi.delete)` → drafts w/ missing local audio → delete server row + local metadata. Clears "Not Submitted" zombies from older clients that stashed before rule 24 was enforced.
+
+### Storage Layout
+
+- **Local metadata:** SecureStore `captivet_draft_{userId}_{slotId}_meta` + chunks (2KB workaround, same pattern as stash). Index at `captivet_drafts_index_{userId}`.
+- **Local audio:** `documentDirectory/drafts/{userId}/{slotId}/seg_N.m4a`.
+- **Server:** `Recording` row w/ `status='draft'`. Server `confirmUpload` allows `draft → uploading` transition.
+
+### Sign-Out Cleanup
+
+`handleSignOut` in `AuthProvider.tsx` → `draftStorage.clearAll()` in `Promise.all` alongside stash cleanup. Blocks `setUser(null)`/`setSession(null)` until all PHI gone (shared tablet safety, rule 10).

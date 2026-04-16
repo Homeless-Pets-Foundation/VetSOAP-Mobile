@@ -562,7 +562,7 @@ export default function RecordingDetailScreen() {
                     Transcript Quality Warning
                   </Text>
                   {recording.qualityWarnings.map((warning, i) => (
-                    <Text key={i} className="text-body-sm text-warning-600 mb-1">
+                    <Text key={`warning-${i}-${warning}`} className="text-body-sm text-warning-600 mb-1">
                       {warning}
                     </Text>
                   ))}

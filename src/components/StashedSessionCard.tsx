@@ -87,9 +87,6 @@ export function StashedSessionCard({ stash, onResume, onDelete }: StashedSession
         size="sm"
         onPress={() => {
           scale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
-          setTimeout(() => {
-            scale.value = withSpring(1, { damping: 15, stiffness: 300 });
-          }, 100);
           onResume();
         }}
         icon={<Play color="#0d8775" size={14} fill="#0d8775" />}

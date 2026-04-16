@@ -64,7 +64,7 @@ export function SkeletonText({
     <View className="gap-2.5">
       {Array.from({ length: lines }).map((_, i) => (
         <Skeleton
-          key={i}
+          key={`skeleton-line-${i}`}
           width={i === lines - 1 ? (lastLineWidth as any) : '100%'}
           height={14}
         />

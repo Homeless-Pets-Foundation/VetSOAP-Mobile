@@ -1,4 +1,5 @@
 import { Paths, File as ExpoFile, Directory } from 'expo-file-system';
+import { safeDeleteDirectory } from './fileOps';
 
 const CACHE_DIR = `${Paths.cache.uri}waveform-peaks/`;
 
@@ -54,10 +55,5 @@ export function cachePeaks(fileUri: string, fileSize: number, peaks: number[]): 
  * Called during sign-out to prevent stale data lingering across user sessions.
  */
 export function clearPeakCache(): void {
-  try {
-    const dir = new Directory(CACHE_DIR);
-    if (dir.exists) dir.delete();
-  } catch {
-    // Best-effort
-  }
+  safeDeleteDirectory(CACHE_DIR);
 }

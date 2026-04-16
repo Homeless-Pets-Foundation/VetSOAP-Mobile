@@ -94,7 +94,7 @@ export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWave
     >
       {Array.from({ length: barCount }).map((_, i) => (
         <WaveBar
-          key={i}
+          key={`wave-bar-${i}`}
           index={i}
           barCount={barCount}
           isActive={isActive}

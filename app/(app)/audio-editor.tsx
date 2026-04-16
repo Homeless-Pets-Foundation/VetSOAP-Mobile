@@ -536,7 +536,7 @@ export default function AudioEditorScreen() {
             <View className="flex-row gap-2">
               {segments.map((seg, i) => (
                 <Pressable
-                  key={i}
+                  key={seg.uri}
                   disabled={isTrimming}
                   onPress={() => {
                     pause();

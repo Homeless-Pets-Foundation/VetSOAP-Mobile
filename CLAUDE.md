@@ -194,6 +194,17 @@ Fields on `PatientSlot` that affect `uploadSlot` server behavior (`serverRecordi
 
 Miss any → Resume strips field → Submit hits fresh-create → duplicate server recording. Fix e.g. `397f109`.
 
+### 25. UI text truncation is a render bug, not a spelling bug
+
+Reports like "Cop" for "Copy", "Transcribin" for "Transcribing", "Please wait while your recording is" for "…is uploaded." are **not** source typos. Android TextView under-measures single-word `<Text>` inside flex-row parents and clips the last glyph; `flex-row` labels without `flex-1` also silently truncate (no ellipsis, because `numberOfLines` is unset). Grep the source for the FULL word before assuming a typo — it will be there, correctly spelled.
+
+Fixes by pattern:
+- **Row labels with long content** (stepper steps, list items): `flex-1` on the Text + `numberOfLines={2}` so it claims remaining row space and wraps instead of clipping.
+- **Short-word action buttons** (Copy, Copy All): trailing-space literal (`` `${label} ` ``) + `style={{ flexShrink: 0, paddingRight: 2 }}` on the Text + `flexShrink: 0` on sibling icons. Inline comment required — the trailing space looks like lint debris and gets "cleaned up" by future edits.
+- **Centered captions in narrow cards** (UploadOverlay): reduce outer padding pressure (`px-8` → `px-6`), prefer shorter active-voice phrasing (`"…uploads."` over `"…is being uploaded."`).
+
+Never `numberOfLines={1}` on a single-word Text in a `self-end` Pressable — makes it worse (`"Co..."` with ellipsis). Verify on physical Android device; iOS and Android emulator both hide this class of bug.
+
 ## Device Binding
 
 Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, persist in SecureStore (survives sign-out — device-scoped, not user-scoped). Server `validateDeviceSession` requires it, can revoke specific devices.
@@ -303,6 +314,7 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/lib/stashAudioManager.ts` — stashed audio in `documentDirectory/stashed-audio/{userId}/`. `setUserId()` first. Session IDs validated vs path traversal. `moveSegmentsToStashDir` persists `serverDraftId`/`draftSlotId` through round-trip (rule 24).
 - `src/lib/draftStorage.ts` — local audio draft persistence. SecureStore metadata (chunked) + audio at `documentDirectory/drafts/{userId}/{slotId}/`. **User-scoped**: `setUserId()` first. `saveDraft`/`getDraft`/`listDrafts`/`deleteDraft`/`clearAll`. `syncPending(createFn)` retries unsynced server-draft creations on reconnect. `cleanupOrphaned(deleteFn)` runs on Record mount → sweeps entries w/ missing local audio + deletes server row.
 - `src/config.ts` — env var access + graceful fallback. Exports `CONFIG_MISSING`.
+- `src/constants/strings.ts` — centralized user-facing UI labels (`PROCESSING_STEP_LABELS`, `UPLOAD_OVERLAY_COPY`, `SOAP_SECTION_ACTIONS`). Add new labels here rather than inline so one `grep` surfaces every rendering site; lightweight precursor to i18n.
 - `app/_layout.tsx` — gates app on `CONFIG_MISSING` before providers mount. Root `ErrorBoundary` wraps tree.
 - `src/components/ui/Button.tsx` — shared button + haptics, optional `icon`. `Haptics.impactAsync` has `.catch()`. No shadow on `ghost`. Every press flows here.
 - `src/hooks/useAudioRecorder.ts` — wraps expo-audio. `audioSource: 'voice_recognition'` on Android. `stop()` swallows; `pause()`/`resume()` catch+cleanup+rethrow. `resetWithoutDelete()` clears state, keeps file; `reset()` clears state + deletes file. Auto-releases on unmount.

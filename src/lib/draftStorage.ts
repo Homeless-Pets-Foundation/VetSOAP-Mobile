@@ -458,7 +458,10 @@ export const draftStorage = {
         }
       }
     } finally {
-      currentUserId = previousUserId;
+      // Only restore if no external setUserId() (e.g. sign-out) happened
+      // while we were awaiting — otherwise we'd clobber the new binding and
+      // leave this module scoped to the departed user (rules 10 + 17).
+      if (currentUserId === userId) currentUserId = previousUserId;
     }
   },
 };

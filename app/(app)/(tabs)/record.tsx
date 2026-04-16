@@ -20,7 +20,7 @@ import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi } from '../../../src/api/recordings';
-import { deleteRecordingWithRetry } from '../../../src/lib/retryableCleanup';
+import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
 import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
@@ -826,21 +826,29 @@ function RecordingSession() {
         };
 
         // If we'd reuse a server draft and the user edited formData after the
-        // draft was created, flush the edits to the server. On ANY failure
-        // (404 = old server without PATCH route, 409 NOT_DRAFT, 5xx, network,
-        // 401/403 after refresh) we best-effort delete the stale draft and
-        // force the fresh-create path. This is the entire backwards-compat
-        // strategy — try Tier 3, fall back to Tier 1.
+        // draft was created, flush the edits to the server. We retry transient
+        // failures and ONLY fall back to fresh-create when the draft is
+        // definitively gone (404). For any other failure mode — including
+        // retries-exhausted — we keep the draft id and promote it via
+        // existingRecordingId, even if that means the final recording carries
+        // slightly stale metadata. A duplicate "Not Submitted" row is a
+        // worse user experience than one recording with a 10-character diff
+        // in the patient name, and the server-side replacedAt backstop would
+        // then have nothing to clean up.
         let useExistingDraft = !!slot.serverDraftId;
         const serverDraftId = slot.serverDraftId;
         if (useExistingDraft && serverDraftId && slot.draftMetadataDirty) {
-          try {
-            await recordingsApi.updateDraftMetadata(serverDraftId, slot.formData);
+          const outcome = await patchDraftMetadataWithRetry(serverDraftId, slot.formData);
+          if (outcome === 'success') {
             dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
-          } catch {
-            deleteRecordingWithRetry(serverDraftId).catch(() => {});
+          } else if (outcome === 'draft_missing') {
+            // Server has no such draft anymore — only path forward is a
+            // fresh create. No orphan to leave behind.
             useExistingDraft = false;
           }
+          // 'not_draft' + 'transient_failure' both fall through: keep
+          // existingRecordingId. confirm-upload accepts either 'draft' or
+          // 'uploading' status, so a partially-promoted row is still usable.
         }
 
         let result;
@@ -919,12 +927,17 @@ function RecordingSession() {
 
         let serverId: string | null = null;
         if (slot.serverDraftId) {
-          try {
-            await recordingsApi.updateDraftMetadata(slot.serverDraftId, slot.formData);
+          const outcome = await patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData);
+          if (outcome === 'success' || outcome === 'transient_failure' || outcome === 'not_draft') {
+            // Keep the existing draft id. For 'transient_failure' + 'not_draft'
+            // the metadata may be stale, but the row still exists and Submit
+            // will promote it in place — strictly better than creating a
+            // duplicate. 'success' is the happy path.
             serverId = slot.serverDraftId;
-          } catch (patchError) {
-            if (__DEV__) console.warn('[Record] syncServerDraft: updateDraftMetadata failed, creating fresh draft', patchError);
-            deleteRecordingWithRetry(slot.serverDraftId).catch(() => {});
+          } else if (outcome === 'draft_missing') {
+            // 404 from the server — the draft genuinely no longer exists
+            // (e.g. deleted from another device). Fall through to fresh create.
+            if (__DEV__) console.warn('[Record] syncServerDraft: draft missing on server, creating fresh', slot.serverDraftId);
           }
 
           if (completedUploadSlotIdsRef.current.has(slotId)) {

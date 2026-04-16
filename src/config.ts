@@ -89,6 +89,20 @@ if (__DEV__ && !GOOGLE_IOS_CLIENT_ID) {
   );
 }
 
+// Server-draft creation debounce window (ms). When > 0, autoSaveDraft delays
+// the POST /api/recordings {isDraft:true} call by this many ms, giving the
+// user a chance to tap Submit before a draft row is ever written. Submit /
+// upload-completion / stash all interrupt the timer so no orphan row leaks.
+// 0 or unset = legacy immediate-create behavior (can race with Submit and
+// produce orphan draft rows that show up alongside completed recordings).
+// Recommended: 800ms.
+export const DRAFT_DEBOUNCE_MS = (() => {
+  const raw = process.env.EXPO_PUBLIC_DRAFT_DEBOUNCE_MS;
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : 0;
+})();
+
 export const CONFIG_MISSING = configErrors.length > 0;
 
 if (CONFIG_MISSING) {

@@ -20,6 +20,8 @@ import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi } from '../../../src/api/recordings';
+import { deleteRecordingWithRetry } from '../../../src/lib/retryableCleanup';
+import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
 import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
@@ -252,20 +254,49 @@ function RecordingSession() {
   // Guard: if upload wins the race against deferred local draft persistence, auto-save
   // must immediately clean up the late draft instead of leaving it behind locally.
   const completedUploadSlotIdsRef = useRef<Set<string>>(new Set());
+  // Per-slot timers for debounced server-draft creation. Server POST
+  // /api/recordings {isDraft:true} runs after DRAFT_DEBOUNCE_MS; if the user
+  // taps Submit first, the timer is cancelled so no draft row ever exists to
+  // orphan. On stash, pending timers are flushed synchronously so the Home
+  // "Not Submitted" card still appears. Empty map = debounce disabled or no
+  // pending syncs.
+  const pendingDraftTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // Suppress the next stopped-audio capture when the current segment is being discarded.
   const skipNextAudioCaptureRef = useRef(false);
+
+  const cancelScheduledDraft = useCallback((slotId: string) => {
+    const timer = pendingDraftTimersRef.current.get(slotId);
+    if (timer) {
+      clearTimeout(timer);
+      pendingDraftTimersRef.current.delete(slotId);
+    }
+  }, []);
 
   const markSubmitIntent = useCallback((slotIds: string[]) => {
     slotIds.forEach((slotId) => {
       submitIntentSlotIdsRef.current.add(slotId);
       completedUploadSlotIdsRef.current.delete(slotId);
+      // Kill any pending server-draft creation so the upload below doesn't
+      // race against a just-written draft row.
+      cancelScheduledDraft(slotId);
     });
-  }, []);
+  }, [cancelScheduledDraft]);
 
   const clearSubmitIntent = useCallback((slotIds: string[]) => {
     slotIds.forEach((slotId) => {
       submitIntentSlotIdsRef.current.delete(slotId);
     });
+  }, []);
+
+  // Clear any pending debounce timers on unmount so they don't fire against a
+  // dead component (and because the user navigating away from Record = intent
+  // to keep the session as a local-only draft, not push a server row).
+  useEffect(() => {
+    const timers = pendingDraftTimersRef.current;
+    return () => {
+      timers.forEach((t) => clearTimeout(t));
+      timers.clear();
+    };
   }, []);
 
   // Auto-select default template for first slot once templates load
@@ -807,7 +838,7 @@ function RecordingSession() {
             await recordingsApi.updateDraftMetadata(serverDraftId, slot.formData);
             dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
           } catch {
-            recordingsApi.delete(serverDraftId).catch(() => {});
+            deleteRecordingWithRetry(serverDraftId).catch(() => {});
             useExistingDraft = false;
           }
         }
@@ -870,11 +901,114 @@ function RecordingSession() {
     [setUploadStatus, dispatch]
   );
 
+  // Phase 2 of autoSaveDraft — the network half. Patches an existing draft in
+  // place, or creates a fresh one. Reads the slot from sessionRef to avoid
+  // acting on a stale snapshot captured at schedule time. Guarded by the same
+  // race refs as before so a Submit or completed upload during the await
+  // aborts before leaving a ghost draft row behind.
+  const syncServerDraft = useCallback(
+    async (slotId: string, draftSlotId: string) => {
+      try {
+        const slot = sessionRef.current.slots.find((s) => s.id === slotId);
+        if (!slot) return;
+        if (completedUploadSlotIdsRef.current.has(slotId)) {
+          draftStorage.deleteDraft(slotId).catch(() => {});
+          return;
+        }
+        if (!isConnected || submitIntentSlotIdsRef.current.has(slotId)) return;
+
+        let serverId: string | null = null;
+        if (slot.serverDraftId) {
+          try {
+            await recordingsApi.updateDraftMetadata(slot.serverDraftId, slot.formData);
+            serverId = slot.serverDraftId;
+          } catch (patchError) {
+            if (__DEV__) console.warn('[Record] syncServerDraft: updateDraftMetadata failed, creating fresh draft', patchError);
+            deleteRecordingWithRetry(slot.serverDraftId).catch(() => {});
+          }
+
+          if (completedUploadSlotIdsRef.current.has(slotId)) {
+            draftStorage.deleteDraft(slotId).catch(() => {});
+            return;
+          }
+          if (submitIntentSlotIdsRef.current.has(slotId)) return;
+        }
+
+        if (!serverId) {
+          if (submitIntentSlotIdsRef.current.has(slotId)) return;
+          const result = await recordingsApi.create(slot.formData, { isDraft: true });
+          serverId = result.id;
+
+          if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
+            deleteRecordingWithRetry(serverId).catch(() => {});
+            if (completedUploadSlotIdsRef.current.has(slotId)) {
+              draftStorage.deleteDraft(slotId).catch(() => {});
+            }
+            return;
+          }
+        }
+
+        dispatch({ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: serverId });
+        await draftStorage.updateServerDraftId(draftSlotId, serverId);
+        queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      } catch (error) {
+        if (__DEV__) console.warn('[Record] syncServerDraft failed:', error);
+      }
+    },
+    [dispatch, isConnected, queryClient]
+  );
+
+  // Schedule phase 2. With DRAFT_DEBOUNCE_MS > 0, delays the server POST so
+  // the user can Submit first and skip creating a draft row altogether — the
+  // primary fix for the "completed + Not Submitted" duplicate pattern. With
+  // DRAFT_DEBOUNCE_MS = 0, runs immediately (legacy behavior).
+  const scheduleDraftSync = useCallback(
+    (slotId: string, draftSlotId: string) => {
+      // Replace any pending timer for this slot (e.g. stop → continue → stop
+      // in quick succession should coalesce into one sync).
+      const existing = pendingDraftTimersRef.current.get(slotId);
+      if (existing) clearTimeout(existing);
+
+      if (DRAFT_DEBOUNCE_MS <= 0) {
+        pendingDraftTimersRef.current.delete(slotId);
+        syncServerDraft(slotId, draftSlotId).catch(() => {});
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        pendingDraftTimersRef.current.delete(slotId);
+        if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
+          // User beat the debounce — no server row needed.
+          return;
+        }
+        syncServerDraft(slotId, draftSlotId).catch(() => {});
+      }, DRAFT_DEBOUNCE_MS);
+      pendingDraftTimersRef.current.set(slotId, timer);
+    },
+    [syncServerDraft]
+  );
+
+  // Force pending syncs to run now (used before stash, which snapshots state
+  // to disk — a missing serverDraftId would mean the resumed session creates
+  // a fresh row on submit instead of promoting).
+  const flushScheduledDraft = useCallback(
+    async (slotId: string): Promise<void> => {
+      const timer = pendingDraftTimersRef.current.get(slotId);
+      if (!timer) return;
+      clearTimeout(timer);
+      pendingDraftTimersRef.current.delete(slotId);
+      const slot = sessionRef.current.slots.find((s) => s.id === slotId);
+      if (!slot || !slot.draftSlotId) return;
+      await syncServerDraft(slotId, slot.draftSlotId);
+    },
+    [syncServerDraft]
+  );
+
   const autoSaveDraft = useCallback(
     async (slot: PatientSlot) => {
       try {
-        // 1) Persist the local draft (audio + metadata). Always runs regardless
-        //    of connectivity so the user can resume offline.
+        // Phase 1: persist the local draft (audio + metadata). Always runs
+        // regardless of connectivity so the user can resume offline.
         const draftSlotId = await draftStorage.saveDraft(slot);
         // Preserve the existing serverDraftId here — the server draft (if any)
         // still represents this slot's recording. Nulling it would orphan the
@@ -893,58 +1027,16 @@ function RecordingSession() {
 
         if (!isConnected || submitIntentSlotIdsRef.current.has(slot.id)) return;
 
-        // 2) Sync with the server. If a draft row already exists for this
-        //    slot, patch it in place so repeated stop/continue cycles don't
-        //    accumulate orphaned "Not Submitted" rows. On any patch failure
-        //    (older server without the route, draft promoted to completed,
-        //    5xx, network), fall back to a fresh create — correctness holds
-        //    regardless of server version.
-        let serverId: string | null = null;
-        if (slot.serverDraftId) {
-          try {
-            await recordingsApi.updateDraftMetadata(slot.serverDraftId, slot.formData);
-            serverId = slot.serverDraftId;
-          } catch (patchError) {
-            if (__DEV__) console.warn('[Record] autoSaveDraft: updateDraftMetadata failed, creating fresh draft', patchError);
-            // The old server row is now orphaned — delete it best-effort so
-            // it doesn't linger on Home as a ghost "Not Submitted" card.
-            recordingsApi.delete(slot.serverDraftId).catch(() => {});
-          }
-
-          if (completedUploadSlotIdsRef.current.has(slot.id)) {
-            draftStorage.deleteDraft(slot.id).catch(() => {});
-            return;
-          }
-          if (submitIntentSlotIdsRef.current.has(slot.id)) return;
-        }
-
-        if (!serverId) {
-          if (submitIntentSlotIdsRef.current.has(slot.id)) return;
-          const result = await recordingsApi.create(slot.formData, { isDraft: true });
-          serverId = result.id;
-
-          if (submitIntentSlotIdsRef.current.has(slot.id) || completedUploadSlotIdsRef.current.has(slot.id)) {
-            recordingsApi.delete(serverId).catch(() => {});
-            if (completedUploadSlotIdsRef.current.has(slot.id)) {
-              draftStorage.deleteDraft(slot.id).catch(() => {});
-            }
-            return;
-          }
-        }
-
-        dispatch({ type: 'SET_DRAFT_IDS', slotId: slot.id, draftSlotId, serverDraftId: serverId });
-        await draftStorage.updateServerDraftId(draftSlotId, serverId);
-        // Refresh Home/Records recording lists so the new "Not Submitted"
-        // card appears immediately when the user switches tabs, without
-        // waiting for a manual pull-to-refresh or app remount.
-        queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        // Phase 2: server sync. Debounced so a user who immediately taps
+        // Submit never writes a draft row to the server.
+        scheduleDraftSync(slot.id, draftSlotId);
       } catch (error) {
         // Draft save is best-effort — never surface errors to the user.
         // The recording is still in session state and can still be submitted.
         if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
       }
     },
-    [dispatch, isConnected, queryClient]
+    [dispatch, isConnected, scheduleDraftSync]
   );
 
   const handleSubmitSingle = useCallback(
@@ -1076,6 +1168,13 @@ function RecordingSession() {
     setIsStashing(true);
     (async () => {
       try {
+        // Flush any pending debounced draft syncs so the stash payload carries
+        // an accurate serverDraftId. Without this, a user who stashes quickly
+        // after Finish would snapshot a null serverDraftId, and on resume
+        // Submit would create a fresh server row instead of promoting.
+        await Promise.all(
+          sessionRef.current.slots.map((s) => flushScheduledDraft(s.id).catch(() => {}))
+        );
         const success = await stashSession(session);
         if (success) {
           // The stashed form of the session does not persist pendingConfirm, so
@@ -1119,7 +1218,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [session, stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft]);
+  }, [session, stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, flushScheduledDraft]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,

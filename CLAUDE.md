@@ -416,3 +416,23 @@ Finish tap → server `status='draft'` + local `draftStorage` entry → Home/Rec
 ### Sign-Out Cleanup
 
 `handleSignOut` in `AuthProvider.tsx` → `draftStorage.clearAll()` in `Promise.all` alongside stash cleanup. Blocks `setUser(null)`/`setSession(null)` until all PHI gone (shared tablet safety, rule 10).
+
+## Karpathy Guidelines
+
+Behavioral guidelines to reduce common LLM coding mistakes. On conflict, project-specific rules above take precedence.
+
+### 1. Think Before Coding
+
+Don't assume. Don't hide confusion. Surface tradeoffs. Before implementing: state assumptions explicitly, present multiple interpretations instead of picking silently, push back when a simpler approach exists, and stop to ask when something is unclear.
+
+### 2. Simplicity First
+
+Minimum code that solves the problem. No features beyond what was asked, no abstractions for single-use code, no speculative "flexibility" or "configurability", no error handling for impossible scenarios. If 200 lines could be 50, rewrite it.
+
+### 3. Surgical Changes
+
+Touch only what you must. Don't "improve" adjacent code, comments, or formatting. Don't refactor things that aren't broken. Match existing style. Remove imports/variables/functions that YOUR changes made unused, but don't remove pre-existing dead code unless asked. Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+Define success criteria. Loop until verified. Transform tasks into verifiable goals ("Add validation" → "Write tests for invalid inputs, then make them pass"). For multi-step tasks, state a brief plan with verification checks at each step.

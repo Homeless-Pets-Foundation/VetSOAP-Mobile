@@ -192,6 +192,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
   const handleSignOutRef = useRef<() => Promise<void>>(async () => {});
+  // Single-flight guard for registerDevice. `fetchUser()` already calls
+  // registerDevice() internally, and session-restore / sign-in paths also fire
+  // it in parallel — without this guard both callers race to set the
+  // deviceRegistrationPending flag and the later resolution wins (possibly
+  // inverting the correct state).
+  const registerDeviceInFlightRef = useRef<Promise<boolean> | null>(null);
   // Distinguishes user-initiated sign-out from session expiry in onAuthStateChange.
   // When Supabase emits SIGNED_OUT due to a failed refresh, this flag is false —
   // allowing one recovery refresh attempt before clearing auth state.
@@ -230,45 +236,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const registerDevice = useCallback(async (): Promise<boolean> => {
-    try {
-      const deviceId = await secureStorage.getDeviceId();
-      if (!deviceId) {
-        setDeviceRegistrationPending(true);
-        return false;
-      }
-      await apiClient.post('/api/device-sessions/register', {
-        deviceId,
-        deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
-        appVersion: require('../../package.json').version,
-      });
-      // Successful register clears any prior limit-block state — a revoke
-      // from another device may have freed a slot since the last attempt.
-      setDeviceRegistrationBlock(null);
-      setDeviceRegistrationPending(false);
-      return true;
-    } catch (error) {
-      if (__DEV__) console.log('[Auth] device registration failed:', error);
-      // Surface DEVICE_LIMIT_REACHED to the modal so the user can revoke
-      // an existing device and retry. The hard-limit modal owns the UX
-      // for that code, so we suppress the banner via `pending=false`.
-      // All other failures (network, 5xx, timeout) raise the banner —
-      // without it the user sits behind silent 428 loops forever.
-      if (error instanceof ApiError && error.code === 'DEVICE_LIMIT_REACHED') {
-        const data = error.data ?? {};
-        const existingDevices = Array.isArray(data.existingDevices)
-          ? (data.existingDevices as DeviceSession[])
-          : [];
-        const capacity =
-          data.capacity && typeof data.capacity === 'object'
-            ? (data.capacity as DeviceCapacity)
-            : null;
-        setDeviceRegistrationBlock({ existingDevices, capacity });
-        setDeviceRegistrationPending(false);
-      } else {
-        setDeviceRegistrationPending(true);
-      }
-      return false;
+    // Single-flight: return the in-flight promise if another caller is already
+    // mid-register. Prevents two concurrent POSTs + racing flag-updates.
+    if (registerDeviceInFlightRef.current) {
+      return registerDeviceInFlightRef.current;
     }
+    const promise = (async (): Promise<boolean> => {
+      try {
+        const deviceId = await secureStorage.getDeviceId();
+        if (!deviceId) {
+          setDeviceRegistrationPending(true);
+          return false;
+        }
+        await apiClient.post('/api/device-sessions/register', {
+          deviceId,
+          deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
+          appVersion: require('../../package.json').version,
+        });
+        // Successful register clears any prior limit-block state — a revoke
+        // from another device may have freed a slot since the last attempt.
+        setDeviceRegistrationBlock(null);
+        setDeviceRegistrationPending(false);
+        return true;
+      } catch (error) {
+        if (__DEV__) console.log('[Auth] device registration failed:', error);
+        // Surface DEVICE_LIMIT_REACHED to the modal so the user can revoke
+        // an existing device and retry. The hard-limit modal owns the UX
+        // for that code, so we suppress the banner via `pending=false`.
+        // All other failures (network, 5xx, timeout) raise the banner —
+        // without it the user sits behind silent 428 loops forever.
+        if (error instanceof ApiError && error.code === 'DEVICE_LIMIT_REACHED') {
+          const data = error.data ?? {};
+          const existingDevices = Array.isArray(data.existingDevices)
+            ? (data.existingDevices as DeviceSession[])
+            : [];
+          const capacity =
+            data.capacity && typeof data.capacity === 'object'
+              ? (data.capacity as DeviceCapacity)
+              : null;
+          setDeviceRegistrationBlock({ existingDevices, capacity });
+          setDeviceRegistrationPending(false);
+        } else {
+          setDeviceRegistrationPending(true);
+        }
+        return false;
+      } finally {
+        registerDeviceInFlightRef.current = null;
+      }
+    })();
+    registerDeviceInFlightRef.current = promise;
+    return promise;
   }, []);
 
   const dismissDeviceRegistrationBlock = useCallback(() => {

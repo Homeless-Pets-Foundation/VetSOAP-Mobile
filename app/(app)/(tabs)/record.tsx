@@ -418,6 +418,12 @@ function RecordingSession() {
 
     pendingStartSlotQueueRef.current = [];
     pendingStashRef.current = false;
+    // Cancel every slot's scheduled server-draft debounce timer. Without this
+    // cleanup, a timer queued before the user tapped "Load Draft" / "Discard"
+    // fires 5s later and creates a ghost server-draft row for a session the
+    // user has already abandoned — surfacing as an orphan "Not Submitted"
+    // card on Home that the sweep can't associate back to any local audio.
+    session.slots.forEach((slot) => cancelScheduledDraft(slot.id));
 
     const shouldResetRecorder =
       session.recorderBoundToSlotId !== null ||
@@ -461,7 +467,7 @@ function RecordingSession() {
     releaseResumedStashIfAny();
 
     resetSession();
-  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft]);
+  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft]);
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(

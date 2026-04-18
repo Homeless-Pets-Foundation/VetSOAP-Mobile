@@ -2,6 +2,8 @@ import React, { createContext, useEffect, useState, useCallback, useRef } from '
 import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
+import Constants from 'expo-constants';
+import * as ScreenCapture from 'expo-screen-capture';
 import { Paths, Directory, File as ExpoFile } from 'expo-file-system';
 import { safeDeleteFile } from '../lib/fileOps';
 import { supabase } from './supabase';
@@ -68,6 +70,13 @@ interface AuthContextType {
   dismissDeviceRegistrationBlock: () => void;
   /** Retry register after the user revoked one of their devices. */
   retryDeviceRegistration: () => Promise<boolean>;
+  /**
+   * True when the most recent device registration attempt failed for a
+   * non-limit reason (network, 5xx, transient). The banner uses this to
+   * prompt the user to retry instead of silently leaving every /api/*
+   * call stuck behind 428 DEVICE_REGISTRATION_REQUIRED.
+   */
+  deviceRegistrationPending: boolean;
 }
 
 export const AuthContext = createContext<AuthContextType>({
@@ -85,6 +94,7 @@ export const AuthContext = createContext<AuthContextType>({
   deviceRegistrationBlock: null,
   dismissDeviceRegistrationBlock: () => {},
   retryDeviceRegistration: async () => false,
+  deviceRegistrationPending: false,
 });
 
 /** Check if the Supabase session token has expired. */
@@ -177,6 +187,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [userFetchError, setUserFetchError] = useState<string | null>(null);
   const [deviceRegistrationBlock, setDeviceRegistrationBlock] =
     useState<DeviceRegistrationBlock | null>(null);
+  const [deviceRegistrationPending, setDeviceRegistrationPending] = useState(false);
 
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
@@ -221,7 +232,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const registerDevice = useCallback(async (): Promise<boolean> => {
     try {
       const deviceId = await secureStorage.getDeviceId();
-      if (!deviceId) return false;
+      if (!deviceId) {
+        setDeviceRegistrationPending(true);
+        return false;
+      }
       await apiClient.post('/api/device-sessions/register', {
         deviceId,
         deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
@@ -230,12 +244,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Successful register clears any prior limit-block state — a revoke
       // from another device may have freed a slot since the last attempt.
       setDeviceRegistrationBlock(null);
+      setDeviceRegistrationPending(false);
       return true;
     } catch (error) {
       if (__DEV__) console.log('[Auth] device registration failed:', error);
       // Surface DEVICE_LIMIT_REACHED to the modal so the user can revoke
-      // an existing device and retry. Other errors stay silent — the next
-      // /api/* call will surface networking or server problems on its own.
+      // an existing device and retry. The hard-limit modal owns the UX
+      // for that code, so we suppress the banner via `pending=false`.
+      // All other failures (network, 5xx, timeout) raise the banner —
+      // without it the user sits behind silent 428 loops forever.
       if (error instanceof ApiError && error.code === 'DEVICE_LIMIT_REACHED') {
         const data = error.data ?? {};
         const existingDevices = Array.isArray(data.existingDevices)
@@ -246,6 +263,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ? (data.capacity as DeviceCapacity)
             : null;
         setDeviceRegistrationBlock({ existingDevices, capacity });
+        setDeviceRegistrationPending(false);
+      } else {
+        setDeviceRegistrationPending(true);
       }
       return false;
     }
@@ -379,6 +399,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserFetchState('idle');
     setUserFetchError(null);
     setDeviceRegistrationBlock(null);
+    setDeviceRegistrationPending(false);
+  }, []);
+
+  // Block screenshots / screen recording of PHI in production builds only.
+  // Gated on extra.isProduction (set by APP_VARIANT=production in app.config.ts)
+  // so dev sessions keep normal capture for debugging. Fire-and-forget with
+  // .catch() — a native failure must not crash Hermes (rules 4 + 9).
+  useEffect(() => {
+    const isProduction = Constants.expoConfig?.extra?.isProduction === true;
+    if (!isProduction) return;
+    ScreenCapture.preventScreenCaptureAsync().catch(() => {});
   }, []);
 
   // Mutex for token refresh: prevents concurrent 401 handlers from racing
@@ -550,6 +581,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(null);
             setSession(null);
             setDeviceRegistrationBlock(null);
+            setDeviceRegistrationPending(false);
           }
         } catch (error) {
           if (__DEV__) console.error('[Auth] onAuthStateChange error:', error);
@@ -684,6 +716,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         deviceRegistrationBlock,
         dismissDeviceRegistrationBlock,
         retryDeviceRegistration,
+        deviceRegistrationPending,
       }}
     >
       {children}

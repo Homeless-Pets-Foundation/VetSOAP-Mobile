@@ -451,7 +451,7 @@ export default function RecordingDetailScreen() {
   const emailDraftMutation = useMutation({
     mutationFn: async () => {
       if (!id) throw new Error('Recording ID not available');
-      return recordingsApi.generateEmailDraft(id, {});
+      return recordingsApi.generateEmailDraft(id, { mode: 'visit_summary' });
     },
     onSuccess: (result) => {
       setEmailDraft(result);

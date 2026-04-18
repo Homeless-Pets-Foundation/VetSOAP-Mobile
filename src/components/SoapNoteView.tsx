@@ -89,7 +89,7 @@ function AccordionSection({
 
   const copySection = async () => {
     try {
-      await copyWithAutoClear(content ?? '');
+      await copyWithAutoClear(editable ? editContent : (content ?? ''));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setShowCopied(true);
       clearTimeout(copyTimeoutRef.current);

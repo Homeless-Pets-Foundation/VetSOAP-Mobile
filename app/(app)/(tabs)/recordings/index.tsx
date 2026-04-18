@@ -17,10 +17,11 @@ import { Button } from '../../../../src/components/ui/Button';
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
 
-type StatusFilter = 'all' | RecordingStatus;
+type StatusFilter = 'all' | 'processing' | RecordingStatus;
 
 const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
+  { key: 'processing', label: 'Processing' },
   { key: 'completed', label: 'Completed' },
   { key: 'failed', label: 'Failed' },
   { key: 'pending_metadata', label: 'Awaiting Details' },
@@ -54,8 +55,10 @@ export default function RecordingsListScreen() {
   } = useInfiniteQuery({
     queryKey: ['recordings', 'list', debouncedSearch, selectedStatus],
     queryFn: ({ pageParam = 1 }) => {
+      // "processing" covers multiple server statuses (uploading, uploaded, transcribing, etc.)
+      // Server doesn't support multi-value status, so fetch all and filter client-side
       const statusParam: RecordingStatus | undefined =
-        selectedStatus === 'all'
+        selectedStatus === 'all' || selectedStatus === 'processing'
           ? undefined
           : (selectedStatus as RecordingStatus);
       return recordingsApi.list({

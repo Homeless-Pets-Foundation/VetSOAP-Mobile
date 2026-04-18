@@ -85,10 +85,19 @@ export default function RecordingsListScreen() {
     },
   });
 
-  const recordings = useMemo(
-    () => data?.pages.flatMap((page) => page.data) ?? [],
-    [data]
-  );
+  const recordings = useMemo(() => {
+    const all = data?.pages.flatMap((page) => page.data) ?? [];
+    // Server ignored the "processing" pseudo-status and returned everything;
+    // narrow client-side to the transient statuses that actually represent
+    // an in-flight recording.
+    if (selectedStatus === 'processing') {
+      const PROCESSING: ReadonlySet<RecordingStatus> = new Set([
+        'uploading', 'uploaded', 'transcribing', 'transcribed', 'generating',
+      ]);
+      return all.filter((r) => PROCESSING.has(r.status));
+    }
+    return all;
+  }, [data, selectedStatus]);
 
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
 

@@ -309,7 +309,10 @@ export default function RecordingDetailScreen() {
 
   const { data: recording, isLoading, isError, error, refetch: refetchRecording, isRefetching: isRefetchingRecording } = useQuery({
     queryKey: ['recording', id],
-    queryFn: () => recordingsApi.get(id!),
+    queryFn: () => {
+      if (!id) throw new Error('Recording ID missing');
+      return recordingsApi.get(id);
+    },
     enabled: !!id,
     refetchInterval: (query) => {
       if (!isAppActive) return false;
@@ -339,7 +342,10 @@ export default function RecordingDetailScreen() {
     isRefetching: isRefetchingSoapNote,
   } = useQuery({
     queryKey: ['soapNote', id],
-    queryFn: () => recordingsApi.getSoapNote(id!),
+    queryFn: () => {
+      if (!id) throw new Error('Recording ID missing');
+      return recordingsApi.getSoapNote(id);
+    },
     enabled: !!id && recording?.status === 'completed',
     retry: 3,
     retryDelay: 2000,
@@ -356,7 +362,10 @@ export default function RecordingDetailScreen() {
     !['completed', 'failed', 'pending_metadata'].includes(recording?.status ?? '');
 
   const retryMutation = useMutation({
-    mutationFn: () => recordingsApi.retry(id!),
+    mutationFn: () => {
+      if (!id) throw new Error('Recording ID missing');
+      return recordingsApi.retry(id);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
@@ -414,7 +423,16 @@ export default function RecordingDetailScreen() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: () => recordingsApi.delete(id!),
+    mutationFn: () => {
+      if (!id) throw new Error('Recording ID missing');
+      return recordingsApi.delete(id);
+    },
+    // TODO(rebase-onto-main): once this branch is rebased onto main, add local
+    // draft cleanup here. If a `draftStorage` entry has this recording as its
+    // `serverDraftId`, the server row will be gone but the local metadata +
+    // audio will linger as an orphan "Not Submitted" card on Home until the
+    // next cleanupOrphaned sweep. The fix is a `draftStorage.listDrafts()` +
+    // `draftStorage.deleteDraft(slotId)` call in onSuccess before navigate.
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['recordings', 'list'] }).catch(() => {});
       router.navigate('/recordings');

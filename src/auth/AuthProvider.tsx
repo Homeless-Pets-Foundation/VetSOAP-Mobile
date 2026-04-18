@@ -21,18 +21,22 @@ interface AuthContextType {
   user: User | null;
   session: Session | null;
   isAuthenticated: boolean;
+  isPasswordRecovery: boolean;
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
+  clearPasswordRecovery: () => void;
 }
 
 export const AuthContext = createContext<AuthContextType>({
   user: null,
   session: null,
   isAuthenticated: false,
+  isPasswordRecovery: false,
   isLoading: true,
   signIn: async () => ({ error: null }),
   signOut: async () => {},
+  clearPasswordRecovery: () => {},
 });
 
 /** Check if the Supabase session token has expired. */
@@ -66,6 +70,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+
+  const clearPasswordRecovery = useCallback(() => {
+    setIsPasswordRecovery(false);
+  }, []);
 
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
@@ -281,6 +290,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (event === 'INITIAL_SESSION') return;
 
         try {
+          // Password recovery: establish session but skip full sign-in flow.
+          // The auth layout checks isPasswordRecovery to allow the reset-password
+          // screen to render instead of redirecting to the app.
+          if (event === 'PASSWORD_RECOVERY' && newSession) {
+            setSession(newSession);
+            apiClient.setToken(newSession.access_token);
+            setIsPasswordRecovery(true);
+            setIsLoading(false);
+            return;
+          }
+
           setSession(newSession);
 
           if (newSession?.access_token) {
@@ -400,9 +420,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         session,
         isAuthenticated,
+        isPasswordRecovery,
         isLoading,
         signIn,
         signOut: handleSignOut,
+        clearPasswordRecovery,
       }}
     >
       {children}

@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import { View, Text, Alert, SafeAreaView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../src/auth/supabase';
+import { useAuth } from '../../src/hooks/useAuth';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
+  const { clearPasswordRecovery } = useAuth();
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -43,8 +45,12 @@ export default function ResetPasswordScreen() {
           {
             text: 'OK',
             onPress: () => {
-              supabase.auth.signOut().catch(() => {});
-              router.replace('/(auth)/login');
+              clearPasswordRecovery();
+              supabase.auth.signOut()
+                .catch(() => {})
+                .finally(() => {
+                  router.replace('/(auth)/login');
+                });
             },
           },
         ]

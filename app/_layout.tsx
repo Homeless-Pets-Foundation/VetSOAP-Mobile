@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Alert } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -59,18 +59,35 @@ export default function RootLayout() {
           return;
         }
 
+        // Supabase can deliver tokens as query params OR as a hash fragment
         const parsed = Linking.parse(url);
-        const access_token = parsed.queryParams?.access_token;
-        const refresh_token = parsed.queryParams?.refresh_token;
+        let access_token = parsed.queryParams?.access_token as string | undefined;
+        let refresh_token = parsed.queryParams?.refresh_token as string | undefined;
+
+        // Fall back to hash fragment: captivet://reset-password#access_token=...&refresh_token=...
+        if (!access_token || !refresh_token) {
+          const hashIndex = url.indexOf('#');
+          if (hashIndex !== -1) {
+            const fragment = url.substring(hashIndex + 1);
+            const params = new URLSearchParams(fragment);
+            access_token = access_token || params.get('access_token') || undefined;
+            refresh_token = refresh_token || params.get('refresh_token') || undefined;
+          }
+        }
 
         if (
           typeof access_token === 'string' &&
           typeof refresh_token === 'string'
         ) {
-          await supabase.auth.setSession({
+          const { error: sessionError } = await supabase.auth.setSession({
             access_token,
             refresh_token,
           });
+
+          if (sessionError) {
+            Alert.alert('Session Error', 'Could not restore your session from the reset link. Please request a new one.');
+            return;
+          }
 
           router.push('/(auth)/reset-password');
         }
@@ -78,6 +95,7 @@ export default function RootLayout() {
         if (__DEV__) {
           console.error('Error handling password reset deep link:', error);
         }
+        Alert.alert('Link Error', 'Something went wrong opening the reset link. Please try again.');
       }
     };
 

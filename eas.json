@@ -56,6 +56,15 @@
       "ios": {
         "distribution": "internal"
       }
+    },
+    "preview-simulator": {
+      "distribution": "internal",
+      "env": {
+        "APP_VARIANT": "preview"
+      },
+      "ios": {
+        "simulator": true
+      }
     }
   },
   "submit": {

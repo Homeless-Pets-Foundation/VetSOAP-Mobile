@@ -219,7 +219,7 @@ export default function LoginScreen() {
               onPress={() => { handleSignIn().catch(() => {}); }}
               loading={isLoading}
               disabled={socialProvider !== null}
-              accessibilityLabel="Sign into your Account"
+              accessibilityLabel="Sign In"
             >
               Sign In
             </Button>

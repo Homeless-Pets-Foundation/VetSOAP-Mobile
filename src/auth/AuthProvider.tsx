@@ -265,9 +265,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setDeviceRegistrationPending(true);
           return false;
         }
+        // Platform.isPad is an iOS-only static property set at app launch based
+        // on UIUserInterfaceIdiom. iPadOS apps running the iPhone binary
+        // (unlikely on EAS builds, but possible) still report isPad=false,
+        // which matches what the server should classify them as for session
+        // rules. Android-side is all tablets for now (phones not a ship target).
+        const deviceType =
+          Platform.OS === 'ios'
+            ? Platform.isPad
+              ? 'ios_tablet'
+              : 'ios_phone'
+            : 'android_tablet';
         await apiClient.post('/api/device-sessions/register', {
           deviceId,
-          deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
+          deviceType,
           appVersion: require('../../package.json').version,
         });
         // Successful register clears any prior limit-block state — a revoke
@@ -697,6 +708,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
       if (__DEV__) console.error('[Auth] signIn failed:', error.message, error.status);
+
+      // Diagnostic: persist the actual Supabase error to a file so we can
+      // distinguish "really-unreachable" from other failure modes in the EAS
+      // preview build. Remove once the iOS-sim-post-signout regression is
+      // root-caused. File is readable via `xcrun simctl get_app_container
+      // booted com.captivet.mobile data`.
+      try {
+        const file = new ExpoFile(Paths.document, 'signin-debug.log');
+        const payload = {
+          at: new Date().toISOString(),
+          emailHash: email.length, // don't log raw email
+          message: error.message ?? null,
+          status: error.status ?? null,
+          name: (error as { name?: string }).name ?? null,
+          cause: String((error as { cause?: unknown }).cause ?? ''),
+        };
+        let prior = '';
+        try { if (file.exists) prior = await file.text(); } catch { /* ignore */ }
+        file.write(prior + JSON.stringify(payload) + '\n');
+      } catch { /* ignore */ }
 
       if (error.message?.includes('Email not confirmed')) {
         return { error: 'Please confirm your email address before signing in.' };

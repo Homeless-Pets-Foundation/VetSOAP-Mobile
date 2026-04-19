@@ -1,7 +1,7 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Home, Mic, FileText } from 'lucide-react-native';
+import { Home, Mic, FileText, Users } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
 export default function TabsLayout() {
@@ -60,13 +60,17 @@ export default function TabsLayout() {
           tabBarAccessibilityLabel: 'View all recordings',
         }}
       />
-      {/* Hide settings and patient from tab bar */}
-      <Tabs.Screen
-        name="settings"
-        options={{ href: null }}
-      />
       <Tabs.Screen
         name="patient"
+        options={{
+          title: 'Patients',
+          tabBarIcon: ({ color, size }) => <Users color={color} size={size} />,
+          tabBarAccessibilityLabel: 'Browse patients',
+        }}
+      />
+      {/* Hide settings from tab bar */}
+      <Tabs.Screen
+        name="settings"
         options={{ href: null }}
       />
     </Tabs>

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const ASSETS = path.join(ROOT, 'assets');
-const SOURCE_LOGO = path.join(ROOT, 'docs', 'Captivet Logo.png');
+const SOURCE_LOGO = path.join(ROOT, 'assets', 'Captivet Logo - Transparent.png');
 
 const TEAL = '#0d8775';
 

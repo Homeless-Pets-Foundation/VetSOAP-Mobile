@@ -180,7 +180,7 @@ Adapter in `src/auth/supabase.ts`: `setItem` writes → reads back → retries o
 
 ### 23. Lazy-load optional native auth modules
 
-`@react-native-google-signin/google-signin`, `expo-apple-authentication`, `expo-crypto` — `require()` on first use in `src/auth/socialAuth.ts`, **not** static import. Old dev-client APKs pre-these-deps → crash on module load if static. New optional native auth module → same pattern.
+`@react-native-google-signin/google-signin`, `expo-apple-authentication`, `expo-crypto` — `require()` on first use in `src/auth/socialAuth.ts` and `src/lib/secureStorage.ts` (see rule 26), **not** static import at the top of the module. Old dev-client APKs pre-these-deps → crash on module load if static. New optional native auth module → same pattern.
 
 Google Sign-In Expo config plugin in `app.config.ts` conditionally included only when `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` set — Android builds don't need iOS URL scheme; unconditional → prebuild fails on Android-only dev.
 
@@ -205,6 +205,32 @@ Fixes by pattern:
 
 Never `numberOfLines={1}` on a single-word Text in a `self-end` Pressable — makes it worse (`"Co..."` with ellipsis). Verify on physical Android device; iOS and Android emulator both hide this class of bug.
 
+### 26. Security-critical random via `expo-crypto`, not global `crypto`
+
+Hermes on iOS does **not** expose `globalThis.crypto.getRandomValues` in RN 0.83.4 / Expo SDK 55 despite Hermes docs claiming it since 0.76. Silent fallthrough to null → `secureStorage.getDeviceId()` returns null → `X-Device-Id` header omitted → server 401 `DEVICE_ID_REQUIRED` → forced sign-out loop. Launch-blocker on iOS, verified 2026-04-19.
+
+Pattern (`src/lib/secureStorage.ts`): prefer `require('expo-crypto').getRandomBytes(16)` first, fall back to global `crypto.getRandomValues` only if expo-crypto is unavailable. Also: `SecureStore.setItemAsync` with `kSecAttrAccessibleAfterFirstUnlock` sometimes fails on iOS Simulator — retry once without the attribute before giving up.
+
+Non-security randomness (idempotency keys in `src/api/recordings.ts`) can still use Math.random as a last resort; security-critical IDs (device ID, nonces) must not.
+
+### 27. `signIn` retries once on `AuthRetryableFetchError`
+
+Supabase GoTrue's internal auto-refresh timer leaves a stale `AbortController` after `signOut`. The next `supabase.auth.signInWithPassword()` rejects immediately with `AuthRetryableFetchError` (status 0, "Network request failed"). Reproducibly fails on iOS after sign-out → sign-in loops.
+
+`signIn` in `AuthProvider.tsx` catches `error.name === 'AuthRetryableFetchError'` and retries `signInWithPassword` once after 500ms. The retry constructs a fresh `AbortController`, breaking the stale-state cycle. Do NOT try to "reset" state by calling `supabase.auth.signOut({ scope: 'local' })` before sign-in — that emits `SIGNED_OUT` which `onAuthStateChange` (rule 20) treats as unexpected loss and tries `refreshSession()` which hangs on the same poisoned controller. 90-second hang confirmed. The retry alone is sufficient.
+
+### 28. `registerDevice` uses `Platform.isPad` to pick iOS device type
+
+`Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet'` was wrong — every iPhone showed up as "iPad" in Settings → Manage Devices. `Platform.isPad` is the standard RN flag (static, set at launch from `UIUserInterfaceIdiom`). Pattern in `AuthProvider.registerDevice`:
+
+```ts
+const deviceType = Platform.OS === 'ios'
+  ? Platform.isPad ? 'ios_tablet' : 'ios_phone'
+  : 'android_tablet';
+```
+
+`app/(app)/devices.tsx:formatDeviceTypeLabel` already maps `ios_phone` → "iPhone". Don't revert to the one-size-fits-all `'ios_tablet'` string.
+
 ## Device Binding
 
 Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, persist in SecureStore (survives sign-out — device-scoped, not user-scoped). Server `validateDeviceSession` requires it, can revoke specific devices.
@@ -223,8 +249,11 @@ Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, 
 - **Lock file:** sync via `npm install --legacy-peer-deps` pre-build if deps change. EAS uses `npm ci` → fails on mismatch. `.npmrc` has `legacy-peer-deps=true` for `@config-plugins/ffmpeg-kit-react-native` peer dep conflict w/ Expo SDK 55.
 - **Secrets sync:** after `.env` edit → `eas secret:push --scope project --env-file .env --force`. Stale EAS secret overrides local `.env` in prod builds.
 - **Metro cache:** after `.env` edit → `npx expo start --clear`. Metro inlines `EXPO_PUBLIC_*` at build time → stale cache silently uses old values. Dev mode: `config.ts` warns if Supabase vars empty.
-- **FFmpeg Maven repo:** `com.arthenica:ffmpeg-kit-min` removed from Maven Central. Self-hosted: `https://homeless-pets-foundation.github.io/ffmpeg-kit-maven`. Wired in `app.config.ts` `extraMavenRepos` (Gradle 9 req). **Current: `6.0-3`** (16KB page-size, built from `arthenica/ffmpeg-kit` `development`). Rebuild: `Homeless-Pets-Foundation/ffmpeg-kit-maven` → Actions → "Build FFmpeg Kit min (16KB page size)" → Run.
+- **FFmpeg Maven repo (Android):** `com.arthenica:ffmpeg-kit-min` removed from Maven Central. Self-hosted: `https://homeless-pets-foundation.github.io/ffmpeg-kit-maven`. Wired in `app.config.ts` `extraMavenRepos` (Gradle 9 req). **Current: `6.0-3`** (16KB page-size, built from `arthenica/ffmpeg-kit` `development`). Rebuild: `Homeless-Pets-Foundation/ffmpeg-kit-maven` → Actions → "Build FFmpeg Kit min (16KB page size)" → Run.
 - **ffmpeg-kit-react-native patch:** `patches/ffmpeg-kit-react-native+6.0.2.patch` overrides AAR `6.0-2` → `6.0-3` in npm pkg `gradle.properties`. Applied via `postinstall: patch-package` after `npm ci`. Bump AAR → update patch version string.
+- **FFmpeg CocoaPods (iOS):** `ffmpeg-kit-ios-min@6.0` trunk podspec 404s on its GitHub release zip (arthenica sunset iOS releases same as Android). Self-hosted at `ffmpeg-kit-maven/ios/6.0-3/` (same repo as the Android Maven artifacts). `plugins/with-ffmpeg-ios-pod-source.js` injects `pod 'ffmpeg-kit-ios-min', :podspec => '<URL>'` into the Podfile before `use_native_modules` — CocoaPods then uses that podspec instead of trunk. Plugin is registered in `app.config.ts` right after `@config-plugins/ffmpeg-kit-react-native`. Consumer URL currently `raw.githubusercontent.com/...` (GitHub Pages deploy flaky due to billing cap); flip back to the Pages URL once Pages is healthy. Rebuilding the xcframework requires an Apple Silicon Mac (`./ios.sh --xcframework --disable-armv7 --disable-armv7s --disable-i386 --disable-arm64-mac-catalyst --disable-x86-64-mac-catalyst`, then zip the 8 xcframeworks at zip root). GH Actions workflow `build-ios-xcframework.yml` exists in the maven repo but requires macOS Actions minutes (billing-gated).
+- **`preview-simulator` EAS profile:** standalone iOS simulator `.app` with the JS bundle baked in (no dev-client, no Apple credentials needed). Use `eas build --platform ios --profile preview-simulator` to produce an artifact you can install on a local or cloud Mac's iOS Simulator for visual smoke tests. Not a real-device path — just a cheap sim-testing escape hatch that doesn't require Apple Dev enrollment.
+- **`sharp` is in `optionalDependencies`, not `devDependencies`:** sharp is used only by `scripts/generate-icons.mjs` locally. As a devDep, EAS `npm ci --include=dev` blew up on macOS arm64 (source build fell over for lack of `node-addon-api`). Optional deps are non-fatal on install failure. Keep it there; don't move it back.
 - **Expo doctor:** `npx expo-doctor` before every EAS build. Pre-build hook (`.claude/hooks/pre-eas-build.sh`) enforces auto. Dependabot bumps past Expo SDK compat → `npx expo install --fix`.
 - **APP_VARIANT:** `app.config.ts` exposes `extra.isProduction` from `APP_VARIANT=production`. Gates prod-only features at runtime (e.g. screen capture prevention, when re-enabled).
 
@@ -305,7 +334,7 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 
 ## File Conventions
 
-- `src/lib/secureStorage.ts` — sole `expo-secure-store` interface. All calls try/catch. `getDeviceId()` → persistent UUID v4 on first call (memory-cached). `DEVICE_ID` NOT deleted in `clearAll()` — device-scoped.
+- `src/lib/secureStorage.ts` — sole `expo-secure-store` interface. All calls try/catch. `getDeviceId()` → persistent UUID v4 on first call (memory-cached). Uses `expo-crypto.getRandomBytes` as primary random source with global `crypto.getRandomValues` as fallback (rule 26). `setItemAsync` has a keychainAccessible-less retry fallback for iOS Sim Keychain quirks. `DEVICE_ID` NOT deleted in `clearAll()` — device-scoped.
 - `src/lib/biometrics.ts` — sole `expo-local-authentication` + biometric pref interface. All wrapped.
 - `src/lib/fileOps.ts` — safe wrappers around `expo-file-system` `File`/`Directory`. Use `safeDeleteFile`/`safeDeleteDirectory`, never `.delete()` direct. Never import `expo-file-system/legacy` in new code.
 - `src/lib/secureClipboard.ts` — 30s auto-clear clipboard for sensitive data. `clearClipboard()` for sign-out.
@@ -322,7 +351,8 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/hooks/useStashedSessions.ts` — stash list + resume. `stashSession` moves segments to stash dir, writes metadata, then `draftStorage.deleteDraft()` for every slot w/ `draftSlotId` (stash owns audio post-commit). `convertToPatientSlots` restores `serverDraftId`/`draftSlotId` from stash payload.
 - `src/types/multiPatient.ts` — `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`. `PatientSlot` incl. `draftSlotId`/`serverDraftId` for auto-saved drafts.
 - `src/types/stash.ts` — `StashedSlot`/`StashedSegment`/`StashedSession`. `StashedSlot` carries optional `serverDraftId`/`draftSlotId` (rule 24).
-- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set.
+- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set. `signIn` retries once on `AuthRetryableFetchError` (rule 27). `registerDevice` sends `ios_phone` / `ios_tablet` / `android_tablet` based on `Platform.isPad` (rule 28).
+- `plugins/with-ffmpeg-ios-pod-source.js` — local Expo config plugin that inserts `pod 'ffmpeg-kit-ios-min', :podspec => '<self-hosted URL>'` into the iOS Podfile via `withDangerousMod`. Registered in `app.config.ts` right after `@config-plugins/ffmpeg-kit-react-native`. Override URL lives in `DEFAULT_PODSPEC_URL` at the top of the file — currently `raw.githubusercontent.com/.../ffmpeg-kit-ios-min.podspec.json`, flip to the Pages URL when Pages is healthy. Don't remove — without it, every `pod install` 404s on the arthenica GitHub release zip.
 - `src/api/client.ts` — sends `X-Device-Id` header all reqs. Memory-caches device ID. Handles `DEVICE_REGISTRATION_REQUIRED` (428) via `onDeviceRegistrationRequired` callback → `registerDevice()` + retry once. Handles `DEVICE_REVOKED`/`DEVICE_ID_REQUIRED` 401s before token refresh.
 - `src/api/recordings.ts` — `createWithFile()` single-segment, `createWithSegments()` multi. Both validate via `getInfoAsync()`, 250MB limit, 10min timeout. Both take optional `existingRecordingId` → skips `create()`, uses server draft as recording ID (promote path).
 - `src/components/AppLockGuard.tsx` — biometric on cold start (not just bg resume). Defaults `isLocked=true` + blank screen until biometric done (no PHI flash). Sign-out = escape hatch.

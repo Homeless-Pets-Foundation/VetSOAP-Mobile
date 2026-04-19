@@ -165,10 +165,11 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
             }`}
           >
             <Text
-              className={`text-body-sm font-medium ${
+              className={`text-body-sm font-medium shrink max-w-[180px] ${
                 isActive ? 'text-white' : 'text-stone-700'
               }`}
               numberOfLines={1}
+              ellipsizeMode="tail"
             >
               {label}
             </Text>

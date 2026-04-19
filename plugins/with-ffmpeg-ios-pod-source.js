@@ -19,8 +19,13 @@ const { mergeContents } = require('@expo/config-plugins/build/utils/generateCode
 const fs = require('fs');
 const path = require('path');
 
+// Served via raw.githubusercontent.com because GitHub Pages on this repo is
+// currently stuck (Pages legacy build, duration=0) — same underlying state
+// that has Actions disabled for the account. Flip back to the Pages URL
+// (https://homeless-pets-foundation.github.io/ffmpeg-kit-maven/ios/…) once
+// Pages is healthy again.
 const DEFAULT_PODSPEC_URL =
-  'https://homeless-pets-foundation.github.io/ffmpeg-kit-maven/ios/ffmpeg-kit-ios-min.podspec.json';
+  'https://raw.githubusercontent.com/Homeless-Pets-Foundation/ffmpeg-kit-maven/main/ios/ffmpeg-kit-ios-min.podspec.json';
 
 function injectSelfHostedPodSource(src, podspecUrl) {
   return mergeContents({

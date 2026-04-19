@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import { File as ExpoFile, Paths } from 'expo-file-system';
 
 const KEYS = {
   ACCESS_TOKEN: 'captivet_access_token',
@@ -6,6 +7,19 @@ const KEYS = {
   SESSION: 'captivet_session',
   DEVICE_ID: 'captivet_device_id',
 } as const;
+
+// Diagnostic: persist getDeviceId state to a file readable from outside the
+// app via `xcrun simctl get_app_container ... data` (iOS sim). Best-effort —
+// swallow any I/O error. Remove once the device-ID-on-iOS bug is fixed.
+async function writeDeviceIdDebug(state: Record<string, unknown>): Promise<void> {
+  try {
+    const file = new ExpoFile(Paths.document, 'device-id-debug.log');
+    const line = `${new Date().toISOString()} ${JSON.stringify(state)}\n`;
+    let prior = '';
+    try { if (file.exists) prior = await file.text(); } catch { /* ignore */ }
+    file.write(prior + line);
+  } catch { /* ignore */ }
+}
 
 export const secureStorage = {
   async getToken(): Promise<string | null> {
@@ -56,30 +70,82 @@ export const secureStorage = {
 
   /** Get or generate a persistent device ID (survives sign-out, tied to this device). */
   async getDeviceId(): Promise<string | null> {
+    // Diagnostic state captured at each branch; written to a log file in
+    // documentDirectory. Drop once iOS device-ID bug is resolved.
+    const diag: Record<string, unknown> = { phase: 'start' };
     try {
-      let id = await SecureStore.getItemAsync(KEYS.DEVICE_ID);
+      let id: string | null = null;
+      try {
+        id = await SecureStore.getItemAsync(KEYS.DEVICE_ID);
+        diag.secureStoreGet = id ? 'hit' : 'miss';
+      } catch (e) {
+        diag.secureStoreGetError = String(e);
+      }
+
       if (!id) {
-        // Device ID is a security boundary (server-side revocation, X-Device-Id
-        // header). Require crypto.getRandomValues — no Math.random fallback.
-        // Hermes on RN 0.76+ always provides it; if somehow absent, return null
-        // so the existing DEVICE_ID_REQUIRED 401 path ("restart or reinstall")
-        // surfaces the failure instead of silently issuing a weak ID.
-        if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
-          if (__DEV__) console.error('[SecureStorage] getDeviceId: crypto.getRandomValues unavailable');
+        // Prefer expo-crypto (present as a dep, reliable across RN/Hermes on
+        // both iOS and Android); fall back to global crypto.getRandomValues
+        // if available; return null only if neither path works.
+        const bytes = new Uint8Array(16);
+        let source: 'expo-crypto' | 'global-crypto' | 'none' = 'none';
+        try {
+          const ExpoCrypto = require('expo-crypto') as {
+            getRandomBytes?: (n: number) => Uint8Array;
+          };
+          if (ExpoCrypto.getRandomBytes) {
+            const b = ExpoCrypto.getRandomBytes(16);
+            bytes.set(b);
+            source = 'expo-crypto';
+          }
+        } catch (e) {
+          diag.expoCryptoError = String(e);
+        }
+        if (source === 'none' && typeof crypto !== 'undefined' && crypto.getRandomValues) {
+          crypto.getRandomValues(bytes);
+          source = 'global-crypto';
+        }
+        diag.randomSource = source;
+        if (source === 'none') {
+          diag.phase = 'no-random-source';
+          void writeDeviceIdDebug(diag);
+          if (__DEV__) console.error('[SecureStorage] getDeviceId: no random source');
           return null;
         }
-        const bytes = new Uint8Array(16);
-        crypto.getRandomValues(bytes);
+
         bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
         bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
         const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
         id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-        await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {
-          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-        });
+        diag.generatedId = id;
+
+        try {
+          await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {
+            keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+          });
+          diag.secureStoreSet = 'ok';
+        } catch (e) {
+          diag.secureStoreSetError = String(e);
+          // Fallback: try again without the accessible attribute. iOS Simulator
+          // Keychain sometimes rejects kSecAttrAccessibleAfterFirstUnlock.
+          try {
+            await SecureStore.setItemAsync(KEYS.DEVICE_ID, id);
+            diag.secureStoreSetFallback = 'ok';
+          } catch (e2) {
+            diag.secureStoreSetFallbackError = String(e2);
+            // Even if Keychain failed, return the in-memory id so the current
+            // request can proceed. Next app launch will regenerate (not ideal
+            // but unblocks iOS builds where Keychain is flaky).
+          }
+        }
       }
+      diag.phase = 'return';
+      diag.returning = id ? 'id' : 'null';
+      void writeDeviceIdDebug(diag);
       return id;
     } catch (error) {
+      diag.phase = 'outer-catch';
+      diag.outerError = String(error);
+      void writeDeviceIdDebug(diag);
       if (__DEV__) console.error('[SecureStorage] getDeviceId failed:', error);
       return null;
     }

@@ -4,7 +4,7 @@ import { useAuth } from '../../src/hooks/useAuth';
 import { View, ActivityIndicator } from 'react-native';
 
 export default function AuthLayout() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isPasswordRecovery, isLoading } = useAuth();
 
   if (isLoading) {
     return (
@@ -14,13 +14,17 @@ export default function AuthLayout() {
     );
   }
 
-  if (isAuthenticated) {
+  // Allow reset-password screen when the user tapped a recovery deep link.
+  // The session is authenticated but the user hasn't set a new password yet.
+  if (isAuthenticated && !isPasswordRecovery) {
     return <Redirect href="/" />;
   }
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="login" />
+      <Stack.Screen name="forgot-password" />
+      <Stack.Screen name="reset-password" />
     </Stack>
   );
 }

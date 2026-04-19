@@ -77,6 +77,16 @@ interface AuthContextType {
    * call stuck behind 428 DEVICE_REGISTRATION_REQUIRED.
    */
   deviceRegistrationPending: boolean;
+  /**
+   * True while the user is mid password-reset deep-link flow: Supabase has
+   * established a session from the recovery token, but the user has not yet
+   * set a new password. `(auth)/_layout.tsx` reads this flag and skips its
+   * "already authenticated → /" redirect so the reset-password screen can
+   * render instead.
+   */
+  isPasswordRecovery: boolean;
+  /** Called by the reset-password screen after it finishes (success or cancel). */
+  clearPasswordRecovery: () => void;
 }
 
 export const AuthContext = createContext<AuthContextType>({
@@ -95,6 +105,8 @@ export const AuthContext = createContext<AuthContextType>({
   dismissDeviceRegistrationBlock: () => {},
   retryDeviceRegistration: async () => false,
   deviceRegistrationPending: false,
+  isPasswordRecovery: false,
+  clearPasswordRecovery: () => {},
 });
 
 /** Check if the Supabase session token has expired. */
@@ -188,6 +200,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [deviceRegistrationBlock, setDeviceRegistrationBlock] =
     useState<DeviceRegistrationBlock | null>(null);
   const [deviceRegistrationPending, setDeviceRegistrationPending] = useState(false);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+
+  const clearPasswordRecovery = useCallback(() => {
+    setIsPasswordRecovery(false);
+  }, []);
 
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
@@ -417,6 +434,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserFetchError(null);
     setDeviceRegistrationBlock(null);
     setDeviceRegistrationPending(false);
+    setIsPasswordRecovery(false);
   }, []);
 
   // Block screenshots / screen recording of PHI in production builds only.
@@ -543,6 +561,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (event === 'INITIAL_SESSION') return;
 
         try {
+          // Password recovery: establish the session but skip the rest of the
+          // sign-in flow (no fetchUser, no stash setup). (auth)/_layout.tsx
+          // reads isPasswordRecovery so the authenticated session doesn't
+          // bounce the user out of reset-password.
+          if (event === 'PASSWORD_RECOVERY' && newSession) {
+            setSession(newSession);
+            sessionTimestampRef.current = Date.now();
+            apiClient.setToken(newSession.access_token);
+            setIsPasswordRecovery(true);
+            setIsLoading(false);
+            return;
+          }
+
           if (newSession?.access_token) {
             sessionRecoveryAttemptedRef.current = false; // reset for next sign-out cycle
             userInitiatedSignOutRef.current = false;     // ensure clear regardless of prior sign-out path
@@ -599,6 +630,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setSession(null);
             setDeviceRegistrationBlock(null);
             setDeviceRegistrationPending(false);
+            setIsPasswordRecovery(false);
           }
         } catch (error) {
           if (__DEV__) console.error('[Auth] onAuthStateChange error:', error);
@@ -734,6 +766,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         dismissDeviceRegistrationBlock,
         retryDeviceRegistration,
         deviceRegistrationPending,
+        isPasswordRecovery,
+        clearPasswordRecovery,
       }}
     >
       {children}

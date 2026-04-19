@@ -85,6 +85,14 @@ export interface Patient {
   aiHistoryUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // Present when the server includes a Prisma relation-count on list endpoints.
+  _count?: { recordings: number };
+}
+
+export interface ListPatientsParams {
+  page?: number;
+  limit?: number;
+  search?: string;
 }
 
 export interface UpdatePatient {

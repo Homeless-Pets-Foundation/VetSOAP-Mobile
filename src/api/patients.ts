@@ -1,5 +1,5 @@
 import { apiClient, ApiError } from './client';
-import type { Patient, UpdatePatient, PaginatedResponse, Recording } from '../types';
+import type { Patient, UpdatePatient, ListPatientsParams, PaginatedResponse, Recording } from '../types';
 
 export interface PimsLookupResult {
   patientName: string;
@@ -14,6 +14,14 @@ export interface ListPatientRecordingsParams {
 }
 
 export const patientsApi = {
+  async list(params: ListPatientsParams = {}): Promise<PaginatedResponse<Patient>> {
+    const query: Record<string, string | number | undefined> = {};
+    if (params.page !== undefined) query.page = params.page;
+    if (params.limit !== undefined) query.limit = params.limit;
+    if (params.search) query.search = params.search;
+    return apiClient.get('/api/patients', query);
+  },
+
   async get(id: string): Promise<Patient> {
     return apiClient.get(`/api/patients/${id}`);
   },

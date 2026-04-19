@@ -17,3 +17,10 @@ export const SOAP_SECTION_ACTIONS = {
   copyAll: 'Copy All',
   copied: 'Copied!',
 } as const;
+
+export const DEVICE_REGISTRATION_BANNER_COPY = {
+  title: 'Device setup incomplete',
+  body: 'Some features may not work until your device is registered.',
+  retry: 'Retry',
+  retrying: 'Retrying…',
+} as const;

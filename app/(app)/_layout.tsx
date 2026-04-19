@@ -3,6 +3,7 @@ import { Redirect, Stack } from 'expo-router';
 import { useAuth } from '../../src/hooks/useAuth';
 import { View, Text, ActivityIndicator, Pressable } from 'react-native';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
+import { DeviceRegistrationBanner } from '../../src/components/DeviceRegistrationBanner';
 
 export default function AppLayout() {
   const {
@@ -97,6 +98,7 @@ export default function AppLayout() {
   return (
     <AppLockGuard>
       <View style={{ flex: 1 }}>
+        <DeviceRegistrationBanner />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="audio-editor" />

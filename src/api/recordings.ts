@@ -24,13 +24,15 @@ const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
 
 function generateIdempotencyKey(): string {
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    crypto.getRandomValues(bytes);
-  } else {
-    // Math.random fallback for Hermes runtimes without crypto polyfill
-    for (let i = 0; i < 16; i++) bytes[i] = (Math.random() * 256) | 0;
+  // Idempotency keys are a replay-attack boundary — require crypto.getRandomValues.
+  // Hermes on RN 0.76+ always provides it; throw rather than fall back to
+  // Math.random so a missing runtime surfaces loudly instead of silently
+  // issuing predictable keys.
+  if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
+    throw new Error('crypto.getRandomValues unavailable — cannot generate idempotency key');
   }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');

@@ -235,8 +235,20 @@ function RecordingSession() {
   const pagerRef = useRef<FlatList>(null);
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
-  // Track pending slot for "stop A then start B" flow
-  const pendingStartSlotRef = useRef<string | null>(null);
+  // Track pending slots for "stop A then start B (then C…)" flow. FIFO queue —
+  // rapid tap of Start across multiple slots during a stop-in-progress used to
+  // overwrite a single ref, dropping all but the latest tap. Queue preserves
+  // each tap; effect pops the head when the recorder finishes stopping.
+  const pendingStartSlotQueueRef = useRef<string[]>([]);
+  const enqueuePendingStart = useCallback((slotId: string) => {
+    const q = pendingStartSlotQueueRef.current;
+    if (!q.includes(slotId)) q.push(slotId);
+  }, []);
+  const removePendingStart = useCallback((slotId: string) => {
+    const q = pendingStartSlotQueueRef.current;
+    const idx = q.indexOf(slotId);
+    if (idx !== -1) q.splice(idx, 1);
+  }, []);
   // Track pending stash for "stop recorder then stash" flow
   const pendingStashRef = useRef(false);
   // Track pending draft for "stop recorder then auto-save draft" flow
@@ -341,10 +353,10 @@ function RecordingSession() {
       // on the next render after SAVE_AUDIO updates the session state.
       if (pendingStashRef.current) {
         recorder.resetWithoutDelete();
-      } else if (pendingStartSlotRef.current) {
-        // If there's a pending slot to start recording on, do it now
-        const nextSlotId = pendingStartSlotRef.current;
-        pendingStartSlotRef.current = null;
+      } else if (pendingStartSlotQueueRef.current.length > 0) {
+        // Pop the head of the queue. Subsequent queued slots will be drained
+        // on later stop cycles — one stop, one start.
+        const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -372,9 +384,8 @@ function RecordingSession() {
           'Recording Error',
           'The current recording could not be captured. Any previously saved segments will still be stashed.'
         );
-      } else if (pendingStartSlotRef.current) {
-        const nextSlotId = pendingStartSlotRef.current;
-        pendingStartSlotRef.current = null;
+      } else if (pendingStartSlotQueueRef.current.length > 0) {
+        const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -405,8 +416,14 @@ function RecordingSession() {
     // below doesn't silently delete the very rows the next step relies on.
     const preserve = new Set(opts?.preserveDraftSlotIds ?? []);
 
-    pendingStartSlotRef.current = null;
+    pendingStartSlotQueueRef.current = [];
     pendingStashRef.current = false;
+    // Cancel every slot's scheduled server-draft debounce timer. Without this
+    // cleanup, a timer queued before the user tapped "Load Draft" / "Discard"
+    // fires 5s later and creates a ghost server-draft row for a session the
+    // user has already abandoned — surfacing as an orphan "Not Submitted"
+    // card on Home that the sweep can't associate back to any local audio.
+    session.slots.forEach((slot) => cancelScheduledDraft(slot.id));
 
     const shouldResetRecorder =
       session.recorderBoundToSlotId !== null ||
@@ -450,7 +467,7 @@ function RecordingSession() {
     releaseResumedStashIfAny();
 
     resetSession();
-  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft]);
+  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft]);
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
@@ -548,12 +565,12 @@ function RecordingSession() {
                 {
                   text: 'Stop & Start New',
                   onPress: () => {
-                    pendingStartSlotRef.current = slotId;
+                    enqueuePendingStart(slotId);
                     (async () => {
                       try {
                         await recorder.stop();
                       } catch {
-                        pendingStartSlotRef.current = null;
+                        removePendingStart(slotId);
                         Alert.alert('Recording Error', 'Failed to stop the current recording.');
                       }
                     })().catch(() => {});
@@ -566,12 +583,12 @@ function RecordingSession() {
 
           // Paused — auto-stop and start new (user already signaled intent to move on)
           if (recorder.state === 'paused') {
-            pendingStartSlotRef.current = slotId;
+            enqueuePendingStart(slotId);
             (async () => {
               try {
                 await recorder.stop();
               } catch {
-                pendingStartSlotRef.current = null;
+                removePendingStart(slotId);
                 Alert.alert('Recording Error', 'Failed to stop the current recording.');
               }
             })().catch(() => {});

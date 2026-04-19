@@ -706,19 +706,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async (email: string, password: string) => {
     if (__DEV__) console.log('[Auth] signIn: attempting for', email);
 
-    // Supabase GoTrue's internal auto-refresh timer can leave behind a stale
-    // AbortController after a previous signOut, causing the next fetch to
-    // reject with AuthRetryableFetchError (status=0, "Network request
-    // failed"). A local-scope signOut resets the client's internal state
-    // without touching server-side session storage. No-op if state is clean.
-    await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-
     let { error } = await supabase.auth.signInWithPassword({ email, password });
 
-    // Retryable fetch failures (per Supabase's own error taxonomy) get one
-    // second attempt after a short delay. Covers transient URLSession state
-    // corruption on iOS that was reproducible in a cloud-Mac simulator after
-    // sign-out → sign-in loops; harmless everywhere else.
+    // Supabase GoTrue's internal auto-refresh timer can leave behind a stale
+    // AbortController after a previous signOut; the next fetch rejects
+    // immediately with AuthRetryableFetchError (status=0, "Network request
+    // failed"). Retry once after a short delay — Supabase itself named this
+    // error "retryable," and the retry's signInWithPassword constructs a
+    // fresh controller so the original stale one doesn't poison it.
+    // Reproducible in the iOS simulator after sign-out → sign-in loops.
     if (error && (error as { name?: string }).name === 'AuthRetryableFetchError') {
       if (__DEV__) console.log('[Auth] signIn: AuthRetryableFetchError, retrying once');
       await new Promise((resolve) => setTimeout(resolve, 500));

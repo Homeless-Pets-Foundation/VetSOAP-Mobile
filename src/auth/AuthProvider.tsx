@@ -705,29 +705,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     if (__DEV__) console.log('[Auth] signIn: attempting for', email);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+
+    // Supabase GoTrue's internal auto-refresh timer can leave behind a stale
+    // AbortController after a previous signOut, causing the next fetch to
+    // reject with AuthRetryableFetchError (status=0, "Network request
+    // failed"). A local-scope signOut resets the client's internal state
+    // without touching server-side session storage. No-op if state is clean.
+    await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+
+    let { error } = await supabase.auth.signInWithPassword({ email, password });
+
+    // Retryable fetch failures (per Supabase's own error taxonomy) get one
+    // second attempt after a short delay. Covers transient URLSession state
+    // corruption on iOS that was reproducible in a cloud-Mac simulator after
+    // sign-out → sign-in loops; harmless everywhere else.
+    if (error && (error as { name?: string }).name === 'AuthRetryableFetchError') {
+      if (__DEV__) console.log('[Auth] signIn: AuthRetryableFetchError, retrying once');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const retry = await supabase.auth.signInWithPassword({ email, password });
+      error = retry.error;
+    }
+
     if (error) {
       if (__DEV__) console.error('[Auth] signIn failed:', error.message, error.status);
-
-      // Diagnostic: persist the actual Supabase error to a file so we can
-      // distinguish "really-unreachable" from other failure modes in the EAS
-      // preview build. Remove once the iOS-sim-post-signout regression is
-      // root-caused. File is readable via `xcrun simctl get_app_container
-      // booted com.captivet.mobile data`.
-      try {
-        const file = new ExpoFile(Paths.document, 'signin-debug.log');
-        const payload = {
-          at: new Date().toISOString(),
-          emailHash: email.length, // don't log raw email
-          message: error.message ?? null,
-          status: error.status ?? null,
-          name: (error as { name?: string }).name ?? null,
-          cause: String((error as { cause?: unknown }).cause ?? ''),
-        };
-        let prior = '';
-        try { if (file.exists) prior = await file.text(); } catch { /* ignore */ }
-        file.write(prior + JSON.stringify(payload) + '\n');
-      } catch { /* ignore */ }
 
       if (error.message?.includes('Email not confirmed')) {
         return { error: 'Please confirm your email address before signing in.' };

@@ -28,6 +28,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       '@config-plugins/ffmpeg-kit-react-native',
       { package: 'min' },
     ],
+    // iOS-only: override CocoaPods trunk resolution of ffmpeg-kit-ios-min
+    // with our self-hosted podspec (mirrors the Android Maven self-host).
+    // Required post arthenica sunset — see plugins/with-ffmpeg-ios-pod-source.js.
+    './plugins/with-ffmpeg-ios-pod-source.js',
     // Native Apple Sign-In (iOS only at runtime; plugin adds the capability).
     'expo-apple-authentication',
     // Android: disable cleartext (HTTP) traffic in production,

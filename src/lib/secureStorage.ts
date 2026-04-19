@@ -57,26 +57,57 @@ export const secureStorage = {
   /** Get or generate a persistent device ID (survives sign-out, tied to this device). */
   async getDeviceId(): Promise<string | null> {
     try {
-      let id = await SecureStore.getItemAsync(KEYS.DEVICE_ID);
+      let id: string | null = null;
+      try {
+        id = await SecureStore.getItemAsync(KEYS.DEVICE_ID);
+      } catch (error) {
+        if (__DEV__) console.error('[SecureStorage] getDeviceId read failed:', error);
+      }
+
       if (!id) {
-        // Device ID is a security boundary (server-side revocation, X-Device-Id
-        // header). Require crypto.getRandomValues — no Math.random fallback.
-        // Hermes on RN 0.76+ always provides it; if somehow absent, return null
-        // so the existing DEVICE_ID_REQUIRED 401 path ("restart or reinstall")
-        // surfaces the failure instead of silently issuing a weak ID.
-        if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
-          if (__DEV__) console.error('[SecureStorage] getDeviceId: crypto.getRandomValues unavailable');
+        // Prefer expo-crypto (reliable across Hermes on iOS and Android);
+        // fall back to global crypto.getRandomValues. iOS Hermes did not
+        // expose `globalThis.crypto.getRandomValues` in the EAS preview
+        // build we shipped on 2026-04-19, so expo-crypto is the primary.
+        const bytes = new Uint8Array(16);
+        let haveRandom = false;
+        try {
+          const ExpoCrypto = require('expo-crypto') as {
+            getRandomBytes?: (n: number) => Uint8Array;
+          };
+          if (ExpoCrypto.getRandomBytes) {
+            bytes.set(ExpoCrypto.getRandomBytes(16));
+            haveRandom = true;
+          }
+        } catch {
+          // Fall through to global crypto.
+        }
+        if (!haveRandom && typeof crypto !== 'undefined' && crypto.getRandomValues) {
+          crypto.getRandomValues(bytes);
+          haveRandom = true;
+        }
+        if (!haveRandom) {
+          if (__DEV__) console.error('[SecureStorage] getDeviceId: no random source');
           return null;
         }
-        const bytes = new Uint8Array(16);
-        crypto.getRandomValues(bytes);
+
         bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
         bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
         const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
         id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-        await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {
-          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-        });
+
+        try {
+          await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {
+            keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+          });
+        } catch (error) {
+          if (__DEV__) console.error('[SecureStorage] getDeviceId set failed:', error);
+          // iOS Simulator Keychain sometimes rejects
+          // kSecAttrAccessibleAfterFirstUnlock; retry without it. The in-memory
+          // id is still returned even if persistence ultimately fails, so the
+          // current request proceeds (next launch will regenerate).
+          try { await SecureStore.setItemAsync(KEYS.DEVICE_ID, id); } catch { /* ignore */ }
+        }
       }
       return id;
     } catch (error) {

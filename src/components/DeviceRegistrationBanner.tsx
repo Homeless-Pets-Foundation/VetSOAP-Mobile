@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertTriangle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../hooks/useAuth';
@@ -8,6 +9,7 @@ import { DEVICE_REGISTRATION_BANNER_COPY } from '../constants/strings';
 export function DeviceRegistrationBanner() {
   const { deviceRegistrationPending, deviceRegistrationBlock, retryDeviceRegistration } = useAuth();
   const [isRetrying, setIsRetrying] = useState(false);
+  const insets = useSafeAreaInsets();
 
   // The hard-limit modal owns that UX — never stack the banner on top of it.
   const shouldRender = deviceRegistrationPending && !deviceRegistrationBlock;
@@ -24,7 +26,10 @@ export function DeviceRegistrationBanner() {
   if (!shouldRender) return null;
 
   return (
-    <View className="bg-amber-100 border-b border-amber-300 px-4 py-3 flex-row items-center">
+    <View
+      className="bg-amber-100 border-b border-amber-300 px-4 pb-3 flex-row items-center"
+      style={{ paddingTop: insets.top + 12 }}
+    >
       <AlertTriangle size={20} color="#b45309" />
       <View className="flex-1 ml-3">
         <Text className="text-amber-900 font-semibold text-sm" numberOfLines={1}>

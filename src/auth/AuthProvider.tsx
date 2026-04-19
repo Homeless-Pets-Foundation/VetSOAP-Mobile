@@ -265,9 +265,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setDeviceRegistrationPending(true);
           return false;
         }
+        // Platform.isPad is an iOS-only static property set at app launch based
+        // on UIUserInterfaceIdiom. iPadOS apps running the iPhone binary
+        // (unlikely on EAS builds, but possible) still report isPad=false,
+        // which matches what the server should classify them as for session
+        // rules. Android-side is all tablets for now (phones not a ship target).
+        const deviceType =
+          Platform.OS === 'ios'
+            ? Platform.isPad
+              ? 'ios_tablet'
+              : 'ios_phone'
+            : 'android_tablet';
         await apiClient.post('/api/device-sessions/register', {
           deviceId,
-          deviceType: Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet',
+          deviceType,
           appVersion: require('../../package.json').version,
         });
         // Successful register clears any prior limit-block state — a revoke
@@ -694,7 +705,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     if (__DEV__) console.log('[Auth] signIn: attempting for', email);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+
+    let { error } = await supabase.auth.signInWithPassword({ email, password });
+
+    // Supabase GoTrue's internal auto-refresh timer can leave behind a stale
+    // AbortController after a previous signOut; the next fetch rejects
+    // immediately with AuthRetryableFetchError (status=0, "Network request
+    // failed"). Retry once after a short delay — Supabase itself named this
+    // error "retryable," and the retry's signInWithPassword constructs a
+    // fresh controller so the original stale one doesn't poison it.
+    // Reproducible in the iOS simulator after sign-out → sign-in loops.
+    if (error && (error as { name?: string }).name === 'AuthRetryableFetchError') {
+      if (__DEV__) console.log('[Auth] signIn: AuthRetryableFetchError, retrying once');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const retry = await supabase.auth.signInWithPassword({ email, password });
+      error = retry.error;
+    }
+
     if (error) {
       if (__DEV__) console.error('[Auth] signIn failed:', error.message, error.status);
 

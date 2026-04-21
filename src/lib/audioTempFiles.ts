@@ -8,8 +8,9 @@ export const audioTempFiles = {
     ensureDirectory(EDIT_TEMP_DIR);
   },
 
-  getTrimOutputPath(segmentIndex: number): string {
-    return `${EDIT_TEMP_DIR}trimmed-${segmentIndex}-${Date.now()}.m4a`;
+  getTrimOutputPath(segmentIndex: number, suffix?: string): string {
+    const tag = suffix ? `-${suffix}` : '';
+    return `${EDIT_TEMP_DIR}trimmed-${segmentIndex}${tag}-${Date.now()}.m4a`;
   },
 
   getConcatOutputPath(): string {

@@ -23,6 +23,10 @@ import type { CreateRecording, Template } from '../types';
 import type { UseAudioRecorderReturn } from '../hooks/useAudioRecorder';
 import { useResponsive } from '../hooks/useResponsive';
 import { patientsApi } from '../api/patients';
+import {
+  LONG_RECORDING_WARNING_COPY,
+  LONG_RECORDING_WARNING_THRESHOLD_SEC,
+} from '../constants/strings';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -245,6 +249,20 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               {formatDuration(duration)}
             </Text>
           </>
+        )}
+
+        {/* Non-blocking warning for multi-hour recordings. Peak extraction scales with
+            FFmpeg seek cost on the edit path, which is slow on low-end Android (A7 Lite,
+            MediaTek P22T). No cap — staff sometimes legitimately need long sessions. */}
+        {duration >= LONG_RECORDING_WARNING_THRESHOLD_SEC && (
+          <View
+            className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 mb-4 self-stretch"
+            accessibilityRole="alert"
+          >
+            <Text className="text-caption text-amber-800 text-center">
+              {LONG_RECORDING_WARNING_COPY.body}
+            </Text>
+          </View>
         )}
 
         {/* Controls */}

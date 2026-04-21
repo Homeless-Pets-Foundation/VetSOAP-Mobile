@@ -1,4 +1,5 @@
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
+import type { FFmpegSession } from 'ffmpeg-kit-react-native';
 import {
   getInfoAsync,
   writeAsStringAsync,
@@ -11,6 +12,14 @@ import { getCachedPeaks, cachePeaks } from './waveformCache';
 // Prevents OOM from decoding extremely large files to PCM.
 const MAX_WAVEFORM_INPUT_BYTES = 500 * 1024 * 1024;
 
+// 16-bit signed integer full-scale value. Peaks are normalized against this so the
+// returned amplitudes represent absolute fraction of digital full-scale rather than
+// per-segment max — keeps visual heights comparable across segments and recordings.
+// (Per-segment normalization made a continuous-volume recording split into N pieces
+// render as N different bar heights because tiny variations in each piece's local max
+// produced wildly different scale factors.)
+const PCM16_FULL_SCALE = 32767;
+
 // Seek-based sampling constants (used when duration >= SHORT_FILE_THRESHOLD_S)
 const SHORT_FILE_THRESHOLD_S = 60;   // files shorter than this use full-decode path
 const SAMPLE_DURATION_S = 4;         // seconds of audio decoded per sample position
@@ -18,6 +27,92 @@ const BATCH_SIZE = 10;               // FFmpeg inputs per command (multi-input c
 const SAMPLES_PER_POSITION = 5;      // waveform peaks extracted per sample position
 const SEEK_SAMPLERATE = 2000;        // Hz for seek-based PCM output
 const SHORT_SAMPLERATE = 500;        // Hz for full-decode path (short files)
+
+// Per-call timeout for FFmpeg invocations on the waveform-extraction path.
+// On weak CPUs (e.g. Galaxy A7 Lite, MediaTek Helio P22T) seeking 30 positions
+// across a multi-hour AAC can stall indefinitely; without a budget the editor
+// would show a skeleton forever and the user has no signal to retry/fall back.
+// 45s is generous for a 10-input batch on healthy hw, conservative on weak hw.
+const WAVEFORM_FFMPEG_TIMEOUT_MS = 45_000;
+
+// After this many consecutive per-position decode failures (timeout OR non-success
+// return code), abandon the extraction and throw so the caller's peakErrors path
+// surfaces a "could not load waveform" banner. Without this, the pad-with-zeros
+// fallback would return a mostly-flat array that renders as a useless baseline
+// and takes minutes to arrive on weak hw (10 × 45s per batch worst case). Three
+// in a row strongly implies the hardware cannot keep up with the file.
+const CONSECUTIVE_DECODE_FAILURE_GIVEUP = 3;
+
+/**
+ * Run a single FFmpeg command with a hard timeout. On timeout the session is
+ * cancelled (best-effort) and an Error is thrown so the caller's fallback
+ * (per-position decode pad-with-zeros, or extractWaveformPeaks's overall
+ * try/catch) can run instead of awaiting forever.
+ *
+ * Uses executeAsync so the session id is available immediately for cancel —
+ * FFmpegKit.execute()'s Promise only resolves *after* the session finishes,
+ * by which time the timeout window has already passed.
+ */
+function executeWaveformWithTimeout(
+  command: string,
+  timeoutMs: number = WAVEFORM_FFMPEG_TIMEOUT_MS
+): Promise<FFmpegSession> {
+  return new Promise<FFmpegSession>((resolve, reject) => {
+    let settled = false;
+    let startedSessionId: number | null = null;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (startedSessionId !== null) {
+        try { FFmpegKit.cancel(startedSessionId); } catch { /* best-effort */ }
+      }
+      reject(new Error(`FFmpeg waveform timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    FFmpegKit.executeAsync(command, (completedSession) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(completedSession);
+    })
+      .then((startedSession) => {
+        startedSessionId = startedSession.getSessionId();
+        // If the timer already fired before the start handle resolved, cancel now.
+        if (settled) {
+          try { FFmpegKit.cancel(startedSessionId); } catch { /* best-effort */ }
+        }
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+// Module-level chain that serializes the FFmpeg portion of waveform extraction.
+// Concurrency = 1 globally: at most one peak-extraction FFmpeg pipeline runs at
+// a time across the whole app. The audio editor's adjacent-segment prefetch
+// fires extractions for prev + next without awaiting (audio-editor.tsx around
+// the InteractionManager.runAfterInteractions block), and FFmpegKit on Android
+// spawns a worker thread per session — running 2-3 in parallel on a 3 GB device
+// (Galaxy A7 Lite) caused real OOM/thrash risk. Cache hits and the upfront file
+// existence/size checks happen *before* enqueueing, so cached lookups stay
+// instant even if a slow extraction is in flight.
+let waveformExtractionChain: Promise<unknown> = Promise.resolve();
+
+function enqueueWaveformExtraction<T>(work: () => Promise<T>): Promise<T> {
+  // Swallow upstream rejection so a single failure doesn't poison every
+  // subsequent caller. Each caller still observes its own work()'s result
+  // because we return the unwrapped promise.
+  const next = waveformExtractionChain.then(() => work(), () => work());
+  // Persist a swallowed version in the chain so the *next* enqueue sees a
+  // resolved sentinel regardless of how `next` settles.
+  waveformExtractionChain = next.then(() => undefined, () => undefined);
+  return next;
+}
 
 /**
  * Validate that a file URI is safe to pass to FFmpeg.
@@ -260,7 +355,6 @@ async function readPcmPeaks(
 
   const CHUNK_SIZE = 256 * 1024; // 256KB chunks — no base64 overhead
   const peaks: number[] = [];
-  let globalMax = 1; // avoid division by zero
   let currentPeakMax = 0;
   let samplesInCurrentPeak = 0;
 
@@ -288,7 +382,6 @@ async function readPcmPeaks(
         samplesInCurrentPeak++;
 
         if (samplesInCurrentPeak >= samplesPerPeak && peaks.length < actualPeaks) {
-          if (currentPeakMax > globalMax) globalMax = currentPeakMax;
           peaks.push(currentPeakMax);
           currentPeakMax = 0;
           samplesInCurrentPeak = 0;
@@ -307,12 +400,12 @@ async function readPcmPeaks(
 
   // Push any remaining samples as the last peak
   if (samplesInCurrentPeak > 0 && peaks.length < actualPeaks) {
-    if (currentPeakMax > globalMax) globalMax = currentPeakMax;
     peaks.push(currentPeakMax);
   }
 
-  // Normalize to 0.0 - 1.0
-  return peaks.map((p) => p / globalMax);
+  // Normalize to 0.0 - 1.0 against absolute full-scale (not per-segment max),
+  // so segments at the same physical loudness render at the same height.
+  return peaks.map((p) => p / PCM16_FULL_SCALE);
 }
 
 /**
@@ -395,33 +488,58 @@ async function runBatch(
     `${inputArgs} -filter_complex "${filterComplex}" -map "[out]"` +
     ` -ac 1 -ar ${SEEK_SAMPLERATE} -f s16le -acodec pcm_s16le -y "${batchPcmPath}"`;
 
-  const batchSession = await FFmpegKit.execute(batchCommand);
-  const batchReturnCode = await batchSession.getReturnCode();
-
-  if (ReturnCode.isSuccess(batchReturnCode)) {
-    return await readBatchPcm(batchPcmPath, n, peaksPerPosition);
+  // Try the multi-input concat batch first. Non-success return code OR a timeout
+  // throw from the wrapper both drop through to the per-position loop below.
+  let batchPeaks: number[] | null = null;
+  try {
+    const batchSession = await executeWaveformWithTimeout(batchCommand);
+    const batchReturnCode = await batchSession.getReturnCode();
+    if (ReturnCode.isSuccess(batchReturnCode)) {
+      batchPeaks = await readBatchPcm(batchPcmPath, n, peaksPerPosition);
+    } else if (__DEV__) {
+      console.log('[ffmpeg] multi-input concat failed (code', batchReturnCode.getValue(), '), falling back to individual decodes');
+    }
+  } catch (err) {
+    if (__DEV__) {
+      console.log('[ffmpeg] batch timed out, falling back to individual decodes:', (err as Error).message);
+    }
   }
 
-  // Batch failed — fall back to individual decodes
-  if (__DEV__) {
-    console.log('[ffmpeg] multi-input concat failed, falling back to individual decodes');
-  }
+  if (batchPeaks !== null) return batchPeaks;
 
   const peaks: number[] = [];
+  let consecutiveFailures = 0;
   for (let i = 0; i < batchPositions.length; i++) {
     const pos = batchPositions[i];
     const individualCommand =
       `-ss ${pos.toFixed(3)} -t ${SAMPLE_DURATION_S} -i "${inputUri}"` +
       ` -ac 1 -ar ${SEEK_SAMPLERATE} -f s16le -acodec pcm_s16le -y "${batchPcmPath}"`;
 
-    const individualSession = await FFmpegKit.execute(individualCommand);
-    const individualReturnCode = await individualSession.getReturnCode();
+    let individualSucceeded = false;
+    try {
+      const individualSession = await executeWaveformWithTimeout(individualCommand);
+      const individualReturnCode = await individualSession.getReturnCode();
+      individualSucceeded = ReturnCode.isSuccess(individualReturnCode);
+    } catch (err) {
+      if (__DEV__) {
+        console.log('[ffmpeg] individual decode timed out at', pos, ':', (err as Error).message);
+      }
+    }
 
-    if (!ReturnCode.isSuccess(individualReturnCode)) {
-      // Pad with zeros for this position rather than aborting the whole extraction
+    if (!individualSucceeded) {
+      consecutiveFailures++;
+      if (consecutiveFailures >= CONSECUTIVE_DECODE_FAILURE_GIVEUP) {
+        // Hardware can't keep up — abandon rather than return a useless flat
+        // waveform. The caller catches this and surfaces an error banner, and
+        // trim-by-time still works because the overlay is decoupled from peaks.
+        throw new Error(
+          `FFmpeg waveform extraction aborted after ${consecutiveFailures} consecutive decode failures`
+        );
+      }
       for (let p = 0; p < peaksPerPosition; p++) peaks.push(0);
       continue;
     }
+    consecutiveFailures = 0;
 
     const indivInfo = await getInfoAsync(batchPcmPath);
     if (!indivInfo.exists || !('size' in indivInfo) || indivInfo.size === 0) {
@@ -482,7 +600,6 @@ async function readBatchPcm(
       const totalSamples = Math.floor(bytes.length / bytesPerSample);
       const samplesPerPeak = Math.max(1, Math.floor(totalSamples / peaksPerPosition));
       const rawPeaks: number[] = [];
-      let globalMax = 1;
       let currentPeakMax = 0;
       let samplesInCurrentPeak = 0;
 
@@ -494,18 +611,17 @@ async function readBatchPcm(
         samplesInCurrentPeak++;
 
         if (samplesInCurrentPeak >= samplesPerPeak && rawPeaks.length < peaksPerPosition) {
-          if (currentPeakMax > globalMax) globalMax = currentPeakMax;
           rawPeaks.push(currentPeakMax);
           currentPeakMax = 0;
           samplesInCurrentPeak = 0;
         }
       }
       if (samplesInCurrentPeak > 0 && rawPeaks.length < peaksPerPosition) {
-        if (currentPeakMax > globalMax) globalMax = currentPeakMax;
         rawPeaks.push(currentPeakMax);
       }
 
-      windowPeaks = rawPeaks.map((p) => p / globalMax);
+      // Absolute-scale normalization (not per-window max) so segments compare correctly
+      windowPeaks = rawPeaks.map((p) => p / PCM16_FULL_SCALE);
     } finally {
       handle.close();
     }
@@ -561,6 +677,11 @@ export async function extractWaveformPeaks(
   // Get duration to decide which extraction strategy to use
   const duration = await getAudioDuration(inputUri);
 
+  // Both paths write PCM scratch files into EDIT_TEMP_DIR. Editor unmount wipes that
+  // directory; without re-creating it here, the next extraction after a fresh editor
+  // session fails with "No such file or directory" on the FFmpeg output path.
+  await audioTempFiles.ensureDir();
+
   let peaks: number[];
 
   if (duration >= SHORT_FILE_THRESHOLD_S) {
@@ -568,14 +689,13 @@ export async function extractWaveformPeaks(
     peaks = await extractPeaksSampled(inputUri, numberOfPeaks, duration);
   } else {
     // Short file: full decode at low sample rate (500Hz is sufficient for visuals)
-    await audioTempFiles.ensureDir();
     const pcmPath = audioTempFiles.getPcmTempPath(0);
 
     try {
       const command =
         `-i "${inputUri}" -ac 1 -ar ${SHORT_SAMPLERATE} -f s16le -acodec pcm_s16le -y "${pcmPath}"`;
 
-      const session = await FFmpegKit.execute(command);
+      const session = await executeWaveformWithTimeout(command);
       const returnCode = await session.getReturnCode();
 
       if (!ReturnCode.isSuccess(returnCode)) {

@@ -3,6 +3,12 @@ import { ensureDirectory, safeDeleteDirectory } from './fileOps';
 
 const CACHE_DIR = `${Paths.cache.uri}waveform-peaks/`;
 
+// Bump when the peak extraction formula changes so old cached files (which encode
+// the previous formula's normalization) are silently ignored on next load instead
+// of rendering at the wrong scale. v2: switched from per-segment normalization to
+// absolute full-scale (peak / 32767).
+const PEAKS_FORMAT_VERSION = 2;
+
 /**
  * Build a deterministic cache filename from a file URI and its size.
  * When a file is trimmed, the URI changes — so the old cache auto-invalidates.
@@ -15,7 +21,7 @@ function cacheKey(fileUri: string, fileSize: number): string {
     hash = ((hash << 5) + hash) ^ fileUri.charCodeAt(i);
     hash = hash >>> 0; // keep unsigned 32-bit
   }
-  return `wf_${hash.toString(16)}_${fileSize}.json`;
+  return `wf_${hash.toString(16)}_${fileSize}_v${PEAKS_FORMAT_VERSION}.json`;
 }
 
 /**

@@ -10,6 +10,12 @@ interface StaticWaveformProps {
   trimEnd: number;
   height?: number;
   isLoading?: boolean;
+  // Zoom/pan window (in seconds). When provided and not equal to [0, duration], the waveform
+  // renders only the windowed slice of peaks, stretched to the full layout width. Bar width
+  // grows in proportion to (duration / visible) so zoomed-in regions get a larger visual.
+  // Omitted values default to showing the full duration.
+  visibleStartSec?: number;
+  visibleEndSec?: number;
 }
 
 // Wrapped in React.memo — only re-renders when peaks or trim range change.
@@ -22,29 +28,43 @@ export const StaticWaveform = React.memo(function StaticWaveform({
   trimEnd,
   height = 120,
   isLoading = false,
+  visibleStartSec,
+  visibleEndSec,
 }: StaticWaveformProps) {
   const [layoutWidth, setLayoutWidth] = React.useState(0);
 
-  const barCount = peaks.length;
-  const barWidth = layoutWidth > 0 && barCount > 0 ? Math.max(1, layoutWidth / barCount - 1) : 2;
+  // Windowed view: compute which slice of peaks corresponds to the visible region, and
+  // stretch it to full layout width. When unzoomed, this is [0, peaks.length] — identical
+  // to the pre-zoom behaviour.
+  const vStart = Math.max(0, Math.min(duration, visibleStartSec ?? 0));
+  const vEnd = Math.max(vStart, Math.min(duration, visibleEndSec ?? duration));
+  const n = peaks.length;
+  const firstIdx = duration > 0 && n > 0 ? Math.max(0, Math.floor((vStart / duration) * n)) : 0;
+  const lastIdx = duration > 0 && n > 0 ? Math.min(n, Math.ceil((vEnd / duration) * n)) : n;
+  const visibleBarCount = Math.max(0, lastIdx - firstIdx);
+
+  const barWidth = layoutWidth > 0 && visibleBarCount > 0 ? Math.max(1, layoutWidth / visibleBarCount - 1) : 2;
   const barGap = 1;
   const halfHeight = height / 2;
   const minBarHeight = 2;
 
-  const trimStartX = duration > 0 ? (trimStart / duration) * layoutWidth : 0;
-  const trimEndX = duration > 0 ? (trimEnd / duration) * layoutWidth : layoutWidth;
+  // Trim region in the visible coordinate space
+  const visibleDur = vEnd - vStart;
+  const trimStartX = visibleDur > 0 ? ((trimStart - vStart) / visibleDur) * layoutWidth : 0;
+  const trimEndX = visibleDur > 0 ? ((trimEnd - vStart) / visibleDur) * layoutWidth : layoutWidth;
 
   // Build 2 SVG path strings (active + dimmed) instead of 600 individual Rect
   // elements. Each bar is a pair of M...h...v...h...Z subpaths (top + bottom
   // mirror). The native SVG renderer processes each path in a single C++ pass
   // with one GPU draw call, instead of 600 bridge crossings.
   const { activePath, dimmedPath } = React.useMemo(() => {
-    if (peaks.length === 0 || duration <= 0) return { activePath: '', dimmedPath: '' };
+    if (visibleBarCount === 0 || visibleDur <= 0) return { activePath: '', dimmedPath: '' };
     let active = '';
     let dimmed = '';
-    for (let i = 0; i < peaks.length; i++) {
+    for (let i = 0; i < visibleBarCount; i++) {
+      const peak = peaks[firstIdx + i] ?? 0;
       const x = i * (barWidth + barGap);
-      const barHeight = Math.max(minBarHeight, peaks[i] * halfHeight * 0.9);
+      const barHeight = Math.max(minBarHeight, peak * halfHeight * 0.9);
       const isInTrimRegion = x >= trimStartX && x <= trimEndX;
 
       // Top half (mirrored above center)
@@ -59,7 +79,7 @@ export const StaticWaveform = React.memo(function StaticWaveform({
       }
     }
     return { activePath: active, dimmedPath: dimmed };
-  }, [peaks, duration, barWidth, barGap, halfHeight, minBarHeight, trimStartX, trimEndX]);
+  }, [peaks, firstIdx, visibleBarCount, visibleDur, barWidth, barGap, halfHeight, minBarHeight, trimStartX, trimEndX]);
 
   if (isLoading) {
     return (
@@ -69,7 +89,7 @@ export const StaticWaveform = React.memo(function StaticWaveform({
     );
   }
 
-  if (peaks.length === 0 || duration <= 0) {
+  if (n === 0 || duration <= 0) {
     return (
       <View
         style={{ height }}

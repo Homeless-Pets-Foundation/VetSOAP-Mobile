@@ -4,17 +4,15 @@ import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { draftStorage } from '../lib/draftStorage';
 import { safeDeleteFile } from '../lib/fileOps';
+import { getSecureRandomHex } from '../lib/random';
 import type { StashedSession } from '../types/stash';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
 
 function generateId(): string {
-  // crypto.getRandomValues is provided by Hermes on RN 0.76+ (we're on 0.83).
-  // No Math.random fallback: predictable stash dir names would weaken the
-  // path-validation boundary in stashAudioManager on shared tablets.
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `stash-${hex}`;
+  // expo-crypto primary; global crypto fallback. No Math.random fallback:
+  // predictable stash dir names would weaken the path-validation boundary
+  // in stashAudioManager on shared tablets. See CLAUDE.md rule 26.
+  return `stash-${getSecureRandomHex(16)}`;
 }
 
 function buildPatientSummary(slots: PatientSlot[]): string {

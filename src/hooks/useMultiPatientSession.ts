@@ -179,11 +179,16 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
     }
 
     case 'CLEAR_AUDIO':
+      // Also null draftSlotId/serverDraftId/draftMetadataDirty: the slot has no
+      // audio anymore, so its draft row is stale. Callers (`handleRecordAgain`
+      // in record.tsx) are responsible for deleting the server draft + local
+      // draft storage before dispatching — clearing in-memory here keeps the
+      // slot's state consistent with the post-cleanup reality.
       return {
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, segments: [], audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null }
+            ? { ...slot, segments: [], audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
             : slot
         ),
       };

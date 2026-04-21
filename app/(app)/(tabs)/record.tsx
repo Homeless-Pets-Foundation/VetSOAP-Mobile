@@ -734,6 +734,10 @@ function RecordingSession() {
                   safeDeleteFile(seg.uri);
                 });
                 deleteOrphanServerRecording(slot);
+                // Drop any auto-saved draft + server draft row — otherwise the
+                // slot gets a fresh recording but the old "Not Submitted" card
+                // + its PHI on disk linger until cleanupOrphaned sweeps them.
+                deleteSlotDraft(slot);
               }
               clearAudio(slotId);
               // Only reset recorder if it's not actively recording another patient
@@ -745,7 +749,7 @@ function RecordingSession() {
         ]
       );
     },
-    [session.slots, session.recorderBoundToSlotId, clearAudio, recorder, deleteOrphanServerRecording]
+    [session.slots, session.recorderBoundToSlotId, clearAudio, recorder, deleteOrphanServerRecording, deleteSlotDraft]
   );
 
   const handleRemove = useCallback(
@@ -780,6 +784,9 @@ function RecordingSession() {
                       safeDeleteFile(seg.uri);
                     });
                     deleteOrphanServerRecording(slot);
+                    // Slot is about to disappear — delete its draft row + local
+                    // audio so it doesn't surface as "Not Submitted" on Home.
+                    deleteSlotDraft(slot);
                     removeSlot(slotId);
                   } catch {}
                 })().catch(() => {});
@@ -789,10 +796,11 @@ function RecordingSession() {
         );
       } else {
         deleteOrphanServerRecording(slot);
+        deleteSlotDraft(slot);
         removeSlot(slotId);
       }
     },
-    [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder, deleteOrphanServerRecording]
+    [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder, deleteOrphanServerRecording, deleteSlotDraft]
   );
 
   const slotHasLiveRecorder = useCallback(
@@ -1335,7 +1343,12 @@ function RecordingSession() {
         await Promise.all(
           sessionRef.current.slots.map((s) => flushScheduledDraft(s.id).catch(() => {}))
         );
-        const success = await stashSession(session);
+        // Read sessionRef (not the closure-captured `session`): flushScheduledDraft
+        // dispatches SET_DRAFT_IDS, which updates the ref synchronously but does
+        // not update the closure variable. Passing `session` risks stashing the
+        // pre-flush snapshot with a missing serverDraftId.
+        const postFlushSession = sessionRef.current;
+        const success = await stashSession(postFlushSession);
         if (success) {
           // The stashed form of the session does not persist pendingConfirm, so
           // any half-confirmed server recording is now unreachable. Best-effort
@@ -1345,7 +1358,7 @@ function RecordingSession() {
           // duplicate draft Recording row on the server would show up twice in
           // the Home "Not Submitted" list. On resume, autoSaveDraft will
           // recreate a draft keyed off the restored session.
-          session.slots.forEach((slot) => {
+          postFlushSession.slots.forEach((slot) => {
             deleteOrphanServerRecording(slot);
             deleteSlotDraft(slot);
           });
@@ -1364,7 +1377,7 @@ function RecordingSession() {
           // stashSession returns false if no slots have audio, max stashes reached,
           // file copy failed, or SecureStore write failed. In all cases the active
           // session is untouched, so recordings (if any) are still here.
-          const hasRecordings = session.slots.some((s) => s.segments.length > 0);
+          const hasRecordings = postFlushSession.slots.some((s) => s.segments.length > 0);
           if (hasRecordings) {
             Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
           }
@@ -1378,7 +1391,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [session, stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, flushScheduledDraft]);
+  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, flushScheduledDraft]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,

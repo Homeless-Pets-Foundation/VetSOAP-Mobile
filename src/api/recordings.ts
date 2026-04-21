@@ -18,6 +18,7 @@ import {
   searchQuerySchema,
 } from '../lib/validation';
 import { validateUploadUrl } from '../lib/sslPinning';
+import { getIdempotencyUuid } from '../lib/random';
 import type { PendingConfirm } from '../types/multiPatient';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
@@ -63,19 +64,10 @@ export function getUploadPhase(error: unknown): UploadPhase {
 }
 
 function generateIdempotencyKey(): string {
-  // Idempotency keys are a replay-attack boundary — require crypto.getRandomValues.
-  // Hermes on RN 0.76+ always provides it; throw rather than fall back to
-  // Math.random so a missing runtime surfaces loudly instead of silently
-  // issuing predictable keys.
-  if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
-    throw new Error('crypto.getRandomValues unavailable — cannot generate idempotency key');
-  }
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  // expo-crypto → global crypto → Math.random (per CLAUDE.md rule 26: the
+  // idempotency key is the only non-security random on iOS Hermes where
+  // Math.random is permitted). Centralized in src/lib/random.ts.
+  return getIdempotencyUuid();
 }
 
 function extensionFromUri(uri: string, fallback = 'm4a'): string {
@@ -271,11 +263,23 @@ export const recordingsApi = {
     let recording: Recording;
     let isExistingRecording = false;
     if (options?.existingRecordingId) {
-      // Use provided draft recording ID instead of creating a new one
+      // Use provided draft recording ID instead of creating a new one. If the
+      // server row is gone (404) — user's form wasn't edited so the
+      // draftMetadataDirty probe never ran — fall through to fresh create
+      // rather than dead-end the user on local audio that still exists.
       try {
         recording = await this.get(options.existingRecordingId);
-      } catch (e) { tagPhase(e, 'create_draft'); }
-      isExistingRecording = true;
+        isExistingRecording = true;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) {
+          if (__DEV__) console.warn('[upload] existing draft missing, creating fresh');
+          try {
+            recording = await this.create(data);
+          } catch (createError) { tagPhase(createError, 'create_draft'); }
+        } else {
+          tagPhase(e, 'create_draft');
+        }
+      }
     } else {
       try {
         recording = await this.create(data);
@@ -419,14 +423,26 @@ export const recordingsApi = {
       return this.confirmUpload(recordingId, fileKey, segmentKeys ? { segmentKeys, segmentCount } : undefined);
     }
 
-    // Use provided draft recording ID or create a new one
+    // Use provided draft recording ID or create a new one. If the server row
+    // is gone (404) — user didn't edit the form so the draftMetadataDirty
+    // probe never ran — fall through to a fresh create instead of dead-ending
+    // on local audio that still exists.
     let recording: Recording;
     let isExistingRecording = false;
     if (options?.existingRecordingId) {
       try {
         recording = await this.get(options.existingRecordingId);
-      } catch (e) { tagPhase(e, 'create_draft'); }
-      isExistingRecording = true;
+        isExistingRecording = true;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) {
+          if (__DEV__) console.warn('[upload] existing draft missing, creating fresh');
+          try {
+            recording = await this.create(data);
+          } catch (createError) { tagPhase(createError, 'create_draft'); }
+        } else {
+          tagPhase(e, 'create_draft');
+        }
+      }
     } else {
       try {
         recording = await this.create(data);

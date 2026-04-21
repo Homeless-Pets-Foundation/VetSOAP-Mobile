@@ -139,6 +139,19 @@ function setStashUserId(userId: string | null): void {
 }
 
 /**
+ * Drop Sentry + PostHog identity so subsequent events / errors don't
+ * attribute to the signed-out user. Shared between user-initiated sign-out
+ * (`handleSignOut`) and the SIGNED_OUT fallback in `onAuthStateChange` —
+ * without this, a session expiry or device revocation leaves the prior
+ * user's id attached to any error captured before the next sign-in.
+ */
+function clearTelemetryIdentity(): void {
+  flushAnalytics().catch(() => {});
+  clearMonitoringUser();
+  resetAnalytics();
+}
+
+/**
  * Delete all per-user PHI from on-device storage. Must run while the scope
  * user IDs are still set so the clearAll methods can read the correct data.
  * Every entry is best-effort — a single failure must not block logout.
@@ -446,9 +459,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     draftStorage.setUserId(null);
     // Flush analytics then clear monitoring identity before we drop React state.
     // Flush is best-effort and bounded by internal PostHog timeouts.
-    flushAnalytics().catch(() => {});
-    clearMonitoringUser();
-    resetAnalytics();
+    clearTelemetryIdentity();
     trackEvent({ name: 'session_signed_out', props: { trigger: 'user' } });
     setUser(null);
     setSession(null);
@@ -648,6 +659,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             queryClient.clear();
             setStashUserId(null);
             draftStorage.setUserId(null);
+            // Drop telemetry identity before dropping React auth state, so any
+            // error captured during the final teardown doesn't attribute to
+            // the expired user. Mirrors the handleSignOut ordering.
+            clearTelemetryIdentity();
             setUser(null);
             setSession(null);
             setDeviceRegistrationBlock(null);

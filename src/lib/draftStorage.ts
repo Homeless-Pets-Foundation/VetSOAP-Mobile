@@ -252,15 +252,24 @@ export const draftStorage = {
         }
       }
 
-      // Build and store metadata
+      // Preserve any existing serverDraftId + pendingSync state so re-saves
+      // on the same slot (Finish → Continue → Finish, or a second autoSaveDraft
+      // during a stop/continue cycle) do not zero out a server row that a
+      // concurrent `syncPending()` would then fresh-create as a duplicate
+      // draft. `updateServerDraftId` remains the authoritative writer for the
+      // post-sync promotion to `pendingSync: false`.
+      const existing = await readDraftChunks(userId, slot.id);
+
       const metadata: DraftMetadata = {
         slotId: slot.id,
         savedAt: new Date().toISOString(),
         formData: slot.formData,
         segments: draftSegments,
         audioDuration: draftSegments.reduce((sum, s) => sum + s.duration, 0),
-        serverDraftId: null,
-        pendingSync: true,
+        serverDraftId: existing?.serverDraftId ?? null,
+        pendingSync: existing?.serverDraftId
+          ? existing.pendingSync
+          : true,
       };
 
       await writeDraftChunks(userId, slot.id, JSON.stringify(metadata));

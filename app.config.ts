@@ -23,6 +23,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           'Allow Captivet to use Face ID to secure your account.',
       },
     ],
+    // Sentry — native crash reporting + source map upload.
+    // DSN injected at runtime via EXPO_PUBLIC_SENTRY_DSN; the plugin itself
+    // configures native SDKs + source-map upload during EAS build.
+    '@sentry/react-native/expo',
     // FFmpeg for on-device audio trimming and waveform extraction
     [
       '@config-plugins/ffmpeg-kit-react-native',

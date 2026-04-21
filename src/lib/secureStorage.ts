@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import { getSecureUuid } from './random';
 
 const KEYS = {
   ACCESS_TOKEN: 'captivet_access_token',
@@ -65,36 +66,12 @@ export const secureStorage = {
       }
 
       if (!id) {
-        // Prefer expo-crypto (reliable across Hermes on iOS and Android);
-        // fall back to global crypto.getRandomValues. iOS Hermes did not
-        // expose `globalThis.crypto.getRandomValues` in the EAS preview
-        // build we shipped on 2026-04-19, so expo-crypto is the primary.
-        const bytes = new Uint8Array(16);
-        let haveRandom = false;
         try {
-          const ExpoCrypto = require('expo-crypto') as {
-            getRandomBytes?: (n: number) => Uint8Array;
-          };
-          if (ExpoCrypto.getRandomBytes) {
-            bytes.set(ExpoCrypto.getRandomBytes(16));
-            haveRandom = true;
-          }
-        } catch {
-          // Fall through to global crypto.
-        }
-        if (!haveRandom && typeof crypto !== 'undefined' && crypto.getRandomValues) {
-          crypto.getRandomValues(bytes);
-          haveRandom = true;
-        }
-        if (!haveRandom) {
-          if (__DEV__) console.error('[SecureStorage] getDeviceId: no random source');
+          id = getSecureUuid();
+        } catch (error) {
+          if (__DEV__) console.error('[SecureStorage] getDeviceId: no random source', error);
           return null;
         }
-
-        bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
-        bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
-        const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-        id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 
         try {
           await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {

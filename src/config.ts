@@ -103,6 +103,13 @@ export const DRAFT_DEBOUNCE_MS = (() => {
   return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : 0;
 })();
 
+// Monitoring — all optional. Missing keys silently disable the corresponding
+// SDK (graceful no-op). We never throw from monitoring init (CLAUDE.md rule 1).
+export const SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN || '';
+export const POSTHOG_KEY = process.env.EXPO_PUBLIC_POSTHOG_KEY || '';
+export const POSTHOG_HOST =
+  process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
+
 export const CONFIG_MISSING = configErrors.length > 0;
 
 if (CONFIG_MISSING) {

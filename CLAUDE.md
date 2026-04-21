@@ -361,6 +361,55 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/components/SubmitPanel.tsx` — bottom panel w/ "Submit All". Visible when multiple slots ready.
 - `src/components/RecordingCard.tsx` — list item. `status='draft'` → amber "Not Submitted" badge. Tap → `/(tabs)/record?draftSlotId=X` (resume) if local draft exists, else detail screen.
 
+## Monitoring & Analytics
+
+Three layers of observability, all env-gated and PHI-scrubbed. Every layer must silently no-op if its key is missing — never throw at init (rule 1).
+
+### Layers
+
+| Layer | Module | Purpose | Key |
+|---|---|---|---|
+| Crash + error reporting | `src/lib/monitoring.ts` (`@sentry/react-native`) | Stack traces, breadcrumbs, release tracking | `EXPO_PUBLIC_SENTRY_DSN` |
+| Product analytics | `src/lib/analytics.ts` (`posthog-react-native`) | Funnel events, user identification | `EXPO_PUBLIC_POSTHOG_KEY` |
+| Server telemetry | `src/api/telemetry.ts` → `POST /api/telemetry/client-error` | Non-network client failures tied to a server recording row | (uses existing auth, no extra key) |
+
+### Event catalog (`AnalyticsEvent` union in `analytics.ts`)
+
+`session_start` · `session_signed_in{auth_method}` · `session_signed_out{trigger}` · `recording_started` · `recording_paused` · `recording_resumed` · `recording_finished` · `recording_discarded` · `submit_attempted` · `submit_succeeded` · `submit_failed{error_phase,error_code}` · `stash_saved` · `stash_resumed` · `stash_discarded` · `submit_all_attempted` · `submit_all_completed`
+
+The discriminated-union type in `analytics.ts` is the single source of truth. If it's not listed there, `trackEvent()` won't compile — this is intentional, to prevent ad-hoc PHI-leaking events.
+
+### Error phase tagging
+
+Upload errors are phase-tagged at throw sites in `src/api/recordings.ts` via `tagPhase()` / `phaseError()` helpers. Phases: `silent_check` · `presign` · `r2_put` · `confirm` · `create_draft` · `unknown`. `uploadSlot` in `record.tsx` reads `getUploadPhase(error)` in its catch and routes it to all three monitoring layers. Do NOT pattern-match error messages — add a phase tag at the throw site instead.
+
+### PHI scrubbing (rules)
+
+1. **Never put patient/client names, transcript text, or form fields in events or error messages.** The analytics event types physically forbid this; Sentry's `beforeSend` redacts PHI-shaped keys (`patient_name`, `clientName`, `subjective`, etc.) and strips `file://` URIs.
+2. **Never call `captureException(err)` on an error that includes form data.** If you're about to pass `slot.formData` to anything, stop.
+3. **`reportClientError()` truncates `message` to 512 chars AND strips file paths.** Server `POST /api/telemetry/client-error` does the same scrub again as defense-in-depth — drops messages that look like sandbox paths into a placeholder.
+4. **Identify by `user_id` only.** `setMonitoringUser(userId, orgId)` and `identifyUser(userId, orgId)` — never pass email or name.
+5. **No session replay. No screen capture. No navigation autocapture.** PostHog config explicitly disables all three.
+
+### Server-side client telemetry table
+
+`ClientTelemetry` Prisma model (`packages/database/prisma/schema.prisma`). Writes go to `client_telemetry` table — indexed on `(organization_id, created_at)`, `(user_id, created_at)`, `recording_id`, `error_code`, `phase`. For the one-query "what went wrong for this recording" view:
+
+```sql
+SELECT phase, error_code, network_state, attempt_number, app_version, message, created_at
+FROM client_telemetry
+WHERE recording_id = '<uuid>'
+ORDER BY created_at DESC;
+```
+
+### Release + source maps
+
+Sentry release ID is auto-generated from `Application.nativeApplicationVersion` + `nativeBuildVersion`. The Expo config plugin `@sentry/react-native/expo` uploads source maps during EAS build — nothing to wire per-build. If source maps aren't showing up, check EAS build logs for the `sentry-cli` upload step and verify `SENTRY_AUTH_TOKEN` is set as an EAS **build-time** secret (not runtime `EXPO_PUBLIC_*`).
+
+### Dev-mode behavior
+
+Sentry is disabled in dev by default (`enabled: !__DEV__`). To test error capture locally, set `EXPO_PUBLIC_SENTRY_ENABLE_IN_DEV=true` and restart Metro with `--clear`. PostHog logs `[PostHog] Initialized` to console when it's active so you can confirm the key was picked up.
+
 ## Multi-Patient Recording Architecture
 
 `app/(app)/record.tsx` → ≤10 patients/session. Each = "slot" as horizontally-pageable card.

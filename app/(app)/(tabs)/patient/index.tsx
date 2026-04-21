@@ -53,10 +53,17 @@ export default function PatientListScreen() {
     },
   });
 
-  const patients = useMemo(
-    () => data?.pages.flatMap((page) => page.data) ?? [],
-    [data]
-  );
+  const patients = useMemo(() => {
+    // Dedupe by id — offset pagination can repeat a row across pages when the
+    // underlying set shifts between fetches (e.g. a patient is updated and
+    // moves in sort order). Without this, FlatList emits duplicate keys.
+    const seen = new Set<string>();
+    return (data?.pages.flatMap((page) => page.data) ?? []).filter((p) => {
+      if (seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    });
+  }, [data]);
 
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
 

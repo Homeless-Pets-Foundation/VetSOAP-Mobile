@@ -1,7 +1,6 @@
 import * as Sentry from '@sentry/react-native';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import * as Application from 'expo-application';
 import { SENTRY_DSN } from '../config';
 
 /**
@@ -61,6 +60,10 @@ export function initMonitoring(): void {
   }
 
   try {
+    // Lazy-load expo-application so old dev-client APKs built before this
+    // dep was added don't crash on module-load. See CLAUDE.md rule 23.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Application = require('expo-application') as typeof import('expo-application');
     Sentry.init({
       dsn: SENTRY_DSN,
       // Release identifier so we can tie crashes to an app version.

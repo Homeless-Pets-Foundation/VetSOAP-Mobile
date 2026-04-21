@@ -1,5 +1,4 @@
 import { Platform } from 'react-native';
-import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import { apiClient } from './client';
 import type { ErrorPhase, NetworkState } from '../lib/analytics';
@@ -28,8 +27,18 @@ export interface ReportClientErrorInput {
   attemptNumber?: number;
 }
 
-const APP_VERSION =
-  Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown';
+// Lazy so old dev-client APKs without the expo-application native module
+// don't throw at module-load. See CLAUDE.md rule 23.
+function getAppVersion(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Application = require('expo-application') as typeof import('expo-application');
+    return Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown';
+  } catch {
+    return Constants.expoConfig?.version ?? 'unknown';
+  }
+}
+
 const OS_VERSION = String(Platform.Version ?? 'unknown');
 const PLATFORM: 'ios' | 'android' | undefined =
   Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : undefined;
@@ -60,7 +69,7 @@ export function reportClientError(input: ReportClientErrorInput): void {
     fileSizeBytes: input.fileSizeBytes,
     networkState: input.networkState,
     attemptNumber: input.attemptNumber,
-    appVersion: APP_VERSION,
+    appVersion: getAppVersion(),
     platform: PLATFORM,
     osVersion: OS_VERSION,
   };

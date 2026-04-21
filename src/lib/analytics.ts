@@ -1,7 +1,6 @@
 import PostHog from 'posthog-react-native';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import * as Application from 'expo-application';
 import { POSTHOG_KEY, POSTHOG_HOST } from '../config';
 
 /**
@@ -12,8 +11,18 @@ import { POSTHOG_KEY, POSTHOG_HOST } from '../config';
 
 let _client: PostHog | null = null;
 
-const APP_VERSION =
-  Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown';
+// Lazy so old dev-client APKs without the expo-application native module
+// don't throw at module-load. See CLAUDE.md rule 23.
+function getAppVersion(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Application = require('expo-application') as typeof import('expo-application');
+    return Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown';
+  } catch {
+    return Constants.expoConfig?.version ?? 'unknown';
+  }
+}
+
 const PLATFORM = Platform.OS;
 
 // ─── Event catalog ─────────────────────────────────────────────────
@@ -80,7 +89,7 @@ export function initAnalytics(): void {
 
     // Super-properties attached to every event.
     _client.register({
-      app_version: APP_VERSION,
+      app_version: getAppVersion(),
       platform: PLATFORM,
       ...(__DEV__ ? { build_env: 'development' } : { build_env: 'production' }),
     });

@@ -24,3 +24,12 @@ export const DEVICE_REGISTRATION_BANNER_COPY = {
   retry: 'Retry',
   retrying: 'Retrying…',
 } as const;
+
+export const LONG_RECORDING_WARNING_COPY = {
+  body: 'Long recording — may be slow to edit on older tablets.',
+} as const;
+
+// Non-blocking warning appears when cumulative slot duration crosses this threshold.
+// The waveform editor still works, but peak extraction on weak hardware (e.g. A7 Lite)
+// can take a long time for multi-hour recordings.
+export const LONG_RECORDING_WARNING_THRESHOLD_SEC = 2 * 60 * 60;

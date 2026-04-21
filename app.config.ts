@@ -96,6 +96,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           'Captivet needs microphone access to record veterinary appointments.',
         NSFaceIDUsageDescription:
           'Allow Captivet to use Face ID to secure your account.',
+        // Pre-declare export compliance: app only uses standard HTTPS/TLS,
+        // which is exempt. Skips the per-build ASC prompt for TestFlight.
+        ITSAppUsesNonExemptEncryption: false,
         // Enforce App Transport Security: require HTTPS for all connections
         NSAppTransportSecurity: IS_DEV
           ? undefined // Use Expo defaults in dev (allows localhost)

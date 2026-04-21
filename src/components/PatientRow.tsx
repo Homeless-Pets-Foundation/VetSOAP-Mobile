@@ -52,25 +52,23 @@ export const PatientRow = React.memo(function PatientRow({ patient }: PatientRow
     >
       <View className="flex-row justify-between items-center">
         <View className="flex-1 mr-3">
-          <Text className="text-body-lg font-semibold text-stone-900 shrink" numberOfLines={1}>
+          <Text className="text-body-lg font-semibold text-stone-900" numberOfLines={1}>
             {patient.name}
           </Text>
-          <View className="flex-row items-center mt-0.5">
-            {patient.pimsPatientId ? (
-              <Text className="text-body-sm text-stone-500">
-                ID: {patient.pimsPatientId}
-              </Text>
-            ) : null}
-            {description ? (
-              <Text
-                className="text-body-sm text-stone-500"
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {patient.pimsPatientId ? ' \u00B7 ' : ''}{description}
-              </Text>
-            ) : null}
-          </View>
+          {patient.pimsPatientId || description ? (
+            <Text
+              className="text-body-sm text-stone-500 mt-0.5"
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              {[
+                patient.pimsPatientId ? `ID: ${patient.pimsPatientId}` : null,
+                description || null,
+              ]
+                .filter(Boolean)
+                .join(' \u00B7 ')}
+            </Text>
+          ) : null}
           {visitCount > 0 ? (
             <Text className="text-caption text-stone-500 mt-1">
               {visitCount} {visitCount === 1 ? 'visit' : 'visits'}

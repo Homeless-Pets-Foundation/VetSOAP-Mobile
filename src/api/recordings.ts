@@ -23,6 +23,45 @@ import type { PendingConfirm } from '../types/multiPatient';
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
 
+/**
+ * Phase label attached to thrown Errors from the upload pipeline so callers
+ * (uploadSlot) can classify the failure without fragile message matching.
+ * Kept as a union string rather than an enum to stay trivially JSON-safe for
+ * telemetry payloads.
+ */
+export type UploadPhase =
+  | 'silent_check'
+  | 'presign'
+  | 'r2_put'
+  | 'confirm'
+  | 'create_draft'
+  | 'unknown';
+
+type TaggedError = Error & { uploadPhase?: UploadPhase };
+
+function tagPhase(error: unknown, phase: UploadPhase): never {
+  if (error instanceof Error) {
+    (error as TaggedError).uploadPhase = phase;
+    throw error;
+  }
+  const wrapped = new Error(String(error ?? 'Upload failed')) as TaggedError;
+  wrapped.uploadPhase = phase;
+  throw wrapped;
+}
+
+function phaseError(phase: UploadPhase, message: string): never {
+  const err = new Error(message) as TaggedError;
+  err.uploadPhase = phase;
+  throw err;
+}
+
+export function getUploadPhase(error: unknown): UploadPhase {
+  if (error instanceof Error && (error as TaggedError).uploadPhase) {
+    return (error as TaggedError).uploadPhase!;
+  }
+  return 'unknown';
+}
+
 function generateIdempotencyKey(): string {
   // Idempotency keys are a replay-attack boundary — require crypto.getRandomValues.
   // Hermes on RN 0.76+ always provides it; throw rather than fall back to
@@ -233,10 +272,14 @@ export const recordingsApi = {
     let isExistingRecording = false;
     if (options?.existingRecordingId) {
       // Use provided draft recording ID instead of creating a new one
-      recording = await this.get(options.existingRecordingId);
+      try {
+        recording = await this.get(options.existingRecordingId);
+      } catch (e) { tagPhase(e, 'create_draft'); }
       isExistingRecording = true;
     } else {
-      recording = await this.create(data);
+      try {
+        recording = await this.create(data);
+      } catch (e) { tagPhase(e, 'create_draft'); }
     }
 
     let r2UploadComplete = false;
@@ -245,26 +288,35 @@ export const recordingsApi = {
       // Read local file info (fetch() doesn't support file:// URIs on Android)
       const fileInfo = await getInfoAsync(fileUri);
       if (!fileInfo.exists) {
-        throw new Error('Failed to read the recorded audio file. Please try recording again.');
+        phaseError('silent_check', 'Failed to read the recorded audio file. Please try recording again.');
       }
       const fileSizeBytes = fileInfo.size ?? 0;
       if (!fileSizeBytes) {
-        throw new Error('The recorded audio file is empty. Please try recording again.');
+        phaseError('silent_check', 'The recorded audio file is empty. Please try recording again.');
       }
       // Enforce client-side file size limit
       if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
-        throw new Error(
+        phaseError(
+          'silent_check',
           `File too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
         );
       }
 
       // Step 2: Get presigned upload URL (include file size for server validation)
-      const { uploadUrl, fileKey, warnings } = await this.getUploadUrl(
-        recording.id,
-        'recording.m4a',
-        contentType,
-        fileSizeBytes
-      );
+      let uploadUrl: string;
+      let fileKey: string;
+      let warnings: string[] | undefined;
+      try {
+        const resp = await this.getUploadUrl(
+          recording.id,
+          'recording.m4a',
+          contentType,
+          fileSizeBytes
+        );
+        uploadUrl = resp.uploadUrl;
+        fileKey = resp.fileKey;
+        warnings = resp.warnings;
+      } catch (e) { tagPhase(e, 'presign'); }
       if (warnings?.length) {
         if (__DEV__) console.warn('[upload]', ...warnings);
       }
@@ -293,14 +345,18 @@ export const recordingsApi = {
           : undefined
       );
 
-      const uploadResult = await withTimeout(
-        uploadTask.uploadAsync(),
-        R2_UPLOAD_TIMEOUT_MS,
-        'Upload timed out. Please check your connection and try again.',
-        () => { uploadTask.cancelAsync().catch(() => {}); }
-      );
+      let uploadResult;
+      try {
+        uploadResult = await withTimeout(
+          uploadTask.uploadAsync(),
+          R2_UPLOAD_TIMEOUT_MS,
+          'Upload timed out. Please check your connection and try again.',
+          () => { uploadTask.cancelAsync().catch(() => {}); }
+        );
+      } catch (e) { tagPhase(e, 'r2_put'); }
       if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
-        throw new Error(
+        phaseError(
+          'r2_put',
           `Upload to storage failed (HTTP ${uploadResult?.status ?? 'unknown'}). Please try again.`
         );
       }
@@ -319,7 +375,10 @@ export const recordingsApi = {
       }
 
       // Step 4: Confirm upload and trigger processing
-      const confirmed = await this.confirmUpload(recording.id, fileKey);
+      let confirmed: Recording;
+      try {
+        confirmed = await this.confirmUpload(recording.id, fileKey);
+      } catch (e) { tagPhase(e, 'confirm'); }
       return confirmed;
     } catch (error) {
       // Only delete if the file hasn't been uploaded to R2 yet.
@@ -364,10 +423,14 @@ export const recordingsApi = {
     let recording: Recording;
     let isExistingRecording = false;
     if (options?.existingRecordingId) {
-      recording = await this.get(options.existingRecordingId);
+      try {
+        recording = await this.get(options.existingRecordingId);
+      } catch (e) { tagPhase(e, 'create_draft'); }
       isExistingRecording = true;
     } else {
-      recording = await this.create(data);
+      try {
+        recording = await this.create(data);
+      } catch (e) { tagPhase(e, 'create_draft'); }
     }
 
     let r2UploadComplete = false;
@@ -384,25 +447,34 @@ export const recordingsApi = {
         // Read local file info
         const fileInfo = await getInfoAsync(segment.uri);
         if (!fileInfo.exists) {
-          throw new Error(`Failed to read audio segment ${i + 1}. Please try recording again.`);
+          phaseError('silent_check', `Failed to read audio segment ${i + 1}. Please try recording again.`);
         }
         const fileSizeBytes = fileInfo.size ?? 0;
         if (!fileSizeBytes) {
-          throw new Error(`Audio segment ${i + 1} is empty. Please try recording again.`);
+          phaseError('silent_check', `Audio segment ${i + 1} is empty. Please try recording again.`);
         }
         if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
-          throw new Error(
+          phaseError(
+            'silent_check',
             `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
           );
         }
 
         // Get presigned URL for this segment
-        const { uploadUrl, fileKey, warnings } = await this.getUploadUrl(
-          recording.id,
-          segmentFileName,
-          contentType,
-          fileSizeBytes
-        );
+        let uploadUrl: string;
+        let fileKey: string;
+        let warnings: string[] | undefined;
+        try {
+          const resp = await this.getUploadUrl(
+            recording.id,
+            segmentFileName,
+            contentType,
+            fileSizeBytes
+          );
+          uploadUrl = resp.uploadUrl;
+          fileKey = resp.fileKey;
+          warnings = resp.warnings;
+        } catch (e) { tagPhase(e, 'presign'); }
         if (warnings?.length) {
           if (__DEV__) console.warn(`[upload] segment ${i + 1}:`, ...warnings);
         }
@@ -435,14 +507,18 @@ export const recordingsApi = {
             : undefined
         );
 
-        const uploadResult = await withTimeout(
-          uploadTask.uploadAsync(),
-          R2_UPLOAD_TIMEOUT_MS,
-          `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
-          () => { uploadTask.cancelAsync().catch(() => {}); }
-        );
+        let uploadResult;
+        try {
+          uploadResult = await withTimeout(
+            uploadTask.uploadAsync(),
+            R2_UPLOAD_TIMEOUT_MS,
+            `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
+            () => { uploadTask.cancelAsync().catch(() => {}); }
+          );
+        } catch (e) { tagPhase(e, 'r2_put'); }
         if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
-          throw new Error(
+          phaseError(
+            'r2_put',
             `Upload of segment ${i + 1} failed (HTTP ${uploadResult?.status ?? 'unknown'}). Please try again.`
           );
         }
@@ -470,10 +546,13 @@ export const recordingsApi = {
       }
 
       // Confirm upload with all segment keys
-      const confirmed = await this.confirmUpload(recording.id, segmentKeys[0], {
-        segmentKeys,
-        segmentCount: segmentKeys.length,
-      });
+      let confirmed: Recording;
+      try {
+        confirmed = await this.confirmUpload(recording.id, segmentKeys[0], {
+          segmentKeys,
+          segmentCount: segmentKeys.length,
+        });
+      } catch (e) { tagPhase(e, 'confirm'); }
       return confirmed;
     } catch (error) {
       // Only delete if R2 upload didn't complete and it's a new recording (not a draft).
@@ -481,14 +560,17 @@ export const recordingsApi = {
       if (!r2UploadComplete && !isExistingRecording) {
         await this.delete(recording.id).catch(() => {});
       }
-      // Enrich the error message for partial multi-segment failures
+      // Enrich the error message for partial multi-segment failures, preserving
+      // the phase tag so uploadSlot can still classify correctly.
       if (completedSegments > 0 && completedSegments < totalSegments && error instanceof Error) {
         const suffix = isExistingRecording
           ? ' (segments uploaded were queued for processing)'
           : ' (the recording has been removed and will need to be re-recorded.)';
-        throw new Error(
+        const rethrown = new Error(
           `${error.message} (${completedSegments} of ${totalSegments} segments had uploaded successfully${suffix}`
-        );
+        ) as Error & { uploadPhase?: UploadPhase };
+        rethrown.uploadPhase = (error as Error & { uploadPhase?: UploadPhase }).uploadPhase;
+        throw rethrown;
       }
       throw error;
     }

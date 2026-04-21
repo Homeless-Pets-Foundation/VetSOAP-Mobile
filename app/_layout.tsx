@@ -11,7 +11,14 @@ import { StatusBar } from 'expo-status-bar';
 import { CONFIG_MISSING } from '../src/config';
 import { queryClient } from '../src/lib/queryClient';
 import { DeviceLimitModal } from '../src/components/DeviceLimitModal';
+import { initMonitoring } from '../src/lib/monitoring';
+import { initAnalytics } from '../src/lib/analytics';
 import '../global.css';
+
+// Initialize Sentry + PostHog at module load so early crashes are captured.
+// Both internally try/catch and no-op if keys are unset — safe under rule 1.
+initMonitoring();
+initAnalytics();
 
 // Initialize native Google Sign-In once at module load, before any component
 // renders. Safe to call with missing/empty client IDs — configureGoogleSignIn

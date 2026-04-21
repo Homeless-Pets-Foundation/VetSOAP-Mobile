@@ -26,6 +26,8 @@ import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
 import { clearPeakCache } from '../lib/waveformCache';
 import { setLogoutReason } from '../lib/logoutReason';
+import { setMonitoringUser, clearMonitoringUser } from '../lib/monitoring';
+import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib/analytics';
 import type { User } from '../types';
 
 /**
@@ -224,6 +226,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(fetchedUser);
     if (!fetchedUser?.id) return;
     const scopedUserId = fetchedUser.id;
+    // Tag monitoring + analytics with the user id (no email / name / PHI).
+    setMonitoringUser(scopedUserId, fetchedUser.organizationId);
+    identifyUser(scopedUserId, fetchedUser.organizationId);
     const isRecoveryScopeCurrent = () =>
       stashStorage.getUserId() === scopedUserId &&
       stashAudioManager.getUserId() === scopedUserId;
@@ -439,6 +444,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Now clear stash user scoping and auth state
     setStashUserId(null);
     draftStorage.setUserId(null);
+    // Flush analytics then clear monitoring identity before we drop React state.
+    // Flush is best-effort and bounded by internal PostHog timeouts.
+    flushAnalytics().catch(() => {});
+    clearMonitoringUser();
+    resetAnalytics();
+    trackEvent({ name: 'session_signed_out', props: { trigger: 'user' } });
     setUser(null);
     setSession(null);
     setUserFetchState('idle');

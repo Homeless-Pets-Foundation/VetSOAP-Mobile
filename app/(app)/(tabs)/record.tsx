@@ -19,8 +19,11 @@ import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { recordingsApi } from '../../../src/api/recordings';
+import { recordingsApi, getUploadPhase } from '../../../src/api/recordings';
 import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
+import { trackEvent, type NetworkState } from '../../../src/lib/analytics';
+import { breadcrumb, captureException } from '../../../src/lib/monitoring';
+import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
 import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
@@ -231,7 +234,21 @@ function RecordingSession() {
   const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
   const [isStashing, setIsStashing] = useState(false);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
-  const { isConnected } = useNetInfo();
+  const netInfo = useNetInfo();
+  const isConnected = netInfo.isConnected;
+  // Derives a coarse connection descriptor for telemetry. Don't leak SSIDs or
+  // carrier names — only the type bucket.
+  const networkStateForTelemetry = (): NetworkState => {
+    if (netInfo.isConnected === false) return 'none';
+    if (netInfo.type === 'wifi') return 'wifi';
+    if (netInfo.type === 'cellular') return 'cellular';
+    if (netInfo.isConnected === true) return 'unknown';
+    return 'unknown';
+  };
+  // Per-slot retry counter — increments each time uploadSlot runs. Drives the
+  // `attempt_number` field on submit events and client-error telemetry so we
+  // can see recordings that fail multiple attempts vs one-shot failures.
+  const uploadAttemptCountsRef = useRef<Map<string, number>>(new Map());
   const pagerRef = useRef<FlatList>(null);
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
@@ -801,11 +818,44 @@ function RecordingSession() {
       // during the window between button tap and React state update disabling the button.
       if (uploadingSlotIdsRef.current.has(slot.id)) return null;
       uploadingSlotIdsRef.current.add(slot.id);
+      const attemptNumber = (uploadAttemptCountsRef.current.get(slot.id) ?? 0) + 1;
+      uploadAttemptCountsRef.current.set(slot.id, attemptNumber);
+      const slotIndex = sessionRef.current.slots.findIndex((s) => s.id === slot.id);
+      const durationSeconds = Math.round(
+        slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0)
+      );
+      const segmentCount = slot.segments.length;
+      const uploadStartedAt = Date.now();
+      const netState = networkStateForTelemetry();
+
+      trackEvent({
+        name: 'submit_attempted',
+        props: {
+          slot_index: slotIndex,
+          segment_count: segmentCount,
+          duration_s: durationSeconds,
+          recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
+          attempt_number: attemptNumber,
+          network_state: netState,
+        },
+      });
+      breadcrumb('upload', 'submit_attempted', {
+        slot_index: slotIndex,
+        segment_count: segmentCount,
+        duration_s: durationSeconds,
+        attempt_number: attemptNumber,
+        network_state: netState,
+        has_existing_draft: !!slot.serverDraftId,
+        has_pending_confirm: !!slot.pendingConfirm,
+      });
+
       try {
         if (hasSilentAudioOnly(slot)) {
-          throw new Error(
+          const silentError = new Error(
             'This recording appears silent. Please verify microphone input and record again before uploading.'
-          );
+          ) as Error & { uploadPhase?: 'silent_check' };
+          silentError.uploadPhase = 'silent_check';
+          throw silentError;
         }
 
         setUploadStatus(slot.id, 'uploading', { progress: 5 });
@@ -907,6 +957,27 @@ function RecordingSession() {
         });
         // Clean up local draft after successful upload
         draftStorage.deleteDraft(slot.id).catch(() => {});
+
+        const latencyMs = Date.now() - uploadStartedAt;
+        trackEvent({
+          name: 'submit_succeeded',
+          props: {
+            slot_index: slotIndex,
+            segment_count: segmentCount,
+            duration_s: durationSeconds,
+            size_bytes: 0,
+            recording_id: result.id,
+            attempt_number: attemptNumber,
+            latency_ms: latencyMs,
+          },
+        });
+        breadcrumb('upload', 'submit_succeeded', {
+          slot_index: slotIndex,
+          attempt_number: attemptNumber,
+          latency_ms: latencyMs,
+        });
+        // Reset attempt counter for this slot — any future retry starts fresh.
+        uploadAttemptCountsRef.current.delete(slot.id);
         return result.id;
       } catch (error) {
         let msg: string;
@@ -918,11 +989,70 @@ function RecordingSession() {
           msg = 'Upload failed. Please try again.';
         }
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
+
+        const phase = getUploadPhase(error);
+        const latencyMs = Date.now() - uploadStartedAt;
+        // Derive an error code usable for filtering — server-supplied codes
+        // win over phase so trial/billing errors stay legible.
+        const errorObj = error as Error & { code?: string; status?: number };
+        const errorCode =
+          (errorObj?.code && String(errorObj.code)) ||
+          (errorObj?.status ? `HTTP_${errorObj.status}` : phase.toUpperCase());
+
+        trackEvent({
+          name: 'submit_failed',
+          props: {
+            slot_index: slotIndex,
+            segment_count: segmentCount,
+            duration_s: durationSeconds,
+            recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
+            attempt_number: attemptNumber,
+            error_phase: phase,
+            error_code: errorCode,
+            network_state: netState,
+            latency_ms: latencyMs,
+          },
+        });
+        reportClientError({
+          phase,
+          severity: 'error',
+          errorCode,
+          message: msg,
+          recordingId: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
+          slotIndex,
+          segmentCount,
+          durationSeconds,
+          networkState: netState,
+          attemptNumber,
+        });
+        captureException(error, {
+          tags: {
+            phase,
+            error_code: errorCode,
+            network_state: netState,
+            has_existing_draft: String(!!slot.serverDraftId),
+          },
+          extra: {
+            slot_index: slotIndex,
+            attempt_number: attemptNumber,
+            segment_count: segmentCount,
+            duration_s: durationSeconds,
+            latency_ms: latencyMs,
+            recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
+          },
+        });
+        breadcrumb('upload', 'submit_failed', {
+          slot_index: slotIndex,
+          phase,
+          error_code: errorCode,
+          attempt_number: attemptNumber,
+        });
         return null;
       } finally {
         uploadingSlotIdsRef.current.delete(slot.id);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- netInfo read via networkStateForTelemetry closure; derivation is pure
     [setUploadStatus, dispatch]
   );
 

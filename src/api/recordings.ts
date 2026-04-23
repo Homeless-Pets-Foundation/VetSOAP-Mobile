@@ -20,9 +20,56 @@ import {
 import { validateUploadUrl } from '../lib/sslPinning';
 import { getIdempotencyUuid } from '../lib/random';
 import type { PendingConfirm } from '../types/multiPatient';
+import { trackEvent } from '../lib/analytics';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
+
+/**
+ * Expected bitrate range for a healthy recording. Outside this window we
+ * emit `audio_bitrate_anomaly` so device-specific encoder glitches (e.g.
+ * 2026-04-22 Morales case: 13 kbps output from some tablets while others
+ * encoded at 256 kbps on the same build) surface as dashboards rather than
+ * support tickets. Bounds are intentionally wide — the signal is that
+ * things landed 10× outside normal, not a precise codec check.
+ */
+const MIN_EXPECTED_KBPS = 32;
+const MAX_EXPECTED_KBPS = 320;
+
+interface AudioQualityParams {
+  slotIndex?: number;
+  durationSeconds: number;
+  sizeBytes: number;
+  segmentCount: number;
+}
+
+function reportAudioQuality({ slotIndex, durationSeconds, sizeBytes, segmentCount }: AudioQualityParams): void {
+  // 8 bits per byte → kbps = (bytes * 8 / duration) / 1000
+  const kbps = durationSeconds > 0 ? Math.round((sizeBytes * 8) / durationSeconds / 1000) : 0;
+  trackEvent({
+    name: 'audio_quality_measured',
+    props: {
+      slot_index: slotIndex ?? 0,
+      duration_s: durationSeconds,
+      size_bytes: sizeBytes,
+      kbps_estimated: kbps,
+      segment_count: segmentCount,
+    },
+  });
+  if (durationSeconds > 5 && (kbps < MIN_EXPECTED_KBPS || kbps > MAX_EXPECTED_KBPS)) {
+    trackEvent({
+      name: 'audio_bitrate_anomaly',
+      props: {
+        slot_index: slotIndex ?? 0,
+        duration_s: durationSeconds,
+        size_bytes: sizeBytes,
+        kbps_estimated: kbps,
+        expected_min: MIN_EXPECTED_KBPS,
+        expected_max: MAX_EXPECTED_KBPS,
+      },
+    });
+  }
+}
 
 /**
  * Phase label attached to thrown Errors from the upload pipeline so callers
@@ -251,6 +298,8 @@ export const recordingsApi = {
       onR2Complete?: (hint: PendingConfirm) => void;
       resume?: PendingConfirm;
       existingRecordingId?: string;
+      audioDurationSeconds?: number;
+      slotIndex?: number;
     }
   ): Promise<Recording> {
     // Retry path: R2 already holds the file; just re-run confirm.
@@ -304,6 +353,17 @@ export const recordingsApi = {
           'silent_check',
           `File too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
         );
+      }
+
+      // Audio quality signal — fire before upload so we still get the metric
+      // if R2 / confirm later fail. Rate-limited at the track_event layer.
+      if (options?.audioDurationSeconds !== undefined) {
+        reportAudioQuality({
+          slotIndex: options.slotIndex,
+          durationSeconds: options.audioDurationSeconds,
+          sizeBytes: fileSizeBytes,
+          segmentCount: 1,
+        });
       }
 
       // Step 2: Get presigned upload URL (include file size for server validation)
@@ -415,6 +475,7 @@ export const recordingsApi = {
       onR2Complete?: (hint: PendingConfirm) => void;
       resume?: PendingConfirm;
       existingRecordingId?: string;
+      slotIndex?: number;
     }
   ): Promise<Recording> {
     // Retry path: all segments already on R2, just re-run confirm.
@@ -453,6 +514,8 @@ export const recordingsApi = {
     const segmentKeys: string[] = [];
     const totalSegments = segments.length;
     let completedSegments = 0;
+    let totalSegmentBytes = 0;
+    const totalSegmentDuration = segments.reduce((sum, s) => sum + (s.duration || 0), 0);
 
     try {
       for (let i = 0; i < totalSegments; i++) {
@@ -475,6 +538,7 @@ export const recordingsApi = {
             `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
           );
         }
+        totalSegmentBytes += fileSizeBytes;
 
         // Get presigned URL for this segment
         let uploadUrl: string;
@@ -544,6 +608,17 @@ export const recordingsApi = {
       }
 
       r2UploadComplete = true;
+
+      // Aggregate audio quality signal now that every segment size is known.
+      // Rate-limited at the track_event layer.
+      if (totalSegmentDuration > 0) {
+        reportAudioQuality({
+          slotIndex: options?.slotIndex,
+          durationSeconds: Math.round(totalSegmentDuration),
+          sizeBytes: totalSegmentBytes,
+          segmentCount: totalSegments,
+        });
+      }
 
       // All segments are on R2. Let the caller persist a resume hint before we
       // attempt confirm — if confirm fails, retry will skip straight to confirm

@@ -98,6 +98,21 @@ export const stashAudioManager = {
     } catch (error) {
       // Clean up partially-copied files on failure
       safeDeleteDirectory(dir);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { trackEvent } = require('./analytics') as typeof import('./analytics');
+        const s = String(error ?? '').toLowerCase();
+        const reason: 'secure_store' | 'fs' | 'quota' | 'other' = s.includes('enospc') || s.includes('quota')
+          ? 'quota'
+          : s.includes('securestore') || s.includes('keystore')
+            ? 'secure_store'
+            : s.includes('enoent') || s.includes('file')
+              ? 'fs'
+              : 'other';
+        trackEvent({ name: 'stash_write_failed', props: { reason } });
+      } catch {
+        // swallow
+      }
       throw error;
     }
   },

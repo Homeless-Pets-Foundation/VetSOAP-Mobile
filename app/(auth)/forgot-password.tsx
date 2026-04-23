@@ -46,13 +46,13 @@ export default function ForgotPasswordScreen() {
               Check your email
             </Text>
             <Text className="text-body text-stone-600 text-center mb-6">
-              We've sent a password reset link to:
+              We&apos;ve sent a password reset link to:
             </Text>
             <Text className="text-body font-semibold text-brand-500 mb-8">
               {email}
             </Text>
             <Text className="text-body-sm text-stone-500 text-center mb-8">
-              Click the link in the email to reset your password. If you don't see the email, check your spam folder.
+              Click the link in the email to reset your password. If you don&apos;t see the email, check your spam folder.
             </Text>
           </View>
 
@@ -79,7 +79,7 @@ export default function ForgotPasswordScreen() {
             Reset password
           </Text>
           <Text className="text-body text-stone-600">
-            Enter your email address and we'll send you a link to reset your password.
+            Enter your email address and we&apos;ll send you a link to reset your password.
           </Text>
         </View>
 

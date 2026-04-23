@@ -12,6 +12,7 @@ import { copyWithAutoClear } from '../lib/secureClipboard';
 import { Copy } from 'lucide-react-native';
 import type { SoapNote } from '../types';
 import { SOAP_SECTION_ACTIONS } from '../constants/strings';
+import { trackEvent } from '../lib/analytics';
 
 const SECTIONS = [
   { key: 'subjective' as const, label: 'Subjective', colorClass: 'bg-soap-subjective' },
@@ -22,6 +23,7 @@ const SECTIONS = [
 
 interface SoapNoteViewProps {
   soapNote: SoapNote;
+  recordingId?: string;
 }
 
 function CopiedToast() {
@@ -43,6 +45,7 @@ function AccordionSection({
   content,
   isExpanded,
   onToggle,
+  recordingId,
 }: {
   sectionKey: string;
   label: string;
@@ -50,6 +53,7 @@ function AccordionSection({
   content: string;
   isExpanded: boolean;
   onToggle: () => void;
+  recordingId?: string;
 }) {
   const [showCopied, setShowCopied] = useState(false);
   const copyTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -71,6 +75,9 @@ function AccordionSection({
   const copySection = async () => {
     try {
       await copyWithAutoClear(content ?? '');
+      if (recordingId) {
+        trackEvent({ name: 'soap_exported', props: { target: 'clipboard', recording_id: recordingId } });
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setShowCopied(true);
       clearTimeout(copyTimeoutRef.current);
@@ -135,7 +142,7 @@ function AccordionSection({
   );
 }
 
-export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
+export function SoapNoteView({ soapNote, recordingId }: SoapNoteViewProps) {
   const [expandedSection, setExpandedSection] = useState<string | null>('subjective');
   const [showCopiedAll, setShowCopiedAll] = useState(false);
   const copyAllTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -152,6 +159,9 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
       }).join('\n\n');
 
       await copyWithAutoClear(fullNote);
+      if (recordingId) {
+        trackEvent({ name: 'soap_exported', props: { target: 'clipboard', recording_id: recordingId } });
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setShowCopiedAll(true);
       clearTimeout(copyAllTimeoutRef.current);
@@ -159,7 +169,7 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
     } catch (error) {
       if (__DEV__) console.error('[SoapNote] copyAll failed:', error);
     }
-  }, [soapNote]);
+  }, [soapNote, recordingId]);
 
   return (
     <View>
@@ -204,6 +214,7 @@ export function SoapNoteView({ soapNote }: SoapNoteViewProps) {
             onToggle={() =>
               setExpandedSection((prev) => (prev === key ? null : key))
             }
+            recordingId={recordingId}
           />
         );
       })}

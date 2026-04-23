@@ -3,6 +3,44 @@ import * as SecureStore from 'expo-secure-store';
 
 const BIOMETRIC_ENABLED_KEY = 'captivet_biometric_enabled';
 
+// Lazy-loaded analytics emitter — avoids a static import cycle and keeps this
+// module safe if analytics hasn't been initialized yet.
+type BiometricResult = 'success' | 'cancel' | 'lockout' | 'hw_error' | 'not_enrolled';
+
+function emitBiometricResult(result: BiometricResult): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trackEvent } = require('./analytics') as typeof import('./analytics');
+    trackEvent({ name: 'biometric_result', props: { result } });
+  } catch {
+    // swallow
+  }
+}
+
+function emitBiometricPromptShown(): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trackEvent } = require('./analytics') as typeof import('./analytics');
+    trackEvent({ name: 'biometric_prompt_shown', props: {} });
+  } catch {
+    // swallow
+  }
+}
+
+/**
+ * Map an expo-local-authentication result.error string to our enum. The SDK
+ * surfaces a small set of error codes — we collapse them into a bounded set
+ * so PostHog cardinality stays low and dashboards can alert on `lockout`
+ * specifically, which is the one that matters operationally.
+ */
+function classifyBiometricError(error: string | undefined): BiometricResult {
+  if (!error) return 'hw_error';
+  if (error === 'user_cancel' || error === 'system_cancel' || error === 'app_cancel') return 'cancel';
+  if (error === 'lockout' || error === 'lockout_permanent') return 'lockout';
+  if (error === 'not_enrolled') return 'not_enrolled';
+  return 'hw_error';
+}
+
 export const biometrics = {
   async isAvailable(): Promise<boolean> {
     try {
@@ -60,6 +98,7 @@ export const biometrics = {
   },
 
   async authenticate(reason = 'Authenticate to access Captivet'): Promise<boolean> {
+    emitBiometricPromptShown();
     try {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: reason,
@@ -67,9 +106,15 @@ export const biometrics = {
         disableDeviceFallback: false,
         fallbackLabel: 'Use Passcode',
       });
+      if (result.success) {
+        emitBiometricResult('success');
+      } else {
+        emitBiometricResult(classifyBiometricError(result.error));
+      }
       return result.success;
     } catch (error) {
       if (__DEV__) console.error('[Biometrics] authenticate failed:', error);
+      emitBiometricResult('hw_error');
       return false;
     }
   },

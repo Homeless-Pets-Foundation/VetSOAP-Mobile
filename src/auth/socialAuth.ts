@@ -59,8 +59,8 @@ async function persistAppleProfileMetadata(
   if (Object.keys(metadata).length === 0) return;
 
   const { error } = await supabase.auth.updateUser({ data: metadata });
-  if (error && __DEV__) {
-    console.error('[socialAuth] Failed to persist Apple profile metadata:', error);
+  if (error) {
+    if (__DEV__) console.error('[socialAuth] Failed to persist Apple profile metadata:', error);
   }
 }
 
@@ -110,7 +110,7 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
   }
 
   try {
-    const { GoogleSignin, statusCodes } = getGoogleSignin();
+    const { GoogleSignin } = getGoogleSignin();
     if (!googleConfigured) configureGoogleSignIn();
 
     if (Platform.OS === 'android') {

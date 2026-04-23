@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList } from 'react-native';
+import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList, AppState } from 'react-native';
+import type { AppStateStatus } from 'react-native';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
@@ -26,6 +27,8 @@ import { breadcrumb, captureException } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
+import { recordSubmitAttempt } from '../../../src/lib/submitTiming';
+import { setSessionActivity } from '../../../src/lib/sessionActivity';
 import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../../src/components/SubmitPanel';
@@ -110,6 +113,12 @@ function hasSilentAudioOnly(slot: PatientSlot): boolean {
   return slot.segments.every(
     (seg) => seg.peakMetering !== undefined && seg.peakMetering <= -20
   );
+}
+
+interface PersistableRecorderSnapshot {
+  audioUri: string | null;
+  duration: number;
+  maxMetering?: number;
 }
 
 function RecordingSession() {
@@ -252,6 +261,8 @@ function RecordingSession() {
   const pagerRef = useRef<FlatList>(null);
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const backgroundPersistingRef = useRef(false);
   // Track pending slots for "stop A then start B (then C…)" flow. FIFO queue —
   // rapid tap of Start across multiple slots during a stop-in-progress used to
   // overwrite a single ref, dropping all but the latest tap. Queue preserves
@@ -272,6 +283,7 @@ function RecordingSession() {
   const pendingDraftSlotIdRef = useRef<string | null>(null);
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
+  const autoSaveDraftRef = useRef<(slot: PatientSlot) => Promise<void>>(async () => {});
   // Guard: prevent the audio-capture effect from saving twice for the same stop
   const audioCaptureDoneRef = useRef(false);
   // Guard: track which slot IDs are actively uploading to prevent double-submission
@@ -317,6 +329,27 @@ function RecordingSession() {
     });
   }, []);
 
+  const buildPersistedSlot = useCallback(
+    (slotId: string, snapshot: PersistableRecorderSnapshot): PatientSlot | null => {
+      if (!snapshot.audioUri) return null;
+      const slot = sessionRef.current.slots.find((s) => s.id === slotId);
+      if (!slot) return null;
+      const newSegment = {
+        uri: snapshot.audioUri,
+        duration: snapshot.duration,
+        peakMetering: typeof snapshot.maxMetering === 'number' ? snapshot.maxMetering : undefined,
+      };
+      return {
+        ...slot,
+        segments: [...slot.segments, newSegment],
+        audioUri: snapshot.audioUri,
+        audioDuration: slot.segments.reduce((sum, seg) => sum + seg.duration, 0) + snapshot.duration,
+        audioState: 'stopped',
+      };
+    },
+    []
+  );
+
   // Clear any pending debounce timers on unmount so they don't fire against a
   // dead component (and because the user navigating away from Record = intent
   // to keep the session as a local-only draft, not push a server row).
@@ -355,14 +388,20 @@ function RecordingSession() {
     if (recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
       audioCaptureDoneRef.current = true;
       const slotId = session.recorderBoundToSlotId;
+      const audioUri = recorder.audioUri;
+      const snapshot: PersistableRecorderSnapshot = {
+        audioUri,
+        duration: recorder.duration,
+        maxMetering: recorder.maxMetering,
+      };
+      const persistedSlot = buildPersistedSlot(slotId, snapshot);
       saveAudio(
         slotId,
-        recorder.audioUri,
-        recorder.duration,
-        recorder.maxMetering
+        audioUri,
+        snapshot.duration,
+        snapshot.maxMetering
       );
-      unbindRecorder();
-      pendingDraftSlotIdRef.current = slotId;
+      pendingDraftSlotIdRef.current = persistedSlot ? slotId : null;
 
       // If there's a pending stash, just reset the recorder here.
       // Don't call executeStash() yet — saveAudio dispatch hasn't been processed,
@@ -414,7 +453,7 @@ function RecordingSession() {
 
     return () => { if (timerId) clearTimeout(timerId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends only on recorder state transitions, not on session/slot refs which would cause infinite loops
-  }, [recorder.state, recorder.audioUri]);
+  }, [recorder.state, recorder.audioUri, recorder.duration, recorder.maxMetering, saveAudio, buildPersistedSlot]);
 
   // Consistency guard: fix orphaned paused/recording states when recorder ownership changes
   useEffect(() => {
@@ -426,6 +465,49 @@ function RecordingSession() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- guard runs only when recorder ownership changes, reading slots is intentionally from current render
   }, [session.recorderBoundToSlotId]);
+
+  const persistSessionDraftsForBackground = useCallback(async () => {
+    if (backgroundPersistingRef.current) return;
+    backgroundPersistingRef.current = true;
+
+    try {
+      const slotOverrides = new Map<string, PatientSlot>();
+      const boundSlotId = sessionRef.current.recorderBoundToSlotId;
+
+      if (boundSlotId && (recorder.state === 'recording' || recorder.state === 'paused')) {
+        try {
+          await recorder.stop();
+          const snapshot = recorder.getPersistableSnapshot();
+          if (snapshot.audioUri) {
+            audioCaptureDoneRef.current = true;
+            const persistedSlot = buildPersistedSlot(boundSlotId, snapshot);
+            saveAudio(boundSlotId, snapshot.audioUri, snapshot.duration, snapshot.maxMetering);
+            if (persistedSlot) {
+              slotOverrides.set(boundSlotId, persistedSlot);
+            }
+            recorder.resetWithoutDelete();
+          } else {
+            unbindRecorder();
+            recorder.reset();
+          }
+        } catch (error) {
+          if (__DEV__) console.error('[Record] background recorder stop failed:', error);
+        }
+      }
+
+      const slotsToPersist = sessionRef.current.slots
+        .map((slot) => slotOverrides.get(slot.id) ?? slot)
+        .filter((slot) => slot.segments.length > 0 && slot.uploadStatus !== 'success');
+
+      await Promise.all(
+        slotsToPersist.map((slot) => autoSaveDraftRef.current(slot).catch(() => {}))
+      );
+    } catch (error) {
+      if (__DEV__) console.error('[Record] background draft persist failed:', error);
+    } finally {
+      backgroundPersistingRef.current = false;
+    }
+  }, [recorder, buildPersistedSlot, saveAudio, unbindRecorder]);
 
   const discardCurrentSession = useCallback(async (opts?: { preserveDraftSlotIds?: string[] }) => {
     // Callers that are about to load a draft (or that want to keep other
@@ -687,12 +769,10 @@ function RecordingSession() {
   );
 
   const handleStop = useCallback(
-    (slotId: string) => {
+    (_slotId: string) => {
       (async () => {
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-          // The effect above will capture audioUri and call saveAudio + unbindRecorder
-          // when recorder.state transitions to 'stopped'
           await recorder.stop();
         } catch {
           Alert.alert('Recording Error', 'Failed to stop recording.');
@@ -938,6 +1018,8 @@ function RecordingSession() {
               onR2Complete,
               resume: slot.pendingConfirm ?? undefined,
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
+              audioDurationSeconds: durationSeconds,
+              slotIndex,
             }
           );
         } else {
@@ -951,6 +1033,7 @@ function RecordingSession() {
               onR2Complete,
               resume: slot.pendingConfirm ?? undefined,
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
+              slotIndex,
             }
           );
         }
@@ -959,6 +1042,13 @@ function RecordingSession() {
           progress: 100,
           serverRecordingId: result.id,
         });
+        // Time-to-SOAP producer: record the submit-success timestamp keyed by
+        // the real server recording_id. The detail screen reads this when
+        // the SOAP first renders and emits `soap_visible`. finishAt is
+        // omitted here — without durable per-slot timing wiring it would
+        // conflate with other slots; the submit delta is the more useful
+        // product metric anyway.
+        recordSubmitAttempt(result.id);
         // Clean up local audio files now that they're safely on R2
         slot.segments.forEach((seg) => {
           safeDeleteFile(seg.uri);
@@ -1207,6 +1297,42 @@ function RecordingSession() {
     [dispatch, isConnected, scheduleDraftSync]
   );
 
+  autoSaveDraftRef.current = autoSaveDraft;
+
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      const previousState = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (
+        previousState === 'active' &&
+        (nextState === 'inactive' || nextState === 'background')
+      ) {
+        persistSessionDraftsForBackground().catch(() => {});
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, [persistSessionDraftsForBackground]);
+
+  // Effect: auto-save draft after segment-affecting state updates have been
+  // processed by React. The ref is set after audio capture and editor commits,
+  // but the actual save is deferred until session.slots reflects the new
+  // segment list.
+  useEffect(() => {
+    if (pendingDraftSlotIdRef.current && !session.recorderBoundToSlotId) {
+      const slotId = pendingDraftSlotIdRef.current;
+      pendingDraftSlotIdRef.current = null;
+      const slot = session.slots.find((s) => s.id === slotId);
+      if (slot && slot.segments.length > 0) {
+        autoSaveDraft(slot).catch(() => {});
+      }
+    }
+  }, [session, autoSaveDraft]);
+
   const handleSubmitSingle = useCallback(
     (slotId: string) => {
       const slot = sessionRef.current.slots.find((s) => s.id === slotId);
@@ -1284,6 +1410,28 @@ function RecordingSession() {
     setIsSubmittingAll(true);
     setTotalSlotsToUpload(slotsToUpload.length);
 
+    // Track NetInfo transitions only during the active upload loop. Each
+    // transition becomes a Sentry breadcrumb so a failed upload carries
+    // "was wifi → cellular → none → ..." in its issue context. We don't
+    // leave the subscription open outside the upload window; steady-state
+    // is tracked elsewhere.
+    let lastNetType: string | null = null;
+    const netUnsub = NetInfo.addEventListener((state: any) => {
+      const nextType: string = state?.isConnected
+        ? (state?.type === 'wifi' || state?.type === 'cellular' ? state.type : 'unknown')
+        : 'none';
+      if (lastNetType !== null && lastNetType !== nextType) {
+        breadcrumb('network', 'state_change', {
+          from: lastNetType,
+          to: nextType,
+          during: 'upload',
+        });
+      }
+      lastNetType = nextType;
+    });
+
+    setSessionActivity('upload');
+
     (async () => {
       try {
         let allSuccess = true;
@@ -1317,12 +1465,16 @@ function RecordingSession() {
         setIsSubmittingAll(false);
         setSubmittingSlotId(null);
         setTotalSlotsToUpload(0);
+        try { netUnsub(); } catch { /* noop */ }
+        setSessionActivity('idle');
       }
     })().catch(() => {
       clearSubmitIntent(slotIdsToUpload);
       setIsSubmittingAll(false);
       setSubmittingSlotId(null);
       setTotalSlotsToUpload(0);
+      try { netUnsub(); } catch { /* noop */ }
+      setSessionActivity('idle');
     });
   }, [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny]);
 
@@ -1404,20 +1556,6 @@ function RecordingSession() {
       executeStash();
     }
   }, [session, executeStash]);
-
-  // Effect: auto-save draft after SAVE_AUDIO has been processed by React.
-  // pendingDraftSlotIdRef is set in the audio-capture effect but the actual save
-  // is deferred here so session.slots includes the just-saved segment.
-  useEffect(() => {
-    if (pendingDraftSlotIdRef.current && !session.recorderBoundToSlotId) {
-      const slotId = pendingDraftSlotIdRef.current;
-      pendingDraftSlotIdRef.current = null;
-      const slot = session.slots.find((s) => s.id === slotId);
-      if (slot && slot.segments.length > 0) {
-        autoSaveDraft(slot).catch(() => {});
-      }
-    }
-  }, [session, autoSaveDraft]);
 
   const handleStashSession = useCallback(() => {
     // If recorder is active, stop it first — the effect will trigger executeStash
@@ -1726,9 +1864,12 @@ function RecordingSession() {
           // Segment set is about to change — the pendingConfirm (if any) no
           // longer matches the audio. Best-effort delete the orphan before
           // the reducer clears the hint.
-          const editedSlot = session.slots.find((s) => s.id === result.slotId);
+          const editedSlot = sessionRef.current.slots.find((s) => s.id === result.slotId);
           if (editedSlot) deleteOrphanServerRecording(editedSlot);
           replaceAllSegments(result.slotId, result.segments);
+          // Re-persist the edited segment set so a restart can't reopen the
+          // pre-edit draft audio.
+          pendingDraftSlotIdRef.current = result.slotId;
         }
       });
 

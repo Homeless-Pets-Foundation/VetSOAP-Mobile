@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { apiClient } from './client';
 import type { ErrorPhase, NetworkState } from '../lib/analytics';
+import { shouldEmit } from '../lib/rateLimitMonitoring';
 
 /**
  * Fire-and-forget client-side telemetry. Posted to
@@ -57,7 +58,11 @@ function sanitizeMessage(raw: string): string {
 }
 
 export function reportClientError(input: ReportClientErrorInput): void {
-  const payload = {
+  const subKey = `${input.phase}:${input.errorCode ?? 'none'}`;
+  const gate = shouldEmit('report_client_error', subKey);
+  if (!gate.emit) return;
+
+  const payload: Record<string, unknown> = {
     phase: input.phase,
     severity: input.severity ?? 'error',
     errorCode: input.errorCode,
@@ -73,6 +78,9 @@ export function reportClientError(input: ReportClientErrorInput): void {
     platform: PLATFORM,
     osVersion: OS_VERSION,
   };
+  if (gate.suppressedPriorWindow > 0) {
+    payload.suppressedPriorWindow = gate.suppressedPriorWindow;
+  }
 
   apiClient.post('/api/telemetry/client-error', payload).catch(() => {
     // Swallow — telemetry is best-effort. Any error here has already been

@@ -20,18 +20,68 @@ const DRAFT_CHUNK_SIZE = 1900;
 
 const BASE_DRAFTS_DIR = `${Paths.document.uri}drafts/`;
 
-interface DraftMetadata {
+export interface DraftSegmentMetadata {
+  uri: string;
+  duration: number;
+  peakMetering?: number;
+}
+
+export interface DraftMetadata {
   slotId: string;
   savedAt: string;
   formData: CreateRecording;
-  segments: { uri: string; duration: number }[];
+  segments: DraftSegmentMetadata[];
   audioDuration: number;
   serverDraftId: string | null;
   pendingSync: boolean;
 }
 
+export type ServerDraftPresence = 'present' | 'missing' | 'unknown';
+
 /** Current user ID — set by AuthProvider to scope draft data per-user. */
 let currentUserId: string | null = null;
+
+/**
+ * Classify a draft-storage failure into a bounded reason. Lazy-loaded to
+ * avoid a static import cycle and to stay safe if analytics isn't wired.
+ */
+function classifyDraftFailure(error: unknown): 'secure_store' | 'fs' | 'quota' | 'other' {
+  const s = String(error ?? '').toLowerCase();
+  if (s.includes('securestore') || s.includes('keystore') || s.includes('keychain')) return 'secure_store';
+  if (s.includes('enospc') || s.includes('no space') || s.includes('quota')) return 'quota';
+  if (s.includes('enoent') || s.includes('file') || s.includes('directory')) return 'fs';
+  return 'other';
+}
+
+function emitDraftFailure(name: 'draft_save_failed' | 'stash_write_failed', error: unknown): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trackEvent } = require('./analytics') as typeof import('./analytics');
+    trackEvent({ name, props: { reason: classifyDraftFailure(error) } });
+  } catch {
+    // swallow
+  }
+}
+
+function emitDraftSyncRetryFailed(attemptNumber: number): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trackEvent } = require('./analytics') as typeof import('./analytics');
+    trackEvent({ name: 'draft_sync_retry_failed', props: { attempt_number: attemptNumber } });
+  } catch {
+    // swallow
+  }
+}
+
+function emitDraftOrphanSweep(found: number, deleted: number): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trackEvent } = require('./analytics') as typeof import('./analytics');
+    trackEvent({ name: 'draft_orphan_sweep', props: { found, deleted } });
+  } catch {
+    // swallow
+  }
+}
 
 function draftIndexKeyForUser(userId: string): string {
   return `captivet_drafts_index_${userId}`;
@@ -128,7 +178,7 @@ async function readDraftChunks(
         if (chunk === null) return null;
         parts.push(chunk);
       }
-      return JSON.parse(parts.join('')) as DraftMetadata;
+      return normalizeDraftMetadata(JSON.parse(parts.join('')));
     }
   } catch {
     return null;
@@ -139,10 +189,57 @@ async function readDraftChunks(
       legacyDraftMetadataKeyForUser(userId, slotId),
     );
     if (!legacyRaw) return null;
-    return JSON.parse(legacyRaw) as DraftMetadata;
+    return normalizeDraftMetadata(JSON.parse(legacyRaw));
   } catch {
     return null;
   }
+}
+
+function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const parsed = raw as Partial<DraftMetadata> & { segments?: unknown };
+  if (
+    typeof parsed.slotId !== 'string' ||
+    typeof parsed.savedAt !== 'string' ||
+    !parsed.formData ||
+    typeof parsed.formData !== 'object' ||
+    !Array.isArray(parsed.segments) ||
+    (typeof parsed.serverDraftId !== 'string' && parsed.serverDraftId !== null) ||
+    typeof parsed.pendingSync !== 'boolean'
+  ) {
+    return null;
+  }
+
+  const segments: DraftSegmentMetadata[] = [];
+  for (const segment of parsed.segments) {
+    if (!segment || typeof segment !== 'object') continue;
+    const parsedSegment = segment as Partial<DraftSegmentMetadata>;
+    if (typeof parsedSegment.uri !== 'string' || typeof parsedSegment.duration !== 'number') {
+      continue;
+    }
+    segments.push({
+      uri: parsedSegment.uri,
+      duration: parsedSegment.duration,
+      peakMetering:
+        typeof parsedSegment.peakMetering === 'number'
+          ? parsedSegment.peakMetering
+          : undefined,
+    });
+  }
+
+  return {
+    slotId: parsed.slotId,
+    savedAt: parsed.savedAt,
+    formData: parsed.formData as CreateRecording,
+    segments,
+    audioDuration:
+      typeof parsed.audioDuration === 'number'
+        ? parsed.audioDuration
+        : segments.reduce((sum, segment) => sum + segment.duration, 0),
+    serverDraftId: parsed.serverDraftId,
+    pendingSync: parsed.pendingSync,
+  };
 }
 
 /**
@@ -235,7 +332,7 @@ export const draftStorage = {
       ensureDirectory(dir);
 
       // Copy all segments to draft directory
-      const draftSegments: { uri: string; duration: number }[] = [];
+      const draftSegments: DraftSegmentMetadata[] = [];
       for (let i = 0; i < slot.segments.length; i++) {
         const segment = slot.segments[i];
         if (!fileExists(segment.uri)) continue;
@@ -244,7 +341,14 @@ export const draftStorage = {
         try {
           new ExpoFile(segment.uri).copy(new ExpoFile(destUri));
           if (fileExists(destUri)) {
-            draftSegments.push({ uri: destUri, duration: segment.duration });
+            draftSegments.push({
+              uri: destUri,
+              duration: segment.duration,
+              peakMetering:
+                typeof segment.peakMetering === 'number'
+                  ? segment.peakMetering
+                  : undefined,
+            });
           }
         } catch {
           // Skip segments that fail to copy
@@ -285,6 +389,7 @@ export const draftStorage = {
     } catch (error) {
       // Clean up partially-copied files on failure
       safeDeleteDirectory(dir);
+      emitDraftFailure('draft_save_failed', error);
       throw error;
     }
   },
@@ -302,6 +407,28 @@ export const draftStorage = {
       if (!metadata) return;
 
       metadata.serverDraftId = serverId;
+      metadata.pendingSync = false;
+
+      await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+    } catch {
+      // Best-effort
+    }
+  },
+
+  /**
+   * Detach a local draft from a server draft row that no longer exists.
+   * Keeps the local audio + metadata, but makes the draft local-only so it
+   * won't silently resurrect on the server after a remote delete.
+   */
+  async clearServerDraftId(slotId: string): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+
+    try {
+      const metadata = await readDraftChunks(userId, slotId);
+      if (!metadata || !metadata.serverDraftId) return;
+
+      metadata.serverDraftId = null;
       metadata.pendingSync = false;
 
       await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
@@ -415,12 +542,14 @@ export const draftStorage = {
     if (!userId) return 0;
 
     let cleaned = 0;
+    let found = 0;
     try {
       const drafts = await this.listDrafts();
       for (const draft of drafts) {
         if (draft.segments.length === 0) continue;
         const anyMissing = draft.segments.some((s) => !fileExists(s.uri));
         if (!anyMissing) continue;
+        found++;
 
         if (draft.serverDraftId) {
           try {
@@ -437,7 +566,47 @@ export const draftStorage = {
     } catch {
       // Best-effort
     }
+    if (found > 0 || cleaned > 0) {
+      emitDraftOrphanSweep(found, cleaned);
+    }
     return cleaned;
+  },
+
+  /**
+   * Reconcile local drafts whose linked server draft row has been deleted on
+   * another device. Missing rows are downgraded to local-only drafts so the
+   * audio remains resumable on this device without auto-recreating a server
+   * row behind the user's back.
+   */
+  async reconcileMissingServerDrafts(
+    getServerDraftPresence: (serverDraftId: string) => Promise<ServerDraftPresence>
+  ): Promise<number> {
+    const userId = currentUserId;
+    if (!userId) return 0;
+
+    let reconciled = 0;
+    try {
+      const drafts = await this.listDrafts();
+      for (const draft of drafts) {
+        if (!draft.serverDraftId || draft.pendingSync) continue;
+
+        let presence: ServerDraftPresence = 'unknown';
+        try {
+          presence = await getServerDraftPresence(draft.serverDraftId);
+        } catch {
+          presence = 'unknown';
+        }
+
+        if (presence !== 'missing') continue;
+
+        await this.clearServerDraftId(draft.slotId);
+        reconciled++;
+      }
+    } catch {
+      // Best-effort
+    }
+
+    return reconciled;
   },
 
   /**
@@ -455,14 +624,19 @@ export const draftStorage = {
 
       const drafts = await this.listDrafts();
 
+      let attempt = 0;
       for (const draft of drafts) {
         if (!draft.pendingSync) continue;
+        attempt++;
 
         try {
           const result = await createFn(draft.formData);
           await this.updateServerDraftId(draft.slotId, result.id);
         } catch {
-          // Best-effort — skip drafts that fail to sync
+          // Best-effort — skip drafts that fail to sync, but emit a
+          // telemetry event so we can see spikes in offline-to-server
+          // reconciliation failures.
+          emitDraftSyncRetryFailed(attempt);
           continue;
         }
       }

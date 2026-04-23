@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { View, Text, Pressable, Alert } from 'react-native';
+import { View, Text, Pressable, Alert, AppState } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -11,9 +11,21 @@ import { StatusBar } from 'expo-status-bar';
 import { CONFIG_MISSING } from '../src/config';
 import { queryClient } from '../src/lib/queryClient';
 import { DeviceLimitModal } from '../src/components/DeviceLimitModal';
-import { initMonitoring } from '../src/lib/monitoring';
-import { initAnalytics } from '../src/lib/analytics';
+import { initMonitoring, captureException } from '../src/lib/monitoring';
+import { initAnalytics, trackEvent } from '../src/lib/analytics';
+import { getSessionActivity } from '../src/lib/sessionActivity';
 import '../global.css';
+
+// Cold-start marker — sampled at module-load time and attached to the first
+// `session_start` event so we can measure boot latency.
+const COLD_START_AT = Date.now();
+let _coldStartReported = false;
+
+type AppStateCoarse = 'active' | 'background' | 'inactive' | 'unknown';
+function coarseAppState(state: string): AppStateCoarse {
+  if (state === 'active' || state === 'background' || state === 'inactive') return state;
+  return 'unknown';
+}
 
 // Initialize Sentry + PostHog at module load so early crashes are captured.
 // Both internally try/catch and no-op if keys are unset — safe under rule 1.
@@ -36,6 +48,13 @@ class ErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(error: Error) {
     return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    captureException(error, {
+      tags: { boundary: 'root' },
+      extra: { componentStack: info.componentStack ?? '' },
+    });
   }
 
   render() {
@@ -67,6 +86,50 @@ class ErrorBoundary extends React.Component<
 
 export default function RootLayout() {
   const router = useRouter();
+
+  useEffect(() => {
+    if (_coldStartReported) return;
+    _coldStartReported = true;
+    trackEvent({ name: 'session_start', props: { cold_start_ms: Date.now() - COLD_START_AT } });
+
+    // Permission snapshot — samples once per cold start. Non-prompting; if
+    // the user never granted mic access the app still functions up to the
+    // record screen and then shows the OS prompt. This fires so we can
+    // correlate "nothing recorded" bug reports with permission state.
+    (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const Audio = require('expo-audio') as typeof import('expo-audio');
+        const result = await Audio.getRecordingPermissionsAsync();
+        const mic: 'granted' | 'denied' | 'undetermined' = result?.status === 'granted'
+          ? 'granted'
+          : result?.status === 'denied'
+            ? 'denied'
+            : 'undetermined';
+        // Notifications intentionally undetermined — expo-notifications isn't
+        // a current dep. Wire here if/when we add one.
+        trackEvent({ name: 'permissions_snapshot', props: { mic, notifications: 'undetermined' } });
+      } catch {
+        // swallow — permission probe is best-effort
+      }
+    })().catch(() => {});
+
+    // App state transitions, tagged with what the user was doing. Catches
+    // "recorder was active when the OS backgrounded us" and similar patterns.
+    let prevState: AppStateCoarse = coarseAppState(AppState.currentState ?? 'active');
+    const sub = AppState.addEventListener('change', (next) => {
+      const nextCoarse = coarseAppState(next);
+      if (nextCoarse === prevState) return;
+      trackEvent({
+        name: 'app_state_change',
+        props: { from: prevState, to: nextCoarse, during: getSessionActivity() },
+      });
+      prevState = nextCoarse;
+    });
+    return () => {
+      try { sub.remove(); } catch { /* noop */ }
+    };
+  }, []);
 
   // Password-reset deep-link handler. Supabase's recovery email opens
   // `captivet://reset-password?…` (query params on iOS) or

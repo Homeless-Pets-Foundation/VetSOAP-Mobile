@@ -73,6 +73,11 @@
         "serviceAccountKeyPath": "./play-service-account.json",
         "track": "internal",
         "releaseStatus": "draft"
+      },
+      "ios": {
+        "appleId": "jaxnnux@gmail.com",
+        "ascAppId": "6762626351",
+        "appleTeamId": "Z4YN5NFUQ5"
       }
     }
   }

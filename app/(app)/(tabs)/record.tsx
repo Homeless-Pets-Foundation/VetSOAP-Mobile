@@ -471,33 +471,15 @@ function RecordingSession() {
     backgroundPersistingRef.current = true;
 
     try {
-      const slotOverrides = new Map<string, PatientSlot>();
-      const boundSlotId = sessionRef.current.recorderBoundToSlotId;
-
-      if (boundSlotId && (recorder.state === 'recording' || recorder.state === 'paused')) {
-        try {
-          await recorder.stop();
-          const snapshot = recorder.getPersistableSnapshot();
-          if (snapshot.audioUri) {
-            audioCaptureDoneRef.current = true;
-            const persistedSlot = buildPersistedSlot(boundSlotId, snapshot);
-            saveAudio(boundSlotId, snapshot.audioUri, snapshot.duration, snapshot.maxMetering);
-            if (persistedSlot) {
-              slotOverrides.set(boundSlotId, persistedSlot);
-            }
-            recorder.resetWithoutDelete();
-          } else {
-            unbindRecorder();
-            recorder.reset();
-          }
-        } catch (error) {
-          if (__DEV__) console.error('[Record] background recorder stop failed:', error);
-        }
-      }
-
-      const slotsToPersist = sessionRef.current.slots
-        .map((slot) => slotOverrides.get(slot.id) ?? slot)
-        .filter((slot) => slot.segments.length > 0 && slot.uploadStatus !== 'success');
+      // Intentionally do NOT stop the live recorder here. With iOS
+      // UIBackgroundModes=["audio"] + the Android foreground-service
+      // microphone permission, the OS keeps the recorder alive through
+      // screen lock and app-switch. We only persist drafts for slots
+      // that already have captured segments — the live recording stays
+      // owned by expo-audio until the user taps Finish.
+      const slotsToPersist = sessionRef.current.slots.filter(
+        (slot) => slot.segments.length > 0 && slot.uploadStatus !== 'success'
+      );
 
       await Promise.all(
         slotsToPersist.map((slot) => autoSaveDraftRef.current(slot).catch(() => {}))
@@ -507,7 +489,7 @@ function RecordingSession() {
     } finally {
       backgroundPersistingRef.current = false;
     }
-  }, [recorder, buildPersistedSlot, saveAudio, unbindRecorder]);
+  }, []);
 
   const discardCurrentSession = useCallback(async (opts?: { preserveDraftSlotIds?: string[] }) => {
     // Callers that are about to load a draft (or that want to keep other

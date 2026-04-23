@@ -82,7 +82,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     name: 'Captivet',
     slug: 'vetsoap-mobile',
     scheme: 'captivet',
-    version: '1.10.1',
+    version: '1.11.0',
     orientation: 'default',
     icon: './assets/icon.png',
     userInterfaceStyle: 'light',
@@ -103,6 +103,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         // Pre-declare export compliance: app only uses standard HTTPS/TLS,
         // which is exempt. Skips the per-build ASC prompt for TestFlight.
         ITSAppUsesNonExemptEncryption: false,
+        // Allow the microphone to keep capturing when the screen locks or the
+        // app is backgrounded. Clinicians set the phone down during exam tasks
+        // (bandaging, injections, restraint) and the recording must continue.
+        UIBackgroundModes: ['audio'],
         // Enforce App Transport Security: require HTTPS for all connections
         NSAppTransportSecurity: IS_DEV
           ? undefined // Use Expo defaults in dev (allows localhost)
@@ -123,6 +127,15 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       permissions: [
         'android.permission.USE_BIOMETRIC',
         'android.permission.USE_FINGERPRINT',
+        // Background audio recording: expo-audio's foreground service keeps
+        // the recorder alive when the screen locks. Requires the generic
+        // FOREGROUND_SERVICE plus the microphone-typed permission (Android 14+),
+        // POST_NOTIFICATIONS for the persistent service notification (API 33+),
+        // and WAKE_LOCK so the CPU doesn't sleep mid-capture.
+        'android.permission.FOREGROUND_SERVICE',
+        'android.permission.FOREGROUND_SERVICE_MICROPHONE',
+        'android.permission.POST_NOTIFICATIONS',
+        'android.permission.WAKE_LOCK',
       ],
       blockedPermissions: [
         // Explicitly block permissions we don't need

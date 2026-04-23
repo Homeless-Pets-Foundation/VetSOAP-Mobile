@@ -21,6 +21,32 @@ import { API_URL, SUPABASE_URL, R2_BUCKET_HOSTNAME } from '../config';
 /** Trusted domains extracted from config at startup */
 const TRUSTED_DOMAINS: string[] = [];
 
+/**
+ * Emit a telemetry signal when URL validation blocks a request. Any production
+ * hit here is incident-worthy — could mean compromised presign URL, config
+ * drift, or misconfigured R2 hostname. Kept as a fire-and-forget helper with
+ * lazy requires so module-load on old dev clients stays zero-cost (rule 1).
+ */
+function reportPinViolation(kind: 'request_url' | 'upload_url', reason: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { captureException } = require('./monitoring') as typeof import('./monitoring');
+    captureException(new Error(`ssl_pin_violation: ${kind} — ${reason}`), {
+      tags: { phase: 'ssl_pin_violation', kind },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { reportClientError } = require('../api/telemetry') as typeof import('../api/telemetry');
+    reportClientError({
+      phase: 'ssl_pin_violation',
+      severity: 'error',
+      errorCode: kind,
+      message: reason,
+    });
+  } catch {
+    // swallow — monitoring may not yet be initialized
+  }
+}
+
 function extractHost(url: string): string | null {
   try {
     return new URL(url).hostname;
@@ -55,11 +81,13 @@ export function validateRequestUrl(url: string): void {
   try {
     parsed = new URL(url);
   } catch {
+    reportPinViolation('request_url', 'invalid_url');
     throw new Error('Invalid request URL');
   }
 
   // Enforce HTTPS in production
   if (parsed.protocol !== 'https:') {
+    reportPinViolation('request_url', `non_https:${parsed.protocol}`);
     throw new Error('Insecure connection rejected: HTTPS required');
   }
 
@@ -74,6 +102,7 @@ export function validateRequestUrl(url: string): void {
   );
 
   if (!isTrusted) {
+    reportPinViolation('request_url', `untrusted_host:${parsed.hostname}`);
     throw new Error('Request to untrusted domain rejected');
   }
 }
@@ -90,19 +119,23 @@ export function validateUploadUrl(url: string): void {
   try {
     parsed = new URL(url);
   } catch {
+    reportPinViolation('upload_url', 'invalid_url');
     throw new Error('Invalid upload URL');
   }
 
   if (parsed.protocol !== 'https:') {
+    reportPinViolation('upload_url', `non_https:${parsed.protocol}`);
     throw new Error('Insecure upload URL rejected: HTTPS required');
   }
 
   // Validate hostname against the configured R2 bucket.
   // Fail-closed: if R2_BUCKET_HOSTNAME is not configured, reject all uploads.
   if (!R2_BUCKET_HOSTNAME) {
+    reportPinViolation('upload_url', 'r2_hostname_unconfigured');
     throw new Error('Upload rejected: R2_BUCKET_HOSTNAME is not configured');
   }
   if (parsed.hostname !== R2_BUCKET_HOSTNAME) {
+    reportPinViolation('upload_url', `wrong_host:${parsed.hostname}`);
     throw new Error('Upload URL targets an untrusted storage domain');
   }
 
@@ -113,6 +146,7 @@ export function validateUploadUrl(url: string): void {
     parsed.searchParams.has('Signature');
 
   if (!hasSignature) {
+    reportPinViolation('upload_url', 'missing_signature');
     throw new Error('Upload URL is missing a presigned signature');
   }
 }

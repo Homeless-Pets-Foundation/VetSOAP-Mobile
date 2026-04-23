@@ -19,6 +19,8 @@ import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { fileExists } from '../../../../src/lib/fileOps';
 import { PROCESSING_STEP_LABELS } from '../../../../src/constants/strings';
+import { trackEvent } from '../../../../src/lib/analytics';
+import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 
 const PROCESSING_STEPS = [
   { status: 'uploading', label: PROCESSING_STEP_LABELS.uploading },
@@ -188,6 +190,28 @@ export default function RecordingDetailScreen() {
     refetchRecording().catch(() => {});
     refetchSoapNote().catch(() => {});
   }, [refetchRecording, refetchSoapNote]);
+
+  // time-to-SOAP — fires once per recording the first time a non-null SOAP
+  // renders on this device. Uses timestamps seeded by record.tsx (Finish
+  // tap + submit start) via the `submitTiming` singleton. If the user cold-
+  // started between submit and viewing, both deltas come back null and we
+  // skip the metric.
+  const soapVisibleEmittedRef = useRef(false);
+  useEffect(() => {
+    if (!id || !soapNote || soapVisibleEmittedRef.current) return;
+    soapVisibleEmittedRef.current = true;
+    const timings = getSubmitTimestamps(id);
+    const now = Date.now();
+    trackEvent({
+      name: 'soap_visible',
+      props: {
+        recording_id: id,
+        ms_since_finish: timings?.finishAt ? now - timings.finishAt : null,
+        ms_since_submit: timings?.submitAt ? now - timings.submitAt : null,
+      },
+    });
+    clearSubmitTimestamps(id);
+  }, [id, soapNote]);
 
   const isPollingStale =
     !!pollingStartedAtRef.current &&
@@ -621,7 +645,7 @@ export default function RecordingDetailScreen() {
                 </Button>
               </View>
             ) : soapNote ? (
-              <SoapNoteView soapNote={soapNote} />
+              <SoapNoteView soapNote={soapNote} recordingId={id ?? undefined} />
             ) : (
               <View className="py-5 items-center">
                 <Text className="text-body text-stone-500">

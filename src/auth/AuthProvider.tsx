@@ -26,9 +26,27 @@ import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
 import { clearPeakCache } from '../lib/waveformCache';
 import { setLogoutReason } from '../lib/logoutReason';
-import { setMonitoringUser, clearMonitoringUser } from '../lib/monitoring';
+import { setMonitoringUser, clearMonitoringUser, captureException, breadcrumb } from '../lib/monitoring';
 import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib/analytics';
 import type { User } from '../types';
+
+/**
+ * Collapse Supabase AuthError into a small, PHI-safe enum suitable for an
+ * event `error_code`. Never include the raw message — it can contain an
+ * email address or other user-identifying detail.
+ */
+function classifyAuthError(error: { name?: string; message?: string; status?: number | null }): string {
+  if (error.name === 'AuthRetryableFetchError') return 'retryable_fetch';
+  if (error.status === 0) return 'network';
+  if (error.message?.includes('fetch')) return 'network';
+  if (error.message?.includes('Email not confirmed')) return 'email_not_confirmed';
+  if (error.message?.includes('Invalid login')) return 'invalid_credentials';
+  if (error.status === 400) return 'invalid_credentials';
+  if (error.status === 422) return 'invalid_payload';
+  if (error.status === 429) return 'rate_limited';
+  if (error.status && error.status >= 500) return 'server_error';
+  return 'other';
+}
 
 /**
  * Tracks the bootstrap state of the user profile fetched from /auth/me after
@@ -306,6 +324,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return true;
       } catch (error) {
         if (__DEV__) console.log('[Auth] device registration failed:', error);
+        const errorCode =
+          error instanceof ApiError
+            ? error.code ?? `http_${error.status}`
+            : 'exception';
+        trackEvent({ name: 'device_registration_failed', props: { error_code: errorCode } });
+        if (!(error instanceof ApiError) || errorCode === 'exception') {
+          captureException(error, { tags: { op: 'register_device' } });
+        } else {
+          breadcrumb('auth', 'device_registration_failed', { error_code: errorCode });
+        }
         // Surface DEVICE_LIMIT_REACHED to the modal so the user can revoke
         // an existing device and retry. The hard-limit modal owns the UX
         // for that code, so we suppress the banner via `pending=false`.
@@ -509,14 +537,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const doRefresh = async () => {
         try {
           if (__DEV__) console.log('[Auth] onUnauthorized: attempting token refresh');
+          trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'on_auth_state' } });
           const { error } = await supabase.auth.refreshSession();
           if (error) {
             // Retry once after 3s — guards against transient network blips
             if (__DEV__) console.log('[Auth] onUnauthorized: first refresh failed, retrying in 3s');
+            trackEvent({
+              name: 'session_refresh_failed',
+              props: { trigger: 'on_auth_state', error_code: classifyAuthError(error) },
+            });
+            trackEvent({ name: 'auth_retry_fired', props: { op: 'refresh_session' } });
             await new Promise<void>(resolve => setTimeout(resolve, 3000));
             const { error: retryError } = await supabase.auth.refreshSession();
             if (retryError) {
               if (__DEV__) console.log('[Auth] onUnauthorized: retry also failed, signing out');
+              trackEvent({
+                name: 'session_refresh_failed',
+                props: { trigger: 'on_auth_state', error_code: `retry_${classifyAuthError(retryError)}` },
+              });
               setLogoutReason('session_expired');
               await handleSignOut();
             } else {
@@ -525,8 +563,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           } else {
             if (__DEV__) console.log('[Auth] onUnauthorized: refresh succeeded');
           }
-        } catch {
+        } catch (e) {
           if (__DEV__) console.log('[Auth] onUnauthorized: refresh threw, signing out');
+          trackEvent({
+            name: 'session_refresh_failed',
+            props: { trigger: 'on_auth_state', error_code: 'exception' },
+          });
+          captureException(e, { tags: { phase: 'auth_refresh' } });
           setLogoutReason('session_expired');
           handleSignOut().catch(() => {});
         } finally {
@@ -548,9 +591,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await supabase.auth.getUser(existingSession.access_token);
           if (validateError || !validatedUser) {
             if (__DEV__) console.log('[Auth] session restore: server rejected token, attempting refresh');
+            trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'recovery' } });
             const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
             if (refreshError || !refreshData.session) {
               if (__DEV__) console.log('[Auth] session restore: refresh also failed, clearing');
+              trackEvent({
+                name: 'session_refresh_failed',
+                props: { trigger: 'recovery', error_code: refreshError ? classifyAuthError(refreshError) : 'no_session' },
+              });
               apiClient.setToken(null);
               await secureStorage.clearAll().catch(() => {});
               return;
@@ -626,6 +674,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (!userInitiatedSignOutRef.current && !sessionRecoveryAttemptedRef.current) {
               sessionRecoveryAttemptedRef.current = true;
               if (__DEV__) console.log('[Auth] SIGNED_OUT without user action, attempting recovery refresh');
+              trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'recovery' } });
               const { data: recoveryData, error: recoveryError } = await supabase.auth.refreshSession();
               if (!recoveryError && recoveryData.session?.access_token) {
                 if (__DEV__) console.log('[Auth] recovery refresh succeeded, session restored');
@@ -639,6 +688,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 return;
               }
               if (__DEV__) console.log('[Auth] recovery refresh failed, proceeding with sign-out cleanup');
+              trackEvent({
+                name: 'session_refresh_failed',
+                props: { trigger: 'recovery', error_code: recoveryError ? classifyAuthError(recoveryError) : 'no_session' },
+              });
             }
             userInitiatedSignOutRef.current = false;
             // Hold isLoading=true during PHI cleanup so the route guard doesn't
@@ -706,9 +759,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const bufferSeconds = 600;
           if (!data.session.expires_at || now > data.session.expires_at - bufferSeconds) {
             if (__DEV__) console.log('[Auth] foreground resume: token expired or near-expiry, refreshing');
+            trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'foreground' } });
             const { error } = await supabase.auth.refreshSession();
             if (error) {
               if (__DEV__) console.log('[Auth] foreground refresh failed:', error.message);
+              trackEvent({
+                name: 'session_refresh_failed',
+                props: { trigger: 'foreground', error_code: classifyAuthError(error) },
+              });
             } else {
               if (__DEV__) console.log('[Auth] foreground refresh succeeded');
             }
@@ -717,6 +775,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (e) {
           if (__DEV__) console.error('[Auth] foreground refresh threw:', e);
+          trackEvent({
+            name: 'session_refresh_failed',
+            props: { trigger: 'foreground', error_code: 'exception' },
+          });
+          captureException(e, { tags: { phase: 'auth_refresh' } });
         } finally {
           refreshPromiseRef.current = null;
         }
@@ -731,8 +794,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     if (__DEV__) console.log('[Auth] signIn: attempting for', email);
+    trackEvent({ name: 'sign_in_attempted', props: { auth_method: 'password' } });
 
     let { error } = await supabase.auth.signInWithPassword({ email, password });
+    let retryUsed = false;
 
     // Supabase GoTrue's internal auto-refresh timer can leave behind a stale
     // AbortController after a previous signOut; the next fetch rejects
@@ -743,6 +808,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Reproducible in the iOS simulator after sign-out → sign-in loops.
     if (error && (error as { name?: string }).name === 'AuthRetryableFetchError') {
       if (__DEV__) console.log('[Auth] signIn: AuthRetryableFetchError, retrying once');
+      trackEvent({ name: 'auth_retry_fired', props: { op: 'sign_in' } });
+      retryUsed = true;
       await new Promise((resolve) => setTimeout(resolve, 500));
       const retry = await supabase.auth.signInWithPassword({ email, password });
       error = retry.error;
@@ -750,6 +817,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     if (error) {
       if (__DEV__) console.error('[Auth] signIn failed:', error.message, error.status);
+      const errorCode = classifyAuthError(error);
+      trackEvent({
+        name: 'sign_in_failed',
+        props: { auth_method: 'password', error_code: errorCode, retry_used: retryUsed },
+      });
 
       if (error.message?.includes('Email not confirmed')) {
         return { error: 'Please confirm your email address before signing in.' };
@@ -769,24 +841,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithGoogle = useCallback(async () => {
     if (__DEV__) console.log('[Auth] signInWithGoogle: attempting');
+    trackEvent({ name: 'sign_in_attempted', props: { auth_method: 'google' } });
     const result = await signInWithGoogleNative();
     if (!result.error && !result.cancelled) {
       if (__DEV__) console.log('[Auth] signInWithGoogle: success');
       registerDevice().catch(() => {});
-    } else if (__DEV__) {
-      console.log('[Auth] signInWithGoogle: failed or cancelled', result.error);
+    } else if (result.error) {
+      if (__DEV__) console.log('[Auth] signInWithGoogle: failed', result.error);
+      trackEvent({
+        name: 'sign_in_failed',
+        props: { auth_method: 'google', error_code: String(result.error).slice(0, 32), retry_used: false },
+      });
     }
     return result;
   }, [registerDevice]);
 
   const signInWithApple = useCallback(async () => {
     if (__DEV__) console.log('[Auth] signInWithApple: attempting');
+    trackEvent({ name: 'sign_in_attempted', props: { auth_method: 'apple' } });
     const result = await signInWithAppleNative();
     if (!result.error && !result.cancelled) {
       if (__DEV__) console.log('[Auth] signInWithApple: success');
       registerDevice().catch(() => {});
-    } else if (__DEV__) {
-      console.log('[Auth] signInWithApple: failed or cancelled', result.error);
+    } else if (result.error) {
+      if (__DEV__) console.log('[Auth] signInWithApple: failed', result.error);
+      trackEvent({
+        name: 'sign_in_failed',
+        props: { auth_method: 'apple', error_code: String(result.error).slice(0, 32), retry_used: false },
+      });
     }
     return result;
   }, [registerDevice]);

@@ -6,7 +6,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
-import { ChevronRight } from 'lucide-react-native';
+import { ChevronRight, CloudOff, Smartphone } from 'lucide-react-native';
 import { StatusBadge } from './StatusBadge';
 import type { Recording } from '../types';
 
@@ -15,6 +15,27 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 interface RecordingCardProps {
   recording: Recording;
   localDraftSlotId?: string;
+}
+
+function DraftLocationChip({ isOnDevice }: { isOnDevice: boolean }) {
+  const Icon = isOnDevice ? Smartphone : CloudOff;
+  const containerClass = isOnDevice ? 'bg-brand-100' : 'bg-warning-100';
+  const textClass = isOnDevice ? 'text-brand-700' : 'text-warning-700';
+  const iconColor = isOnDevice ? '#0f766e' : '#b45309';
+  const label = isOnDevice ? 'On this device' : 'Not on this device';
+
+  return (
+    <View
+      className={`px-2 py-0.5 rounded-badge flex-row items-center self-end ${containerClass}`}
+      accessibilityRole="text"
+      accessibilityLabel={isOnDevice ? 'Draft audio is saved on this device' : 'Draft audio is not saved on this device'}
+    >
+      <Icon color={iconColor} size={12} style={{ marginRight: 4 }} />
+      <Text className={`text-caption font-semibold ${textClass}`}>
+        {label}
+      </Text>
+    </View>
+  );
 }
 
 export const RecordingCard = React.memo(function RecordingCard({ recording, localDraftSlotId }: RecordingCardProps) {
@@ -43,6 +64,13 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
     .join(' \u00B7 ');
 
   const clientLabel = recording.clientName?.trim();
+  const isDraft = recording.status === 'draft';
+  const hasLocalDraftAudio = Boolean(localDraftSlotId);
+  const accessibilityStatusSuffix = isDraft
+    ? hasLocalDraftAudio
+      ? ', audio on this device'
+      : ', audio not on this device'
+    : '';
 
   return (
     <AnimatedPressable
@@ -60,7 +88,7 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
         scale.value = withSpring(1, { damping: 15, stiffness: 300 });
       }}
       accessibilityRole="button"
-      accessibilityLabel={`Recording from ${formattedDate || 'unknown date'}, status ${recording.status}`}
+      accessibilityLabel={`Recording from ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
       className="card mb-2"
       style={animatedStyle}
     >
@@ -111,7 +139,10 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
           </Text>
         </View>
         <View className="flex-row items-center gap-2">
-          <StatusBadge status={recording.status} />
+          <View className="items-end gap-1">
+            <StatusBadge status={recording.status} />
+            {isDraft ? <DraftLocationChip isOnDevice={hasLocalDraftAudio} /> : null}
+          </View>
           <ChevronRight color="#a8a29e" size={18} />
         </View>
       </View>

@@ -8,12 +8,32 @@ const KEYS = {
   DEVICE_ID: 'captivet_device_id',
 } as const;
 
+/**
+ * Report a SecureStore failure without creating an import cycle. Loaded
+ * lazily so module-load in monitoring.ts staying zero-cost (rule 1). Rate
+ * limiting happens inside `captureMessage` so a recurring Keystore fault
+ * doesn't flood Sentry. Falls back to a no-op if monitoring isn't wired.
+ */
+function reportSecureStoreFailure(op: string, error: unknown): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { captureMessage } = require('./monitoring') as typeof import('./monitoring');
+    captureMessage('secure_store_failed', 'warning', {
+      tags: { op },
+      extra: { error: String(error).slice(0, 200) },
+    });
+  } catch {
+    // monitoring not ready / not compiled in dev client — swallow
+  }
+}
+
 export const secureStorage = {
   async getToken(): Promise<string | null> {
     try {
       return await SecureStore.getItemAsync(KEYS.ACCESS_TOKEN);
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] getToken failed:', error);
+      reportSecureStoreFailure('getToken', error);
       return null;
     }
   },
@@ -25,6 +45,7 @@ export const secureStorage = {
       });
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] setToken failed:', error);
+      reportSecureStoreFailure('setToken', error);
     }
   },
 
@@ -33,6 +54,7 @@ export const secureStorage = {
       await SecureStore.deleteItemAsync(KEYS.ACCESS_TOKEN);
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] deleteToken failed:', error);
+      reportSecureStoreFailure('deleteToken', error);
     }
   },
 
@@ -41,6 +63,7 @@ export const secureStorage = {
       return await SecureStore.getItemAsync(KEYS.SESSION);
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] getSession failed:', error);
+      reportSecureStoreFailure('getSession', error);
       return null;
     }
   },
@@ -52,6 +75,7 @@ export const secureStorage = {
       });
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] setSession failed:', error);
+      reportSecureStoreFailure('setSession', error);
     }
   },
 
@@ -83,12 +107,15 @@ export const secureStorage = {
           // kSecAttrAccessibleAfterFirstUnlock; retry without it. The in-memory
           // id is still returned even if persistence ultimately fails, so the
           // current request proceeds (next launch will regenerate).
-          try { await SecureStore.setItemAsync(KEYS.DEVICE_ID, id); } catch { /* ignore */ }
+          try { await SecureStore.setItemAsync(KEYS.DEVICE_ID, id); } catch (retryError) {
+          reportSecureStoreFailure('setDeviceIdRetryFallback', retryError);
+        }
         }
       }
       return id;
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] getDeviceId failed:', error);
+      reportSecureStoreFailure('getDeviceId', error);
       return null;
     }
   },

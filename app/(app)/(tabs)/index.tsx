@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import Animated, {
   FadeInDown,
@@ -16,7 +16,9 @@ import { useAuth } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useDeviceCapacity } from '../../../src/hooks/useDeviceCapacity';
 import { recordingsApi } from '../../../src/api/recordings';
+import { ApiError } from '../../../src/api/client';
 import { draftStorage } from '../../../src/lib/draftStorage';
+import { buildDraftResumeMap, mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { RecordingCard } from '../../../src/components/RecordingCard';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { SkeletonCard } from '../../../src/components/ui/Skeleton';
@@ -52,20 +54,42 @@ export default function HomeScreen() {
 
   const recordings = data?.data ?? [];
 
-  const [draftMap, setDraftMap] = useState<Record<string, string>>({});
-  const refreshDraftMap = useCallback(() => {
-    draftStorage.listDrafts().then((drafts) => {
-      const map: Record<string, string> = {};
-      for (const d of drafts) {
-        if (d.serverDraftId) map[d.serverDraftId] = d.slotId;
-      }
-      setDraftMap(map);
-    }).catch(() => {});
-  }, [user?.id]);
-  // Refresh on every screen focus — required so drafts created elsewhere
-  // (e.g. after tapping Finish on the Record tab) show up when the user
-  // returns to Home without a full app remount.
-  useFocusEffect(refreshDraftMap);
+  const { data: draftData, refetch: refetchDrafts } = useQuery({
+    queryKey: ['recordings', 'drafts', 'recent'],
+    queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc', status: 'draft' }),
+    enabled: !!user,
+  });
+
+  const [localDrafts, setLocalDrafts] = useState<Awaited<ReturnType<typeof draftStorage.listDrafts>>>([]);
+  const refreshLocalDrafts = useCallback(() => {
+    draftStorage
+      .reconcileMissingServerDrafts(async (serverDraftId) => {
+        try {
+          const recording = await recordingsApi.get(serverDraftId);
+          return recording.status === 'draft' ? 'present' : 'unknown';
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 404) {
+            return 'missing';
+          }
+          return 'unknown';
+        }
+      })
+      .then(() => draftStorage.listDrafts())
+      .then(setLocalDrafts)
+      .catch(() => {
+        setLocalDrafts([]);
+      });
+  }, []);
+
+  const draftResumeMap = useMemo(
+    () => buildDraftResumeMap(localDrafts),
+    [localDrafts]
+  );
+  const drafts = useMemo(() => {
+    if (!user) return [];
+    return mergeDraftRecordings(localDrafts, draftData?.data ?? [], user.id, user.organizationId);
+  }, [draftData?.data, localDrafts, user]);
+
   const totalRecordings = data?.pagination?.total ?? 0;
   const processingCount = recordings.filter(
     (r) => !['completed', 'failed'].includes(r.status)
@@ -75,8 +99,19 @@ export default function HomeScreen() {
     transform: [{ scale: ctaScale.value }],
   }));
 
+  const handleRefresh = useCallback(() => {
+    refetch().catch(() => {});
+    refetchDrafts().catch(() => {});
+    refreshLocalDrafts();
+  }, [refetch, refetchDrafts, refreshLocalDrafts]);
+
+  // Refresh on every screen focus — required so drafts created elsewhere
+  // (e.g. after tapping Finish on the Record tab) or deleted elsewhere
+  // disappear when the user returns to Home without a full app remount.
+  useFocusEffect(handleRefresh);
+
   return (
-    <ScreenContainer refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); refreshDraftMap(); }}>
+    <ScreenContainer refreshing={isRefetching} onRefresh={handleRefresh}>
       {/* Header */}
       <Animated.View entering={FadeInDown.duration(400)} className="mb-6 flex-row items-start justify-between">
         <View className="flex-1">
@@ -176,6 +211,17 @@ export default function HomeScreen() {
       </Animated.View>
 
       {/* Recent Recordings */}
+      {drafts.length > 0 ? (
+        <View className="mb-6">
+          <View className="flex-row justify-between items-center mb-3">
+            <Text className="section-title">Not Submitted</Text>
+          </View>
+          {drafts.map((recording) => (
+            <RecordingCard key={recording.id} recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+          ))}
+        </View>
+      ) : null}
+
       <View className="mb-8">
         <View className="flex-row justify-between items-center mb-3">
           <Text className="section-title">Recent Recordings</Text>
@@ -222,7 +268,7 @@ export default function HomeScreen() {
           </Card>
         ) : (
           recordings.map((recording) => (
-            <RecordingCard key={recording.id} recording={recording} localDraftSlotId={draftMap[recording.id]} />
+            <RecordingCard key={recording.id} recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
           ))
         )}
       </View>

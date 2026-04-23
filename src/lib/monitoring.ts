@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/react-native';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { SENTRY_DSN } from '../config';
+import { shouldEmit } from './rateLimitMonitoring';
 
 /**
  * Sentry wrapper. All API here must be safe to call when Sentry is disabled
@@ -70,9 +71,21 @@ export function initMonitoring(): void {
       release: `${Application.applicationId ?? 'com.captivet.mobile'}@${Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown'}+${Application.nativeBuildVersion ?? '0'}`,
       environment: __DEV__ ? 'development' : 'production',
       enabled: !__DEV__ || process.env.EXPO_PUBLIC_SENTRY_ENABLE_IN_DEV === 'true',
-      // Sample a slice of transactions for performance monitoring. Errors are
-      // always captured regardless of this rate.
-      tracesSampleRate: 0.2,
+      // Sample more aggressively for upload-path transactions — that's the
+      // code we actually care about tracing. Everything else stays at 10%.
+      // Errors are always captured regardless.
+      tracesSampler: (samplingContext) => {
+        const op = samplingContext?.transactionContext?.op ?? '';
+        const name = samplingContext?.transactionContext?.name ?? '';
+        if (op === 'http.client' && (name.includes('/api/recordings') || name.includes('/api/telemetry'))) {
+          return 1.0;
+        }
+        return 0.1;
+      },
+      // iOS app-hang tracking: watchdog-style detection when the main thread
+      // stops responding. Android ANR detection is enabled through the native
+      // SDK's default integrations but called out here for clarity.
+      enableAppHangTracking: true,
       // Default PII off — we set user ID manually via setUser().
       sendDefaultPii: false,
       // Drop noisy breadcrumbs we don't need and scrub the rest.
@@ -177,16 +190,40 @@ export function breadcrumb(
   }
 }
 
-/** Capture a caught exception. */
+/**
+ * Build a coarse rate-limiter sub-key from exception context. Prefers the
+ * `phase` or `op` tag the caller passed (that's the semantic dedup key), then
+ * the error's `name` or constructor, then a constant. Never keys on anything
+ * high-cardinality like recording_id.
+ */
+function subKeyForException(error: unknown, tags?: Record<string, string>): string {
+  const phase = tags?.phase;
+  const op = tags?.op;
+  const component = tags?.component;
+  let errorName = 'Error';
+  if (error && typeof error === 'object') {
+    const maybeName = (error as { name?: unknown }).name;
+    if (typeof maybeName === 'string' && maybeName.length > 0) errorName = maybeName;
+  }
+  return [phase ?? op ?? component ?? 'generic', errorName].join(':');
+}
+
+/** Capture a caught exception. Rate-limited per `${tag.phase | op | component}:${error.name}`. */
 export function captureException(
   error: unknown,
   context?: { tags?: Record<string, string>; extra?: Record<string, unknown> },
 ): void {
   if (!_initialized) return;
+  const gate = shouldEmit('capture_exception', subKeyForException(error, context?.tags));
+  if (!gate.emit) return;
   try {
+    const extra = { ...(context?.extra ?? {}) };
+    if (gate.suppressedPriorWindow > 0) {
+      (extra as Record<string, unknown>).suppressed_prior_window = gate.suppressedPriorWindow;
+    }
     Sentry.captureException(error, {
       tags: context?.tags,
-      extra: context?.extra,
+      extra,
     });
   } catch {
     // swallow
@@ -200,6 +237,23 @@ export function captureMessage(
   context?: { tags?: Record<string, string>; extra?: Record<string, unknown> },
 ): void {
   if (!_initialized) return;
+  // Only the 'warning' bucket is rate-limited — info is rare and intentional,
+  // and error is rare enough that the caller should usually have used
+  // `captureException` instead. This matches the plan's channel caps.
+  if (level === 'warning') {
+    const gate = shouldEmit('capture_message_warning', message);
+    if (!gate.emit) return;
+    try {
+      const extra = { ...(context?.extra ?? {}) };
+      if (gate.suppressedPriorWindow > 0) {
+        (extra as Record<string, unknown>).suppressed_prior_window = gate.suppressedPriorWindow;
+      }
+      Sentry.captureMessage(message, { level, tags: context?.tags, extra });
+    } catch {
+      // swallow
+    }
+    return;
+  }
   try {
     Sentry.captureMessage(message, {
       level,

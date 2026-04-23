@@ -1,13 +1,20 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
 import { Search } from 'lucide-react-native';
 import { recordingsApi } from '../../../../src/api/recordings';
+import { ApiError } from '../../../../src/api/client';
 import { draftStorage } from '../../../../src/lib/draftStorage';
+import {
+  buildDraftResumeMap,
+  mergeDraftRecordings,
+  sortRecordingsByCreatedAt,
+} from '../../../../src/lib/draftRecordings';
 import { useAuth } from '../../../../src/hooks/useAuth';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
@@ -17,6 +24,14 @@ import { Button } from '../../../../src/components/ui/Button';
 
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
+const STATUS_FILTER_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'draft', label: 'Not Submitted' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'completed', label: 'Completed' },
+] as const;
+
+type StatusFilterValue = typeof STATUS_FILTER_OPTIONS[number]['value'];
 
 export default function RecordingsListScreen() {
   const router = useRouter();
@@ -25,8 +40,19 @@ export default function RecordingsListScreen() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
+  const [isStatusFilterOpen, setIsStatusFilterOpen] = useState(false);
   const isInitialMountRef = useRef(true);
   const isTabFocused = useIsFocused();
+  const shouldLoadRecordings = !!user && selectedStatusFilter !== 'draft';
+  const shouldLoadDrafts = !!user && (selectedStatusFilter === 'all' || selectedStatusFilter === 'draft');
+  const serverStatusFilter = selectedStatusFilter === 'failed' || selectedStatusFilter === 'completed'
+    ? selectedStatusFilter
+    : undefined;
+  const activeStatusFilterLabel = STATUS_FILTER_OPTIONS.find(
+    (option) => option.value === selectedStatusFilter
+  )?.label ?? 'All';
+  const filterButtonLabel = selectedStatusFilter === 'all' ? 'Status' : activeStatusFilterLabel;
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -46,7 +72,7 @@ export default function RecordingsListScreen() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ['recordings', 'list', debouncedSearch],
+    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', 'desc'],
     queryFn: ({ pageParam = 1 }) =>
       recordingsApi.list({
         search: debouncedSearch || undefined,
@@ -54,8 +80,10 @@ export default function RecordingsListScreen() {
         limit: PAGE_SIZE,
         sortBy: 'createdAt',
         sortOrder: 'desc',
+        ...(serverStatusFilter ? { status: serverStatusFilter } : {}),
       }),
     initialPageParam: 1,
+    enabled: shouldLoadRecordings,
     getNextPageParam: (lastPage) => {
       if (!lastPage.pagination) return undefined;
       const { page, totalPages } = lastPage.pagination;
@@ -64,7 +92,7 @@ export default function RecordingsListScreen() {
     refetchInterval: (query) => {
       // Pause polling when the tab is not focused — other mounted tabs
       // (home, detail) would otherwise compound into the same rate-limit budget.
-      if (!isTabFocused) return false;
+      if (!isTabFocused || serverStatusFilter) return false;
       const allRecordings = query.state.data?.pages.flatMap((p) => p.data);
       const hasProcessing = allRecordings?.some(
         (r) => !['completed', 'failed', 'pending_metadata'].includes(r.status)
@@ -74,39 +102,137 @@ export default function RecordingsListScreen() {
   });
 
   const recordings = useMemo(
-    () => data?.pages.flatMap((page) => page.data) ?? [],
+    () => sortRecordingsByCreatedAt(data?.pages.flatMap((page) => page.data) ?? [], 'desc'),
     [data]
   );
 
-  const [draftMap, setDraftMap] = useState<Record<string, string>>({});
-  const refreshDraftMap = useCallback(() => {
-    draftStorage.listDrafts().then((drafts) => {
-      const map: Record<string, string> = {};
-      for (const d of drafts) {
-        if (d.serverDraftId) map[d.serverDraftId] = d.slotId;
-      }
-      setDraftMap(map);
-    }).catch(() => {});
-  }, [user?.id]);
-  // Refresh on every screen focus — required so drafts created elsewhere
-  // (e.g. after tapping Finish on the Record tab) show up when the user
-  // returns to this list without a full app remount.
-  useFocusEffect(refreshDraftMap);
+  const {
+    data: draftData,
+    error: draftError,
+    isLoading: isDraftLoading,
+    isError: isDraftError,
+    refetch: refetchDrafts,
+    isRefetching: isDraftRefetching,
+  } = useQuery({
+    queryKey: ['recordings', 'drafts', 'list', debouncedSearch, 'desc'],
+    queryFn: () =>
+      recordingsApi.list({
+        search: debouncedSearch || undefined,
+        status: 'draft',
+        page: 1,
+        limit: PAGE_SIZE,
+        sortBy: 'createdAt',
+        sortOrder: 'desc',
+      }),
+    enabled: shouldLoadDrafts,
+  });
 
+  const [localDrafts, setLocalDrafts] = useState<Awaited<ReturnType<typeof draftStorage.listDrafts>>>([]);
+  const refreshLocalDrafts = useCallback(() => {
+    draftStorage
+      .reconcileMissingServerDrafts(async (serverDraftId) => {
+        try {
+          const recording = await recordingsApi.get(serverDraftId);
+          return recording.status === 'draft' ? 'present' : 'unknown';
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 404) {
+            return 'missing';
+          }
+          return 'unknown';
+        }
+      })
+      .then(() => draftStorage.listDrafts())
+      .then(setLocalDrafts)
+      .catch(() => {
+        setLocalDrafts([]);
+      });
+  }, []);
+
+  const draftResumeMap = useMemo(
+    () => buildDraftResumeMap(localDrafts),
+    [localDrafts]
+  );
+  const filteredLocalDrafts = useMemo(() => {
+    const query = debouncedSearch.trim().toLowerCase();
+    if (!query) return localDrafts;
+    return localDrafts.filter((draft) =>
+      [draft.formData.patientName, draft.formData.clientName]
+        .some((value) => value?.toLowerCase().includes(query))
+    );
+  }, [localDrafts, debouncedSearch]);
+  const mergedDrafts = useMemo(() => {
+    if (!user) return [];
+    return mergeDraftRecordings(
+      filteredLocalDrafts,
+      draftData?.data ?? [],
+      user.id,
+      user.organizationId,
+      'desc'
+    );
+  }, [draftData?.data, filteredLocalDrafts, user]);
+  const displayRecordings = useMemo(() => {
+    if (selectedStatusFilter === 'draft') return mergedDrafts;
+    if (selectedStatusFilter === 'all') {
+      const combined = new Map<string, (typeof recordings)[number]>();
+
+      for (const recording of mergedDrafts) {
+        combined.set(recording.id, recording);
+      }
+      for (const recording of recordings) {
+        combined.set(recording.id, recording);
+      }
+
+      return sortRecordingsByCreatedAt(Array.from(combined.values()), 'desc');
+    }
+    return recordings;
+  }, [mergedDrafts, recordings, selectedStatusFilter]);
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
+  const handleRefresh = useCallback(() => {
+    if (shouldLoadRecordings) {
+      refetch().catch(() => {});
+    }
+    if (shouldLoadDrafts) {
+      refetchDrafts().catch(() => {});
+    }
+    refreshLocalDrafts();
+  }, [refetch, refetchDrafts, refreshLocalDrafts, shouldLoadDrafts, shouldLoadRecordings]);
+
+  // Refresh on every screen focus — required so drafts created or deleted on
+  // another device reconcile before this list renders from cached data.
+  useFocusEffect(handleRefresh);
 
   const onEndReached = useCallback(() => {
-    if (hasNextPage && !isFetchingNextPage) {
+    if (shouldLoadRecordings && hasNextPage && !isFetchingNextPage) {
       fetchNextPage().catch(() => {});
     }
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage, shouldLoadRecordings]);
 
   // Disable entry animations after initial data load
   useEffect(() => {
-    if (data && isInitialMountRef.current) {
+    if ((data || draftData) && isInitialMountRef.current) {
       isInitialMountRef.current = false;
     }
-  }, [data]);
+  }, [data, draftData]);
+
+  const isListLoading = selectedStatusFilter === 'draft'
+    ? isDraftLoading
+    : selectedStatusFilter === 'all'
+      ? isLoading || isDraftLoading
+      : isLoading;
+  const isListError = selectedStatusFilter === 'draft' ? isDraftError : isError;
+  const listError = selectedStatusFilter === 'draft' ? draftError : error;
+  const isListRefetching = selectedStatusFilter === 'draft'
+    ? isDraftRefetching
+    : selectedStatusFilter === 'all'
+      ? isRefetching || isDraftRefetching
+      : isRefetching;
+  const emptyMessage = debouncedSearch
+    ? selectedStatusFilter === 'all'
+      ? 'No recordings match your search.'
+      : 'No recordings match your search and filter.'
+    : selectedStatusFilter === 'all'
+      ? 'No recordings yet.'
+      : 'No recordings match this filter.';
 
   return (
     <SafeAreaView className="screen items-center">
@@ -119,41 +245,109 @@ export default function RecordingsListScreen() {
           Recordings
         </Text>
 
-        {/* Search */}
-        <View
-          className={`flex-row items-center bg-white border rounded-input px-3 mb-4 ${
-            isFocused ? 'border-brand-500' : 'border-stone-300'
-          }`}
-        >
-          <Search color="#78716c" size={iconSm} />
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
-            placeholder="Search by patient name..."
-            placeholderTextColor="#78716c"
-            accessibilityLabel="Search recordings by patient name"
-            className="flex-1 p-3 text-body text-stone-900"
-          />
+        <View className="flex-row items-center gap-2 mb-4">
+          {/* Search */}
+          <View
+            className={`flex-1 flex-row items-center bg-white border rounded-input px-3 ${
+              isFocused ? 'border-brand-500' : 'border-stone-300'
+            }`}
+          >
+            <Search color="#78716c" size={iconSm} />
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              onFocus={() => setIsFocused(true)}
+              onBlur={() => setIsFocused(false)}
+              placeholder="Search by patient name..."
+              placeholderTextColor="#78716c"
+              accessibilityLabel="Search recordings by patient name"
+              className="flex-1 p-3 text-body text-stone-900"
+            />
+          </View>
+
+          <Pressable
+            onPress={() => {
+              Haptics.selectionAsync().catch(() => {});
+              setIsStatusFilterOpen((current) => !current);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={`Toggle status filters. Current filter ${activeStatusFilterLabel}`}
+            accessibilityState={{ expanded: isStatusFilterOpen }}
+            hitSlop={8}
+            className={`min-h-[48px] px-3.5 rounded-input border items-center justify-center ${
+              isStatusFilterOpen || selectedStatusFilter !== 'all'
+                ? 'border-brand-500 bg-brand-50'
+                : 'border-stone-300 bg-white'
+            }`}
+          >
+            <Text
+              className={`text-body-sm font-medium ${
+                isStatusFilterOpen || selectedStatusFilter !== 'all'
+                  ? 'text-brand-600'
+                  : 'text-stone-700'
+              }`}
+            >
+              {filterButtonLabel}
+            </Text>
+          </Pressable>
         </View>
+
+        {isStatusFilterOpen ? (
+          <View
+            className="flex-row flex-wrap gap-2 mb-4"
+            accessibilityRole="radiogroup"
+            accessibilityLabel="Filter recordings by status"
+          >
+            {STATUS_FILTER_OPTIONS.map((option) => {
+              const isSelected = option.value === selectedStatusFilter;
+
+              return (
+                <Pressable
+                  key={option.value}
+                  onPress={() => {
+                    Haptics.selectionAsync().catch(() => {});
+                    setSelectedStatusFilter(option.value);
+                    setIsStatusFilterOpen(false);
+                  }}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isSelected }}
+                  accessibilityLabel={option.label}
+                  hitSlop={8}
+                  className={`px-3.5 min-h-[44px] justify-center rounded-pill border ${
+                    isSelected
+                      ? 'border-brand-500 bg-brand-500'
+                      : 'border-stone-300 bg-white'
+                  }`}
+                >
+                  <Text
+                    className={`text-body-sm font-medium ${
+                      isSelected ? 'text-white' : 'text-stone-700'
+                    }`}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
       </View>
 
       <FlatList
-        data={recordings}
+        data={displayRecordings}
         keyExtractor={keyExtractor}
         renderItem={({ item, index }) => {
           if (isInitialMountRef.current && index < 3) {
             return (
               <Animated.View entering={FadeInRight.delay(index * 50).duration(250)}>
-                <RecordingCard recording={item} localDraftSlotId={draftMap[item.id]} />
+                <RecordingCard recording={item} localDraftSlotId={draftResumeMap[item.id]} />
               </Animated.View>
             );
           }
-          return <RecordingCard recording={item} localDraftSlotId={draftMap[item.id]} />;
+          return <RecordingCard recording={item} localDraftSlotId={draftResumeMap[item.id]} />;
         }}
         contentContainerStyle={FLATLIST_CONTENT_STYLE}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); refreshDraftMap(); }} />}
+        refreshControl={<RefreshControl refreshing={isListRefetching} onRefresh={handleRefresh} />}
         onEndReached={onEndReached}
         onEndReachedThreshold={0.8}
         removeClippedSubviews={true}
@@ -161,14 +355,14 @@ export default function RecordingsListScreen() {
         windowSize={7}
         initialNumToRender={8}
         ListFooterComponent={
-          isFetchingNextPage ? (
+          shouldLoadRecordings && isFetchingNextPage ? (
             <View className="py-4 items-center">
               <ActivityIndicator size="small" color="#0d8775" />
             </View>
           ) : null
         }
         ListEmptyComponent={
-          isLoading ? (
+          isListLoading ? (
             <View>
               <SkeletonCard />
               <SkeletonCard />
@@ -176,22 +370,22 @@ export default function RecordingsListScreen() {
               <SkeletonCard />
               <SkeletonCard />
             </View>
-          ) : isError ? (
+          ) : isListError ? (
             <View className="py-10 items-center">
               <Search color="#dc2626" size={iconLg} />
               <Text className="text-body text-stone-600 mt-3 text-center">
                 Could not load recordings.
               </Text>
-              {error ? (
+              {listError ? (
                 <Text className="text-caption text-stone-500 mt-2 text-center px-4" selectable>
-                  [{error.name ?? 'Error'}{(error as { status?: number })?.status ? ` ${(error as { status?: number }).status}` : ''}] {error.message}
+                  [{listError.name ?? 'Error'}{(listError as { status?: number })?.status ? ` ${(listError as { status?: number }).status}` : ''}] {listError.message}
                 </Text>
               ) : null}
               <View className="mt-4">
                 <Button
                   variant="secondary"
                   size="sm"
-                  onPress={() => { refetch().catch(() => {}); }}
+                  onPress={handleRefresh}
                 >
                   Retry
                 </Button>
@@ -201,9 +395,9 @@ export default function RecordingsListScreen() {
             <View className="py-10 items-center">
               <Search color="#78716c" size={iconLg} />
               <Text className="text-body text-stone-500 mt-3 text-center">
-                {search ? 'No recordings match your search.' : 'No recordings yet.'}
+                {emptyMessage}
               </Text>
-              {!search && (
+              {!debouncedSearch && selectedStatusFilter === 'all' && (
                 <View className="mt-4">
                   <Button
                     variant="primary"

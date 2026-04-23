@@ -1,8 +1,63 @@
 import { API_URL } from '../config';
 import { secureStorage } from '../lib/secureStorage';
 import { validateRequestUrl } from '../lib/sslPinning';
+import { getIdempotencyUuid } from '../lib/random';
 
 const REQUEST_TIMEOUT_MS = 30000;
+
+/**
+ * Classify an API path into a coarse bucket for telemetry cardinality. Full
+ * paths leak PHI-adjacent identifiers (recording_id, user_id) and explode
+ * PostHog property cardinality; the bucket keeps dashboards cheap. The raw
+ * path still goes into the Sentry breadcrumb for one-off debugging.
+ */
+function endpointKindOf(path: string): 'recordings' | 'auth' | 'telemetry' | 'devices' | 'soap' | 'other' {
+  if (path.startsWith('/api/recordings')) return 'recordings';
+  if (path.startsWith('/api/soap-notes') || path.includes('soap-note')) return 'soap';
+  if (path.startsWith('/api/telemetry')) return 'telemetry';
+  if (path.startsWith('/api/device-sessions') || path.startsWith('/auth')) {
+    return path.startsWith('/auth') ? 'auth' : 'devices';
+  }
+  return 'other';
+}
+
+function emitApiRequestFailed(
+  endpointKind: ReturnType<typeof endpointKindOf>,
+  status: number,
+  latencyMs: number,
+  retried: boolean,
+): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trackEvent } = require('../lib/analytics') as typeof import('../lib/analytics');
+    trackEvent({
+      name: 'api_request_failed',
+      props: { endpoint_kind: endpointKind, status, latency_ms: latencyMs, retried },
+    });
+  } catch {
+    // swallow
+  }
+}
+
+function emitApiBreadcrumb(
+  method: string,
+  path: string,
+  status: number,
+  latencyMs: number,
+  requestId: string,
+): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { breadcrumb } = require('../lib/monitoring') as typeof import('../lib/monitoring');
+    breadcrumb('network', `${method} ${path}`, {
+      status,
+      latency_ms: latencyMs,
+      request_id: requestId,
+    });
+  } catch {
+    // swallow
+  }
+}
 
 export class ApiError extends Error {
   constructor(
@@ -116,7 +171,8 @@ export class ApiClient {
     path: string,
     serializedBody: string | undefined,
     timeoutMs: number,
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    requestId?: string
   ): Promise<Response> {
     const authHeaders = await this.getAuthHeaders();
     // Cache device ID after first successful read to avoid hitting SecureStore on every request.
@@ -141,6 +197,7 @@ export class ApiClient {
           ...authHeaders,
           ...(deviceId ? { 'X-Device-Id': deviceId } : {}),
           ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+          ...(requestId ? { 'X-Request-Id': requestId } : {}),
         },
         body: serializedBody,
         signal: controller.signal,
@@ -176,7 +233,14 @@ export class ApiClient {
     }
 
     const serializedBody = body ? JSON.stringify(body) : undefined;
-    let response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey);
+    // One X-Request-Id per logical request — reused across retries so the
+    // server sees them as the same "client intent." The server generates
+    // its own if we ever miss setting this, but the correlation is tighter
+    // when the client owns the ID. Cheap UUID — non-security context.
+    const requestId = getIdempotencyUuid();
+    const fetchStartedAt = Date.now();
+    let retried = false;
+    let response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
 
     // On 428, the server is telling us this device has no session row and we
     // need to register before /api/* calls are accepted. Only the registration
@@ -188,7 +252,8 @@ export class ApiClient {
         const registered = await this.onDeviceRegistrationRequired().catch(() => false);
         if (registered) {
           if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after device registration');
-          response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey);
+          retried = true;
+        response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
         }
       }
     }
@@ -226,10 +291,12 @@ export class ApiClient {
       // If the token changed after refresh, retry the request once
       if (newToken && newToken !== oldToken) {
         if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
-        response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey);
+        retried = true;
+        response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
       }
     }
 
+    const latencyMs = Date.now() - fetchStartedAt;
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({})) ?? {};
       const details = Array.isArray(errorBody.details) ? errorBody.details : [];
@@ -241,6 +308,10 @@ export class ApiClient {
       const { error: _err, code: _code, details: _details, ...restData } = errorBody;
       const hasData = Object.keys(restData).length > 0;
 
+      const endpointKind = endpointKindOf(path);
+      emitApiRequestFailed(endpointKind, response.status, latencyMs, retried);
+      emitApiBreadcrumb(method, path, response.status, latencyMs, requestId);
+
       throw new ApiError(
         message,
         response.status,
@@ -250,6 +321,11 @@ export class ApiClient {
         hasData ? (restData as Record<string, unknown>) : undefined
       );
     }
+
+    // Success breadcrumb so upload-path debugging has the whole conversation
+    // even when no error fires. Keeps the breadcrumb ring small via the
+    // `maxBreadcrumbs: 50` setting in monitoring.ts.
+    emitApiBreadcrumb(method, path, response.status, latencyMs, requestId);
 
     if (response.status === 204) {
       return undefined as T;

@@ -10,6 +10,8 @@ import {
   type RecordingStatus,
 } from 'expo-audio';
 import { safeDeleteFile } from '../lib/fileOps';
+import { captureException } from '../lib/monitoring';
+import { reportClientError } from '../api/telemetry';
 
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped';
 
@@ -21,6 +23,11 @@ export interface UseAudioRecorderReturn {
   maxMetering?: number;
   audioUri: string | null;
   mimeType: string;
+  getPersistableSnapshot: () => {
+    audioUri: string | null;
+    duration: number;
+    maxMetering?: number;
+  };
   start: () => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
@@ -68,6 +75,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const latestAudioUriRef = useRef<string | null>(null);
   const maxMeteringRef = useRef(-160);
   const hasMeteringSampleRef = useRef(false);
+  const finalDurationRef = useRef(0);
   // Capture duration before pause/stop — native pause can reset the polled durationMillis to 0
   const capturedDurationRef = useRef(0);
 
@@ -83,6 +91,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     if (status.hasError && !hasErrorAlertedRef.current && !mediaResetAlertedRef.current) {
       hasErrorAlertedRef.current = true;
       if (__DEV__) console.error('[AudioRecorder] Recording error:', status.error);
+      const errorMessage = typeof status.error === 'string' ? status.error : JSON.stringify(status.error ?? {});
+      captureException(new Error(errorMessage || 'expo-audio status.hasError'), {
+        tags: { component: 'useAudioRecorder', phase: 'recorder_status' },
+      });
+      reportClientError({
+        phase: 'recorder_status',
+        severity: 'error',
+        message: errorMessage,
+      });
       Alert.alert(
         'Recording Issue',
         'An error occurred during recording. The audio may be incomplete or silent — please stop, check your recording, and re-record if needed.'
@@ -111,6 +128,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     }
     isStartingRef.current = true;
     setIsStarting(true);
+    let startSucceeded = false;
     try {
       // Android 13+ requires POST_NOTIFICATIONS for the foreground service notification.
       // Without it the background recording service may fail to start silently.
@@ -144,9 +162,20 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       capturedDurationRef.current = 0;
       mediaResetAlertedRef.current = false;
       hasErrorAlertedRef.current = false;
+      startSucceeded = true;
     } finally {
       isStartingRef.current = false;
       setIsStarting(false);
+      if (!startSucceeded) {
+        // Fire-and-forget telemetry — caller is responsible for user-facing
+        // Alert, we just want the signal in dashboards. Silent on disabled
+        // monitoring + rate-limited on repeats.
+        reportClientError({
+          phase: 'recorder_start',
+          severity: 'error',
+          message: 'recorder_start threw',
+        });
+      }
     }
   }, [state, recorder]);
 
@@ -158,7 +187,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       setState('paused');
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] pause failed:', error);
+      captureException(error, { tags: { component: 'useAudioRecorder', phase: 'recorder_pause' } });
+      reportClientError({
+        phase: 'recorder_pause',
+        severity: 'error',
+        message: String(error),
+        durationSeconds: capturedDurationRef.current,
+      });
       // Native handle is broken — clean up so user can start fresh
+      finalDurationRef.current = capturedDurationRef.current;
       setFinalDuration(capturedDurationRef.current);
       try { await recorder.stop(); } catch {}
       const stoppedUri = recorder.uri ?? null;
@@ -176,10 +213,17 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       setState('recording');
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] resume failed:', error);
+      captureException(error, { tags: { component: 'useAudioRecorder', phase: 'recorder_resume' } });
+      reportClientError({
+        phase: 'recorder_resume',
+        severity: 'error',
+        message: String(error),
+      });
       // Native handle is broken — clean up so user can start fresh
       // Use captured duration since polled value may be 0 while paused
       const polledDuration = Math.floor(recorderState.durationMillis / 1000);
-      setFinalDuration(polledDuration > 0 ? polledDuration : capturedDurationRef.current);
+      finalDurationRef.current = polledDuration > 0 ? polledDuration : capturedDurationRef.current;
+      setFinalDuration(finalDurationRef.current);
       try { await recorder.stop(); } catch {}
       const stoppedUri = recorder.uri ?? null;
       latestAudioUriRef.current = stoppedUri;
@@ -195,11 +239,19 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     stoppingRef.current = true;
     // Use polled duration if available, otherwise fall back to duration captured before pause
     const polledDuration = Math.floor(recorderState.durationMillis / 1000);
-    setFinalDuration(polledDuration > 0 ? polledDuration : capturedDurationRef.current);
+    finalDurationRef.current = polledDuration > 0 ? polledDuration : capturedDurationRef.current;
+    setFinalDuration(finalDurationRef.current);
     try {
       await recorder.stop();
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] stop failed:', error);
+      captureException(error, { tags: { component: 'useAudioRecorder', phase: 'recorder_stop' } });
+      reportClientError({
+        phase: 'recorder_stop',
+        severity: 'error',
+        message: String(error),
+        durationSeconds: finalDurationRef.current,
+      });
     }
     const stoppedUri = recorder.uri ?? null;
     latestAudioUriRef.current = stoppedUri;
@@ -222,6 +274,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     maxMeteringRef.current = -160;
     hasMeteringSampleRef.current = false;
     setFinalDuration(0);
+    finalDurationRef.current = 0;
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
@@ -235,6 +288,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     maxMeteringRef.current = -160;
     hasMeteringSampleRef.current = false;
     setFinalDuration(0);
+    finalDurationRef.current = 0;
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
@@ -249,6 +303,13 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     audioUri,
     mimeType: 'audio/x-m4a',
+    getPersistableSnapshot: () => ({
+      audioUri: latestAudioUriRef.current,
+      duration: finalDurationRef.current > 0
+        ? finalDurationRef.current
+        : Math.floor(recorderState.durationMillis / 1000),
+      maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
+    }),
     start,
     pause,
     resume,

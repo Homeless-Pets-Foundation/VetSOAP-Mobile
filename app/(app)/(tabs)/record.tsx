@@ -88,9 +88,9 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
           size="lg"
           onPress={handleRequest}
           loading={requesting}
-          accessibilityLabel="Grant microphone access"
+          accessibilityLabel="Continue to microphone permission prompt"
         >
-          Grant Microphone Access
+          Continue
         </Button>
       </View>
     </ScreenContainer>

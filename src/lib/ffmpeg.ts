@@ -674,20 +674,20 @@ export async function extractWaveformPeaks(
   const cached = await getCachedPeaks(inputUri, fileSize);
   if (cached !== null) return cached;
 
-  // Get duration to decide which extraction strategy to use
-  const duration = await getAudioDuration(inputUri);
+  const peaks = await enqueueWaveformExtraction(async () => {
+    // Get duration to decide which extraction strategy to use
+    const duration = await getAudioDuration(inputUri);
 
-  // Both paths write PCM scratch files into EDIT_TEMP_DIR. Editor unmount wipes that
-  // directory; without re-creating it here, the next extraction after a fresh editor
-  // session fails with "No such file or directory" on the FFmpeg output path.
-  await audioTempFiles.ensureDir();
+    // Both paths write PCM scratch files into EDIT_TEMP_DIR. Editor unmount wipes that
+    // directory; without re-creating it here, the next extraction after a fresh editor
+    // session fails with "No such file or directory" on the FFmpeg output path.
+    await audioTempFiles.ensureDir();
 
-  let peaks: number[];
+    if (duration >= SHORT_FILE_THRESHOLD_S) {
+      // Long file: seek-based sampling (fast — only decodes 4s per position)
+      return extractPeaksSampled(inputUri, numberOfPeaks, duration);
+    }
 
-  if (duration >= SHORT_FILE_THRESHOLD_S) {
-    // Long file: seek-based sampling (fast — only decodes 4s per position)
-    peaks = await extractPeaksSampled(inputUri, numberOfPeaks, duration);
-  } else {
     // Short file: full decode at low sample rate (500Hz is sufficient for visuals)
     const pcmPath = audioTempFiles.getPcmTempPath(0);
 
@@ -707,11 +707,11 @@ export async function extractWaveformPeaks(
         throw new Error('PCM output file is empty or missing');
       }
 
-      peaks = await readPcmPeaks(pcmPath, pcmInfo.size, numberOfPeaks);
+      return readPcmPeaks(pcmPath, pcmInfo.size, numberOfPeaks);
     } finally {
       audioTempFiles.cleanupFile(pcmPath);
     }
-  }
+  });
 
   // Write to cache (fire-and-forget — cachePeaks() has internal try/catch)
   cachePeaks(inputUri, fileSize, peaks);

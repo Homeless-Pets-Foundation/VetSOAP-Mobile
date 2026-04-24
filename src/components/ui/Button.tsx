@@ -6,19 +6,22 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { cx, HIT_SLOP, runMaybeAsyncEvent } from './styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
+type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'dangerGhost';
 type ButtonSize = 'sm' | 'md' | 'lg';
 
-interface ButtonProps extends Omit<PressableProps, 'style' | 'children'> {
+interface ButtonProps extends Omit<PressableProps, 'style' | 'children' | 'onPress'> {
   children: string;
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
   haptic?: boolean;
   icon?: React.ReactNode;
+  className?: string;
+  onPress?: (event: GestureResponderEvent) => void | Promise<void>;
 }
 
 const variantClasses: Record<ButtonVariant, { container: string; text: string }> = {
@@ -38,6 +41,10 @@ const variantClasses: Record<ButtonVariant, { container: string; text: string }>
     container: 'bg-transparent',
     text: 'text-stone-700',
   },
+  dangerGhost: {
+    container: 'bg-transparent',
+    text: 'text-danger-600',
+  },
 };
 
 const sizeClasses: Record<ButtonSize, { container: string; text: string }> = {
@@ -56,6 +63,7 @@ export function Button({
   disabled,
   onPress,
   accessibilityLabel,
+  className,
   ...rest
 }: ButtonProps) {
   const scale = useSharedValue(1);
@@ -76,7 +84,7 @@ export function Button({
     if (haptic) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
-    onPress?.(e);
+    runMaybeAsyncEvent('Button onPress', onPress, e);
   };
 
   const v = variantClasses[variant];
@@ -88,18 +96,25 @@ export function Button({
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       disabled={disabled || loading}
-      hitSlop={12}
-      pressRetentionOffset={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      hitSlop={HIT_SLOP}
+      pressRetentionOffset={HIT_SLOP}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || children}
-      accessibilityState={{ disabled: disabled || loading }}
-      className={`rounded-btn items-center justify-center flex-row min-h-[44px] ${variant !== 'ghost' ? 'shadow-btn' : ''} ${v.container} ${s.container} ${disabled || loading ? 'opacity-50' : ''}`}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
+      className={cx(
+        'rounded-btn items-center justify-center flex-row min-h-[44px]',
+        variant !== 'ghost' && variant !== 'dangerGhost' && 'shadow-btn',
+        v.container,
+        s.container,
+        (disabled || loading) && 'opacity-50',
+        className
+      )}
       style={animatedStyle}
       {...rest}
     >
       {loading ? (
         <ActivityIndicator
-          color={variant === 'secondary' || variant === 'ghost' ? '#44403c' : '#fff'}
+          color={variant === 'secondary' || variant === 'ghost' ? '#44403c' : variant === 'dangerGhost' ? '#dc2626' : '#fff'}
           size="small"
         />
       ) : (

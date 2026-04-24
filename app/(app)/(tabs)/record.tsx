@@ -195,19 +195,23 @@ function RecordingSession() {
     recordingsApi.delete(recordingId).catch(() => {});
   }, []);
 
+  /** Delete only the local auto-saved draft metadata/audio for a slot. */
+  const deleteLocalSlotDraft = useCallback((slot: PatientSlot) => {
+    draftStorage.deleteDraft(slot.id).catch(() => {});
+  }, []);
+
   /**
    * Delete the auto-saved draft tied to a slot — both the local SecureStore
    * entry and the server Recording row (if one was created). Used when the
-   * user discards or stashes a session: the draft is no longer a useful
-   * representation of the recording and would otherwise linger as a ghost
-   * "Not Submitted" row on Home plus a duplicate PHI copy on disk.
+   * user discards a session: the recording is no longer useful and would
+   * otherwise linger as a ghost "Not Submitted" row on Home plus PHI on disk.
    */
   const deleteSlotDraft = useCallback((slot: PatientSlot) => {
-    draftStorage.deleteDraft(slot.id).catch(() => {});
+    deleteLocalSlotDraft(slot);
     if (slot.serverDraftId && slot.uploadStatus !== 'success') {
       recordingsApi.delete(slot.serverDraftId).catch(() => {});
     }
-  }, []);
+  }, [deleteLocalSlotDraft]);
 
   /**
    * Editing metadata on a slot with a pendingConfirm hint invalidates it: the
@@ -1487,14 +1491,13 @@ function RecordingSession() {
           // The stashed form of the session does not persist pendingConfirm, so
           // any half-confirmed server recording is now unreachable. Best-effort
           // delete each one so they don't linger as orphaned 'uploading' rows.
-          // The auto-saved drafts are also discarded here — the stash becomes
-          // the sole representation of the in-progress session, so keeping a
-          // duplicate draft Recording row on the server would show up twice in
-          // the Home "Not Submitted" list. On resume, autoSaveDraft will
-          // recreate a draft keyed off the restored session.
+          // Local auto-saved draft metadata/audio is removed because the stash
+          // now owns the local files. The server draft row is intentionally
+          // preserved via `serverDraftId` in the stash payload so resume ->
+          // submit promotes the same draft in place.
           postFlushSession.slots.forEach((slot) => {
             deleteOrphanServerRecording(slot);
-            deleteSlotDraft(slot);
+            deleteLocalSlotDraft(slot);
           });
           // The new stash supersedes the one we resumed from — release it so the
           // old SecureStore entry and audio dir don't linger. Done only after the
@@ -1525,7 +1528,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, flushScheduledDraft]);
+  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteLocalSlotDraft, flushScheduledDraft]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,

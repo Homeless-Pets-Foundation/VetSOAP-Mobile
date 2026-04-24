@@ -1,20 +1,28 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, type TextInputProps, type NativeSyntheticEvent, type TargetedEvent } from 'react-native';
+import { View, TextInput, type TextInputProps, type NativeSyntheticEvent, type TargetedEvent } from 'react-native';
+import { FormField } from './FormField';
+import { cx } from './styles';
 
 interface TextInputFieldProps extends Omit<TextInputProps, 'style'> {
   label: string;
   required?: boolean;
   error?: string;
+  helpText?: string;
   rightAccessory?: React.ReactNode;
+  className?: string;
+  containerClassName?: string;
 }
 
 export function TextInputField({
   label,
   required = false,
   error,
+  helpText,
   rightAccessory,
   onFocus,
   onBlur,
+  className,
+  containerClassName,
   ...rest
 }: TextInputFieldProps) {
   const [isFocused, setIsFocused] = useState(false);
@@ -36,13 +44,15 @@ export function TextInputField({
       : 'border-stone-300';
 
   return (
-    <View className="mb-3.5">
-      <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
-        {label}
-        {required && <Text className="text-danger-500"> *</Text>}
-      </Text>
+    <FormField
+      label={label}
+      required={required}
+      error={error}
+      helpText={helpText}
+      className={containerClassName}
+    >
       {rightAccessory ? (
-        <View className={`input-base min-h-[44px] ${borderClass} flex-row items-center`}>
+        <View className={cx('input-base min-h-[44px] flex-row items-center', borderClass, className)}>
           <TextInput
             placeholderTextColor="#78716c"
             accessibilityLabel={label}
@@ -61,18 +71,10 @@ export function TextInputField({
           accessibilityHint={required ? 'Required field' : undefined}
           onFocus={handleFocus}
           onBlur={handleBlur}
-          className={`input-base min-h-[44px] ${borderClass}`}
+          className={cx('input-base min-h-[44px]', borderClass, className)}
           {...rest}
         />
       )}
-      {error && (
-        <Text
-          className="text-caption text-danger-600 mt-1"
-          accessibilityRole="alert"
-        >
-          {error}
-        </Text>
-      )}
-    </View>
+    </FormField>
   );
 }

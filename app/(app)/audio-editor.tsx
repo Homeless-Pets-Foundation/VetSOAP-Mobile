@@ -314,7 +314,7 @@ export default function AudioEditorScreen() {
   const targetIndexSV = useSharedValue(-1);
   // Width of the dragged tab — drives how far other tabs shift to make room.
   const draggedTabWidthSV = useSharedValue(0);
-  const tabLayoutsRef = useRef<Array<{ x: number; width: number }>>([]);
+  const tabLayoutsRef = useRef<{ x: number; width: number }[]>([]);
   const [isDraggingTab, setIsDraggingTab] = useState(false);
   useAnimatedReaction(
     () => draggingIndexSV.value !== -1,
@@ -969,7 +969,7 @@ export default function AudioEditorScreen() {
         ]
       );
     },
-    [segments, selectedIndex, pause, pushHistory]
+    [segments, selectedIndex, segmentLabels, pause, pushHistory]
   );
 
   // Reset trim handles to full range

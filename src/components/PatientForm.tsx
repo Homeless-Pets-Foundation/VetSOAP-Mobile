@@ -1,11 +1,21 @@
 import React from 'react';
-import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native';
-import * as Haptics from 'expo-haptics';
+import { View, Text, ActivityIndicator } from 'react-native';
+import { SegmentedControl } from './ui/SegmentedControl';
 import { TextInputField } from './ui/TextInputField';
+import { Toggle } from './ui/Toggle';
 import type { CreateRecording, Template } from '../types';
 
-const SPECIES_OPTIONS = ['Canine', 'Feline'];
-const APPOINTMENT_TYPE_OPTIONS = ['Wellness Exam', 'Sick Visit', 'Urgent/Emergency', 'Follow-up'];
+const SPECIES_OPTIONS = [
+  { label: 'Canine', value: 'Canine' },
+  { label: 'Feline', value: 'Feline' },
+] as const;
+
+const APPOINTMENT_TYPE_OPTIONS = [
+  { label: 'Wellness Exam', value: 'Wellness Exam' },
+  { label: 'Sick Visit', value: 'Sick Visit' },
+  { label: 'Urgent/Emergency', value: 'Urgent/Emergency' },
+  { label: 'Follow-up', value: 'Follow-up' },
+] as const;
 
 interface PatientFormProps {
   formData: CreateRecording;
@@ -18,13 +28,13 @@ interface PatientFormProps {
 }
 
 export function PatientForm({ formData, onUpdate, templates, templatesLoading, clientNameDisabled, onPimsIdBlur, pimsLookupLoading }: PatientFormProps) {
-  const handleTemplateSelect = (template: Template) => {
-    Haptics.selectionAsync().catch(() => {});
-    const newId = formData.templateId === template.id ? undefined : template.id;
+  const handleTemplateSelect = (templateId: string | null) => {
+    const template = templates?.find((item) => item.id === templateId);
+    const newId = templateId ?? undefined;
     onUpdate('templateId', newId);
 
     // Auto-fill species if the template targets exactly one species
-    if (newId && template.species?.length === 1 && !formData.species) {
+    if (newId && template?.species?.length === 1 && !formData.species) {
       onUpdate('species', template.species[0]);
     }
   };
@@ -32,53 +42,31 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
   return (
     <View>
       {/* Template Picker */}
-      {(templates && templates.length > 0 || templatesLoading) && (
-        <View className="mb-3.5">
-          <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
-            Template
-          </Text>
-          {templatesLoading ? (
+      {(templates && templates.length > 0 || templatesLoading) ? (
+        templatesLoading ? (
+          <View className="mb-3.5">
+            <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
+              Template
+            </Text>
             <ActivityIndicator size="small" color="#78716c" />
-          ) : (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              accessibilityRole="radiogroup"
-              accessibilityLabel="Template selection"
-            >
-              <View className="flex-row gap-1.5">
-                {(templates ?? []).map((template) => {
-                  const isSelected = formData.templateId === template.id;
-                  return (
-                    <Pressable
-                      key={template.id}
-                      onPress={() => handleTemplateSelect(template)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected: isSelected }}
-                      accessibilityLabel={template.name}
-                      accessibilityHint={template.description || undefined}
-                      hitSlop={8}
-                      className={`px-3.5 min-h-[44px] justify-center rounded-pill border ${
-                        isSelected
-                          ? 'border-brand-500 bg-brand-500'
-                          : 'border-stone-300 bg-white'
-                      }`}
-                    >
-                      <Text
-                        className={`text-body-sm font-medium ${
-                          isSelected ? 'text-white' : 'text-stone-700'
-                        }`}
-                      >
-                        {template.name}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </ScrollView>
-          )}
-        </View>
-      )}
+          </View>
+        ) : (
+          <SegmentedControl
+            label="Template"
+            options={(templates ?? []).map((template) => ({
+              label: template.name,
+              value: template.id,
+              description: template.description || undefined,
+            }))}
+            value={formData.templateId ?? null}
+            onValueChange={handleTemplateSelect}
+            allowDeselect
+            scrollable
+            optionClassName="rounded-pill"
+            accessibilityLabel="Template selection"
+          />
+        )
+      ) : null}
 
       <Text
         className="text-body-lg font-semibold text-stone-900 mb-4"
@@ -123,46 +111,18 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
         editable={!clientNameDisabled}
       />
 
-      <View className="mb-3.5">
-        <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
-          Species<Text className="text-danger-500"> *</Text>
-        </Text>
-        <View
-          className="flex-row gap-2"
-          accessibilityRole="radiogroup"
-          accessibilityLabel="Species selection"
-        >
-          {SPECIES_OPTIONS.map((species) => {
-            const isSelected = formData.species === species;
-            return (
-              <Pressable
-                key={species}
-                onPress={() => {
-                  Haptics.selectionAsync().catch(() => {});
-                  if (!isSelected) onUpdate('species', species);
-                }}
-                hitSlop={8}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: isSelected }}
-                accessibilityLabel={species}
-                className={`flex-1 min-h-[48px] items-center justify-center rounded-pill border ${
-                  isSelected
-                    ? 'border-brand-500 bg-brand-500'
-                    : 'border-stone-300 bg-white'
-                }`}
-              >
-                <Text
-                  className={`text-body font-medium ${
-                    isSelected ? 'text-white' : 'text-stone-700'
-                  }`}
-                >
-                  {species}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
+      <SegmentedControl
+        label="Species"
+        required
+        options={SPECIES_OPTIONS}
+        value={formData.species || null}
+        onValueChange={(value) => {
+          if (value) onUpdate('species', value);
+        }}
+        columns={2}
+        optionClassName="rounded-pill min-h-[48px]"
+        accessibilityLabel="Species selection"
+      />
 
       <TextInputField
         label="Breed"
@@ -174,81 +134,28 @@ export function PatientForm({ formData, onUpdate, templates, templatesLoading, c
         autoComplete="off"
       />
 
-      <View className="mb-3.5">
-        <Text className="text-body-sm font-medium text-stone-700 mb-1.5">
-          Appointment Type<Text className="text-danger-500"> *</Text>
-        </Text>
-        <View
-          className="flex-row flex-wrap"
-          style={{ marginHorizontal: -4 }}
-          accessibilityRole="radiogroup"
-          accessibilityLabel="Appointment type selection"
-        >
-          {APPOINTMENT_TYPE_OPTIONS.map((type) => {
-            const isSelected = formData.appointmentType === type;
-            return (
-              <View key={type} style={{ width: '50%', paddingHorizontal: 4, marginBottom: 8 }}>
-              <Pressable
-                onPress={() => {
-                  Haptics.selectionAsync().catch(() => {});
-                  if (!isSelected) onUpdate('appointmentType', type);
-                }}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: isSelected }}
-                accessibilityLabel={type}
-                hitSlop={8}
-                className={`min-h-[44px] items-center justify-center rounded-btn border ${
-                  isSelected
-                    ? 'border-brand-500 bg-brand-500'
-                    : 'border-stone-300 bg-white'
-                }`}
-              >
-                <Text
-                  className={`text-body-sm font-medium ${
-                    isSelected ? 'text-white' : 'text-stone-700'
-                  }`}
-                >
-                  {type}
-                </Text>
-              </Pressable>
-              </View>
-            );
-          })}
-        </View>
-      </View>
+      <SegmentedControl
+        label="Appointment Type"
+        required
+        options={APPOINTMENT_TYPE_OPTIONS}
+        value={formData.appointmentType || null}
+        onValueChange={(value) => {
+          if (value) onUpdate('appointmentType', value);
+        }}
+        columns={2}
+        accessibilityLabel="Appointment type selection"
+      />
 
       {/* Foreign Language Toggle */}
-      <Pressable
-        onPress={() => {
-          Haptics.selectionAsync().catch(() => {});
-          onUpdate('foreignLanguage', !formData.foreignLanguage);
-        }}
-        accessibilityRole="switch"
-        accessibilityState={{ checked: !!formData.foreignLanguage }}
+      <Toggle
+        value={!!formData.foreignLanguage}
+        onValueChange={(value) => onUpdate('foreignLanguage', value)}
+        label="Foreign Language"
+        description="Enable if a non-English language was spoken during this exam"
         accessibilityLabel="Foreign Language"
         accessibilityHint="Enable if a non-English language was spoken during this exam"
-        className="flex-row items-center justify-between py-3 mb-3.5"
-      >
-        <View className="flex-1 mr-3">
-          <Text className="text-body-sm font-medium text-stone-700">
-            Foreign Language
-          </Text>
-          <Text className="text-body-xs text-stone-500 mt-0.5">
-            Enable if a non-English language was spoken during this exam
-          </Text>
-        </View>
-        <View
-          className={`w-[44px] h-[24px] rounded-full justify-center px-[2px] ${
-            formData.foreignLanguage ? 'bg-brand-500' : 'bg-stone-300'
-          }`}
-        >
-          <View
-            className={`w-[20px] h-[20px] rounded-full bg-white ${
-              formData.foreignLanguage ? 'self-end' : 'self-start'
-            }`}
-          />
-        </View>
-      </Pressable>
+        className="py-3 mb-3.5"
+      />
     </View>
   );
 }

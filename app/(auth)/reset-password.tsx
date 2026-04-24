@@ -12,11 +12,8 @@ export default function ResetPasswordScreen() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const handleResetPassword = async () => {
-    setError(null);
-
     // Validate password length
     if (password.length < 8) {
       Alert.alert('Password too short', 'Password must be at least 8 characters');
@@ -82,7 +79,6 @@ export default function ResetPasswordScreen() {
             value={password}
             onChangeText={(text) => {
               setPassword(text);
-              setError(null);
             }}
             placeholder="At least 8 characters"
             autoCapitalize="none"
@@ -96,7 +92,6 @@ export default function ResetPasswordScreen() {
             value={confirmPassword}
             onChangeText={(text) => {
               setConfirmPassword(text);
-              setError(null);
             }}
             placeholder="At least 8 characters"
             autoCapitalize="none"

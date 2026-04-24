@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator, Pressable } from 'react-native';
+import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
-import * as Haptics from 'expo-haptics';
 import { Search } from 'lucide-react-native';
 import { recordingsApi } from '../../../../src/api/recordings';
 import { ApiError } from '../../../../src/api/client';
@@ -20,7 +19,8 @@ import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { RecordingCard } from '../../../../src/components/RecordingCard';
 import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
-import { Button } from '../../../../src/components/ui/Button';
+import { EmptyState } from '../../../../src/components/ui/EmptyState';
+import { Select } from '../../../../src/components/ui/Select';
 
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
@@ -41,7 +41,6 @@ export default function RecordingsListScreen() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
-  const [isStatusFilterOpen, setIsStatusFilterOpen] = useState(false);
   const isInitialMountRef = useRef(true);
   const isTabFocused = useIsFocused();
   const shouldLoadRecordings = !!user && selectedStatusFilter !== 'draft';
@@ -52,7 +51,6 @@ export default function RecordingsListScreen() {
   const activeStatusFilterLabel = STATUS_FILTER_OPTIONS.find(
     (option) => option.value === selectedStatusFilter
   )?.label ?? 'All';
-  const filterButtonLabel = selectedStatusFilter === 'all' ? 'Status' : activeStatusFilterLabel;
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -265,72 +263,17 @@ export default function RecordingsListScreen() {
             />
           </View>
 
-          <Pressable
-            onPress={() => {
-              Haptics.selectionAsync().catch(() => {});
-              setIsStatusFilterOpen((current) => !current);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel={`Toggle status filters. Current filter ${activeStatusFilterLabel}`}
-            accessibilityState={{ expanded: isStatusFilterOpen }}
-            hitSlop={8}
-            className={`min-h-[48px] px-3.5 rounded-input border items-center justify-center ${
-              isStatusFilterOpen || selectedStatusFilter !== 'all'
-                ? 'border-brand-500 bg-brand-50'
-                : 'border-stone-300 bg-white'
-            }`}
-          >
-            <Text
-              className={`text-body-sm font-medium ${
-                isStatusFilterOpen || selectedStatusFilter !== 'all'
-                  ? 'text-brand-600'
-                  : 'text-stone-700'
-              }`}
-            >
-              {filterButtonLabel}
-            </Text>
-          </Pressable>
+          <Select
+            options={STATUS_FILTER_OPTIONS}
+            value={selectedStatusFilter}
+            onValueChange={(value) => setSelectedStatusFilter(value)}
+            placeholder="Status"
+            accessibilityLabel={`Filter recordings by status. Current filter ${activeStatusFilterLabel}`}
+            sheetTitle="Filter by status"
+            className="w-[150px]"
+            fieldClassName={selectedStatusFilter !== 'all' ? 'border-brand-500 bg-brand-50' : ''}
+          />
         </View>
-
-        {isStatusFilterOpen ? (
-          <View
-            className="flex-row flex-wrap gap-2 mb-4"
-            accessibilityRole="radiogroup"
-            accessibilityLabel="Filter recordings by status"
-          >
-            {STATUS_FILTER_OPTIONS.map((option) => {
-              const isSelected = option.value === selectedStatusFilter;
-
-              return (
-                <Pressable
-                  key={option.value}
-                  onPress={() => {
-                    Haptics.selectionAsync().catch(() => {});
-                    setSelectedStatusFilter(option.value);
-                    setIsStatusFilterOpen(false);
-                  }}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: isSelected }}
-                  accessibilityLabel={option.label}
-                  hitSlop={8}
-                  className={`px-3.5 min-h-[44px] justify-center rounded-pill border ${
-                    isSelected
-                      ? 'border-brand-500 bg-brand-500'
-                      : 'border-stone-300 bg-white'
-                  }`}
-                >
-                  <Text
-                    className={`text-body-sm font-medium ${
-                      isSelected ? 'text-white' : 'text-stone-700'
-                    }`}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : null}
       </View>
 
       <FlatList
@@ -371,44 +314,34 @@ export default function RecordingsListScreen() {
               <SkeletonCard />
             </View>
           ) : isListError ? (
-            <View className="py-10 items-center">
-              <Search color="#dc2626" size={iconLg} />
-              <Text className="text-body text-stone-600 mt-3 text-center">
-                Could not load recordings.
-              </Text>
-              {listError ? (
-                <Text className="text-caption text-stone-500 mt-2 text-center px-4" selectable>
-                  [{listError.name ?? 'Error'}{(listError as { status?: number })?.status ? ` ${(listError as { status?: number }).status}` : ''}] {listError.message}
-                </Text>
-              ) : null}
-              <View className="mt-4">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onPress={handleRefresh}
-                >
-                  Retry
-                </Button>
-              </View>
-            </View>
+            <EmptyState
+              icon={Search}
+              iconColor="#dc2626"
+              iconSize={iconLg}
+              description="Could not load recordings."
+              details={
+                listError ? (
+                  <Text className="text-caption text-stone-500 text-center px-4" selectable>
+                    [{listError.name ?? 'Error'}{(listError as { status?: number })?.status ? ` ${(listError as { status?: number }).status}` : ''}] {listError.message}
+                  </Text>
+                ) : undefined
+              }
+              action={{
+                label: 'Retry',
+                variant: 'secondary',
+                onPress: handleRefresh,
+              }}
+            />
           ) : (
-            <View className="py-10 items-center">
-              <Search color="#78716c" size={iconLg} />
-              <Text className="text-body text-stone-500 mt-3 text-center">
-                {emptyMessage}
-              </Text>
-              {!debouncedSearch && selectedStatusFilter === 'all' && (
-                <View className="mt-4">
-                  <Button
-                    variant="primary"
-                    onPress={() => router.push('/record')}
-                    accessibilityLabel="Start recording an appointment"
-                  >
-                    Record Appointment
-                  </Button>
-                </View>
-              )}
-            </View>
+            <EmptyState
+              icon={Search}
+              iconSize={iconLg}
+              description={emptyMessage}
+              action={!debouncedSearch && selectedStatusFilter === 'all' ? {
+                label: 'Record Appointment',
+                onPress: () => router.push('/record'),
+              } : undefined}
+            />
           )
         }
       />

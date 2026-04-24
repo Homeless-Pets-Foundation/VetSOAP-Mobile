@@ -1,16 +1,10 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
+import { View, Text } from 'react-native';
 import { Trash2, Play } from 'lucide-react-native';
-import * as Haptics from 'expo-haptics';
 import type { StashedSession } from '../types/stash';
 import { Button } from './ui/Button';
-
-const AnimatedView = Animated.View;
+import { Card } from './ui/Card';
+import { IconButton } from './ui/IconButton';
 
 interface StashedSessionCardProps {
   stash: StashedSession;
@@ -42,12 +36,6 @@ function formatRelativeTime(isoDate: string): string {
 }
 
 export function StashedSessionCard({ stash, onResume, onDelete }: StashedSessionCardProps) {
-  const scale = useSharedValue(1);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
-
   const metaParts: string[] = [];
   const relTime = formatRelativeTime(stash.stashedAt);
   if (relTime) metaParts.push(relTime);
@@ -55,7 +43,7 @@ export function StashedSessionCard({ stash, onResume, onDelete }: StashedSession
   metaParts.push(`${stash.patientCount} ${stash.patientCount === 1 ? 'patient' : 'patients'}`);
 
   return (
-    <AnimatedView className="card mb-2" style={animatedStyle}>
+    <Card className="mb-2">
       {/* Header row: title + delete */}
       <View className="flex-row items-start justify-between mb-2">
         <View className="flex-1 mr-3">
@@ -66,35 +54,27 @@ export function StashedSessionCard({ stash, onResume, onDelete }: StashedSession
             {metaParts.join('  \u00B7  ')}
           </Text>
         </View>
-        <Pressable
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-            onDelete();
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Delete saved session"
+        <IconButton
+          icon={<Trash2 color="#a8a29e" size={16} />}
+          label="Delete saved session"
+          onPress={onDelete}
           accessibilityHint="Double-tap to permanently delete this saved session and its recordings"
-          className="w-9 h-9 rounded-full items-center justify-center -mr-1 -mt-1"
-          hitSlop={8}
-        >
-          <Trash2 color="#a8a29e" size={16} />
-        </Pressable>
+          size="sm"
+          className="-mr-1 -mt-1"
+        />
       </View>
 
       {/* Resume button */}
       <Button
         variant="secondary"
         size="sm"
-        onPress={() => {
-          scale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
-          onResume();
-        }}
+        onPress={onResume}
         icon={<Play color="#0d8775" size={14} fill="#0d8775" />}
         accessibilityLabel={`Resume session for ${stash.clientName}, ${stash.patientSummary}`}
         accessibilityHint="Double-tap to resume this recording session"
       >
         Resume Session
       </Button>
-    </AnimatedView>
+    </Card>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, Pressable, Alert, ScrollView, RefreshControl } from 'react-native';
+import { View, Text, Alert, ScrollView, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
@@ -13,6 +13,10 @@ import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
 import { Card } from '../../src/components/ui/Card';
 import { SkeletonCard } from '../../src/components/ui/Skeleton';
 import { Button } from '../../src/components/ui/Button';
+import { Badge } from '../../src/components/ui/Badge';
+import { EmptyState } from '../../src/components/ui/EmptyState';
+import { IconButton } from '../../src/components/ui/IconButton';
+import { ListItem } from '../../src/components/ui/ListItem';
 
 function formatRelativeTime(isoDate: string): string {
   const date = new Date(isoDate);
@@ -67,52 +71,30 @@ function DeviceRow({ device, isCurrent, onRevoke, isRevoking }: DeviceRowProps) 
   const typeLabel = formatDeviceTypeLabel(device.deviceType);
 
   return (
-    <Card className="mb-2">
-      <View className="flex-row items-center">
-        <View className="w-10 h-10 rounded-full bg-stone-100 justify-center items-center mr-3">
+    <ListItem
+      title={device.deviceName || typeLabel}
+      subtitle={`${typeLabel}${device.appVersion ? ` · v${device.appVersion}` : ''}`}
+      meta={`Last active ${formatRelativeTime(device.lastSeenAt)}`}
+      leading={
+        <View className="w-10 h-10 rounded-full bg-stone-100 justify-center items-center">
           <Icon color="#0d8775" size={iconMd} />
         </View>
-        <View className="flex-1">
-          <View className="flex-row items-center">
-            <Text className="text-body font-semibold text-stone-900">
-              {device.deviceName || typeLabel}
-            </Text>
-            {isCurrent ? (
-              <View className="ml-2 px-2 py-0.5 rounded-badge bg-success-100">
-                <Text className="text-caption font-semibold text-success-700">
-                  This device
-                </Text>
-              </View>
-            ) : null}
-          </View>
-          <Text className="text-caption text-stone-500 mt-0.5">
-            {typeLabel}
-            {device.appVersion ? ` · v${device.appVersion}` : ''}
-          </Text>
-          <Text className="text-caption text-stone-400 mt-0.5">
-            Last active {formatRelativeTime(device.lastSeenAt)}
-          </Text>
-        </View>
-        {!isCurrent ? (
-          <Pressable
+      }
+      badge={isCurrent ? <Badge variant="success">This device</Badge> : undefined}
+      trailing={
+        !isCurrent ? (
+          <Button
+            variant="dangerGhost"
+            size="sm"
+            loading={isRevoking}
             onPress={onRevoke}
-            disabled={isRevoking}
-            accessibilityRole="button"
             accessibilityLabel={`Revoke ${device.deviceName || typeLabel}`}
-            hitSlop={8}
-            className="ml-2 px-3 py-2"
           >
-            <Text
-              className={`text-body-sm font-semibold ${
-                isRevoking ? 'text-stone-400' : 'text-danger-500'
-              }`}
-            >
-              Revoke
-            </Text>
-          </Pressable>
-        ) : null}
-      </View>
-    </Card>
+            Revoke
+          </Button>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -194,14 +176,12 @@ export default function DevicesScreen() {
       <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
         <View className="px-5 pt-5">
           <View className="flex-row items-center mb-6">
-            <Pressable
+            <IconButton
+              icon={<ChevronLeft color="#1c1917" size={iconMd} />}
+              label="Go back"
               onPress={() => router.back()}
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-              className="mr-3 w-11 h-11 items-center justify-center"
-            >
-              <ChevronLeft color="#1c1917" size={iconMd} />
-            </Pressable>
+              className="mr-3"
+            />
             <Text
               className="text-display font-bold text-stone-900"
               accessibilityRole="header"
@@ -254,24 +234,27 @@ export default function DevicesScreen() {
               <SkeletonCard />
             </View>
           ) : isError ? (
-            <Card className="items-center py-6">
-              <ShieldAlert color="#dc2626" size={iconLg} />
-              <Text className="text-body text-stone-600 mt-3 text-center">
-                Could not load your devices.
-              </Text>
-              <View className="mt-3">
-                <Button variant="secondary" size="sm" onPress={() => { refetch().catch(() => {}); }}>
-                  Retry
-                </Button>
-              </View>
-            </Card>
+            <EmptyState
+              contained
+              icon={ShieldAlert}
+              iconColor="#dc2626"
+              iconSize={iconLg}
+              description="Could not load your devices."
+              action={{
+                label: 'Retry',
+                variant: 'secondary',
+                onPress: () => {
+                  refetch().catch(() => {});
+                },
+              }}
+            />
           ) : devices.length === 0 ? (
-            <Card className="items-center py-6">
-              <Smartphone color="#a8a29e" size={iconLg} />
-              <Text className="text-body text-stone-500 mt-3 text-center">
-                No active devices.
-              </Text>
-            </Card>
+            <EmptyState
+              contained
+              icon={Smartphone}
+              iconSize={iconLg}
+              description="No active devices."
+            />
           ) : (
             devices.map((device) => (
               <DeviceRow

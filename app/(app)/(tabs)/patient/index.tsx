@@ -9,7 +9,7 @@ import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { PatientRow } from '../../../../src/components/PatientRow';
 import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
-import { Button } from '../../../../src/components/ui/Button';
+import { EmptyState } from '../../../../src/components/ui/EmptyState';
 
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
@@ -147,28 +147,25 @@ export default function PatientListScreen() {
                 <SkeletonCard />
               </View>
             ) : isError ? (
-              <View className="py-10 items-center">
-                <User color="#dc2626" size={iconLg} />
-                <Text className="text-body text-stone-600 mt-3 text-center">
-                  Could not load patients.
-                </Text>
-                <View className="mt-4">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onPress={() => { refetch().catch(() => {}); }}
-                  >
-                    Retry
-                  </Button>
-                </View>
-              </View>
+              <EmptyState
+                icon={User}
+                iconColor="#dc2626"
+                iconSize={iconLg}
+                description="Could not load patients."
+                action={{
+                  label: 'Retry',
+                  variant: 'secondary',
+                  onPress: () => {
+                    refetch().catch(() => {});
+                  },
+                }}
+              />
             ) : (
-              <View className="py-10 items-center">
-                <User color="#78716c" size={iconLg} />
-                <Text className="text-body text-stone-500 mt-3 text-center">
-                  {search ? 'No patients match your search.' : 'No patients yet.'}
-                </Text>
-              </View>
+              <EmptyState
+                icon={User}
+                iconSize={iconLg}
+                description={search ? 'No patients match your search.' : 'No patients yet.'}
+              />
             )
           }
         />

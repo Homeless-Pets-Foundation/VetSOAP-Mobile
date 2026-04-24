@@ -25,9 +25,13 @@ function requireValue(name: string, value: string | undefined): string {
   return value;
 }
 
+// Production default is the canonical host (CLAUDE.md rule: clients MUST use
+// api.captivet.com). Missing env in a production build falls back to this
+// literal instead of a startup error — prevents the Railway fallback URL
+// from sneaking back in via a misconfigured .env.
 export const API_URL = __DEV__
   ? (process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000')
-  : requireHttps('EXPO_PUBLIC_API_URL', process.env.EXPO_PUBLIC_API_URL);
+  : (process.env.EXPO_PUBLIC_API_URL || 'https://api.captivet.com');
 
 export const SUPABASE_URL = __DEV__
   ? (process.env.EXPO_PUBLIC_SUPABASE_URL || '')

@@ -532,12 +532,36 @@ function RecordingSession() {
   triggerInterruptionRef.current = recorder.triggerInterruption;
   useEffect(() => {
     const sub = audioFocus.addListener((event) => {
-      if (event.type !== 'loss') return;
-      if (event.reason === 'duck') return; // ducking is volume-only, not pause
-      if (interruptionPendingResumeRef.current) return; // already handling
-      const state = recorderStateForFocusRef.current;
-      if (state !== 'recording' && state !== 'paused') return;
-      triggerInterruptionRef.current().catch(() => {});
+      if (event.type === 'loss') {
+        if (event.reason === 'duck') return; // ducking is volume-only, not pause
+        if (interruptionPendingResumeRef.current) return; // already handling
+        const state = recorderStateForFocusRef.current;
+        if (state !== 'recording' && state !== 'paused') return;
+        triggerInterruptionRef.current().catch(() => {});
+        return;
+      }
+      if (event.type === 'gain') {
+        // Gain fires when the interrupting source releases focus (call
+        // declined / timed out, alarm dismissed, voice app finished). If the
+        // app got backgrounded during the interruption, defer to the
+        // AppState 'active' handler instead — it adds the same 500ms delay
+        // for AVAudioSession warmup on iOS and avoids a double-resume race.
+        if (!interruptionPendingResumeRef.current) return;
+        if (appStateRef.current !== 'active') return;
+        const resume = interruptionPendingResumeRef.current;
+        interruptionPendingResumeRef.current = null;
+        setTimeout(() => {
+          try {
+            startRecordingRef.current(resume.slotId);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            breadcrumb('record', 'interruption_resumed', { slot_id: resume.slotId, source: 'audio_focus' });
+          } catch (e) {
+            if (__DEV__) console.error('[Record] focus-gain auto-resume failed', e);
+          } finally {
+            setInterruptionPendingResume(null);
+          }
+        }, 500);
+      }
     });
     return () => {
       sub.remove();

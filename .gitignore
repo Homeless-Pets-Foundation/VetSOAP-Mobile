@@ -43,6 +43,9 @@ firebase-debug.log
 .claude/scheduled_tasks.lock
 AGENTS.local.md
 
+# Playwright MCP session artifacts (local-only logs)
+.playwright-mcp/
+
 # Local server-patch workflow (not part of the app)
 .server_patch/
 .server_repo_link

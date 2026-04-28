@@ -270,6 +270,7 @@ export function DeviceLimitModal() {
                       hitSlop={8}
                       className="ml-2 px-3 py-2"
                     >
+                      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className={`text-body-sm font-semibold ${
                           otherBusy
@@ -278,8 +279,10 @@ export function DeviceLimitModal() {
                               ? 'text-stone-400'
                               : 'text-danger-500'
                         }`}
+                        allowFontScaling={false}
+                        style={{ flexShrink: 0, paddingRight: 2 }}
                       >
-                        {isThisRowBusy ? 'Revoking…' : 'Revoke'}
+                        {`${isThisRowBusy ? 'Revoking…' : 'Revoke'} `}
                       </Text>
                     </Pressable>
                   </View>

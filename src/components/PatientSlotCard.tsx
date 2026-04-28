@@ -179,8 +179,15 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             accessibilityLabel={`Remove patient ${slotIndex + 1}`}
             className="flex-row items-center px-3 py-2 min-h-[44px] flex-shrink-0"
           >
-            <X color="#dc2626" size={16} />
-            <Text className="text-body-sm text-danger-600 ml-1">Remove</Text>
+            <X color="#dc2626" size={16} style={{ flexShrink: 0 }} />
+            {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+            <Text
+              className="text-body-sm text-danger-600 ml-1"
+              allowFontScaling={false}
+              style={{ flexShrink: 0, paddingRight: 2 }}
+            >
+              {'Remove '}
+            </Text>
           </Pressable>
         )}
       </View>

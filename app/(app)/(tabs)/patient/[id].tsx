@@ -259,8 +259,13 @@ export default function PatientDetailScreen() {
                         disabled={regenerateSummaryMutation.isPending}
                         hitSlop={8}
                       >
-                        <Text className="text-caption font-medium text-brand-600">
-                          {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'}
+                        {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+                        <Text
+                          className="text-caption font-medium text-brand-600"
+                          allowFontScaling={false}
+                          style={{ flexShrink: 0, paddingRight: 2 }}
+                        >
+                          {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'} `}
                         </Text>
                       </Pressable>
                     </View>
@@ -275,8 +280,13 @@ export default function PatientDetailScreen() {
                       disabled={regenerateSummaryMutation.isPending}
                       hitSlop={8}
                     >
-                      <Text className="text-caption font-medium text-brand-600">
-                        {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'}
+                      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+                      <Text
+                        className="text-caption font-medium text-brand-600"
+                        allowFontScaling={false}
+                        style={{ flexShrink: 0, paddingRight: 2 }}
+                      >
+                        {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'} `}
                       </Text>
                     </Pressable>
                   </>
@@ -363,8 +373,15 @@ export default function PatientDetailScreen() {
                       accessibilityLabel="Edit patient profile"
                       className="flex-row items-center"
                     >
-                      <Edit2 color="#0d8775" size={14} />
-                      <Text className="text-body-sm text-brand-600 ml-1" style={{ paddingRight: 4 }}>Edit</Text>
+                      <Edit2 color="#0d8775" size={14} style={{ flexShrink: 0 }} />
+                      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+                      <Text
+                        className="text-body-sm text-brand-600 ml-1"
+                        allowFontScaling={false}
+                        style={{ flexShrink: 0, paddingRight: 2 }}
+                      >
+                        {'Edit '}
+                      </Text>
                     </Pressable>
                   </View>
                   <ProfileField label="Name" value={patient.name} />
@@ -396,7 +413,14 @@ export default function PatientDetailScreen() {
                       accessibilityRole="button"
                       accessibilityLabel="Cancel editing"
                     >
-                      <Text className="text-body-sm text-stone-500">Cancel</Text>
+                      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+                      <Text
+                        className="text-body-sm text-stone-500"
+                        allowFontScaling={false}
+                        style={{ flexShrink: 0, paddingRight: 2 }}
+                      >
+                        {'Cancel '}
+                      </Text>
                     </Pressable>
                   </View>
 

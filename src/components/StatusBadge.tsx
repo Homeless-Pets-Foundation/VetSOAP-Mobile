@@ -69,8 +69,13 @@ export function StatusBadge({ status }: StatusBadgeProps) {
       accessibilityLabel={`Status: ${config.label}`}
     >
       {config.inProgress && <PulsingDot color={v.dot} />}
-      <Text className={`text-caption font-semibold ${v.text}`}>
-        {config.label}
+      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph (e.g. "Uploadin"); do NOT remove. */}
+      <Text
+        className={`text-caption font-semibold ${v.text}`}
+        allowFontScaling={false}
+        style={{ flexShrink: 0, paddingRight: 2 }}
+      >
+        {`${config.label} `}
       </Text>
     </View>
   );

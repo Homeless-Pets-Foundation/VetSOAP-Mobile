@@ -13,6 +13,7 @@ import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
 import { useAuth } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
@@ -247,6 +248,14 @@ function RecordingSession() {
   const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
   const [isStashing, setIsStashing] = useState(false);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
+  // Set when an audio session interruption (incoming call, Siri, etc.) tore
+  // down the recording mid-stream. The hook captures the partial segment and
+  // transitions to `'interrupted'`; we save it and remember which slot to
+  // resume in once AppState returns to 'active' (call ended).
+  const [interruptionPendingResume, setInterruptionPendingResume] = useState<{ slotId: string } | null>(null);
+  // The AppState handler reads this from a ref — its effect deps are pinned
+  // to avoid re-subscribing AppState on every state mutation.
+  const interruptionPendingResumeRef = useRef<{ slotId: string } | null>(null);
   const netInfo = useNetInfo();
   const isConnected = netInfo.isConnected;
   // Derives a coarse connection descriptor for telemetry. Don't leak SSIDs or
@@ -469,6 +478,40 @@ function RecordingSession() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- guard runs only when recorder ownership changes, reading slots is intentionally from current render
   }, [session.recorderBoundToSlotId]);
+
+  // Effect: handle audio session interruptions (incoming call, Siri, headphones).
+  //
+  // The hook flushes whatever bytes it captured to a partial segment file and
+  // flips to `'interrupted'`. We commit that segment to the slot via the same
+  // multi-segment path used by manual pause-then-continue, reset the recorder
+  // to idle, and arm `interruptionPendingResume` so the AppState handler picks
+  // up resumption when the user returns from the call. The slot's audioState
+  // ends at `'idle'` (CONTINUE_RECORDING) so the new segment slots in cleanly
+  // when recording starts again.
+  useEffect(() => {
+    if (recorder.state !== 'interrupted') return;
+    if (interruptionPendingResume) return; // already handled this transition
+    const slotId = session.recorderBoundToSlotId;
+    if (!slotId) {
+      // No bound slot — there's nothing to save. Just clear the recorder.
+      recorder.resetWithoutDelete();
+      return;
+    }
+    if (recorder.audioUri) {
+      // Skip the next 'stopped'-driven autosave: the hook calls stop() inside
+      // its interruption handler, which would otherwise double-fire the audio
+      // capture effect against this same URI.
+      audioCaptureDoneRef.current = true;
+      saveAudio(slotId, recorder.audioUri, recorder.duration, recorder.maxMetering);
+      dispatch({ type: 'CONTINUE_RECORDING', slotId });
+    }
+    setInterruptionPendingResume({ slotId });
+    interruptionPendingResumeRef.current = { slotId };
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    breadcrumb('record', 'interruption_paused', { slot_id: slotId });
+    recorder.resetWithoutDelete();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally fires only on the recorder transition; reading session/refs from current render is correct
+  }, [recorder.state]);
 
   const persistSessionDraftsForBackground = useCallback(async () => {
     if (backgroundPersistingRef.current) return;
@@ -892,6 +935,14 @@ function RecordingSession() {
       // during the window between button tap and React state update disabling the button.
       if (uploadingSlotIdsRef.current.has(slot.id)) return null;
       uploadingSlotIdsRef.current.add(slot.id);
+      // Hold a wake-lock for the duration of this slot's upload. Per Sentry
+      // 7445949187, Android Doze + ConnectivityManager reap the R2 PUT's TCP
+      // socket the moment the screen sleeps mid-upload, surfacing as
+      // `Failed to connect`. Tag is per-slot so concurrent uploads don't fight
+      // over a shared lock; expo-keep-awake aggregates across tags. Released
+      // unconditionally in the finally below.
+      const keepAwakeTag = `captivet-upload-${slot.id}`;
+      activateKeepAwakeAsync(keepAwakeTag).catch(() => { /* best-effort */ });
       const attemptNumber = (uploadAttemptCountsRef.current.get(slot.id) ?? 0) + 1;
       uploadAttemptCountsRef.current.set(slot.id, attemptNumber);
       const slotIndex = sessionRef.current.slots.findIndex((s) => s.id === slot.id);
@@ -1134,6 +1185,7 @@ function RecordingSession() {
         return null;
       } finally {
         uploadingSlotIdsRef.current.delete(slot.id);
+        deactivateKeepAwake(keepAwakeTag).catch(() => { /* best-effort */ });
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- netInfo read via networkStateForTelemetry closure; derivation is pure
@@ -1295,6 +1347,30 @@ function RecordingSession() {
         (nextState === 'inactive' || nextState === 'background')
       ) {
         persistSessionDraftsForBackground().catch(() => {});
+      }
+
+      // Resume from interruption (incoming call, Siri) when the user returns.
+      // Short delay because iOS' AVAudioSession needs ~500ms after the call
+      // ends before `setActive(true)` can succeed; bypassing this leads to
+      // OSStatus -50 / "session not active" on the very next prepareToRecord.
+      if (
+        nextState === 'active' &&
+        previousState !== 'active' &&
+        interruptionPendingResumeRef.current
+      ) {
+        const resume = interruptionPendingResumeRef.current;
+        interruptionPendingResumeRef.current = null;
+        setTimeout(() => {
+          try {
+            startRecordingRef.current(resume.slotId);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            breadcrumb('record', 'interruption_resumed', { slot_id: resume.slotId });
+          } catch (e) {
+            if (__DEV__) console.error('[Record] interruption auto-resume failed', e);
+          } finally {
+            setInterruptionPendingResume(null);
+          }
+        }, 500);
       }
     };
 
@@ -2010,6 +2086,22 @@ function RecordingSession() {
         <View className="mx-5 mb-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg flex-row items-center">
           <Text className="text-body-sm text-amber-700 flex-1">
             Draft recording pending upload — connect to Wi-Fi to sync
+          </Text>
+        </View>
+      )}
+
+      {/* Interruption Banner — call/Siri/headphones interrupted recording.
+          Stays visible from the moment the partial segment is saved until
+          AppState returns to 'active' and recording auto-resumes. */}
+      {interruptionPendingResume && (
+        <View
+          className="mx-5 mb-2 px-3 py-3 bg-orange-100 border-2 border-orange-400 rounded-lg flex-row items-center"
+          accessibilityLiveRegion="assertive"
+          accessibilityRole="alert"
+        >
+          <View className="w-2 h-2 rounded-full bg-orange-500 mr-3" />
+          <Text className="text-body-sm font-semibold text-orange-800 flex-1">
+            Recording paused for call — auto-resuming when you return.
           </Text>
         </View>
       )}

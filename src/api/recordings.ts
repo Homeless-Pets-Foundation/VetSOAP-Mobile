@@ -21,6 +21,7 @@ import { validateUploadUrl } from '../lib/sslPinning';
 import { getIdempotencyUuid } from '../lib/random';
 import type { PendingConfirm } from '../types/multiPatient';
 import { trackEvent } from '../lib/analytics';
+import { breadcrumb } from '../lib/monitoring';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
@@ -147,6 +148,44 @@ function withTimeout<T>(
       (error) => { clearTimeout(timeoutId); reject(error); }
     );
   });
+}
+
+/**
+ * The R2 PUT routinely loses its TCP socket on Android when the device
+ * transitions networks (Wi-Fi ↔ cellular) or the OS reaps backgrounded
+ * sockets. Sentry issue 7445949187 (Pixel 10 Pro XL, Android 16) shows the
+ * native expo-file-system layer rejects with "Failed to connect to <host>"
+ * in these cases — a clean TCP-level failure that almost always succeeds on
+ * a fresh socket. Mirrors the rule-27 single-retry pattern used for
+ * `signIn` against AuthRetryableFetchError.
+ *
+ * Match list intentionally narrow: only signatures that come from the
+ * expo-file-system native layer or Hermes' fetch when the *socket* dies.
+ * HTTP-level errors (non-2xx responses) are caught further out by the
+ * status-range check and must NOT retry — those are not transient.
+ */
+const TRANSIENT_R2_ERROR_RE = /Failed to connect|Network request failed|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i;
+
+function isTransientUploadError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return TRANSIENT_R2_ERROR_RE.test(err.message ?? '');
+}
+
+async function uploadOnceWithRetry<T>(
+  buildAndRun: () => Promise<T>,
+  context: { segmentIndex?: number },
+): Promise<T> {
+  try {
+    return await buildAndRun();
+  } catch (err) {
+    if (!isTransientUploadError(err)) throw err;
+    breadcrumb('upload', 'r2_put_retry', {
+      segment_index: context.segmentIndex,
+      reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown',
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    return await buildAndRun();
+  }
 }
 
 const ALLOWED_AUDIO_TYPES = new Set([
@@ -387,36 +426,42 @@ export const recordingsApi = {
       // Validate the presigned upload URL targets a trusted storage domain
       validateUploadUrl(uploadUrl);
 
-      // Step 3: Upload to R2 using createUploadTask (supports file:// URIs + progress)
-      const uploadTask = createUploadTask(
-        uploadUrl,
-        fileUri,
-        {
-          httpMethod: 'PUT',
-          uploadType: FileSystemUploadType.BINARY_CONTENT,
-          headers: { 'Content-Type': contentType },
-        },
-        options?.onUploadProgress
-          ? (progress) => {
-              const total = progress.totalBytesExpectedToSend;
-              const loaded = progress.totalBytesSent;
-              options.onUploadProgress!({
-                loaded,
-                total,
-                percent: total > 0 ? Math.round((loaded / total) * 100) : 0,
-              });
-            }
-          : undefined
-      );
-
-      let uploadResult;
-      try {
-        uploadResult = await withTimeout(
+      // Step 3: Upload to R2 using createUploadTask (supports file:// URIs + progress).
+      // Wrapped in uploadOnceWithRetry so a transient TCP failure (the dominant
+      // r2_put error mode on Android per Sentry data) gets a single, fresh-socket
+      // retry rather than a 5-6% stall + user-visible failure.
+      const buildAndRunUpload = () => {
+        const uploadTask = createUploadTask(
+          uploadUrl,
+          fileUri,
+          {
+            httpMethod: 'PUT',
+            uploadType: FileSystemUploadType.BINARY_CONTENT,
+            headers: { 'Content-Type': contentType },
+          },
+          options?.onUploadProgress
+            ? (progress) => {
+                const total = progress.totalBytesExpectedToSend;
+                const loaded = progress.totalBytesSent;
+                options.onUploadProgress!({
+                  loaded,
+                  total,
+                  percent: total > 0 ? Math.round((loaded / total) * 100) : 0,
+                });
+              }
+            : undefined
+        );
+        return withTimeout(
           uploadTask.uploadAsync(),
           R2_UPLOAD_TIMEOUT_MS,
           'Upload timed out. Please check your connection and try again.',
           () => { uploadTask.cancelAsync().catch(() => {}); }
         );
+      };
+
+      let uploadResult;
+      try {
+        uploadResult = await uploadOnceWithRetry(buildAndRunUpload, {});
       } catch (e) { tagPhase(e, 'r2_put'); }
       if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
         phaseError(
@@ -564,37 +609,41 @@ export const recordingsApi = {
         const segmentProgressBase = (i / totalSegments) * 100;
         const segmentProgressRange = 100 / totalSegments;
 
-        const uploadTask = createUploadTask(
-          uploadUrl,
-          segment.uri,
-          {
-            httpMethod: 'PUT',
-            uploadType: FileSystemUploadType.BINARY_CONTENT,
-            headers: { 'Content-Type': contentType },
-          },
-          options?.onUploadProgress
-            ? (progress) => {
-                const total = progress.totalBytesExpectedToSend;
-                const loaded = progress.totalBytesSent;
-                const segmentPercent = total > 0 ? (loaded / total) * 100 : 0;
-                const overallPercent = segmentProgressBase + (segmentPercent * segmentProgressRange) / 100;
-                options.onUploadProgress!({
-                  loaded,
-                  total,
-                  percent: Math.round(overallPercent),
-                });
-              }
-            : undefined
-        );
-
-        let uploadResult;
-        try {
-          uploadResult = await withTimeout(
+        // Wrapped in uploadOnceWithRetry — see note in createWithFile above.
+        const buildAndRunSegmentUpload = () => {
+          const uploadTask = createUploadTask(
+            uploadUrl,
+            segment.uri,
+            {
+              httpMethod: 'PUT',
+              uploadType: FileSystemUploadType.BINARY_CONTENT,
+              headers: { 'Content-Type': contentType },
+            },
+            options?.onUploadProgress
+              ? (progress) => {
+                  const total = progress.totalBytesExpectedToSend;
+                  const loaded = progress.totalBytesSent;
+                  const segmentPercent = total > 0 ? (loaded / total) * 100 : 0;
+                  const overallPercent = segmentProgressBase + (segmentPercent * segmentProgressRange) / 100;
+                  options.onUploadProgress!({
+                    loaded,
+                    total,
+                    percent: Math.round(overallPercent),
+                  });
+                }
+              : undefined
+          );
+          return withTimeout(
             uploadTask.uploadAsync(),
             R2_UPLOAD_TIMEOUT_MS,
             `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
             () => { uploadTask.cancelAsync().catch(() => {}); }
           );
+        };
+
+        let uploadResult;
+        try {
+          uploadResult = await uploadOnceWithRetry(buildAndRunSegmentUpload, { segmentIndex: i });
         } catch (e) { tagPhase(e, 'r2_put'); }
         if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
           phaseError(

@@ -13,7 +13,7 @@ import { safeDeleteFile } from '../lib/fileOps';
 import { captureException } from '../lib/monitoring';
 import { reportClientError } from '../api/telemetry';
 
-export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped';
+export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped' | 'interrupted';
 
 export interface UseAudioRecorderReturn {
   state: RecordingState;
@@ -79,7 +79,31 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // Capture duration before pause/stop — native pause can reset the polled durationMillis to 0
   const capturedDurationRef = useRef(0);
 
-  // Status listener for recording events (errors, media reset)
+  // Recorder + recorderState are referenced inside statusListener but declared
+  // below this hook. We forward them via refs so the listener identity stays
+  // stable (callback memoization doesn't break on every render) without
+  // introducing the use-before-define lint trap.
+  const recorderRef = useRef<ReturnType<typeof useExpoAudioRecorder> | null>(null);
+  const recorderStateRef = useRef<{ durationMillis: number } | null>(null);
+  const stateRef = useRef<RecordingState>('idle');
+
+  // Status listener for recording events (errors, media reset).
+  //
+  // Interruption auto-resume contract: when expo-audio emits `hasError` while
+  // we believe we're recording, treat that as an audio session interruption
+  // (incoming call, Siri, headphones unplugged) rather than a hard stop.
+  // Flush bytes to disk via a best-effort `recorder.stop()`, capture the
+  // resulting URI, and transition to a new `'interrupted'` state. The caller
+  // observes that state, saves the URI as a multi-segment, and auto-restarts
+  // recording when AppState returns to 'active'. We do NOT fire the legacy
+  // "Recording Issue" Alert here — the banner UI in record.tsx tells the
+  // user what's happening; an OS-modal alert on top of an incoming call
+  // screen is just noise the user can't dismiss.
+  //
+  // `mediaServicesDidReset` keeps its dedicated alert path because it
+  // signals that the audio daemon itself crashed and the recorder handle is
+  // permanently invalid — auto-resume cannot recover. Same for the very
+  // first `hasError` we ever see on a recorder that wasn't recording yet.
   const statusListener = useCallback((status: RecordingStatus) => {
     if (status.mediaServicesDidReset && !mediaResetAlertedRef.current) {
       mediaResetAlertedRef.current = true;
@@ -87,24 +111,54 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         'Recording Interrupted',
         'The audio input was lost (e.g. headphones disconnected). Please stop and start a new recording.'
       );
+      return;
     }
-    if (status.hasError && !hasErrorAlertedRef.current && !mediaResetAlertedRef.current) {
-      hasErrorAlertedRef.current = true;
-      if (__DEV__) console.error('[AudioRecorder] Recording error:', status.error);
-      const errorMessage = typeof status.error === 'string' ? status.error : JSON.stringify(status.error ?? {});
-      captureException(new Error(errorMessage || 'expo-audio status.hasError'), {
-        tags: { component: 'useAudioRecorder', phase: 'recorder_status' },
-      });
-      reportClientError({
-        phase: 'recorder_status',
-        severity: 'error',
-        message: errorMessage,
-      });
+    if (!status.hasError) return;
+    if (hasErrorAlertedRef.current || mediaResetAlertedRef.current) return;
+    hasErrorAlertedRef.current = true;
+
+    const errorMessage = typeof status.error === 'string' ? status.error : JSON.stringify(status.error ?? {});
+    if (__DEV__) console.error('[AudioRecorder] Recording error:', status.error);
+    captureException(new Error(errorMessage || 'expo-audio status.hasError'), {
+      tags: { component: 'useAudioRecorder', phase: 'recorder_status' },
+    });
+    reportClientError({
+      phase: 'recorder_status',
+      severity: 'error',
+      message: errorMessage,
+    });
+
+    const wasRecording = stateRef.current === 'recording' || stateRef.current === 'paused';
+    if (!wasRecording) {
+      // Error during prepare / before record() — there's nothing to flush;
+      // surface the legacy alert so the user knows their attempt failed.
       Alert.alert(
         'Recording Issue',
         'An error occurred during recording. The audio may be incomplete or silent — please stop, check your recording, and re-record if needed.'
       );
+      return;
     }
+
+    // Best-effort flush + capture URI for the partial segment, then signal
+    // the interrupted state so the UI can offer auto-resume.
+    (async () => {
+      const r = recorderRef.current;
+      const polled = recorderStateRef.current?.durationMillis ?? 0;
+      const captured = Math.floor(polled / 1000);
+      if (captured > 0) capturedDurationRef.current = captured;
+      finalDurationRef.current = capturedDurationRef.current;
+      setFinalDuration(finalDurationRef.current);
+      try {
+        if (r) await r.stop();
+      } catch {
+        // Recording is already broken; stop() failure is expected.
+      }
+      const uri = r?.uri ?? null;
+      latestAudioUriRef.current = uri;
+      setAudioUri(uri);
+      setState('interrupted');
+      await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+    })().catch(() => { /* best-effort: state stays whatever the throw left it */ });
   }, []);
 
   // Create the expo-audio recorder (auto-released on unmount)
@@ -112,6 +166,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   // Poll for status (duration, metering) — 500ms balances responsiveness with CPU usage on weak hardware
   const recorderState = useAudioRecorderState(recorder, 500);
+
+  // Forward to the refs the statusListener closes over — see its comment.
+  recorderRef.current = recorder;
+  recorderStateRef.current = recorderState;
+  stateRef.current = state;
 
   useEffect(() => {
     if (state !== 'recording' && state !== 'paused') return;
@@ -298,7 +357,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   return {
     state,
     isStarting,
-    duration: state === 'stopped' ? finalDuration : Math.floor(recorderState.durationMillis / 1000),
+    duration:
+      state === 'stopped' || state === 'interrupted'
+        ? finalDuration
+        : Math.floor(recorderState.durationMillis / 1000),
     metering: recorderState.metering ?? -160,
     maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     audioUri,

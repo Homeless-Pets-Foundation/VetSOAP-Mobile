@@ -1,4 +1,4 @@
-import PostHog from 'posthog-react-native';
+import type PostHog from 'posthog-react-native';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { POSTHOG_KEY, POSTHOG_HOST } from '../config';
@@ -9,6 +9,21 @@ import { shouldEmit, getSuppressionSummary } from './rateLimitMonitoring';
  * property shapes. PHI is never allowed — the property types below are the
  * only fields we emit. If you need a new field, add it here, not inline.
  */
+
+// Lazy so old dev-client APKs without posthog-react-native's native deps
+// (expo-application etc.) don't throw at module-load. See CLAUDE.md rule 23.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _PostHog: any | null = null;
+function loadPostHog(): typeof PostHog | null {
+  if (_PostHog) return _PostHog;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _PostHog = require('posthog-react-native').default;
+    return _PostHog;
+  } catch {
+    return null;
+  }
+}
 
 let _client: PostHog | null = null;
 
@@ -146,8 +161,14 @@ export function initAnalytics(): void {
     return;
   }
 
+  const PostHogCtor = loadPostHog();
+  if (!PostHogCtor) {
+    if (__DEV__) console.log('[PostHog] Disabled — posthog-react-native native module unavailable');
+    return;
+  }
+
   try {
-    _client = new PostHog(POSTHOG_KEY, {
+    _client = new PostHogCtor(POSTHOG_KEY, {
       host: POSTHOG_HOST,
       // Disable autocapture — we only want explicit events we can audit.
       captureAppLifecycleEvents: false,

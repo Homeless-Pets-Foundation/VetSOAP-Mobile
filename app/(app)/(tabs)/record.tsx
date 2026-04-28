@@ -568,17 +568,22 @@ function RecordingSession() {
     };
   }, []);
 
-  // Hold the audio-focus listener only while a slot is actively recording or
-  // paused, so we don't preempt music / voice apps when no clinical session
-  // is in progress.
+  // Hold the audio-focus listener while a slot is actively recording or
+  // paused — and ALSO while we're in the post-interruption pending-resume
+  // window, otherwise we'd miss the GAIN event when the interrupting
+  // source (call, alarm) releases focus and never auto-resume on
+  // declined / missed-call paths. The ref is read synchronously so we
+  // don't hit the abandon-then-re-request cycle that batched setState
+  // would force on us.
   useEffect(() => {
     const isActive = recorder.state === 'recording' || recorder.state === 'paused';
-    if (isActive) {
+    const hasPendingResume = !!interruptionPendingResumeRef.current;
+    if (isActive || hasPendingResume) {
       audioFocus.startMonitoring().catch(() => {});
     } else {
       audioFocus.stopMonitoring().catch(() => {});
     }
-  }, [recorder.state]);
+  }, [recorder.state, interruptionPendingResume]);
 
   const persistSessionDraftsForBackground = useCallback(async () => {
     if (backgroundPersistingRef.current) return;

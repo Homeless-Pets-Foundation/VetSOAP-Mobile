@@ -1,0 +1,7 @@
+{
+  "name": "captivet-audio-focus",
+  "version": "0.1.0",
+  "description": "Native Android audio focus listener for detecting recording interruptions (calls, alarms, voice apps).",
+  "main": "index.ts",
+  "private": true
+}

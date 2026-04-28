@@ -34,6 +34,7 @@ export interface UseAudioRecorderReturn {
   stop: () => Promise<void>;
   reset: () => void;
   resetWithoutDelete: () => void;
+  triggerInterruption: () => Promise<void>;
   isSupported: boolean;
 }
 
@@ -141,25 +142,35 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
     // Best-effort flush + capture URI for the partial segment, then signal
     // the interrupted state so the UI can offer auto-resume.
-    (async () => {
-      const r = recorderRef.current;
-      const polled = recorderStateRef.current?.durationMillis ?? 0;
-      const captured = Math.floor(polled / 1000);
-      if (captured > 0) capturedDurationRef.current = captured;
-      finalDurationRef.current = capturedDurationRef.current;
-      setFinalDuration(finalDurationRef.current);
-      try {
-        if (r) await r.stop();
-      } catch {
-        // Recording is already broken; stop() failure is expected.
-      }
-      const uri = r?.uri ?? null;
-      latestAudioUriRef.current = uri;
-      setAudioUri(uri);
-      setState('interrupted');
-      await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
-    })().catch(() => { /* best-effort: state stays whatever the throw left it */ });
+    runInterruptionFlowRef.current().catch(() => { /* best-effort */ });
   }, []);
+
+  // Shared interruption flow used by both expo-audio's hasError signal (above)
+  // and the Android audio-focus loss listener (record.tsx). Captures bytes,
+  // transitions to 'interrupted', and lets the caller observe state and run
+  // the save+pending-resume flow.
+  const runInterruptionFlow = useCallback(async () => {
+    const wasRecording = stateRef.current === 'recording' || stateRef.current === 'paused';
+    if (!wasRecording) return;
+    const r = recorderRef.current;
+    const polled = recorderStateRef.current?.durationMillis ?? 0;
+    const captured = Math.floor(polled / 1000);
+    if (captured > 0) capturedDurationRef.current = captured;
+    finalDurationRef.current = capturedDurationRef.current;
+    setFinalDuration(finalDurationRef.current);
+    try {
+      if (r) await r.stop();
+    } catch {
+      // Recording is already broken or already stopped; ignore.
+    }
+    const uri = r?.uri ?? null;
+    latestAudioUriRef.current = uri;
+    setAudioUri(uri);
+    setState('interrupted');
+    await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+  }, []);
+  const runInterruptionFlowRef = useRef(runInterruptionFlow);
+  runInterruptionFlowRef.current = runInterruptionFlow;
 
   // Create the expo-audio recorder (auto-released on unmount)
   const recorder = useExpoAudioRecorder(RECORDING_OPTIONS, statusListener);
@@ -378,6 +389,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     stop,
     reset,
     resetWithoutDelete,
+    triggerInterruption: runInterruptionFlow,
     isSupported: true,
   };
 }

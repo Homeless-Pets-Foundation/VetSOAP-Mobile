@@ -14,6 +14,7 @@ import {
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import * as audioFocus from '../../../modules/captivet-audio-focus';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
 import { useAuth } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
@@ -511,6 +512,48 @@ function RecordingSession() {
     breadcrumb('record', 'interruption_paused', { slot_id: slotId });
     recorder.resetWithoutDelete();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally fires only on the recorder transition; reading session/refs from current render is correct
+  }, [recorder.state]);
+
+  // Android audio-focus interruption bridge.
+  //
+  // expo-audio on Android does not surface AudioFocus loss as `hasError`
+  // because its background-audio foreground service holds focus across the
+  // call. To detect calls / alarms / voice apps, the local
+  // `captivet-audio-focus` native module registers our own focus listener
+  // via AudioManager. On loss, we hand off to the hook's shared
+  // `triggerInterruption()` flow, which transitions the recorder state to
+  // 'interrupted' — the existing `recorder.state === 'interrupted'` effect
+  // above then saves the partial segment, shows the banner, and arms
+  // pending-resume. iOS already gets this via expo-audio's hasError, and
+  // the native module is a no-op on that platform.
+  const recorderStateForFocusRef = useRef(recorder.state);
+  recorderStateForFocusRef.current = recorder.state;
+  const triggerInterruptionRef = useRef(recorder.triggerInterruption);
+  triggerInterruptionRef.current = recorder.triggerInterruption;
+  useEffect(() => {
+    const sub = audioFocus.addListener((event) => {
+      if (event.type !== 'loss') return;
+      if (event.reason === 'duck') return; // ducking is volume-only, not pause
+      if (interruptionPendingResumeRef.current) return; // already handling
+      const state = recorderStateForFocusRef.current;
+      if (state !== 'recording' && state !== 'paused') return;
+      triggerInterruptionRef.current().catch(() => {});
+    });
+    return () => {
+      sub.remove();
+    };
+  }, []);
+
+  // Hold the audio-focus listener only while a slot is actively recording or
+  // paused, so we don't preempt music / voice apps when no clinical session
+  // is in progress.
+  useEffect(() => {
+    const isActive = recorder.state === 'recording' || recorder.state === 'paused';
+    if (isActive) {
+      audioFocus.startMonitoring().catch(() => {});
+    } else {
+      audioFocus.stopMonitoring().catch(() => {});
+    }
   }, [recorder.state]);
 
   const persistSessionDraftsForBackground = useCallback(async () => {

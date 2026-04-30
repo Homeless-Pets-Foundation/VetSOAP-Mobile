@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, Image, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
-import { AlertCircle, Eye, EyeOff, Info, Apple } from 'lucide-react-native';
+import { AlertCircle, Eye, EyeOff, Info } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { TextInputField } from '../../src/components/ui/TextInputField';
@@ -244,19 +244,6 @@ export default function LoginScreen() {
               Continue with Google
             </Button>
 
-            {Platform.OS === 'ios' && (
-              <Button
-                variant="secondary"
-                size="lg"
-                icon={<Apple color="#000" size={iconSm + 2} fill="#000" />}
-                onPress={() => { handleSocial('apple').catch(() => {}); }}
-                loading={socialProvider === 'apple'}
-                disabled={isLoading || socialProvider === 'google'}
-                accessibilityLabel="Continue with Apple"
-              >
-                Continue with Apple
-              </Button>
-            )}
           </View>
         </Animated.View>
         </View>

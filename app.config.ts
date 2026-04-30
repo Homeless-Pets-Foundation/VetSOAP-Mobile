@@ -82,7 +82,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     name: 'Captivet',
     slug: 'vetsoap-mobile',
     scheme: 'captivet',
-    version: '1.11.2',
+    version: '1.11.3',
     orientation: 'default',
     icon: './assets/icon.png',
     userInterfaceStyle: 'light',

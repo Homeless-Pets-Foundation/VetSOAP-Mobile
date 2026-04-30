@@ -52,7 +52,6 @@ const RECORDING_OPTIONS: RecordingOptions = {
   ios: {
     audioQuality: AudioQuality.MAX,
     outputFormat: IOSOutputFormat.MPEG4AAC,
-    bitRateStrategy: 0, // CONSTANT — consistent bitrate throughout recording
     linearPCMBitDepth: 16,
     linearPCMIsBigEndian: false,
     linearPCMIsFloat: false,

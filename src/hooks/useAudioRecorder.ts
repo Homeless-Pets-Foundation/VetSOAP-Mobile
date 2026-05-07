@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Alert, Platform, PermissionsAndroid } from 'react-native';
+import { Alert, AppState, Platform, PermissionsAndroid } from 'react-native';
 import {
   useAudioRecorder as useExpoAudioRecorder,
   useAudioRecorderState,
@@ -174,8 +174,26 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // Create the expo-audio recorder (auto-released on unmount)
   const recorder = useExpoAudioRecorder(RECORDING_OPTIONS, statusListener);
 
-  // Poll for status (duration, metering) — 500ms balances responsiveness with CPU usage on weak hardware
-  const recorderState = useAudioRecorderState(recorder, 500);
+  // Adaptive poll cadence: 500ms while actively recording in the foreground
+  // (responsive metering + duration), 2000ms when backgrounded (still ticks
+  // the duration counter for the background-recording UX), 5000ms when idle
+  // or stopped (no consumer reading the polled values). On weak hardware the
+  // 500ms cadence is the dominant CPU cost of an open recorder; this keeps
+  // the cost only for the moments the UI actually needs it.
+  const [appActive, setAppActive] = useState(() => AppState.currentState === 'active');
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      setAppActive(next === 'active');
+    });
+    return () => sub.remove();
+  }, []);
+  const pollIntervalMs =
+    state === 'recording' || state === 'paused'
+      ? appActive
+        ? 500
+        : 2000
+      : 5000;
+  const recorderState = useAudioRecorderState(recorder, pollIntervalMs);
 
   // Forward to the refs the statusListener closes over — see its comment.
   recorderRef.current = recorder;

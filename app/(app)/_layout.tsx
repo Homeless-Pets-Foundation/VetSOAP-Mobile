@@ -1,9 +1,12 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Redirect, Stack } from 'expo-router';
 import { useAuth } from '../../src/hooks/useAuth';
 import { View, Text, ActivityIndicator, Pressable } from 'react-native';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
 import { DeviceRegistrationBanner } from '../../src/components/DeviceRegistrationBanner';
+import { breadcrumb } from '../../src/lib/monitoring';
+
+const HALF_AUTH_TIMEOUT_MS = 30_000;
 
 export default function AppLayout() {
   const {
@@ -31,6 +34,24 @@ export default function AppLayout() {
   const handleSignOut = useCallback(() => {
     signOut().catch(() => {});
   }, [signOut]);
+
+  // Half-auth fallback: when the layout is stuck on the spinner branch below
+  // (session present but /auth/me hasn't returned), force a sign-out after a
+  // grace period so the user reaches the login screen instead of an
+  // indefinite blank spinner. The two paths into this state are (a) a hard
+  // network outage during cold-start fetchUser, and (b) a hung native bridge
+  // call (SecureStore, registerDevice). Both leave isLoading=false but
+  // userFetchState='loading' or 'idle' with user=null.
+  const isHalfAuth = isAuthenticated && !user && userFetchState !== 'error';
+  useEffect(() => {
+    if (!isHalfAuth) return;
+    const t = setTimeout(() => {
+      if (__DEV__) console.warn('[AppLayout] half-auth spinner stuck >30s, forcing signOut');
+      breadcrumb('auth', 'half_auth_timeout', {});
+      signOut().catch(() => {});
+    }, HALF_AUTH_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [isHalfAuth, signOut]);
 
   if (__DEV__) console.log('[AppLayout] render: isLoading=', isLoading, 'isAuthenticated=', isAuthenticated);
 
@@ -101,7 +122,10 @@ export default function AppLayout() {
         <DeviceRegistrationBanner />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="audio-editor" />
+          {/* iOS interactive-pop swipe-back from screen edge intercepts the left
+              trim handle's pan when the user starts the drag near the edge.
+              Disable it here — the editor has its own back button. */}
+          <Stack.Screen name="audio-editor" options={{ gestureEnabled: false }} />
         </Stack>
       </View>
     </AppLockGuard>

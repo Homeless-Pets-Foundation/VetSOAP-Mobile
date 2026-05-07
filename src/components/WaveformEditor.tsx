@@ -90,9 +90,11 @@ export function WaveformEditor({
   }, [duration, zoomSV, panSV]);
 
   // Reflect zoom/pan into React state so StaticWaveform can pick the right peak slice.
-  // Throttled: only fires when the integer-second window shifts, which is plenty to keep
-  // the waveform visually matched to the handle/playhead positions without overrendering
-  // during an active pinch.
+  // 100ms throttle on top of the 0.05s value-change gate keeps runOnJS hops below
+  // ~10/sec even during a sustained pinch on iOS, where each hop costs a JS-thread
+  // tick. The reaction always fires its first/last update so the waveform renders
+  // a settled window when the gesture ends.
+  const lastReactionFireMsSV = useSharedValue(0);
   useAnimatedReaction(
     () => {
       'worklet';
@@ -104,10 +106,18 @@ export function WaveformEditor({
     (val, prev) => {
       'worklet';
       if (val.end === 0) return;
-      if (!prev || Math.abs(val.start - prev.start) > 0.05 || Math.abs(val.end - prev.end) > 0.05) {
-        runOnJS(setVisibleStartSec)(val.start);
-        runOnJS(setVisibleEndSec)(val.end);
-      }
+      const changed =
+        !prev ||
+        Math.abs(val.start - prev.start) > 0.05 ||
+        Math.abs(val.end - prev.end) > 0.05;
+      if (!changed) return;
+      const now = Date.now();
+      // First emit always passes (lastReactionFireMsSV starts at 0, any real
+      // monotonic time exceeds the 100ms gate).
+      if (now - lastReactionFireMsSV.value < 100) return;
+      lastReactionFireMsSV.value = now;
+      runOnJS(setVisibleStartSec)(val.start);
+      runOnJS(setVisibleEndSec)(val.end);
     }
   );
 
@@ -162,6 +172,14 @@ export function WaveformEditor({
       const visible = dur / newZoom;
       const desiredLeftSec = pinchFocalSec.value - (event.focalX / cw) * visible;
       panSV.value = Math.max(0, Math.min(dur - visible, desiredLeftSec));
+    })
+    .onEnd(() => {
+      'worklet';
+      // Reset the reaction throttle so the settled window value flows to React
+      // state on the next worklet tick — without this, ending a pinch within
+      // the 100ms throttle window leaves StaticWaveform with the second-to-last
+      // visible bounds.
+      lastReactionFireMsSV.value = 0;
     });
 
   const twoFingerPan = Gesture.Pan()
@@ -180,6 +198,10 @@ export function WaveformEditor({
     .onBegin(() => {
       'worklet';
       pinchPanAtStart.value = panSV.value;
+    })
+    .onEnd(() => {
+      'worklet';
+      lastReactionFireMsSV.value = 0;
     });
 
   // Double-tap to toggle zoom (1x ↔ 3x around tap point). Lives *inside* TrimOverlay's

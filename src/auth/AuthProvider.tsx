@@ -177,6 +177,34 @@ function clearTelemetryIdentity(): void {
  * in onAuthStateChange so transient session expiry cleans up the same set
  * of artefacts as a user-initiated sign-out.
  */
+/**
+ * Race a possibly-hanging cleanup promise against a deadline. The cleanup
+ * paths in sign-out reach into native bridges (SecureStore Keychain,
+ * Google Sign-In, file system) that can permanently hang on iOS — when that
+ * happens there is no recovery short of killing the app, which the user
+ * sees as a blank loading screen because `isLoading` never flips back to
+ * false. `withTimeout` ensures the chain always advances to `setUser(null)`.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const safeguard = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      breadcrumb('auth', 'cleanup_timeout', { label, ms });
+      resolve(null);
+    }, ms);
+  });
+  return Promise.race([
+    p.then((v) => {
+      if (timer) clearTimeout(timer);
+      return v;
+    }).catch(() => {
+      if (timer) clearTimeout(timer);
+      return null;
+    }),
+    safeguard,
+  ]);
+}
+
 async function performPhiCleanup(): Promise<void> {
   try {
     await Promise.all([
@@ -463,24 +491,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     userInitiatedSignOutRef.current = true;
     // Clear in-memory token immediately
     apiClient.setToken(null);
-    try {
-      await supabase.auth.signOut();
-    } catch (error) {
-      if (__DEV__) console.error('[Auth] supabase.auth.signOut failed:', error);
-    }
-    await signOutNativeGoogle();
-    try {
-      await secureStorage.clearAll();
-    } catch (error) {
-      if (__DEV__) console.error('[Auth] clearAll failed:', error);
-    }
+    await withTimeout(
+      supabase.auth.signOut().catch((error) => {
+        if (__DEV__) console.error('[Auth] supabase.auth.signOut failed:', error);
+      }),
+      3000,
+      'supabase_signout'
+    );
+    await withTimeout(signOutNativeGoogle(), 2000, 'google_signout');
+    await withTimeout(
+      secureStorage.clearAll().catch((error) => {
+        if (__DEV__) console.error('[Auth] clearAll failed:', error);
+      }),
+      3000,
+      'secure_clear'
+    );
     // Clear cached PHI from React Query
     queryClient.clear();
 
     // Await critical PHI cleanup before clearing auth state.
     // This prevents a race where the next user signs in while the previous
     // user's stash data and audio files are still on disk.
-    await performPhiCleanup();
+    await withTimeout(performPhiCleanup(), 3000, 'phi_cleanup');
 
     // Now clear stash user scoping and auth state
     setStashUserId(null);
@@ -703,10 +735,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // Full PHI cleanup before clearing auth state — mirrors handleSignOut.
             // Prevents the next user on a shared tablet from seeing stashed patient
             // data, drafts, cached audio, or waveform peaks when a session expires
-            // or is revoked by the server.
-            await performPhiCleanup();
-            await signOutNativeGoogle();
-            await secureStorage.clearAll();
+            // or is revoked by the server. Each step is bounded by withTimeout so
+            // a hung native bridge can't trap setIsLoading(true) forever — the
+            // common observable symptom is a blank spinner on cold start that
+            // only clears via force-quit + relaunch.
+            await withTimeout(performPhiCleanup(), 3000, 'phi_cleanup');
+            await withTimeout(signOutNativeGoogle(), 2000, 'google_signout');
+            await withTimeout(
+              secureStorage.clearAll().catch(() => {}),
+              3000,
+              'secure_clear'
+            );
             // Clear cached PHI so the next user on this shared tablet
             // doesn't briefly see the previous user's recording list.
             queryClient.clear();
@@ -762,11 +801,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'foreground' } });
             const { error } = await supabase.auth.refreshSession();
             if (error) {
+              const errorCode = classifyAuthError(error);
               if (__DEV__) console.log('[Auth] foreground refresh failed:', error.message);
               trackEvent({
                 name: 'session_refresh_failed',
-                props: { trigger: 'foreground', error_code: classifyAuthError(error) },
+                props: { trigger: 'foreground', error_code: errorCode },
               });
+              // Hard failures (auth no longer valid) need to advance the app to
+              // the login screen. Without this the foreground handler logs the
+              // error and returns — leaving the user on a half-auth screen
+              // (session in memory, /auth/me 401-ing on every gated query) that
+              // looks like a blank spinner. Local-scope signOut emits SIGNED_OUT
+              // through onAuthStateChange so cleanup runs through one path.
+              const isTransient =
+                errorCode === 'network' ||
+                errorCode === 'retryable_fetch' ||
+                errorCode === 'rate_limited' ||
+                errorCode === 'server_error';
+              if (!isTransient) {
+                if (__DEV__) console.log('[Auth] foreground refresh hard-fail, forcing local signOut');
+                breadcrumb('auth', 'foreground_refresh_hard_fail', { error_code: errorCode });
+                await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+              }
             } else {
               if (__DEV__) console.log('[Auth] foreground refresh succeeded');
             }

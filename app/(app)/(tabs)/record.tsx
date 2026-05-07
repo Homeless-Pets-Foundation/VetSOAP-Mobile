@@ -2048,16 +2048,16 @@ function RecordingSession() {
           templates={templates}
           templatesLoading={templatesLoading}
           width={screenWidth}
-          onUpdateForm={(field, value) => handleUpdateForm(item.id, field, value)}
-          onStart={() => handleStart(item.id)}
-          onPause={() => handlePause(item.id)}
-          onResume={() => handleResume(item.id)}
-          onStop={() => handleStop(item.id)}
-          onRecordAgain={() => handleRecordAgain(item.id)}
-          onContinueRecording={() => handleContinueRecording(item.id)}
-          onRemove={() => handleRemove(item.id)}
-          onSubmitSingle={() => handleSubmitSingle(item.id)}
-          onEditRecording={() => handleEditRecording(item.id)}
+          onUpdateForm={handleUpdateForm}
+          onStart={handleStart}
+          onPause={handlePause}
+          onResume={handleResume}
+          onStop={handleStop}
+          onRecordAgain={handleRecordAgain}
+          onContinueRecording={handleContinueRecording}
+          onRemove={handleRemove}
+          onSubmitSingle={handleSubmitSingle}
+          onEditRecording={handleEditRecording}
           submitBlockedByLiveRecording={slotHasLiveRecorder(item)}
         />
       );

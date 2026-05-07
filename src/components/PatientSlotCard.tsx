@@ -40,16 +40,19 @@ interface PatientSlotCardProps {
   templates: Template[];
   templatesLoading: boolean;
   width: number;
-  onUpdateForm: (field: keyof CreateRecording, value: string | boolean | undefined) => void;
-  onStart: () => void;
-  onPause: () => void;
-  onResume: () => void;
-  onStop: () => void;
-  onRecordAgain: () => void;
-  onContinueRecording: () => void;
-  onRemove: () => void;
-  onSubmitSingle: () => void;
-  onEditRecording: () => void;
+  // Slot-id parameterized so the parent can pass stable useCallback refs once
+  // and React.memo on this component actually short-circuits re-renders during
+  // the recorder's 500ms metering polls.
+  onUpdateForm: (slotId: string, field: keyof CreateRecording, value: string | boolean | undefined) => void;
+  onStart: (slotId: string) => void;
+  onPause: (slotId: string) => void;
+  onResume: (slotId: string) => void;
+  onStop: (slotId: string) => void;
+  onRecordAgain: (slotId: string) => void;
+  onContinueRecording: (slotId: string) => void;
+  onRemove: (slotId: string) => void;
+  onSubmitSingle: (slotId: string) => void;
+  onEditRecording: (slotId: string) => void;
   submitBlockedByLiveRecording: boolean;
 }
 
@@ -113,6 +116,34 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     transform: [{ scale: recordBtnScale.value }],
   }));
 
+  // Bind slot.id once per render so child components (PatientForm, Button)
+  // get callbacks with the legacy no-id signature without forcing the parent
+  // to recreate them.
+  const slotId = slot.id;
+  const handleUpdateForm = React.useCallback(
+    (field: keyof CreateRecording, value: string | boolean | undefined) =>
+      onUpdateForm(slotId, field, value),
+    [onUpdateForm, slotId]
+  );
+  const handleStart = React.useCallback(() => onStart(slotId), [onStart, slotId]);
+  const handlePause = React.useCallback(() => onPause(slotId), [onPause, slotId]);
+  const handleResume = React.useCallback(() => onResume(slotId), [onResume, slotId]);
+  const handleStop = React.useCallback(() => onStop(slotId), [onStop, slotId]);
+  const handleRecordAgain = React.useCallback(() => onRecordAgain(slotId), [onRecordAgain, slotId]);
+  const handleContinueRecording = React.useCallback(
+    () => onContinueRecording(slotId),
+    [onContinueRecording, slotId]
+  );
+  const handleRemove = React.useCallback(() => onRemove(slotId), [onRemove, slotId]);
+  const handleSubmitSingle = React.useCallback(
+    () => onSubmitSingle(slotId),
+    [onSubmitSingle, slotId]
+  );
+  const handleEditRecording = React.useCallback(
+    () => onEditRecording(slotId),
+    [onEditRecording, slotId]
+  );
+
   const [pimsLookupLoading, setPimsLookupLoading] = React.useState(false);
   const lookupIdRef = React.useRef(0);
 
@@ -125,16 +156,16 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       .then((result) => {
         if (lookupIdRef.current !== lookupId) return;
         if (!result) return;
-        onUpdateForm('patientName', result.patientName);
-        if (result.clientName) onUpdateForm('clientName', result.clientName);
-        if (result.species) onUpdateForm('species', result.species);
-        if (result.breed) onUpdateForm('breed', result.breed);
+        handleUpdateForm('patientName', result.patientName);
+        if (result.clientName) handleUpdateForm('clientName', result.clientName);
+        if (result.species) handleUpdateForm('species', result.species);
+        if (result.breed) handleUpdateForm('breed', result.breed);
       })
       .catch(() => {})
       .finally(() => {
         if (lookupIdRef.current === lookupId) setPimsLookupLoading(false);
       });
-  }, [slot.formData.pimsPatientId, onUpdateForm]);
+  }, [slot.formData.pimsPatientId, handleUpdateForm]);
 
   const hasRequiredFields =
     slot.formData.patientName.trim().length > 0 &&
@@ -173,7 +204,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         </Text>
         {totalSlots > 1 && (
           <Pressable
-            onPress={onRemove}
+            onPress={handleRemove}
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={`Remove patient ${slotIndex + 1}`}
@@ -196,7 +227,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       <Card className="mb-4">
         <PatientForm
           formData={slot.formData}
-          onUpdate={onUpdateForm}
+          onUpdate={handleUpdateForm}
           templates={templates}
           templatesLoading={templatesLoading}
           onPimsIdBlur={handlePimsBlur}
@@ -278,7 +309,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           {audioState === 'idle' && (
             <Animated.View entering={FadeIn.duration(300)}>
               <AnimatedPressable
-                onPress={onStart}
+                onPress={handleStart}
                 onPressIn={() => {
                   recordBtnScale.value = withSpring(0.9, { damping: 15, stiffness: 300 });
                 }}
@@ -307,26 +338,26 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           {/* Recording: pause + finish */}
           {isRecorderOwner && isRecording && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
-              <Button variant="secondary" onPress={onPause}>Pause</Button>
-              <Button variant="primary" onPress={onStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
+              <Button variant="secondary" onPress={handlePause}>Pause</Button>
+              <Button variant="primary" onPress={handleStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
             </Animated.View>
           )}
 
           {/* Paused: resume + finish (recorder owner) */}
           {isRecorderOwner && isPaused && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
-              <Button variant="secondary" onPress={onResume}>Resume</Button>
-              <Button variant="primary" onPress={onStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
+              <Button variant="secondary" onPress={handleResume}>Resume</Button>
+              <Button variant="primary" onPress={handleStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
             </Animated.View>
           )}
 
           {/* Paused but not recorder owner: let user continue or start over */}
           {isPaused && !isRecorderOwner && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
-              <Button variant="primary" onPress={onContinueRecording} icon={<Plus color="#fff" size={18} />}>Continue Recording</Button>
+              <Button variant="primary" onPress={handleContinueRecording} icon={<Plus color="#fff" size={18} />}>Continue Recording</Button>
               {hasSegments && (
                 <Pressable
-                  onPress={onRecordAgain}
+                  onPress={handleRecordAgain}
                   accessibilityRole="button"
                   accessibilityLabel="Delete recording and start over"
                   className="min-h-[44px] justify-center items-center"
@@ -343,14 +374,14 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           {/* Stopped with segments: continue, edit, or discard */}
           {isStopped && hasSegments && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
-              <Button variant="primary" size="lg" onPress={onContinueRecording} icon={<Plus color="#fff" size={18} />}>
+              <Button variant="primary" size="lg" onPress={handleContinueRecording} icon={<Plus color="#fff" size={18} />}>
                 Continue Recording
               </Button>
-              <Button variant="secondary" onPress={onEditRecording} icon={<Scissors color="#1c1917" size={16} />}>
+              <Button variant="secondary" onPress={handleEditRecording} icon={<Scissors color="#1c1917" size={16} />}>
                 Edit Recording
               </Button>
               <Pressable
-                onPress={onRecordAgain}
+                onPress={handleRecordAgain}
                 accessibilityRole="button"
                 accessibilityLabel="Delete recording and start over"
                 className="min-h-[44px] justify-center items-center"
@@ -366,7 +397,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           {/* Stopped with no segments (error recovery) */}
           {isStopped && !hasSegments && (
             <Animated.View entering={FadeIn.duration(200)}>
-              <Button variant="primary" onPress={onContinueRecording}>Try Again</Button>
+              <Button variant="primary" onPress={handleContinueRecording}>Try Again</Button>
             </Animated.View>
           )}
         </View>
@@ -442,7 +473,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             <Button
               variant="primary"
               size="lg"
-              onPress={onSubmitSingle}
+              onPress={handleSubmitSingle}
               loading={slot.uploadStatus === 'uploading'}
               disabled={!canSubmitSingle}
               accessibilityLabel="Submit and generate SOAP note"

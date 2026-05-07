@@ -186,7 +186,6 @@ export function TrimOverlay({
       }
     })
     .activeOffsetX([-8, 8])
-    .failOffsetY([-15, 15])
     .minPointers(1)
     .maxPointers(1);
 
@@ -252,7 +251,12 @@ export function TrimOverlay({
       runOnJS(emitZoomToggle)(Math.max(0, Math.min(tapSec, dur)));
     });
 
-  const gesture = Gesture.Exclusive(doubleTap, pan, tap);
+  // Race instead of Exclusive: each gesture races to activate based on its own
+  // criteria (doubleTap = 2 taps in 250ms, pan = 8px X-axis movement, tap = release
+  // within 300ms with no movement). Exclusive's priority chain misbehaves on iOS
+  // when the higher-priority gesture stays in BEGAN state — Pan never gets a turn
+  // until doubleTap fully fails, which felt like dead handles.
+  const gesture = Gesture.Race(doubleTap, pan, tap);
 
   // --- Animated styles ---
   // All position math uses the visible window [pSV, pSV + durationSV/zSV]. When zoomed in,

@@ -66,6 +66,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const [state, setState] = useState<RecordingState>('idle');
   const [audioUri, setAudioUri] = useState<string | null>(null);
   const [finalDuration, setFinalDuration] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [isStarting, setIsStarting] = useState(false);
   const stoppingRef = useRef(false);
@@ -76,6 +77,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const maxMeteringRef = useRef(-160);
   const hasMeteringSampleRef = useRef(false);
   const finalDurationRef = useRef(0);
+  const elapsedSecondsRef = useRef(0);
+  const elapsedBeforeCurrentRunMsRef = useRef(0);
+  const recordingStartedAtMsRef = useRef<number | null>(null);
   // Capture duration before pause/stop — native pause can reset the polled durationMillis to 0
   const capturedDurationRef = useRef(0);
 
@@ -86,6 +90,65 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const recorderRef = useRef<ReturnType<typeof useExpoAudioRecorder> | null>(null);
   const recorderStateRef = useRef<{ durationMillis: number } | null>(null);
   const stateRef = useRef<RecordingState>('idle');
+
+  const setElapsedSecondsValue = useCallback((seconds: number) => {
+    const normalized = Math.max(0, seconds);
+    elapsedSecondsRef.current = normalized;
+    setElapsedSeconds(normalized);
+  }, []);
+
+  const getNativeDurationSeconds = useCallback(() => {
+    return Math.floor((recorderStateRef.current?.durationMillis ?? 0) / 1000);
+  }, []);
+
+  const getElapsedDurationSeconds = useCallback(() => {
+    const startedAt = recordingStartedAtMsRef.current;
+    const activeElapsedMs = startedAt === null ? 0 : Math.max(0, Date.now() - startedAt);
+    return Math.floor((elapsedBeforeCurrentRunMsRef.current + activeElapsedMs) / 1000);
+  }, []);
+
+  const resetElapsedClock = useCallback(() => {
+    recordingStartedAtMsRef.current = null;
+    elapsedBeforeCurrentRunMsRef.current = 0;
+    setElapsedSecondsValue(0);
+  }, [setElapsedSecondsValue]);
+
+  const startElapsedClock = useCallback(() => {
+    elapsedBeforeCurrentRunMsRef.current = 0;
+    recordingStartedAtMsRef.current = Date.now();
+    setElapsedSecondsValue(0);
+  }, [setElapsedSecondsValue]);
+
+  const resumeElapsedClock = useCallback(() => {
+    if (recordingStartedAtMsRef.current === null) {
+      recordingStartedAtMsRef.current = Date.now();
+    }
+    setElapsedSecondsValue(getElapsedDurationSeconds());
+  }, [getElapsedDurationSeconds, setElapsedSecondsValue]);
+
+  const freezeElapsedClock = useCallback(() => {
+    const startedAt = recordingStartedAtMsRef.current;
+    if (startedAt !== null) {
+      elapsedBeforeCurrentRunMsRef.current += Math.max(0, Date.now() - startedAt);
+      recordingStartedAtMsRef.current = null;
+    }
+    const seconds = Math.max(
+      getElapsedDurationSeconds(),
+      getNativeDurationSeconds(),
+      capturedDurationRef.current
+    );
+    capturedDurationRef.current = seconds;
+    setElapsedSecondsValue(seconds);
+    return seconds;
+  }, [getElapsedDurationSeconds, getNativeDurationSeconds, setElapsedSecondsValue]);
+
+  const finalizeDuration = useCallback(() => {
+    const seconds = Math.max(freezeElapsedClock(), finalDurationRef.current);
+    finalDurationRef.current = seconds;
+    setFinalDuration(seconds);
+    setElapsedSecondsValue(seconds);
+    return seconds;
+  }, [freezeElapsedClock, setElapsedSecondsValue]);
 
   // Status listener for recording events (errors, media reset).
   //
@@ -152,11 +215,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     const wasRecording = stateRef.current === 'recording' || stateRef.current === 'paused';
     if (!wasRecording) return;
     const r = recorderRef.current;
-    const polled = recorderStateRef.current?.durationMillis ?? 0;
-    const captured = Math.floor(polled / 1000);
-    if (captured > 0) capturedDurationRef.current = captured;
-    finalDurationRef.current = capturedDurationRef.current;
-    setFinalDuration(finalDurationRef.current);
+    finalizeDuration();
     try {
       if (r) await r.stop();
     } catch {
@@ -167,7 +226,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setAudioUri(uri);
     setState('interrupted');
     await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
-  }, []);
+  }, [finalizeDuration]);
   const runInterruptionFlowRef = useRef(runInterruptionFlow);
   runInterruptionFlowRef.current = runInterruptionFlow;
 
@@ -175,11 +234,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const recorder = useExpoAudioRecorder(RECORDING_OPTIONS, statusListener);
 
   // Adaptive poll cadence: 500ms while actively recording in the foreground
-  // (responsive metering + duration), 2000ms when backgrounded (still ticks
-  // the duration counter for the background-recording UX), 5000ms when idle
-  // or stopped (no consumer reading the polled values). On weak hardware the
-  // 500ms cadence is the dominant CPU cost of an open recorder; this keeps
-  // the cost only for the moments the UI actually needs it.
+  // (responsive metering + native fallback duration), 2000ms when backgrounded,
+  // 5000ms when idle or stopped. The visible timer is driven by a JS clock
+  // below so iOS native status throttling cannot make the counter jump.
   const [appActive, setAppActive] = useState(() => AppState.currentState === 'active');
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
@@ -208,6 +265,16 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       maxMeteringRef.current = currentMetering;
     }
   }, [recorderState.metering, state]);
+
+  useEffect(() => {
+    if (state !== 'recording') return;
+    const updateElapsed = () => {
+      setElapsedSecondsValue(Math.max(getElapsedDurationSeconds(), getNativeDurationSeconds()));
+    };
+    updateElapsed();
+    const interval = setInterval(updateElapsed, 250);
+    return () => clearInterval(interval);
+  }, [getElapsedDurationSeconds, getNativeDurationSeconds, setElapsedSecondsValue, state]);
 
   const start = useCallback(async () => {
     if (isStartingRef.current || state !== 'idle') {
@@ -241,11 +308,14 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       await recorder.prepareToRecordAsync();
       recorder.record();
 
+      startElapsedClock();
       setState('recording');
       setAudioUri(null);
       latestAudioUriRef.current = null;
       maxMeteringRef.current = -160;
       hasMeteringSampleRef.current = false;
+      finalDurationRef.current = 0;
+      setFinalDuration(0);
       capturedDurationRef.current = 0;
       mediaResetAlertedRef.current = false;
       hasErrorAlertedRef.current = false;
@@ -264,11 +334,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         });
       }
     }
-  }, [state, recorder]);
+  }, [state, recorder, startElapsedClock]);
 
   const pause = useCallback(async () => {
-    // Capture duration before native pause — Android can reset polled durationMillis to 0
-    capturedDurationRef.current = Math.floor(recorderState.durationMillis / 1000);
+    // Capture duration before native pause — native pause can reset durationMillis to 0
+    capturedDurationRef.current = freezeElapsedClock();
     try {
       recorder.pause();
       setState('paused');
@@ -282,8 +352,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         durationSeconds: capturedDurationRef.current,
       });
       // Native handle is broken — clean up so user can start fresh
-      finalDurationRef.current = capturedDurationRef.current;
-      setFinalDuration(capturedDurationRef.current);
+      finalizeDuration();
       try { await recorder.stop(); } catch {}
       const stoppedUri = recorder.uri ?? null;
       latestAudioUriRef.current = stoppedUri;
@@ -292,11 +361,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
       throw error;
     }
-  }, [recorder, recorderState.durationMillis]);
+  }, [finalizeDuration, freezeElapsedClock, recorder]);
 
   const resume = useCallback(async () => {
     try {
       recorder.record();
+      resumeElapsedClock();
       setState('recording');
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] resume failed:', error);
@@ -307,10 +377,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         message: String(error),
       });
       // Native handle is broken — clean up so user can start fresh
-      // Use captured duration since polled value may be 0 while paused
-      const polledDuration = Math.floor(recorderState.durationMillis / 1000);
-      finalDurationRef.current = polledDuration > 0 ? polledDuration : capturedDurationRef.current;
-      setFinalDuration(finalDurationRef.current);
+      finalizeDuration();
       try { await recorder.stop(); } catch {}
       const stoppedUri = recorder.uri ?? null;
       latestAudioUriRef.current = stoppedUri;
@@ -319,15 +386,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
       throw error;
     }
-  }, [recorder, recorderState.durationMillis]);
+  }, [finalizeDuration, recorder, resumeElapsedClock]);
 
   const stop = useCallback(async () => {
     if (stoppingRef.current) return;
     stoppingRef.current = true;
-    // Use polled duration if available, otherwise fall back to duration captured before pause
-    const polledDuration = Math.floor(recorderState.durationMillis / 1000);
-    finalDurationRef.current = polledDuration > 0 ? polledDuration : capturedDurationRef.current;
-    setFinalDuration(finalDurationRef.current);
+    const durationSeconds = finalizeDuration();
     try {
       await recorder.stop();
     } catch (error) {
@@ -337,7 +401,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         phase: 'recorder_stop',
         severity: 'error',
         message: String(error),
-        durationSeconds: finalDurationRef.current,
+        durationSeconds,
       });
     }
     const stoppedUri = recorder.uri ?? null;
@@ -349,7 +413,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     await setAudioModeAsync({
       allowsRecording: false,
     }).catch(() => {});
-  }, [recorder, recorderState.durationMillis]);
+  }, [finalizeDuration, recorder]);
 
   const reset = useCallback(() => {
     if (latestAudioUriRef.current) {
@@ -362,11 +426,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     hasMeteringSampleRef.current = false;
     setFinalDuration(0);
     finalDurationRef.current = 0;
+    resetElapsedClock();
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
     hasErrorAlertedRef.current = false;
-  }, []);
+  }, [resetElapsedClock]);
 
   const resetWithoutDelete = useCallback(() => {
     setState('idle');
@@ -376,11 +441,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     hasMeteringSampleRef.current = false;
     setFinalDuration(0);
     finalDurationRef.current = 0;
+    resetElapsedClock();
     capturedDurationRef.current = 0;
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
     hasErrorAlertedRef.current = false;
-  }, []);
+  }, [resetElapsedClock]);
 
   return {
     state,
@@ -388,7 +454,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     duration:
       state === 'stopped' || state === 'interrupted'
         ? finalDuration
-        : Math.floor(recorderState.durationMillis / 1000),
+        : elapsedSeconds,
     metering: recorderState.metering ?? -160,
     maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     audioUri,
@@ -397,7 +463,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       audioUri: latestAudioUriRef.current,
       duration: finalDurationRef.current > 0
         ? finalDurationRef.current
-        : Math.floor(recorderState.durationMillis / 1000),
+        : Math.max(elapsedSecondsRef.current, getElapsedDurationSeconds(), getNativeDurationSeconds()),
       maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     }),
     start,

@@ -297,6 +297,12 @@ function RecordingSession() {
   const pendingDraftSlotIdRef = useRef<string | null>(null);
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
+  // Single-flight guard for startRecordingForSlot. Prevents a second concurrent
+  // invocation (e.g. user-retap during a 250ms pending-start-queue setTimeout,
+  // or any path where two start calls overlap) from racing the first: the
+  // second's catch unbinds while the first's success writes audioState='recording',
+  // leaving slot.audioState='recording' with recorderBoundToSlotId=null.
+  const startInFlightRef = useRef(false);
   const autoSaveDraftRef = useRef<(slot: PatientSlot) => Promise<void>>(async () => {});
   // Guard: prevent the audio-capture effect from saving twice for the same stop
   const audioCaptureDoneRef = useRef(false);
@@ -469,16 +475,28 @@ function RecordingSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends only on recorder state transitions, not on session/slot refs which would cause infinite loops
   }, [recorder.state, recorder.audioUri, recorder.duration, recorder.maxMetering, saveAudio, buildPersistedSlot]);
 
-  // Consistency guard: fix orphaned paused/recording states when recorder ownership changes
+  // Consistency guard: heal orphaned recording/paused states whenever slots change.
+  //
+  // A race between a successful startRecordingForSlot resolving setAudioState('recording')
+  // and a concurrent invocation's catch dispatching unbindRecorder can leave a slot in
+  // 'recording' state without ownership. UI then shows the "Ready to Record" badge with
+  // the Start button permanently disabled (canStartRecording requires audioState='idle').
+  // Watching session.slots here heals that state on the next render — Fix #2 prevents the
+  // race at the source, this is defense in depth for any future similar path.
   useEffect(() => {
     session.slots.forEach((slot) => {
       if (slot.id === session.recorderBoundToSlotId) return;
-      if (slot.audioState === 'recording') {
-        setAudioState(slot.id, slot.segments.length > 0 ? 'stopped' : 'idle');
+      if (slot.audioState === 'recording' || slot.audioState === 'paused') {
+        const nextState = slot.segments.length > 0 ? 'stopped' : 'idle';
+        breadcrumb('record', 'orphan_state_healed', {
+          from: slot.audioState,
+          to: nextState,
+          has_segments: slot.segments.length > 0,
+        });
+        setAudioState(slot.id, nextState);
       }
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- guard runs only when recorder ownership changes, reading slots is intentionally from current render
-  }, [session.recorderBoundToSlotId]);
+  }, [session.recorderBoundToSlotId, session.slots, setAudioState]);
 
   // Effect: handle audio session interruptions (incoming call, Siri, headphones).
   //
@@ -805,6 +823,8 @@ function RecordingSession() {
 
   const startRecordingForSlot = useCallback(
     (slotId: string) => {
+      if (startInFlightRef.current) return;
+      startInFlightRef.current = true;
       (async () => {
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
@@ -820,8 +840,12 @@ function RecordingSession() {
               ? 'The recorder is still finishing a previous recording. Please try again in a moment.'
               : 'Could not start recording. Please check that your device has a microphone and it is not in use by another app.';
           Alert.alert('Recording Error', msg);
+        } finally {
+          startInFlightRef.current = false;
         }
-      })().catch(() => {});
+      })().catch(() => {
+        startInFlightRef.current = false;
+      });
     },
     [recorder, bindRecorder, unbindRecorder, setAudioState]
   );

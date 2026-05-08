@@ -151,20 +151,25 @@ function withTimeout<T>(
 }
 
 /**
- * The R2 PUT routinely loses its TCP socket on Android when the device
- * transitions networks (Wi-Fi ↔ cellular) or the OS reaps backgrounded
- * sockets. Sentry issue 7445949187 (Pixel 10 Pro XL, Android 16) shows the
- * native expo-file-system layer rejects with "Failed to connect to <host>"
- * in these cases — a clean TCP-level failure that almost always succeeds on
- * a fresh socket. Mirrors the rule-27 single-retry pattern used for
- * `signIn` against AuthRetryableFetchError.
+ * The R2 PUT routinely loses its TCP socket — or fails to resolve the R2
+ * hostname at all — on Android when the device transitions networks
+ * (Wi-Fi ↔ cellular), the OS reaps backgrounded sockets, or the DHCP lease
+ * rolls over and DNS hasn't recovered yet. Two real fingerprints from Sentry:
+ *   - "Failed to connect to <host>" (TCP — expo-file-system / native layer)
+ *   - "Unable to resolve host …: No address associated with hostname"
+ *     (DNS — Android UnknownHostException, Sentry issue 7445949187 on a
+ *     Galaxy Tab A7 Lite, Android 14)
+ * Both are clean transport-level failures that almost always succeed on a
+ * fresh socket. Mirrors the rule-27 single-retry pattern used for `signIn`
+ * against AuthRetryableFetchError.
  *
  * Match list intentionally narrow: only signatures that come from the
- * expo-file-system native layer or Hermes' fetch when the *socket* dies.
- * HTTP-level errors (non-2xx responses) are caught further out by the
- * status-range check and must NOT retry — those are not transient.
+ * expo-file-system native layer, Android's DNS resolver, or Hermes' fetch
+ * when the *socket* dies. HTTP-level errors (non-2xx responses) are caught
+ * further out by the status-range check and must NOT retry — those are not
+ * transient.
  */
-const TRANSIENT_R2_ERROR_RE = /Failed to connect|Network request failed|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i;
+const TRANSIENT_R2_ERROR_RE = /Failed to connect|Network request failed|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|Unable to resolve host|No address associated with hostname/i;
 
 function isTransientUploadError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;

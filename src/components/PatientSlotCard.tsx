@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { StyleSheet, View, Text, Pressable } from 'react-native';
 import { ScrollView } from 'react-native-gesture-handler';
 import Animated, {
   FadeIn,
@@ -29,6 +29,16 @@ import {
 } from '../constants/strings';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+const styles = StyleSheet.create({
+  timerText: {
+    alignSelf: 'stretch',
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 0,
+    includeFontPadding: false,
+  },
+});
 
 interface PatientSlotCardProps {
   slot: PatientSlot;
@@ -266,10 +276,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               metering={metering}
             />
             <Text
-              className={`text-timer font-bold font-mono mb-5 ${
+              className={`text-timer font-bold mb-5 ${
                 isRecording ? 'text-brand-500' : 'text-stone-900'
               }`}
-              style={{ alignSelf: 'stretch', textAlign: 'center' }}
+              style={styles.timerText}
             >
               {formatDuration(duration)}
             </Text>
@@ -283,7 +293,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         ) : (
           <>
             <AudioWaveform isActive={false} />
-            <Text className="text-timer font-bold font-mono mb-5 text-stone-900" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
+            <Text className="text-timer font-bold mb-5 text-stone-900" style={styles.timerText}>
               {formatDuration(duration)}
             </Text>
           </>

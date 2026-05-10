@@ -79,6 +79,7 @@ function reportAudioQuality({ slotIndex, durationSeconds, sizeBytes, segmentCoun
  * telemetry payloads.
  */
 export type UploadPhase =
+  | 'preflight'
   | 'silent_check'
   | 'presign'
   | 'r2_put'
@@ -385,16 +386,16 @@ export const recordingsApi = {
       // Read local file info (fetch() doesn't support file:// URIs on Android)
       const fileInfo = await getInfoAsync(fileUri);
       if (!fileInfo.exists) {
-        phaseError('silent_check', 'Failed to read the recorded audio file. Please try recording again.');
+        phaseError('preflight', 'Failed to read the recorded audio file. Please try recording again.');
       }
       const fileSizeBytes = fileInfo.size ?? 0;
       if (!fileSizeBytes) {
-        phaseError('silent_check', 'The recorded audio file is empty. Please try recording again.');
+        phaseError('preflight', 'The recorded audio file is empty. Please try recording again.');
       }
       // Enforce client-side file size limit
       if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
         phaseError(
-          'silent_check',
+          'preflight',
           `File too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
         );
       }
@@ -576,15 +577,15 @@ export const recordingsApi = {
         // Read local file info
         const fileInfo = await getInfoAsync(segment.uri);
         if (!fileInfo.exists) {
-          phaseError('silent_check', `Failed to read audio segment ${i + 1}. Please try recording again.`);
+          phaseError('preflight', `Failed to read audio segment ${i + 1}. Please try recording again.`);
         }
         const fileSizeBytes = fileInfo.size ?? 0;
         if (!fileSizeBytes) {
-          phaseError('silent_check', `Audio segment ${i + 1} is empty. Please try recording again.`);
+          phaseError('preflight', `Audio segment ${i + 1} is empty. Please try recording again.`);
         }
         if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
           phaseError(
-            'silent_check',
+            'preflight',
             `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
           );
         }

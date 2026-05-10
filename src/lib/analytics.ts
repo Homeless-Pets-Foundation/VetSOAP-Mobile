@@ -125,6 +125,7 @@ export type AppStateValue = 'active' | 'background' | 'inactive' | 'unknown';
 
 export type ErrorPhase =
   | 'unknown'
+  | 'preflight'
   | 'silent_check'
   | 'presign'
   | 'r2_put'

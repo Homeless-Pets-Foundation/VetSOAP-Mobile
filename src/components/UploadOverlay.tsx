@@ -54,12 +54,18 @@ export function UploadOverlay({
 
   // Use overallProgress for phase text in multi-patient mode so label matches percentage
   const progressForPhase = isMulti && totalSlotsToUpload > 1 ? overallProgress : currentProgress;
+  // Sentinel: when uploadSlot is in the FFmpeg split phase, it sets progress
+  // into [1, 5) (between the initial 0 and the upload-start 5). Display the
+  // dedicated "Preparing audio…" label so users on slow tablets see meaningful
+  // text instead of a frozen "Preparing..." for up to a minute.
   const phaseText =
-    progressForPhase < 10
-      ? 'Preparing...'
-      : progressForPhase >= 95
-        ? 'Processing...'
-        : 'Uploading...';
+    progressForPhase >= 1 && progressForPhase < 5
+      ? UPLOAD_OVERLAY_COPY.phasePreparing
+      : progressForPhase < 10
+        ? 'Preparing...'
+        : progressForPhase >= 95
+          ? 'Processing...'
+          : 'Uploading...';
 
   useEffect(() => {
     if (!visible) {

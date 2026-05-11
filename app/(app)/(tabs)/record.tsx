@@ -6,7 +6,10 @@ import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { safeDeleteFile, fileExists } from '../../../src/lib/fileOps';
+import { safeDeleteFile, safeDeleteDirectory, fileExists } from '../../../src/lib/fileOps';
+import { getInfoAsync } from 'expo-file-system/legacy';
+import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
+import { OVERSIZED_CONFIRM_COPY } from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import {
@@ -115,6 +118,29 @@ function hasSilentAudioOnly(slot: PatientSlot): boolean {
   return slot.segments.every(
     (seg) => seg.peakMetering !== undefined && seg.peakMetering <= -20
   );
+}
+
+/** Sentinel error thrown when the user taps Cancel on the oversize confirm dialog. */
+class UploadCancelledByUser extends Error {
+  constructor() {
+    super('Upload cancelled by user');
+    this.name = 'UploadCancelledByUser';
+  }
+}
+
+/** Promise-wrapped Alert.alert with a yes/no choice. Resolves true on confirm, false on cancel. */
+function confirmOversizedUpload(hours: number, mb: number, parts: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      OVERSIZED_CONFIRM_COPY.title,
+      OVERSIZED_CONFIRM_COPY.body(hours, mb, parts),
+      [
+        { text: OVERSIZED_CONFIRM_COPY.cancel, style: 'cancel', onPress: () => resolve(false) },
+        { text: OVERSIZED_CONFIRM_COPY.upload, style: 'default', onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) }
+    );
+  });
 }
 
 interface PersistableRecorderSnapshot {
@@ -1070,6 +1096,13 @@ function RecordingSession() {
         has_pending_confirm: !!slot.pendingConfirm,
       });
 
+      // Auto-split state — populated by the preflight block below if any
+      // segment exceeds the 250 MB cap. Declared at function scope so the
+      // catch + post-success cleanup can both see them.
+      let segmentsForUpload = slot.segments;
+      let splitTempDir: string | null = null;
+      let splitTempUris: string[] = [];
+
       try {
         if (hasSilentAudioOnly(slot)) {
           const silentError = new Error(
@@ -1077,6 +1110,64 @@ function RecordingSession() {
           ) as Error & { uploadPhase?: 'silent_check' };
           silentError.uploadPhase = 'silent_check';
           throw silentError;
+        }
+
+        // Pre-flight: detect oversized segments and split via FFmpeg into
+        // <250 MB parts that flow through the existing createWithSegments
+        // path. Errors carry uploadPhase='preflight' for Sentry routing.
+        try {
+          let totalBytes = 0;
+          let anyOversized = false;
+          for (const seg of slot.segments) {
+            const info = await getInfoAsync(seg.uri);
+            const size = info.exists ? (info.size ?? 0) : 0;
+            totalBytes += size;
+            if (size > 250 * 1024 * 1024) anyOversized = true;
+          }
+
+          if (anyOversized) {
+            const totalDurationSec = slot.segments.reduce((sum, s) => sum + (s.duration ?? 0), 0);
+            const hours = totalDurationSec / 3600;
+            const mb = Math.round(totalBytes / 1024 / 1024);
+            const predictedParts = Math.ceil(totalBytes / (200 * 1024 * 1024));
+
+            const userConfirmed = await confirmOversizedUpload(hours, mb, predictedParts);
+            if (!userConfirmed) {
+              throw new UploadCancelledByUser();
+            }
+
+            // Sentinel [1, 5) → UploadOverlay shows "Preparing audio…"
+            setUploadStatus(slot.id, 'uploading', { progress: 1 });
+
+            const splitResult = await maybeSplitForUpload(
+              slot.segments,
+              { userId: user?.id ?? 'unknown', slotId: slot.id },
+              (phase, current, total) => {
+                if (phase === 'splitting' && total && total > 0) {
+                  const pct = Math.min(4, 1 + Math.floor(((current ?? 0) / total) * 3));
+                  setUploadStatus(slot.id, 'uploading', { progress: pct });
+                }
+              }
+            );
+
+            segmentsForUpload = splitResult.segments;
+            splitTempDir = splitResult.tempDir;
+            splitTempUris = splitResult.tempUris;
+
+            breadcrumb('upload', 'oversized_split', {
+              slot_index: slotIndex,
+              input_size_bytes: totalBytes,
+              parts: splitResult.segments.length,
+              did_split: splitResult.didSplit,
+            });
+          }
+        } catch (err) {
+          if (splitTempDir) safeDeleteDirectory(splitTempDir);
+          if (err instanceof UploadCancelledByUser) throw err;
+          if (err instanceof Error && !(err as Error & { uploadPhase?: string }).uploadPhase) {
+            (err as Error & { uploadPhase: 'preflight' }).uploadPhase = 'preflight';
+          }
+          throw err;
         }
 
         setUploadStatus(slot.id, 'uploading', { progress: 5 });
@@ -1140,11 +1231,12 @@ function RecordingSession() {
         }
 
         let result;
-        if (slot.segments.length === 1) {
-          // Single segment: use existing single-file upload
+        if (segmentsForUpload.length === 1) {
+          // Single segment: use existing single-file upload (only when no
+          // split happened AND original was a single segment).
           result = await recordingsApi.createWithFile(
             slot.formData,
-            slot.segments[0].uri,
+            segmentsForUpload[0].uri,
             'audio/x-m4a',
             {
               onUploadProgress,
@@ -1156,10 +1248,10 @@ function RecordingSession() {
             }
           );
         } else {
-          // Multi-segment: upload all segments
+          // Multi-segment: either originally multi-segment, or split-derived
           result = await recordingsApi.createWithSegments(
             slot.formData,
-            slot.segments,
+            segmentsForUpload,
             'audio/x-m4a',
             {
               onUploadProgress,
@@ -1186,6 +1278,9 @@ function RecordingSession() {
         slot.segments.forEach((seg) => {
           safeDeleteFile(seg.uri);
         });
+        // Also clean up any FFmpeg-split temp parts + their containing dir.
+        for (const tempUri of splitTempUris) safeDeleteFile(tempUri);
+        if (splitTempDir) safeDeleteDirectory(splitTempDir);
         // Clean up local draft after successful upload
         draftStorage.deleteDraft(slot.id).catch(() => {});
 
@@ -1211,6 +1306,14 @@ function RecordingSession() {
         uploadAttemptCountsRef.current.delete(slot.id);
         return result.id;
       } catch (error) {
+        // User explicitly cancelled the oversize confirm dialog: do not log,
+        // do not capture, leave the slot in 'pending'. They can retry later.
+        if (error instanceof UploadCancelledByUser) {
+          setUploadStatus(slot.id, 'pending');
+          if (splitTempDir) safeDeleteDirectory(splitTempDir);
+          return null;
+        }
+
         let msg: string;
         if (error instanceof TypeError && /network/i.test(error.message)) {
           msg = 'No internet connection. Please check your network and try again.';
@@ -1919,6 +2022,11 @@ function RecordingSession() {
         }
       })
       .catch(() => {});
+    // Sweep stale FFmpeg-split temp dirs from a previous session that may
+    // have been force-quit mid-split. Live in-flight splits create their
+    // own uniquely-timestamped subdir and are guarded by the orchestrator's
+    // own try/catch — this only wipes leftovers.
+    cleanupSplitTempDirs(user.id);
   }, [user?.id, queryClient]);
 
   const handleResumeStash = useCallback(

@@ -10,6 +10,18 @@ export const UPLOAD_OVERLAY_COPY = {
   title: 'Uploading Recording',
   titleMulti: 'Uploading Recordings',
   reassurance: 'Please wait while your recording uploads.',
+  /** Phase label shown while FFmpeg is splitting an oversized recording before any bytes are uploaded. */
+  phasePreparing: 'Preparing audio…',
+} as const;
+
+export const OVERSIZED_CONFIRM_COPY = {
+  title: 'Recording is large',
+  /** Body builder. `hours` rounded to 1 decimal, `mb` rounded to whole MB, `parts` is the predicted part count. */
+  body: (hours: number, mb: number, parts: number): string =>
+    `Your ${hours.toFixed(1)}-hour recording (${mb} MB) will be uploaded in ${parts} parts. ` +
+    `This may take a few minutes. Continue?`,
+  cancel: 'Cancel',
+  upload: 'Upload',
 } as const;
 
 export const SOAP_SECTION_ACTIONS = {

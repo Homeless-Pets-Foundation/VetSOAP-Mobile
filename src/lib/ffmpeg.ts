@@ -4,7 +4,7 @@ import {
   getInfoAsync,
   writeAsStringAsync,
 } from 'expo-file-system/legacy';
-import { File as ExpoFile } from 'expo-file-system';
+import { File as ExpoFile, Directory } from 'expo-file-system';
 import { audioTempFiles } from './audioTempFiles';
 import { getCachedPeaks, cachePeaks } from './waveformCache';
 
@@ -717,4 +717,143 @@ export async function extractWaveformPeaks(
   cachePeaks(inputUri, fileSize, peaks);
 
   return peaks;
+}
+
+/**
+ * Split an M4A audio file into N parts of approximately equal duration
+ * using AAC stream copy (no re-encoding) via the FFmpeg `segment` muxer.
+ *
+ * Sizing: callers pass `targetBytes` (the desired upper bound per part) and
+ * `durationSeconds` (the source file's full duration). The helper computes
+ * `parts = ceil(fileSize / targetBytes)` and `T = ceil(durationSeconds / parts)`,
+ * then runs:
+ *
+ *     ffmpeg -i <input> -f segment -segment_time T -c copy
+ *            -reset_timestamps 1 -map 0:a <outDir>/part_%03d.m4a
+ *
+ * The segment muxer emits whole AAC frames at keyframe boundaries, so each
+ * part is independently decodable. Per-part actual size can drift a few MB
+ * above the time-derived target due to keyframe alignment — callers should
+ * reserve a margin (e.g. target 200 MB to stay under a 250 MB cap).
+ *
+ * Output files are named `part_000.m4a`, `part_001.m4a`, … in `outputDir`.
+ * Caller owns the directory's lifecycle (creation + cleanup).
+ *
+ * Per-part durations are computed from the size-to-duration ratio of the
+ * input rather than re-probed via FFprobe, because invoking FFprobe N times
+ * on a slow tablet adds seconds we don't need — the server re-derives exact
+ * timing from the concatenated file anyway.
+ *
+ * Hard timeout: 5 minutes. Stream copy is I/O bound, so a 6-hour 700 MB file
+ * on a Galaxy A7 Lite typically completes in 30–60 s; 5 min is a generous
+ * upper bound that still prevents infinite hangs.
+ */
+const SPLIT_FFMPEG_TIMEOUT_MS = 5 * 60 * 1000;
+
+export async function splitAudioBySize(
+  inputUri: string,
+  targetBytes: number,
+  durationSeconds: number,
+  outputDir: string,
+): Promise<{ uri: string; duration: number }[]> {
+  validateFileUri(inputUri, 'Split input');
+  if (!Number.isFinite(targetBytes) || targetBytes <= 0) {
+    throw new Error(`splitAudioBySize: targetBytes must be positive, got ${targetBytes}`);
+  }
+  validateTimeParam(durationSeconds, 'Split duration');
+  if (durationSeconds <= 0) {
+    throw new Error('splitAudioBySize: durationSeconds must be > 0');
+  }
+  if (!outputDir.endsWith('/')) {
+    throw new Error('splitAudioBySize: outputDir must end with /');
+  }
+
+  const inputInfo = await getInfoAsync(inputUri);
+  if (!inputInfo.exists) {
+    throw new Error('splitAudioBySize: input file does not exist');
+  }
+  const inputSize = inputInfo.size ?? 0;
+  if (inputSize <= 0) {
+    throw new Error('splitAudioBySize: input file is empty');
+  }
+
+  // Ensure output directory exists (idempotent — Directory.create({intermediates}))
+  const outDir = new Directory(outputDir);
+  if (!outDir.exists) {
+    outDir.create({ intermediates: true });
+  }
+
+  // Compute splits. ceil(size/target) parts, ceil(duration/parts) seconds each.
+  // We round up segment_time so the final part captures any remainder; FFmpeg's
+  // segment muxer naturally emits N or N±1 outputs depending on keyframe layout,
+  // and the directory listing reads back whatever it actually produced.
+  const parts = Math.ceil(inputSize / targetBytes);
+  const segmentTimeSec = Math.ceil(durationSeconds / parts);
+
+  // Pattern uses %03d so directory listing's lexical sort matches numeric order
+  const outputPattern = `${outputDir}part_%03d.m4a`;
+
+  const command =
+    `-i "${inputUri}" ` +
+    `-f segment ` +
+    `-segment_time ${segmentTimeSec} ` +
+    `-c copy ` +
+    `-reset_timestamps 1 ` +
+    `-map 0:a ` +
+    `-y "${outputPattern}"`;
+
+  // Wrap in a hard timeout. FFmpegKit.execute resolves after the session
+  // completes; if it stalls, we cancel all in-flight FFmpeg sessions
+  // (best-effort — coarser than the executeAsync session-id pattern used
+  // by the waveform extractor, but acceptable here because the only other
+  // FFmpeg consumer in the app is short-lived waveform/silence detection
+  // that won't be running concurrently with submit-time split).
+  const sessionPromise = FFmpegKit.execute(command);
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(
+      () => reject(new Error(`splitAudioBySize: FFmpeg timed out after ${SPLIT_FFMPEG_TIMEOUT_MS}ms`)),
+      SPLIT_FFMPEG_TIMEOUT_MS,
+    ),
+  );
+
+  let session;
+  try {
+    session = await Promise.race([sessionPromise, timeoutPromise]);
+  } catch (err) {
+    try { FFmpegKit.cancel(); } catch { /* best-effort */ }
+    throw err;
+  }
+
+  const returnCode = await session.getReturnCode();
+  if (!ReturnCode.isSuccess(returnCode)) {
+    const logs = (await session.getLogsAsString()) ?? '';
+    throw new Error(`FFmpeg split failed (code ${returnCode.getValue()}): ${logs.slice(0, 200)}`);
+  }
+
+  // Read back the parts that FFmpeg actually emitted, sorted lexically.
+  const dirEntries = outDir.list();
+  const partFiles = dirEntries
+    .filter((entry): entry is InstanceType<typeof ExpoFile> => entry instanceof ExpoFile)
+    .filter((file) => /^part_\d{3}\.m4a$/.test(file.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (partFiles.length === 0) {
+    throw new Error('FFmpeg split produced no output files');
+  }
+
+  // Build segment list. Compute each part's duration from its size ratio
+  // against the input. This is approximate but only used for UI / quality
+  // telemetry; the server re-derives exact duration from the concatenated file.
+  const result: { uri: string; duration: number }[] = [];
+  for (const partFile of partFiles) {
+    const partInfo = await getInfoAsync(partFile.uri);
+    if (!partInfo.exists || (partInfo.size ?? 0) === 0) {
+      throw new Error(`FFmpeg split produced empty part: ${partFile.name}`);
+    }
+    const partSize = partInfo.size ?? 0;
+    const partDuration = (partSize / inputSize) * durationSeconds;
+    result.push({ uri: partFile.uri, duration: partDuration });
+  }
+
+  return result;
 }

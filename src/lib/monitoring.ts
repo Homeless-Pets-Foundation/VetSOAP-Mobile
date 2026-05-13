@@ -71,6 +71,24 @@ export function initMonitoring(): void {
       release: `${Application.applicationId ?? 'com.captivet.mobile'}@${Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown'}+${Application.nativeBuildVersion ?? '0'}`,
       environment: __DEV__ ? 'development' : 'production',
       enabled: !__DEV__ || process.env.EXPO_PUBLIC_SENTRY_ENABLE_IN_DEV === 'true',
+      // ApiClient.doFetch already emits `network/info` breadcrumbs with a
+      // server-side request_id (the cross-reference key we want). Sentry's
+      // default xhr capture writes a parallel `xhr/info` breadcrumb for the
+      // same request, doubling every payload (Sentry REACT-NATIVE-4 event
+      // showed every entry duplicated). Replace the default Breadcrumbs
+      // integration with one that skips xhr/fetch capture.
+      integrations: (defaults) => defaults.map((i) =>
+        i.name === 'Breadcrumbs'
+          ? Sentry.breadcrumbsIntegration({
+              console: true,
+              dom: false,
+              fetch: false,
+              history: false,
+              sentry: true,
+              xhr: false,
+            })
+          : i
+      ),
       // Sample more aggressively for upload-path transactions — that's the
       // code we actually care about tracing. Everything else stays at 10%.
       // Errors are always captured regardless.

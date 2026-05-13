@@ -9,6 +9,7 @@ import * as Haptics from 'expo-haptics';
 import { safeDeleteFile, safeDeleteDirectory, fileExists } from '../../../src/lib/fileOps';
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
+import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import { OVERSIZED_CONFIRM_COPY } from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
@@ -41,7 +42,7 @@ import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
 import { UploadOverlay } from '../../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
-import type { PatientSlot } from '../../../src/types/multiPatient';
+import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
@@ -109,15 +110,77 @@ function isSlotActivelyRecording(slot: PatientSlot): boolean {
   return slot.audioState === 'recording' || slot.audioState === 'paused';
 }
 
-function hasSilentAudioOnly(slot: PatientSlot): boolean {
-  if (slot.segments.length === 0) return false;
-  // Use peakMetering stored at record-time (sampled every 500ms) instead of running
-  // FFmpeg volumedetect on the entire file. On A7 Lite, FFmpeg decoding a 45-minute
-  // recording takes 10-20s and blocks the upload modal from appearing.
-  // Fail open: if any segment lacks metering data, assume not silent.
-  return slot.segments.every(
-    (seg) => seg.peakMetering !== undefined && seg.peakMetering <= -20
-  );
+const SILENT_METERING_THRESHOLD_DB = -20;
+const SHORT_AUDIO_FFMPEG_SILENCE_SECONDS = 15;
+const MISSING_METERING_FFMPEG_MAX_SECONDS = 180;
+
+type SilenceCheckReason =
+  | 'metering_all_below_threshold'
+  | 'ffmpeg_all_segments_silent'
+  | 'missing_metering_long_recording'
+  | 'ffmpeg_timeout'
+  | 'ffmpeg_error';
+
+async function checkSilentAudio(slot: PatientSlot): Promise<{
+  silent: boolean;
+  inconclusive: boolean;
+  reason: SilenceCheckReason | null;
+}> {
+  if (slot.segments.length === 0) return { silent: false, inconclusive: false, reason: null };
+
+  const durationSeconds = slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0);
+  const hasCompleteMetering = slot.segments.every((seg) => typeof seg.peakMetering === 'number');
+  if (
+    hasCompleteMetering &&
+    slot.segments.every((seg) => (seg.peakMetering ?? 0) <= SILENT_METERING_THRESHOLD_DB)
+  ) {
+    return { silent: true, inconclusive: false, reason: 'metering_all_below_threshold' };
+  }
+
+  const shouldRunFfmpeg =
+    durationSeconds <= SHORT_AUDIO_FFMPEG_SILENCE_SECONDS ||
+    (!hasCompleteMetering && durationSeconds <= MISSING_METERING_FFMPEG_MAX_SECONDS);
+
+  if (!shouldRunFfmpeg) {
+    return hasCompleteMetering
+      ? { silent: false, inconclusive: false, reason: null }
+      : { silent: false, inconclusive: true, reason: 'missing_metering_long_recording' };
+  }
+
+  try {
+    let inconclusiveReason: 'ffmpeg_timeout' | 'ffmpeg_error' | null = null;
+    for (const segment of slot.segments) {
+      const result = await checkAudioSilenceForUpload(segment.uri);
+      if (result.status === 'not_silent') {
+        return { silent: false, inconclusive: false, reason: null };
+      }
+      if (result.status === 'inconclusive') {
+        inconclusiveReason ??= result.reason;
+      }
+    }
+
+    return inconclusiveReason
+      ? { silent: false, inconclusive: true, reason: inconclusiveReason }
+      : { silent: true, inconclusive: false, reason: 'ffmpeg_all_segments_silent' };
+  } catch {
+    return { silent: false, inconclusive: true, reason: 'ffmpeg_error' };
+  }
+}
+
+async function sumSegmentSizes(segments: AudioSegment[]): Promise<number> {
+  let totalBytes = 0;
+  for (const segment of segments) {
+    const info = await getInfoAsync(segment.uri);
+    if (!info.exists) {
+      throw new Error('Failed to read the prepared audio file. Please try again.');
+    }
+    const size = info.size ?? 0;
+    if (!size) {
+      throw new Error('The prepared audio file is empty. Please try again.');
+    }
+    totalBytes += size;
+  }
+  return totalBytes;
 }
 
 /** Sentinel error thrown when the user taps Cancel on the oversize confirm dialog. */
@@ -1102,9 +1165,55 @@ function RecordingSession() {
       let segmentsForUpload = slot.segments;
       let splitTempDir: string | null = null;
       let splitTempUris: string[] = [];
+      let uploadSizeBytes = 0;
 
       try {
-        if (hasSilentAudioOnly(slot)) {
+        // Pre-flight: read local segment sizes before any expensive work.
+        // This gives telemetry a real byte count and lets missing/empty files
+        // fail as preflight errors instead of being misclassified as silence.
+        let totalBytes = 0;
+        let anyOversized = false;
+        try {
+          for (const seg of slot.segments) {
+            const info = await getInfoAsync(seg.uri);
+            const size = info.exists ? (info.size ?? 0) : 0;
+            if (!info.exists) {
+              throw new Error('Failed to read the recorded audio file. Please try recording again.');
+            }
+            if (!size) {
+              throw new Error('The recorded audio file is empty. Please try recording again.');
+            }
+            totalBytes += size;
+            if (size > 250 * 1024 * 1024) anyOversized = true;
+          }
+          uploadSizeBytes = totalBytes;
+        } catch (err) {
+          if (err instanceof Error && !(err as Error & { uploadPhase?: string }).uploadPhase) {
+            (err as Error & { uploadPhase: 'preflight' }).uploadPhase = 'preflight';
+          }
+          throw err;
+        }
+
+        setUploadStatus(slot.id, 'uploading', { progress: 1 });
+        const silenceCheck = await checkSilentAudio(slot);
+        if (silenceCheck.inconclusive) {
+          const reason =
+            silenceCheck.reason === 'missing_metering_long_recording'
+              ? 'missing_metering_long_recording'
+              : silenceCheck.reason === 'ffmpeg_timeout'
+                ? 'ffmpeg_timeout'
+              : 'ffmpeg_error';
+          trackEvent({
+            name: 'audio_silence_check_inconclusive',
+            props: {
+              slot_index: slotIndex,
+              duration_s: durationSeconds,
+              segment_count: segmentCount,
+              reason,
+            },
+          });
+        }
+        if (silenceCheck.silent) {
           const silentError = new Error(
             'This recording appears silent. Please verify microphone input and record again before uploading.'
           ) as Error & { uploadPhase?: 'silent_check' };
@@ -1112,19 +1221,9 @@ function RecordingSession() {
           throw silentError;
         }
 
-        // Pre-flight: detect oversized segments and split via FFmpeg into
-        // <250 MB parts that flow through the existing createWithSegments
-        // path. Errors carry uploadPhase='preflight' for Sentry routing.
+        // Pre-flight: split oversized segments via FFmpeg into <250 MB parts
+        // that flow through the existing createWithSegments path.
         try {
-          let totalBytes = 0;
-          let anyOversized = false;
-          for (const seg of slot.segments) {
-            const info = await getInfoAsync(seg.uri);
-            const size = info.exists ? (info.size ?? 0) : 0;
-            totalBytes += size;
-            if (size > 250 * 1024 * 1024) anyOversized = true;
-          }
-
           if (anyOversized) {
             const totalDurationSec = slot.segments.reduce((sum, s) => sum + (s.duration ?? 0), 0);
             const hours = totalDurationSec / 3600;
@@ -1153,6 +1252,7 @@ function RecordingSession() {
             segmentsForUpload = splitResult.segments;
             splitTempDir = splitResult.tempDir;
             splitTempUris = splitResult.tempUris;
+            uploadSizeBytes = await sumSegmentSizes(segmentsForUpload);
 
             breadcrumb('upload', 'oversized_split', {
               slot_index: slotIndex,
@@ -1291,7 +1391,7 @@ function RecordingSession() {
             slot_index: slotIndex,
             segment_count: segmentCount,
             duration_s: durationSeconds,
-            size_bytes: 0,
+            size_bytes: uploadSizeBytes,
             recording_id: result.id,
             attempt_number: attemptNumber,
             latency_ms: latencyMs,
@@ -1327,10 +1427,15 @@ function RecordingSession() {
         const phase = getUploadPhase(error);
         const latencyMs = Date.now() - uploadStartedAt;
         // Derive an error code usable for filtering — server-supplied codes
-        // win over phase so trial/billing errors stay legible.
+        // win over phase so trial/billing errors stay legible. Hermes-
+        // minified class names from expo-modules-core CodedError can leak a
+        // single-letter `code` in prod builds (Sentry REACT-NATIVE-4 surfaced
+        // `error_code: k`); require UPPER_SNAKE-shaped codes to trust them.
         const errorObj = error as Error & { code?: string; status?: number };
+        const rawCode = typeof errorObj?.code === 'string' ? errorObj.code : '';
+        const looksLikeRealCode = /^[A-Z][A-Z0-9_]{2,}$/.test(rawCode);
         const errorCode =
-          (errorObj?.code && String(errorObj.code)) ||
+          (looksLikeRealCode && rawCode) ||
           (errorObj?.status ? `HTTP_${errorObj.status}` : phase.toUpperCase());
 
         trackEvent({
@@ -1356,6 +1461,7 @@ function RecordingSession() {
           slotIndex,
           segmentCount,
           durationSeconds,
+          fileSizeBytes: uploadSizeBytes || undefined,
           networkState: netState,
           attemptNumber,
         });
@@ -1371,6 +1477,7 @@ function RecordingSession() {
             attempt_number: attemptNumber,
             segment_count: segmentCount,
             duration_s: durationSeconds,
+            file_size_bytes: uploadSizeBytes || undefined,
             latency_ms: latencyMs,
             recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
           },
@@ -2108,7 +2215,7 @@ function RecordingSession() {
       }
 
       // Snapshot segments before navigating — avoids stale closure if session changes while editing.
-      // Preserve peakMetering so the silent-audio guard (hasSilentAudioOnly) still works for
+      // Preserve peakMetering so the silent-audio guard keeps the fast path for
       // round-tripped segments that the user opened in the editor but didn't trim.
       const originalSegments = slot.segments.map((s) => ({
         uri: s.uri,

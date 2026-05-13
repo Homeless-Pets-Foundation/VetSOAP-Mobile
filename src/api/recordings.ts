@@ -22,6 +22,7 @@ import { getIdempotencyUuid } from '../lib/random';
 import type { PendingConfirm } from '../types/multiPatient';
 import { trackEvent } from '../lib/analytics';
 import { breadcrumb } from '../lib/monitoring';
+import { waitForNetworkOnline } from '../lib/networkWait';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
@@ -177,21 +178,42 @@ function isTransientUploadError(err: unknown): boolean {
   return TRANSIENT_R2_ERROR_RE.test(err.message ?? '');
 }
 
+// 3 attempts total covers a typical WiFi handoff (~5–10s) plus a stale-AP
+// recovery, while keeping worst-case time-to-failure bounded (~35s).
+const MAX_R2_ATTEMPTS = 3;
+// Sentry issue REACT-NATIVE-4 (2026-05-13) had a 1.6s gap between
+// NETWORK_LOST and submit_failed because the old retry used a flat 1.5s
+// setTimeout. 15s covers a typical WiFi flap with headroom.
+const NET_RECOVERY_WAIT_MS = 15_000;
+
 async function uploadOnceWithRetry<T>(
-  buildAndRun: () => Promise<T>,
+  buildAndRun: (attempt: number) => Promise<T>,
   context: { segmentIndex?: number },
 ): Promise<T> {
-  try {
-    return await buildAndRun();
-  } catch (err) {
-    if (!isTransientUploadError(err)) throw err;
-    breadcrumb('upload', 'r2_put_retry', {
-      segment_index: context.segmentIndex,
-      reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown',
-    });
-    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
-    return await buildAndRun();
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_R2_ATTEMPTS; attempt++) {
+    try {
+      return await buildAndRun(attempt);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientUploadError(err)) throw err;
+      if (attempt === MAX_R2_ATTEMPTS) throw err;
+      const startedAt = Date.now();
+      const online = await waitForNetworkOnline(NET_RECOVERY_WAIT_MS);
+      const waitMs = Date.now() - startedAt;
+      breadcrumb('upload', 'r2_put_retry', {
+        attempt,
+        segment_index: context.segmentIndex,
+        wait_ms: waitMs,
+        was_online_at_retry: online,
+        reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown',
+      });
+      // Tiny jitter so multiple concurrent uploads on the same device
+      // don't slam the AP the instant it comes back.
+      await new Promise<void>((r) => setTimeout(r, 200 + Math.random() * 300));
+    }
   }
+  throw lastErr;
 }
 
 const ALLOWED_AUDIO_TYPES = new Set([
@@ -411,32 +433,28 @@ export const recordingsApi = {
         });
       }
 
-      // Step 2: Get presigned upload URL (include file size for server validation)
-      let uploadUrl: string;
-      let fileKey: string;
-      let warnings: string[] | undefined;
-      try {
-        const resp = await this.getUploadUrl(
-          recording.id,
-          'recording.m4a',
-          contentType,
-          fileSizeBytes
-        );
-        uploadUrl = resp.uploadUrl;
-        fileKey = resp.fileKey;
-        warnings = resp.warnings;
-      } catch (e) { tagPhase(e, 'presign'); }
-      if (warnings?.length) {
-        if (__DEV__) console.warn('[upload]', ...warnings);
-      }
-      // Validate the presigned upload URL targets a trusted storage domain
-      validateUploadUrl(uploadUrl);
+      // Step 2: Upload to R2. Presign + PUT are wrapped together in
+      // uploadOnceWithRetry so each retry gets a fresh presigned URL (the
+      // stale-URL 403 mode in Sentry REACT-NATIVE-7) and waits for the
+      // network to recover (Sentry REACT-NATIVE-4) before retrying.
+      let fileKey: string | undefined;
+      const buildAndRunUpload = async (_attempt: number) => {
+        let uploadUrl: string;
+        let warnings: string[] | undefined;
+        try {
+          const resp = await this.getUploadUrl(
+            recording.id,
+            'recording.m4a',
+            contentType,
+            fileSizeBytes
+          );
+          uploadUrl = resp.uploadUrl;
+          fileKey = resp.fileKey;
+          warnings = resp.warnings;
+        } catch (e) { tagPhase(e, 'presign'); }
+        if (warnings?.length && __DEV__) console.warn('[upload]', ...warnings);
+        validateUploadUrl(uploadUrl);
 
-      // Step 3: Upload to R2 using createUploadTask (supports file:// URIs + progress).
-      // Wrapped in uploadOnceWithRetry so a transient TCP failure (the dominant
-      // r2_put error mode on Android per Sentry data) gets a single, fresh-socket
-      // retry rather than a 5-6% stall + user-visible failure.
-      const buildAndRunUpload = () => {
         const uploadTask = createUploadTask(
           uploadUrl,
           fileUri,
@@ -457,23 +475,31 @@ export const recordingsApi = {
               }
             : undefined
         );
-        return withTimeout(
+        const result = await withTimeout(
           uploadTask.uploadAsync(),
           R2_UPLOAD_TIMEOUT_MS,
           'Upload timed out. Please check your connection and try again.',
           () => { uploadTask.cancelAsync().catch(() => {}); }
         );
+        if (!result || result.status < 200 || result.status >= 300) {
+          phaseError(
+            'r2_put',
+            `Upload to storage failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`
+          );
+        }
+        return result;
       };
 
-      let uploadResult;
       try {
-        uploadResult = await uploadOnceWithRetry(buildAndRunUpload, {});
-      } catch (e) { tagPhase(e, 'r2_put'); }
-      if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
-        phaseError(
-          'r2_put',
-          `Upload to storage failed (HTTP ${uploadResult?.status ?? 'unknown'}). Please try again.`
-        );
+        await uploadOnceWithRetry(buildAndRunUpload, {});
+      } catch (e) {
+        // Closure already tagged 'presign' or 'r2_put'. Only fall back to
+        // 'r2_put' for untagged throws (e.g. raw native exceptions).
+        if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
+        tagPhase(e, 'r2_put');
+      }
+      if (!fileKey) {
+        phaseError('r2_put', 'Upload completed but no file key was returned. Please try again.');
       }
 
       r2UploadComplete = true;
@@ -591,32 +617,29 @@ export const recordingsApi = {
         }
         totalSegmentBytes += fileSizeBytes;
 
-        // Get presigned URL for this segment
-        let uploadUrl: string;
-        let fileKey: string;
-        let warnings: string[] | undefined;
-        try {
-          const resp = await this.getUploadUrl(
-            recording.id,
-            segmentFileName,
-            contentType,
-            fileSizeBytes
-          );
-          uploadUrl = resp.uploadUrl;
-          fileKey = resp.fileKey;
-          warnings = resp.warnings;
-        } catch (e) { tagPhase(e, 'presign'); }
-        if (warnings?.length) {
-          if (__DEV__) console.warn(`[upload] segment ${i + 1}:`, ...warnings);
-        }
-        validateUploadUrl(uploadUrl);
-
-        // Upload segment to R2
+        // Presign + PUT wrapped together — see note in createWithFile above.
+        // Each retry attempt fetches a fresh presigned URL.
+        let fileKey: string | undefined;
         const segmentProgressBase = (i / totalSegments) * 100;
         const segmentProgressRange = 100 / totalSegments;
 
-        // Wrapped in uploadOnceWithRetry — see note in createWithFile above.
-        const buildAndRunSegmentUpload = () => {
+        const buildAndRunSegmentUpload = async (_attempt: number) => {
+          let uploadUrl: string;
+          let warnings: string[] | undefined;
+          try {
+            const resp = await this.getUploadUrl(
+              recording.id,
+              segmentFileName,
+              contentType,
+              fileSizeBytes
+            );
+            uploadUrl = resp.uploadUrl;
+            fileKey = resp.fileKey;
+            warnings = resp.warnings;
+          } catch (e) { tagPhase(e, 'presign'); }
+          if (warnings?.length && __DEV__) console.warn(`[upload] segment ${i + 1}:`, ...warnings);
+          validateUploadUrl(uploadUrl);
+
           const uploadTask = createUploadTask(
             uploadUrl,
             segment.uri,
@@ -639,23 +662,29 @@ export const recordingsApi = {
                 }
               : undefined
           );
-          return withTimeout(
+          const result = await withTimeout(
             uploadTask.uploadAsync(),
             R2_UPLOAD_TIMEOUT_MS,
             `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
             () => { uploadTask.cancelAsync().catch(() => {}); }
           );
+          if (!result || result.status < 200 || result.status >= 300) {
+            phaseError(
+              'r2_put',
+              `Upload of segment ${i + 1} failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`
+            );
+          }
+          return result;
         };
 
-        let uploadResult;
         try {
-          uploadResult = await uploadOnceWithRetry(buildAndRunSegmentUpload, { segmentIndex: i });
-        } catch (e) { tagPhase(e, 'r2_put'); }
-        if (!uploadResult || uploadResult.status < 200 || uploadResult.status >= 300) {
-          phaseError(
-            'r2_put',
-            `Upload of segment ${i + 1} failed (HTTP ${uploadResult?.status ?? 'unknown'}). Please try again.`
-          );
+          await uploadOnceWithRetry(buildAndRunSegmentUpload, { segmentIndex: i });
+        } catch (e) {
+          if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
+          tagPhase(e, 'r2_put');
+        }
+        if (!fileKey) {
+          phaseError('r2_put', `Segment ${i + 1} uploaded but no file key was returned. Please try again.`);
         }
 
         segmentKeys.push(fileKey);

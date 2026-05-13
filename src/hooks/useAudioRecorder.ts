@@ -10,7 +10,7 @@ import {
   type RecordingStatus,
 } from 'expo-audio';
 import { safeDeleteFile } from '../lib/fileOps';
-import { captureException } from '../lib/monitoring';
+import { breadcrumb, captureException } from '../lib/monitoring';
 import { reportClientError } from '../api/telemetry';
 
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped' | 'interrupted';
@@ -182,6 +182,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
     const errorMessage = typeof status.error === 'string' ? status.error : JSON.stringify(status.error ?? {});
     if (__DEV__) console.error('[AudioRecorder] Recording error:', status.error);
+    breadcrumb('record', 'recorder_status_error', {
+      state: stateRef.current,
+      will_attempt_interrupt_flow: stateRef.current === 'recording' || stateRef.current === 'paused',
+    });
     captureException(new Error(errorMessage || 'expo-audio status.hasError'), {
       tags: { component: 'useAudioRecorder', phase: 'recorder_status' },
     });
@@ -214,6 +218,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const runInterruptionFlow = useCallback(async () => {
     const wasRecording = stateRef.current === 'recording' || stateRef.current === 'paused';
     if (!wasRecording) return;
+    breadcrumb('record', 'recorder_interrupted', { from_state: stateRef.current });
     const r = recorderRef.current;
     finalizeDuration();
     try {

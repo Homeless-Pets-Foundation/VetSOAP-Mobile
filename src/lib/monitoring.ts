@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/react-native';
-import { Platform } from 'react-native';
+import { DeviceEventEmitter, Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { SENTRY_DSN } from '../config';
 import { shouldEmit } from './rateLimitMonitoring';
@@ -89,6 +89,19 @@ export function initMonitoring(): void {
             })
           : i
       ),
+      // Perf signals worth paying for: cold-start (`enableAppStartTracking`),
+      // slow/frozen frames (`enableNativeFramesTracking`), JS-thread stalls
+      // (`enableStallTracking`), and user interaction tracing — useful for
+      // the open WatchdogTermination triage and to catch upload-path /
+      // multi-patient pager regressions before users report them. Defaults
+      // already enable most of these when `tracesSampler` is set, but pin
+      // them explicitly so a future SDK default flip can't silently disable.
+      enableAppStartTracking: true,
+      enableNativeFramesTracking: true,
+      enableStallTracking: true,
+      enableUserInteractionTracing: true,
+      // Release health — bucket session counts by app version for triage.
+      enableAutoSessionTracking: true,
       // Sample more aggressively for upload-path transactions — that's the
       // code we actually care about tracing. Everything else stays at 10%.
       // Errors are always captured regardless.
@@ -151,6 +164,23 @@ export function initMonitoring(): void {
 
     Sentry.setTag('platform', Platform.OS);
     Sentry.setTag('app_version', Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown');
+
+    // iOS-only memory warning trail for the open WatchdogTermination triage.
+    // RN core posts a `memoryWarning` event on DeviceEventEmitter when iOS
+    // calls didReceiveMemoryWarning. Android has no equivalent without a
+    // custom native module — out of scope.
+    if (Platform.OS === 'ios') {
+      DeviceEventEmitter.addListener('memoryWarning', () => {
+        try {
+          Sentry.addBreadcrumb({
+            category: 'memory',
+            message: 'ios_memory_warning',
+            level: 'warning',
+          });
+        } catch { /* swallow */ }
+      });
+    }
+
     _initialized = true;
     if (__DEV__) console.log('[Sentry] Initialized');
   } catch (error) {
@@ -187,7 +217,9 @@ export type BreadcrumbCategory =
   | 'stash'
   | 'draft'
   | 'navigation'
-  | 'network';
+  | 'network'
+  | 'memory'
+  | 'ffmpeg';
 
 /** Record a breadcrumb. Safe to call even when Sentry is disabled. */
 export function breadcrumb(

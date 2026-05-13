@@ -7,6 +7,29 @@ import {
 import { File as ExpoFile, Directory } from 'expo-file-system';
 import { audioTempFiles } from './audioTempFiles';
 import { getCachedPeaks, cachePeaks } from './waveformCache';
+import { breadcrumb } from './monitoring';
+
+type FfmpegOpKind = 'waveform' | 'silence_check' | 'split';
+
+async function crumbFfmpegOp<T>(
+  kind: FfmpegOpKind,
+  work: () => Promise<T>,
+  extra?: Record<string, string | number | boolean | null | undefined>,
+): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    const result = await work();
+    breadcrumb('ffmpeg', `${kind}_ok`, { duration_ms: Date.now() - startedAt, ...extra });
+    return result;
+  } catch (err) {
+    breadcrumb('ffmpeg', `${kind}_failed`, {
+      duration_ms: Date.now() - startedAt,
+      reason: err instanceof Error ? err.name : 'unknown',
+      ...extra,
+    });
+    throw err;
+  }
+}
 
 // Maximum input file size for waveform extraction (500MB).
 // Prevents OOM from decoding extremely large files to PCM.
@@ -403,13 +426,22 @@ export async function checkAudioSilenceForUpload(
 ): Promise<SilenceCheckResult> {
   const maxVolumeThresholdDb = thresholds.maxVolumeDb ?? -20;
   const meanVolumeThresholdDb = thresholds.meanVolumeDb ?? -60;
+  const startedAt = Date.now();
+
+  const finish = (result: SilenceCheckResult): SilenceCheckResult => {
+    breadcrumb('ffmpeg', `silence_check_${result.status}`, {
+      duration_ms: Date.now() - startedAt,
+      reason: result.status === 'inconclusive' ? result.reason : undefined,
+    });
+    return result;
+  };
 
   try {
     validateFileUri(uri, 'Upload silence check');
 
     const info = await getInfoAsync(uri);
     if (!info.exists) {
-      return { status: 'inconclusive', reason: 'ffmpeg_error' };
+      return finish({ status: 'inconclusive', reason: 'ffmpeg_error' });
     }
 
     const session = await executeSilenceCheckWithTimeout(
@@ -418,7 +450,7 @@ export async function checkAudioSilenceForUpload(
     );
     const returnCode = await session.getReturnCode();
     if (!ReturnCode.isSuccess(returnCode)) {
-      return { status: 'inconclusive', reason: 'ffmpeg_error' };
+      return finish({ status: 'inconclusive', reason: 'ffmpeg_error' });
     }
 
     const isSilent = parseVolumedetectSilence((await session.getLogsAsString()) ?? '', {
@@ -426,15 +458,15 @@ export async function checkAudioSilenceForUpload(
       meanVolumeDb: meanVolumeThresholdDb,
     });
     if (isSilent === null) {
-      return { status: 'inconclusive', reason: 'ffmpeg_error' };
+      return finish({ status: 'inconclusive', reason: 'ffmpeg_error' });
     }
 
-    return isSilent ? { status: 'silent' } : { status: 'not_silent' };
+    return finish(isSilent ? { status: 'silent' } : { status: 'not_silent' });
   } catch (error) {
-    return {
+    return finish({
       status: 'inconclusive',
       reason: error instanceof FFmpegSilenceCheckTimeoutError ? 'ffmpeg_timeout' : 'ffmpeg_error',
-    };
+    });
   }
 }
 
@@ -776,7 +808,7 @@ export async function extractWaveformPeaks(
   const cached = await getCachedPeaks(inputUri, fileSize);
   if (cached !== null) return cached;
 
-  const peaks = await enqueueWaveformExtraction(async () => {
+  const peaks = await crumbFfmpegOp('waveform', () => enqueueWaveformExtraction(async () => {
     // Get duration to decide which extraction strategy to use
     const duration = await getAudioDuration(inputUri);
 
@@ -813,7 +845,7 @@ export async function extractWaveformPeaks(
     } finally {
       audioTempFiles.cleanupFile(pcmPath);
     }
-  });
+  }), { file_size_mb: Math.round(fileSize / 1024 / 1024) });
 
   // Write to cache (fire-and-forget — cachePeaks() has internal try/catch)
   cachePeaks(inputUri, fileSize, peaks);
@@ -858,6 +890,7 @@ export async function splitAudioBySize(
   durationSeconds: number,
   outputDir: string,
 ): Promise<{ uri: string; duration: number }[]> {
+  const splitStartedAt = Date.now();
   validateFileUri(inputUri, 'Split input');
   if (!Number.isFinite(targetBytes) || targetBytes <= 0) {
     throw new Error(`splitAudioBySize: targetBytes must be positive, got ${targetBytes}`);
@@ -956,6 +989,12 @@ export async function splitAudioBySize(
     const partDuration = (partSize / inputSize) * durationSeconds;
     result.push({ uri: partFile.uri, duration: partDuration });
   }
+
+  breadcrumb('ffmpeg', 'split_ok', {
+    duration_ms: Date.now() - splitStartedAt,
+    parts: result.length,
+    input_mb: Math.round(inputSize / 1024 / 1024),
+  });
 
   return result;
 }

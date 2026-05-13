@@ -12,7 +12,6 @@ import { shouldEmit, getSuppressionSummary } from './rateLimitMonitoring';
 
 // Lazy so old dev-client APKs without posthog-react-native's native deps
 // (expo-application etc.) don't throw at module-load. See CLAUDE.md rule 23.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _PostHog: any | null = null;
 function loadPostHog(): typeof PostHog | null {
   if (_PostHog) return _PostHog;
@@ -77,6 +76,7 @@ export type AnalyticsEvent =
   | { name: 'template_selected'; props: { template_kind: string } }
   | { name: 'audio_quality_measured'; props: { slot_index: number; duration_s: number; size_bytes: number; kbps_estimated: number; segment_count: number } }
   | { name: 'audio_bitrate_anomaly'; props: { slot_index: number; duration_s: number; size_bytes: number; kbps_estimated: number; expected_min: number; expected_max: number } }
+  | { name: 'audio_silence_check_inconclusive'; props: { slot_index: number; duration_s: number; segment_count: number; reason: SilenceCheckInconclusiveReason } }
   // Submit
   | { name: 'submit_attempted'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; network_state: NetworkState } }
   | { name: 'submit_succeeded'; props: { slot_index: number; segment_count: number; duration_s: number; size_bytes: number; recording_id: string; attempt_number: number; latency_ms: number } }
@@ -114,6 +114,8 @@ export type NetworkState = 'wifi' | 'cellular' | 'none' | 'unknown';
 export type RefreshTrigger = 'recovery' | 'foreground' | 'on_auth_state' | 'device_registration' | 'manual';
 
 export type FailureReason = 'secure_store' | 'fs' | 'quota' | 'network' | 'other';
+
+export type SilenceCheckInconclusiveReason = 'missing_metering_long_recording' | 'ffmpeg_timeout' | 'ffmpeg_error';
 
 export type EndpointKind = 'recordings' | 'auth' | 'telemetry' | 'devices' | 'soap' | 'other';
 

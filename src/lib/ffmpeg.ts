@@ -34,6 +34,7 @@ const SHORT_SAMPLERATE = 500;        // Hz for full-decode path (short files)
 // would show a skeleton forever and the user has no signal to retry/fall back.
 // 45s is generous for a 10-input batch on healthy hw, conservative on weak hw.
 const WAVEFORM_FFMPEG_TIMEOUT_MS = 45_000;
+const SILENCE_CHECK_FFMPEG_TIMEOUT_MS = 15_000;
 
 // After this many consecutive per-position decode failures (timeout OR non-success
 // return code), abandon the extraction and throw so the caller's peakErrors path
@@ -79,6 +80,51 @@ function executeWaveformWithTimeout(
       .then((startedSession) => {
         startedSessionId = startedSession.getSessionId();
         // If the timer already fired before the start handle resolved, cancel now.
+        if (settled) {
+          try { FFmpegKit.cancel(startedSessionId); } catch { /* best-effort */ }
+        }
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+class FFmpegSilenceCheckTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`FFmpeg silence check timeout after ${timeoutMs}ms`);
+    this.name = 'FFmpegSilenceCheckTimeoutError';
+  }
+}
+
+function executeSilenceCheckWithTimeout(
+  command: string,
+  timeoutMs: number = SILENCE_CHECK_FFMPEG_TIMEOUT_MS
+): Promise<FFmpegSession> {
+  return new Promise<FFmpegSession>((resolve, reject) => {
+    let settled = false;
+    let startedSessionId: number | null = null;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (startedSessionId !== null) {
+        try { FFmpegKit.cancel(startedSessionId); } catch { /* best-effort */ }
+      }
+      reject(new FFmpegSilenceCheckTimeoutError(timeoutMs));
+    }, timeoutMs);
+
+    FFmpegKit.executeAsync(command, (completedSession) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(completedSession);
+    })
+      .then((startedSession) => {
+        startedSessionId = startedSession.getSessionId();
         if (settled) {
           try { FFmpegKit.cancel(startedSessionId); } catch { /* best-effort */ }
         }
@@ -314,11 +360,26 @@ export async function isAudioEffectivelySilent(
     return false;
   }
 
-  const logs = (await session.getLogsAsString()) ?? '';
+  const silenceResult = parseVolumedetectSilence((await session.getLogsAsString()) ?? '', {
+    maxVolumeDb: maxVolumeThresholdDb,
+    meanVolumeDb: meanVolumeThresholdDb,
+  });
+  return silenceResult ?? false;
+}
+
+export type SilenceCheckResult =
+  | { status: 'silent' }
+  | { status: 'not_silent' }
+  | { status: 'inconclusive'; reason: 'ffmpeg_timeout' | 'ffmpeg_error' };
+
+function parseVolumedetectSilence(
+  logs: string,
+  thresholds: { maxVolumeDb: number; meanVolumeDb: number }
+): boolean | null {
   const meanVolumeMatch = logs.match(/mean_volume:\s*(-?(?:inf|\d+(?:\.\d+)?)?)\s*dB/i);
   const maxVolumeMatch = logs.match(/max_volume:\s*(-?(?:inf|\d+(?:\.\d+)?)?)\s*dB/i);
   if (!meanVolumeMatch || !maxVolumeMatch) {
-    return false;
+    return null;
   }
 
   const rawMean = meanVolumeMatch[1]?.toLowerCase();
@@ -330,10 +391,51 @@ export async function isAudioEffectivelySilent(
   const meanVolume = Number.parseFloat(rawMean);
   const maxVolume = Number.parseFloat(raw);
   if (!Number.isFinite(meanVolume) || !Number.isFinite(maxVolume)) {
-    return false;
+    return null;
   }
 
-  return meanVolume <= meanVolumeThresholdDb && maxVolume <= maxVolumeThresholdDb;
+  return meanVolume <= thresholds.meanVolumeDb && maxVolume <= thresholds.maxVolumeDb;
+}
+
+export async function checkAudioSilenceForUpload(
+  uri: string,
+  thresholds: { maxVolumeDb?: number; meanVolumeDb?: number; timeoutMs?: number } = {}
+): Promise<SilenceCheckResult> {
+  const maxVolumeThresholdDb = thresholds.maxVolumeDb ?? -20;
+  const meanVolumeThresholdDb = thresholds.meanVolumeDb ?? -60;
+
+  try {
+    validateFileUri(uri, 'Upload silence check');
+
+    const info = await getInfoAsync(uri);
+    if (!info.exists) {
+      return { status: 'inconclusive', reason: 'ffmpeg_error' };
+    }
+
+    const session = await executeSilenceCheckWithTimeout(
+      `-i "${uri}" -af volumedetect -f null -`,
+      thresholds.timeoutMs ?? SILENCE_CHECK_FFMPEG_TIMEOUT_MS
+    );
+    const returnCode = await session.getReturnCode();
+    if (!ReturnCode.isSuccess(returnCode)) {
+      return { status: 'inconclusive', reason: 'ffmpeg_error' };
+    }
+
+    const isSilent = parseVolumedetectSilence((await session.getLogsAsString()) ?? '', {
+      maxVolumeDb: maxVolumeThresholdDb,
+      meanVolumeDb: meanVolumeThresholdDb,
+    });
+    if (isSilent === null) {
+      return { status: 'inconclusive', reason: 'ffmpeg_error' };
+    }
+
+    return isSilent ? { status: 'silent' } : { status: 'not_silent' };
+  } catch (error) {
+    return {
+      status: 'inconclusive',
+      reason: error instanceof FFmpegSilenceCheckTimeoutError ? 'ffmpeg_timeout' : 'ffmpeg_error',
+    };
+  }
 }
 
 /**

@@ -1427,10 +1427,15 @@ function RecordingSession() {
         const phase = getUploadPhase(error);
         const latencyMs = Date.now() - uploadStartedAt;
         // Derive an error code usable for filtering — server-supplied codes
-        // win over phase so trial/billing errors stay legible.
+        // win over phase so trial/billing errors stay legible. Hermes-
+        // minified class names from expo-modules-core CodedError can leak a
+        // single-letter `code` in prod builds (Sentry REACT-NATIVE-4 surfaced
+        // `error_code: k`); require UPPER_SNAKE-shaped codes to trust them.
         const errorObj = error as Error & { code?: string; status?: number };
+        const rawCode = typeof errorObj?.code === 'string' ? errorObj.code : '';
+        const looksLikeRealCode = /^[A-Z][A-Z0-9_]{2,}$/.test(rawCode);
         const errorCode =
-          (errorObj?.code && String(errorObj.code)) ||
+          (looksLikeRealCode && rawCode) ||
           (errorObj?.status ? `HTTP_${errorObj.status}` : phase.toUpperCase());
 
         trackEvent({

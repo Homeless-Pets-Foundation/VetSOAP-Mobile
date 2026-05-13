@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, CONFIG_MISSING } from '../config';
 import { secureStorage } from '../lib/secureStorage';
+import { breadcrumb } from '../lib/monitoring';
 
 function initSupabase() {
   if (CONFIG_MISSING || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -27,10 +28,15 @@ function initSupabase() {
             const readBack = await secureStorage.getSession();
             if (readBack !== value) {
               // Write appeared to succeed but read-back differs — retry once
+              breadcrumb('auth', 'token_rotation_retry', { reason: 'readback_mismatch' });
               await secureStorage.setSession(value);
             }
           } catch (error) {
             if (__DEV__) console.error('[Supabase storage] setSession failed, retrying:', error);
+            breadcrumb('auth', 'token_rotation_retry', {
+              reason: 'setSession_threw',
+              error_name: error instanceof Error ? error.name : 'unknown',
+            });
             await new Promise<void>(resolve => setTimeout(resolve, 1500));
             try {
               await secureStorage.setSession(value);

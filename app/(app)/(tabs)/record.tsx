@@ -55,7 +55,10 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
       .then(({ granted, canAskAgain }) => {
         if (granted) {
           onGranted();
-        } else if (!canAskAgain) {
+          return;
+        }
+        trackEvent({ name: 'mic_permission_denied', props: { can_ask_again: canAskAgain } });
+        if (!canAskAgain) {
           Alert.alert(
             'Permission Required',
             'Microphone access was denied. Please enable it in your device Settings to record appointments.',

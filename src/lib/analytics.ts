@@ -105,6 +105,7 @@ export type AnalyticsEvent =
   | { name: 'biometric_result'; props: { result: 'success' | 'cancel' | 'lockout' | 'hw_error' | 'not_enrolled' } }
   // Permissions + device
   | { name: 'permissions_snapshot'; props: { mic: PermissionState; notifications: PermissionState } }
+  | { name: 'mic_permission_denied'; props: { can_ask_again: boolean } }
   | { name: 'app_state_change'; props: { from: AppStateValue; to: AppStateValue; during: 'record' | 'upload' | 'idle' } }
   // Observability of observability
   | { name: 'monitoring_suppression_summary'; props: { total_suppressed: number; top_key: string | null; top_count: number; active_buckets: number } };

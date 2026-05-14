@@ -3,6 +3,7 @@ import { View, Text, Image, AppState, Alert } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { biometrics } from '../lib/biometrics';
 import { AuthContext } from '../auth/AuthProvider';
+import { captureMessage } from '../lib/monitoring';
 import { Button } from './ui/Button';
 
 const BACKGROUND_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
@@ -66,7 +67,25 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
 
   // Cold-start biometric check: on mount, check if biometric lock is enabled.
   // If so, require authentication before showing content.
+  //
+  // Hung-bridge defense (CLAUDE.md rule 29): if `biometrics.isAvailable()` /
+  // `isEnabled()` / `authenticate()` hang silently (post-update Keystore
+  // rebuild, OS biometric service stall) the user sees the blank
+  // `bg-stone-50` screen at line 174 forever. The 12s watchdog flips
+  // `isReady=true, isLocked=false` so the user lands on the app content
+  // (or the explicit Lock UI with an Unlock button) instead of nothing.
   useEffect(() => {
+    const watchdog = setTimeout(() => {
+      captureMessage('applock_init_watchdog_fired', 'warning', {
+        tags: { phase: 'init_watchdog', op: 'applock_init' },
+        extra: { timeout_ms: 12_000 },
+      });
+      isAuthenticatingRef.current = false;
+      setIsAuthenticating(false);
+      setIsLocked(false);
+      setIsReady(true);
+    }, 12_000);
+
     (async () => {
       try {
         const [available, enabled] = await Promise.all([
@@ -101,10 +120,16 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
         setIsLocked(false);
         setIsReady(true);
       }
-    })().catch(() => {
-      setIsLocked(false);
-      setIsReady(true);
-    });
+    })()
+      .catch(() => {
+        setIsLocked(false);
+        setIsReady(true);
+      })
+      .finally(() => {
+        clearTimeout(watchdog);
+      });
+
+    return () => clearTimeout(watchdog);
   }, []);
 
   // Background/foreground lock handler

@@ -26,7 +26,7 @@ import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
 import { clearPeakCache } from '../lib/waveformCache';
 import { setLogoutReason } from '../lib/logoutReason';
-import { setMonitoringUser, clearMonitoringUser, captureException, breadcrumb } from '../lib/monitoring';
+import { setMonitoringUser, clearMonitoringUser, captureException, captureMessage, breadcrumb } from '../lib/monitoring';
 import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib/analytics';
 import type { User } from '../types';
 
@@ -189,7 +189,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | n
   let timer: ReturnType<typeof setTimeout> | null = null;
   const safeguard = new Promise<null>((resolve) => {
     timer = setTimeout(() => {
-      breadcrumb('auth', 'cleanup_timeout', { label, ms });
+      breadcrumb('auth', 'init_watchdog_fired', { label, ms });
+      // captureMessage is rate-limited per-message at the 'warning' channel,
+      // so a spamming caller can't drain Sentry quota.
+      captureMessage('init_watchdog_fired', 'warning', {
+        tags: { phase: 'init_watchdog', op: label },
+        extra: { timeout_ms: ms },
+      });
       resolve(null);
     }, ms);
   });
@@ -615,8 +621,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [handleSignOut, registerDevice]);
 
   useEffect(() => {
-    // Restore existing session on startup
-    supabase.auth.getSession().then(async ({ data: { session: existingSession } }) => {
+    // Belt-and-suspenders watchdog against hung native bridges in the cold-
+    // start path (CLAUDE.md rule 29). Supabase GoTrue's auto-refresh timer
+    // (rule 27), SecureStore reads on a freshly-rebuilt Keystore, and the
+    // post-update biometric handoff have all been observed to hang silently.
+    // Without this timer the user sees a stuck `<ActivityIndicator>` in
+    // `(auth)/_layout.tsx` until they force-stop the app. Firing this
+    // watchdog flips `isLoading=false` so the Sign-In screen renders, and
+    // captures a Sentry message so we can see how often it happens.
+    const initWatchdog = setTimeout(() => {
+      captureMessage('auth_init_watchdog_fired', 'warning', {
+        tags: { phase: 'init_watchdog', op: 'auth_init' },
+        extra: { timeout_ms: 15_000 },
+      });
+      setIsLoading(false);
+    }, 15_000);
+
+    // Restore existing session on startup. `getSession` is wrapped in a
+    // narrower 10s timeout so the common-case hang (poisoned AbortController
+    // post-update) recovers to "no session" 5s before the top-level watchdog
+    // fires — gives the user the Sign-In screen rather than a captured
+    // warning with no recovery action.
+    withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session').then(async (result) => {
+      const existingSession = result?.data?.session ?? null;
       if (existingSession) {
         if (existingSession.access_token) {
           const { data: { user: validatedUser }, error: validateError } =
@@ -662,6 +689,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }).catch((error) => {
       if (__DEV__) console.error('[Auth] Failed to restore session:', error);
     }).finally(() => {
+      clearTimeout(initWatchdog);
       setIsLoading(false);
     });
 

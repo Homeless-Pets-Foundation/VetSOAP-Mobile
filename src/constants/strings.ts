@@ -14,6 +14,15 @@ export const UPLOAD_OVERLAY_COPY = {
   phasePreparing: 'Preparing audio…',
 } as const;
 
+export const SILENT_CHECK_COPY = {
+  title: 'Recording sounds silent',
+  body:
+    'Your microphone signal looked very quiet. If you can hear the audio on playback in Edit Recording, ' +
+    'tap Upload Anyway. Otherwise cancel and re-record.',
+  cancel: 'Cancel',
+  upload: 'Upload Anyway',
+} as const;
+
 export const OVERSIZED_CONFIRM_COPY = {
   title: 'Recording is large',
   /** Body builder. `hours` rounded to 1 decimal, `mb` rounded to whole MB, `parts` is the predicted part count. */

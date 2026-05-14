@@ -83,6 +83,46 @@ function emitDraftOrphanSweep(found: number, deleted: number): void {
   }
 }
 
+function emitDraftSegmentCopyFailed(
+  expected: number,
+  saved: number,
+  ensureDirFailed: boolean,
+  reasons: string[],
+  priorValidSave: boolean,
+): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trackEvent } = require('./analytics') as typeof import('./analytics');
+    // Tally by reason so the payload stays bounded for high-segment-count
+    // slots and groups cleanly in PostHog: "source_missing:2,copy_threw:1".
+    const tally: Record<string, number> = {};
+    for (const r of reasons) {
+      tally[r] = (tally[r] ?? 0) + 1;
+    }
+    const tallyString = Object.entries(tally)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}:${v}`)
+      .join(',');
+    trackEvent({
+      name: 'draft_save_segment_copy_failed',
+      props: {
+        expected,
+        saved,
+        ensure_dir_failed: ensureDirFailed,
+        reasons: tallyString,
+        // True if the slot already had a complete-on-disk draft before this
+        // save attempt — surfaces the data-loss risk where saveDraft's catch
+        // wipes the previously valid dir on a fresh failure. If this fires
+        // with prior_valid_save=true in PostHog, that's the signal to invest
+        // in the temp-file/atomic-rename approach.
+        prior_valid_save: priorValidSave,
+      },
+    });
+  } catch {
+    // swallow
+  }
+}
+
 function draftIndexKeyForUser(userId: string): string {
   return `captivet_drafts_index_${userId}`;
 }
@@ -328,42 +368,94 @@ export const draftStorage = {
     validateSlotId(slot.id);
 
     const dir = slotDraftDirForUser(userId, slot.id);
-    try {
-      ensureDirectory(dir);
 
-      // Copy all segments to draft directory
+    // Read existing metadata up front so we can (a) preserve serverDraftId
+    // through this re-save and (b) tag copy-failure telemetry with whether
+    // the slot already had valid audio on disk that this catch path could
+    // potentially wipe. The fileExists check must run BEFORE any copy
+    // attempt — once copies start, dest paths may get partially overwritten.
+    const existing = await readDraftChunks(userId, slot.id);
+    const priorValidSave =
+      !!existing &&
+      existing.segments.length > 0 &&
+      existing.segments.every((s) => fileExists(s.uri));
+
+    try {
+      // ensureDirectory now returns whether the dir actually exists post-call.
+      // If creation failed (low storage, EACCES, expo-file-system race), the
+      // copy loop below would all fail silently and we'd write empty-segments
+      // metadata — exactly the orphan-draft bug we are guarding against. Fail
+      // loudly so autoSaveDraft can skip the server-sync phase.
+      const dirReady = ensureDirectory(dir);
+      if (!dirReady) {
+        emitDraftSegmentCopyFailed(slot.segments.length, 0, true, [], priorValidSave);
+        throw new Error(`Draft storage: failed to create draft directory (${slot.segments.length} segments)`);
+      }
+
+      // Copy all segments to draft directory. We capture per-segment outcomes
+      // so partial / total copy failures surface in PostHog instead of being
+      // silently absorbed into an empty draft entry.
       const draftSegments: DraftSegmentMetadata[] = [];
+      const failureReasons: string[] = [];
       for (let i = 0; i < slot.segments.length; i++) {
         const segment = slot.segments[i];
-        if (!fileExists(segment.uri)) continue;
+        if (!fileExists(segment.uri)) {
+          failureReasons.push('source_missing');
+          continue;
+        }
 
         const destUri = `${dir}seg_${i}.m4a`;
         try {
           new ExpoFile(segment.uri).copy(new ExpoFile(destUri));
-          if (fileExists(destUri)) {
-            draftSegments.push({
-              uri: destUri,
-              duration: segment.duration,
-              peakMetering:
-                typeof segment.peakMetering === 'number'
-                  ? segment.peakMetering
-                  : undefined,
-            });
-          }
         } catch {
-          // Skip segments that fail to copy
+          failureReasons.push('copy_threw');
           continue;
         }
+
+        if (!fileExists(destUri)) {
+          failureReasons.push('dest_missing_after_copy');
+          continue;
+        }
+
+        draftSegments.push({
+          uri: destUri,
+          duration: segment.duration,
+          peakMetering:
+            typeof segment.peakMetering === 'number'
+              ? segment.peakMetering
+              : undefined,
+        });
+      }
+
+      // Emit telemetry whenever any segment failed to copy — even on partial
+      // success — so the rate of silent copy failures is visible.
+      if (failureReasons.length > 0) {
+        emitDraftSegmentCopyFailed(
+          slot.segments.length,
+          draftSegments.length,
+          false,
+          failureReasons,
+          priorValidSave,
+        );
+      }
+
+      // Refuse to persist a metadata row with zero usable segments when the
+      // input had segments. The autoSaveDraft caller catches this and skips
+      // the Phase 2 server-sync, preventing the "Not on this device" orphan.
+      if (slot.segments.length > 0 && draftSegments.length === 0) {
+        throw new Error(
+          `Draft storage: all ${slot.segments.length} segment copies failed (${failureReasons.join(',')})`,
+        );
       }
 
       // Preserve any existing serverDraftId + pendingSync state so re-saves
       // on the same slot (Finish → Continue → Finish, or a second autoSaveDraft
       // during a stop/continue cycle) do not zero out a server row that a
       // concurrent `syncPending()` would then fresh-create as a duplicate
-      // draft. `updateServerDraftId` remains the authoritative writer for the
-      // post-sync promotion to `pendingSync: false`.
-      const existing = await readDraftChunks(userId, slot.id);
-
+      // draft. `existing` is read at the top of saveDraft so we don't make
+      // a second SecureStore round-trip here. `updateServerDraftId` remains
+      // the authoritative writer for the post-sync promotion to
+      // `pendingSync: false`.
       const metadata: DraftMetadata = {
         slotId: slot.id,
         savedAt: new Date().toISOString(),
@@ -546,9 +638,19 @@ export const draftStorage = {
     try {
       const drafts = await this.listDrafts();
       for (const draft of drafts) {
-        if (draft.segments.length === 0) continue;
-        const anyMissing = draft.segments.some((s) => !fileExists(s.uri));
-        if (!anyMissing) continue;
+        // Two orphan shapes get swept:
+        //   (a) Non-empty segments but at least one file missing on disk.
+        //   (b) Zero segments AND a serverDraftId — produced by an older
+        //       build of saveDraft that silently swallowed all-segments-copy
+        //       failures and still created a server row. Without (b) those
+        //       orphans linger forever as a "Not on this device" card the
+        //       user has to delete by hand.
+        const anyMissing =
+          draft.segments.length > 0 &&
+          draft.segments.some((s) => !fileExists(s.uri));
+        const emptyButServerLinked =
+          draft.segments.length === 0 && !!draft.serverDraftId;
+        if (!anyMissing && !emptyButServerLinked) continue;
         found++;
 
         if (draft.serverDraftId) {

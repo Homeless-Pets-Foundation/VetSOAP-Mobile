@@ -231,6 +231,14 @@ const deviceType = Platform.OS === 'ios'
 
 `app/(app)/devices.tsx:formatDeviceTypeLabel` already maps `ios_phone` → "iPhone". Don't revert to the one-size-fits-all `'ios_tablet'` string.
 
+### 29. UI-gating async work must have a hard timeout
+
+Any async call that gates a render decision — `isLoading`, `isLocked`, `isReady`, an early-return on a loader — **must** have a watchdog that flips the gate even if the underlying Promise never settles. Promises don't reject themselves; native bridges (Supabase GoTrue's auto-refresh `AbortController`, `expo-secure-store` Keystore reads on Direct Boot, `expo-local-authentication` biometric prompts, `expo-audio` recorder ops, `expo-file-system` on locked storage) can hang silently in post-update or low-storage scenarios. A `.finally(() => setIsLoading(false))` never fires if the chain never settles → the user stares at a spinner / blank screen until they force-quit.
+
+Pattern in `AuthProvider.tsx` startup useEffect: `setTimeout(() => { captureMessage('auth_init_watchdog_fired', 'warning', ...); setIsLoading(false); }, 15_000)`, cleared in `.finally`. The watchdog fires a `captureMessage` so we *see* in Sentry how often it triggers — silent recovery for the user, observable signal for us. The same pattern protects `AppLockGuard`'s cold-start biometric check (12s watchdog). When adding a new init path that holds a render gate, copy that pattern; don't trust `.finally` alone.
+
+Tactical timeout on the specific call (`withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session')`) sits inside the watchdog — recovers to a usable state 3–5 s before the watchdog fires so the user lands on a real screen rather than a Sentry warning with no UX fix. Use both layers.
+
 ## Device Binding
 
 Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, persist in SecureStore (survives sign-out — device-scoped, not user-scoped). Server `validateDeviceSession` requires it, can revoke specific devices.

@@ -10,7 +10,7 @@ import { safeDeleteFile, safeDeleteDirectory, fileExists } from '../../../src/li
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
 import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
-import { OVERSIZED_CONFIRM_COPY } from '../../../src/constants/strings';
+import { OVERSIZED_CONFIRM_COPY, SILENT_CHECK_COPY } from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import {
@@ -113,7 +113,11 @@ function isSlotActivelyRecording(slot: PatientSlot): boolean {
   return slot.audioState === 'recording' || slot.audioState === 'paused';
 }
 
-const SILENT_METERING_THRESHOLD_DB = -20;
+// -35 dBFS: covers soft speech close to the mic without missing dead-mic recordings
+// (mic noise floor sits around -60 to -70 dBFS). Earlier value (-20 dBFS) tripped
+// false positives on Pixel devices where expo-audio reports a depressed peak even
+// though file playback is clearly audible.
+const SILENT_METERING_THRESHOLD_DB = -35;
 const SHORT_AUDIO_FFMPEG_SILENCE_SECONDS = 15;
 const MISSING_METERING_FFMPEG_MAX_SECONDS = 180;
 
@@ -192,6 +196,21 @@ class UploadCancelledByUser extends Error {
     super('Upload cancelled by user');
     this.name = 'UploadCancelledByUser';
   }
+}
+
+/** Promise-wrapped Alert.alert offering Upload Anyway when silence-check trips. */
+function confirmSilentUpload(): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      SILENT_CHECK_COPY.title,
+      SILENT_CHECK_COPY.body,
+      [
+        { text: SILENT_CHECK_COPY.cancel, style: 'cancel', onPress: () => resolve(false) },
+        { text: SILENT_CHECK_COPY.upload, style: 'default', onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) }
+    );
+  });
 }
 
 /** Promise-wrapped Alert.alert with a yes/no choice. Resolves true on confirm, false on cancel. */
@@ -1197,7 +1216,10 @@ function RecordingSession() {
           throw err;
         }
 
-        setUploadStatus(slot.id, 'uploading', { progress: 1 });
+        // Silence check runs BEFORE flipping the slot into 'uploading' state.
+        // Otherwise the Upload Anyway dialog appears with the upload overlay
+        // still painted behind it (slot already shows "uploading", which is
+        // confusing while the user is being asked to confirm or cancel).
         const silenceCheck = await checkSilentAudio(slot);
         if (silenceCheck.inconclusive) {
           const reason =
@@ -1217,12 +1239,35 @@ function RecordingSession() {
           });
         }
         if (silenceCheck.silent) {
-          const silentError = new Error(
-            'This recording appears silent. Please verify microphone input and record again before uploading.'
-          ) as Error & { uploadPhase?: 'silent_check' };
-          silentError.uploadPhase = 'silent_check';
-          throw silentError;
+          // peakMetering reported by expo-audio is not always reliable on
+          // certain Android devices (Pixel 10 Pro XL has been observed to
+          // report depressed peaks despite clearly audible playback). Offer
+          // an explicit user override so a clinician with an audible recording
+          // can push it through without losing the audio capture.
+          const userOverride = await confirmSilentUpload();
+          if (!userOverride) {
+            const silentError = new Error(
+              'This recording appears silent. Please verify microphone input and record again before uploading.'
+            ) as Error & { uploadPhase?: 'silent_check' };
+            silentError.uploadPhase = 'silent_check';
+            throw silentError;
+          }
+          trackEvent({
+            name: 'silent_check_bypassed',
+            props: {
+              slot_index: slotIndex,
+              duration_s: durationSeconds,
+              segment_count: segmentCount,
+              reason: silenceCheck.reason === 'ffmpeg_all_segments_silent'
+                ? 'ffmpeg_all_segments_silent'
+                : 'metering_all_below_threshold',
+            },
+          });
         }
+
+        // Silence check cleared (or user overrode) — flip to 'uploading' now
+        // so the upload overlay only paints once we actually intend to upload.
+        setUploadStatus(slot.id, 'uploading', { progress: 1 });
 
         // Pre-flight: split oversized segments via FFmpeg into <250 MB parts
         // that flow through the existing createWithSegments path.
@@ -1638,6 +1683,17 @@ function RecordingSession() {
       } catch (error) {
         // Draft save is best-effort — never surface errors to the user.
         // The recording is still in session state and can still be submitted.
+        // Capture to Sentry so empty-segment / dir-creation failures surface
+        // in production (the previous DEV-only warn was invisible on prod
+        // builds and let the orphan-draft bug hide).
+        captureException(error, {
+          tags: { phase: 'auto_save_draft' },
+          extra: {
+            slot_id: slot.id,
+            segment_count: slot.segments.length,
+            has_server_draft: !!slot.serverDraftId,
+          },
+        });
         if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
       }
     },

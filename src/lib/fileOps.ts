@@ -45,12 +45,19 @@ export function directoryExists(uri: string): boolean {
   }
 }
 
-/** Create a directory (and intermediates) if it doesn't already exist. Never throws. */
-export function ensureDirectory(uri: string): void {
+/**
+ * Create a directory (and intermediates) if it doesn't already exist. Never throws.
+ * Returns true if the directory exists after the call, false if creation failed.
+ * Callers that care about the outcome (e.g. draft persistence) should check the
+ * return value; legacy callers that fired-and-forgot still work because the
+ * return is ignored.
+ */
+export function ensureDirectory(uri: string): boolean {
   try {
     const d = new Directory(uri);
     if (!d.exists) d.create({ intermediates: true });
+    return d.exists;
   } catch {
-    // Best-effort
+    return false;
   }
 }

@@ -392,6 +392,17 @@ export const draftStorage = {
         throw new Error(`Draft storage: failed to create draft directory (${slot.segments.length} segments)`);
       }
 
+      // Capture free disk once so it lands in the eventual all-failed throw's
+      // message. Low storage is one of the candidate triggers for `copy_threw`
+      // (REACT-NATIVE-8); having freeDiskMb in the Sentry payload lets us
+      // distinguish ENOSPC from "source URI stale" without a device repro.
+      let freeDiskMb: number | null;
+      try {
+        freeDiskMb = Math.round(Paths.availableDiskSpace / (1024 * 1024));
+      } catch {
+        freeDiskMb = null;
+      }
+
       // Copy all segments to draft directory. We capture per-segment outcomes
       // so partial / total copy failures surface in PostHog instead of being
       // silently absorbed into an empty draft entry.
@@ -407,8 +418,14 @@ export const draftStorage = {
         const destUri = `${dir}seg_${i}.m4a`;
         try {
           new ExpoFile(segment.uri).copy(new ExpoFile(destUri));
-        } catch {
-          failureReasons.push('copy_threw');
+        } catch (err) {
+          // Pin the underlying error into the reason tag so the next RN-8
+          // event tells us which errno (ENOSPC / EPERM / …) is firing.
+          // Scrub `file://` paths defensively — same pattern as
+          // src/api/telemetry.ts:reportClientError.
+          const raw = err instanceof Error ? err.message : String(err);
+          const short = raw.replace(/file:\/\/\S+/g, '<path>').slice(0, 80);
+          failureReasons.push(`copy_threw:${short}`);
           continue;
         }
 
@@ -444,7 +461,7 @@ export const draftStorage = {
       // the Phase 2 server-sync, preventing the "Not on this device" orphan.
       if (slot.segments.length > 0 && draftSegments.length === 0) {
         throw new Error(
-          `Draft storage: all ${slot.segments.length} segment copies failed (${failureReasons.join(',')})`,
+          `Draft storage: all ${slot.segments.length} segment copies failed (${failureReasons.join(',')}) freeDiskMb=${freeDiskMb}`,
         );
       }
 
@@ -479,8 +496,16 @@ export const draftStorage = {
 
       return slot.id;
     } catch (error) {
-      // Clean up partially-copied files on failure
-      safeDeleteDirectory(dir);
+      // Preserve audio from any pre-existing complete-on-disk draft. The catch
+      // used to wipe `dir` unconditionally, which destroyed prior successful
+      // saves when a re-save failed — typical when slot.segments[i].uri points
+      // at recorder temp files that Android cache cleanup, an OS update, or an
+      // FFmpeg-split sweep has since purged. `priorValidSave` is computed at
+      // line 378 for exactly this guard; the previous code only used it for
+      // telemetry (`prior_valid_save` PostHog property).
+      if (!priorValidSave) {
+        safeDeleteDirectory(dir);
+      }
       emitDraftFailure('draft_save_failed', error);
       throw error;
     }

@@ -75,10 +75,22 @@ export class ApiError extends Error {
   }
 }
 
+export interface MfaRequiredRequest {
+  path: string;
+  method: string;
+  reason?: string;
+  currentLevel?: string;
+  nextLevel?: string;
+  staleSession?: boolean;
+  verifiedAt?: number | null;
+  maxAgeSeconds?: number;
+}
+
 export class ApiClient {
   private onUnauthorized?: () => void | Promise<void>;
   private onDeviceRevoked?: () => void | Promise<void>;
   private onDeviceRegistrationRequired?: () => Promise<boolean>;
+  private onMfaRequired?: (request: MfaRequiredRequest) => void | Promise<void>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
   /**
@@ -113,6 +125,10 @@ export class ApiClient {
    */
   setOnDeviceRegistrationRequired(callback: () => Promise<boolean>) {
     this.onDeviceRegistrationRequired = callback;
+  }
+
+  setOnMfaRequired(callback: ((request: MfaRequiredRequest) => void | Promise<void>) | null) {
+    this.onMfaRequired = callback ?? undefined;
   }
 
   /**
@@ -157,6 +173,9 @@ export class ApiClient {
     }
     if (status === 401) return 'Your session has expired. Please sign in again.';
     if (status === 402) return (errorBody.error as string) || 'Payment required.';
+    if (status === 403 && errorBody.code === 'MFA_REQUIRED') {
+      return (errorBody.error as string) || 'Multi-factor authentication is required.';
+    }
     if (status === 403) return 'You do not have permission to perform this action.';
     if (status === 404) return 'The requested resource was not found.';
     if (status === 422 && details.length) return details.map((d) => d.message).join(', ');
@@ -302,6 +321,22 @@ export class ApiClient {
       const details = Array.isArray(errorBody.details) ? errorBody.details : [];
       const message = this.buildErrorMessage(response.status, errorBody, details);
       const code = typeof errorBody.code === 'string' ? errorBody.code : undefined;
+
+      if (response.status === 403 && code === 'MFA_REQUIRED') {
+        await this.onMfaRequired?.({
+          path,
+          method,
+          reason: typeof errorBody.reason === 'string' ? errorBody.reason : undefined,
+          currentLevel:
+            typeof errorBody.currentLevel === 'string' ? errorBody.currentLevel : undefined,
+          nextLevel: typeof errorBody.nextLevel === 'string' ? errorBody.nextLevel : undefined,
+          staleSession:
+            typeof errorBody.staleSession === 'boolean' ? errorBody.staleSession : undefined,
+          verifiedAt: typeof errorBody.verifiedAt === 'number' ? errorBody.verifiedAt : null,
+          maxAgeSeconds:
+            typeof errorBody.maxAgeSeconds === 'number' ? errorBody.maxAgeSeconds : undefined,
+        });
+      }
 
       // Strip the fields we lift to first-class properties so callers reading
       // `data` aren't tempted to duplicate-read them.

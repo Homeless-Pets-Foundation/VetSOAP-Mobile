@@ -194,12 +194,25 @@ Fields on `PatientSlot` that affect `uploadSlot` server behavior (`serverRecordi
 
 Miss any → Resume strips field → Submit hits fresh-create → duplicate server recording. Fix e.g. `397f109`.
 
+### 25. MFA auth requests must use hardened network handling
+
+MFA endpoints (`/auth/mfa/*`) are auth routes, but they are still production network calls. `mfaAuthRequest()` in `src/auth/AuthProvider.tsx` must keep the same safety properties as `ApiClient.request()`:
+
+- Build URLs from `API_URL`, then call `validateRequestUrl(mfaUrl)` inside the request `try` so `finally` still runs.
+- Use `AbortController` + `MFA_REQUEST_TIMEOUT_MS`, and always `clearTimeout(timeout)` in `finally`.
+- Send `Authorization`, `X-Device-Id`, and `X-Supabase-Refresh-Token` when that route requires the refresh token.
+- Parse error JSON with `await response.json().catch(() => ({})) ?? {}`.
+- Throw `ApiError` with `mfaErrorMessage(...)`, not raw server `data.error`.
+
+`src/auth/mfaPolicy.ts` owns MFA error-code branching and safe user-facing messages. `app/(auth)/mfa.tsx` should use `isSetupApprovalCodeError()` + `mfaErrorMessage()` from that module. Never display raw MFA server error text; it can include implementation detail or account-identifying content.
+
 ## Device Binding
 
 Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, persist in SecureStore (survives sign-out — device-scoped, not user-scoped). Server `validateDeviceSession` requires it, can revoke specific devices.
 
 - `secureStorage.getDeviceId()` — gen + cache UUID
 - `ApiClient.doFetch()` — memory-caches device ID after first SecureStore read
+- MFA bearer routes in `AuthProvider.mfaAuthRequest()` also send `X-Device-Id`; don't route around device binding for auth-only endpoints.
 - `AuthProvider.registerDevice()` — called on sign-in AND session restore; **must return `boolean`** (true on success) so `ApiClient` can retry after auto-register
 - Server → `DEVICE_REGISTRATION_REQUIRED` (428) → `ApiClient` calls `registerDevice()` via `onDeviceRegistrationRequired` callback, retries once. Any `/api/*` call from a never-registered device returns 428 — do NOT treat 428 as a fatal error in new code
 - Server → `DEVICE_REVOKED` (401) → client forces sign-out + msg
@@ -209,6 +222,7 @@ Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, 
 
 - **Secrets:** `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` — EAS project-level (not `eas.json`).
 - **Credentials:** preview + production → `credentialsSource: "remote"` (EAS-managed).
+- **APK builds:** use EAS profile `production-apk`, not the `production` profile (`production` builds an AAB). Command: `npx --yes eas-cli@latest build --platform android --profile production-apk --non-interactive`. Android Studio alone is not the normal path because this is an EAS managed project with no committed `android/` directory. Local APKs require `eas build --local` or `expo prebuild` plus local Android/JDK/signing setup.
 - **Lock file:** sync via `npm install --legacy-peer-deps` pre-build if deps change. EAS uses `npm ci` → fails on mismatch. `.npmrc` has `legacy-peer-deps=true` for `@config-plugins/ffmpeg-kit-react-native` peer dep conflict w/ Expo SDK 55.
 - **Secrets sync:** after `.env` edit → `eas secret:push --scope project --env-file .env --force`. Stale EAS secret overrides local `.env` in prod builds.
 - **Metro cache:** after `.env` edit → `npx expo start --clear`. Metro inlines `EXPO_PUBLIC_*` at build time → stale cache silently uses old values. Dev mode: `config.ts` warns if Supabase vars empty.
@@ -310,7 +324,9 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/hooks/useStashedSessions.ts` — stash list + resume. `stashSession` moves segments to stash dir, writes metadata, then `draftStorage.deleteDraft()` for every slot w/ `draftSlotId` (stash owns audio post-commit). `convertToPatientSlots` restores `serverDraftId`/`draftSlotId` from stash payload.
 - `src/types/multiPatient.ts` — `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`. `PatientSlot` incl. `draftSlotId`/`serverDraftId` for auto-saved drafts.
 - `src/types/stash.ts` — `StashedSlot`/`StashedSegment`/`StashedSession`. `StashedSlot` carries optional `serverDraftId`/`draftSlotId` (rule 24).
-- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set.
+- `app/(auth)/mfa.tsx` — MFA challenge/enrollment screen. Uses `react-native-qrcode-svg` for TOTP enrollment QR codes. RN callbacks wrap async handlers with `.catch(() => {})`.
+- `src/auth/mfaPolicy.ts` — safe MFA error-code handling and UI messages. Keep setup approval-code checks here, and add executable tests in `tests/security-mfa.test.mjs` when new MFA codes are introduced.
+- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set. MFA helpers live here too; `mfaAuthRequest()` must follow rule 25.
 - `src/api/client.ts` — sends `X-Device-Id` header all reqs. Memory-caches device ID. Handles `DEVICE_REGISTRATION_REQUIRED` (428) via `onDeviceRegistrationRequired` callback → `registerDevice()` + retry once. Handles `DEVICE_REVOKED`/`DEVICE_ID_REQUIRED` 401s before token refresh.
 - `src/api/recordings.ts` — `createWithFile()` single-segment, `createWithSegments()` multi. Both validate via `getInfoAsync()`, 250MB limit, 10min timeout. Both take optional `existingRecordingId` → skips `create()`, uses server draft as recording ID (promote path).
 - `src/components/AppLockGuard.tsx` — biometric on cold start (not just bg resume). Defaults `isLocked=true` + blank screen until biometric done (no PHI flash). Sign-out = escape hatch.

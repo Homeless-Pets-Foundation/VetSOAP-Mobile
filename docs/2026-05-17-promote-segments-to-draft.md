@@ -38,11 +38,11 @@ export type SessionAction =
   | {
       type: 'PROMOTE_SEGMENTS_TO_DRAFT';
       slotId: string;
-      segments: Array<{ uri: string; duration: number; peakMetering?: number }>;
+      segments: AudioSegment[];
     };
 ```
 
-Reducer in `src/hooks/useMultiPatientSession.ts` replaces `slot.segments` with the provided array. Length and per-segment `duration` must match the existing array exactly — defense-in-depth assertion logs (`__DEV__` only) on mismatch so a future refactor that drops a segment doesn't silently bypass the guard. The reducer must not touch `audioState`, `recorderBoundToSlotId`, `uploadStatus`, or any other slot field — promotion is URI-only.
+Use the existing `AudioSegment` type alias (also from `src/types/multiPatient.ts`) rather than inlining the shape — a future schema change (e.g. adding a sample-rate field to `AudioSegment`) then flows into the action payload automatically instead of needing a coordinated edit. Reducer in `src/hooks/useMultiPatientSession.ts` replaces `slot.segments` with the provided array. Length and per-segment `duration` must match the existing array exactly — defense-in-depth assertion logs (`__DEV__` only) on mismatch so a future refactor that drops a segment doesn't silently bypass the guard. The reducer must not touch `audioState`, `recorderBoundToSlotId`, `uploadStatus`, or any other slot field — promotion is URI-only.
 
 ### 2. `saveDraft` returns the promoted segments
 
@@ -51,11 +51,11 @@ Reducer in `src/hooks/useMultiPatientSession.ts` replaces `slot.segments` with t
 ```ts
 async saveDraft(slot: PatientSlot): Promise<{
   draftSlotId: string;
-  promotedSegments: Array<{ uri: string; duration: number; peakMetering?: number }>;
+  promotedSegments: AudioSegment[];
 }>
 ```
 
-`promotedSegments` is the `draftSegments` array already constructed at line 437 — it already has the durable `destUri`, the `duration` carried through, and the optional `peakMetering`. The shape change is mechanical: today the function returns `slot.id` (a string); change to return an object.
+`promotedSegments` is the `draftSegments` array already constructed at line 437 — it already has the durable `destUri`, the `duration` carried through, and the optional `peakMetering`. The shape change is mechanical: today the function returns `slot.id` (a string); change to return an object. Same rationale for `AudioSegment`: if the type grows fields, this signature absorbs the change for free.
 
 Caller updates (one site — `autoSaveDraft` in `record.tsx:1662`) — destructure `{ draftSlotId, promotedSegments }`. Callers in `tests/security-mfa.test.mjs` and any other indirect consumers must be audited via grep.
 
@@ -64,7 +64,10 @@ Caller updates (one site — `autoSaveDraft` in `record.tsx:1662`) — destructu
 After successful `saveDraft`, dispatch *both* actions in order — first `PROMOTE_SEGMENTS_TO_DRAFT` (URI rewrite), then `SET_DRAFT_IDS` (draft linkage). Order matters because subsequent reads from `sessionRef.current` should see the new URIs *before* any downstream side effect (e.g. `scheduleDraftSync` snapshotting the slot for the server PATCH) runs.
 
 ```ts
-const { draftSlotId, promotedSegments } = await draftStorage.saveDraft(slot);
+import type { AudioSegment } from '../../../src/types/multiPatient';
+
+const { draftSlotId, promotedSegments }: { draftSlotId: string; promotedSegments: AudioSegment[] } =
+  await draftStorage.saveDraft(slot);
 
 if (promotedSegments.length === slot.segments.length) {
   dispatch({

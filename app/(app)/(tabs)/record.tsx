@@ -26,7 +26,7 @@ import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { recordingsApi, getUploadPhase } from '../../../src/api/recordings';
+import { recordingsApi, getUploadPhase, isTransientUploadError } from '../../../src/api/recordings';
 import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import { trackEvent, type NetworkState } from '../../../src/lib/analytics';
 import { breadcrumb, captureException } from '../../../src/lib/monitoring';
@@ -426,6 +426,14 @@ function RecordingSession() {
   // Guard: if upload wins the race against deferred local draft persistence, auto-save
   // must immediately clean up the late draft instead of leaving it behind locally.
   const completedUploadSlotIdsRef = useRef<Set<string>>(new Set());
+  // Set when uploadSlot fails with transient r2_put exhaustion (Sentry
+  // REACT-NATIVE-4 fingerprint: DNS resolve or socket reset after all 3 retry
+  // attempts). Read by handleSubmitSingle / handleSubmitAll after uploadSlot
+  // returns null so they can fall through to auto-stash instead of leaving
+  // the user staring at a generic "upload failed" alert with no recovery
+  // path. Keyed by slot id so concurrent uploads don't collide; entries are
+  // consumed (deleted) by the read side.
+  const autoStashableFailuresRef = useRef<Set<string>>(new Set());
   // Per-slot timers for debounced server-draft creation. Server POST
   // /api/recordings {isDraft:true} runs after DRAFT_DEBOUNCE_MS; if the user
   // taps Submit first, the timer is cancelled so no draft row ever exists to
@@ -1142,6 +1150,10 @@ function RecordingSession() {
       // during the window between button tap and React state update disabling the button.
       if (uploadingSlotIdsRef.current.has(slot.id)) return null;
       uploadingSlotIdsRef.current.add(slot.id);
+      // Fresh attempt — clear any stale auto-stash flag from a prior failure
+      // so retry-then-succeed doesn't accidentally stash on the next failure
+      // path that wasn't actually network-dead.
+      autoStashableFailuresRef.current.delete(slot.id);
       // Hold a wake-lock for the duration of this slot's upload. Per Sentry
       // 7445949187, Android Doze + ConnectivityManager reap the R2 PUT's TCP
       // socket the moment the screen sleeps mid-upload, surfacing as
@@ -1536,6 +1548,13 @@ function RecordingSession() {
           error_code: errorCode,
           attempt_number: attemptNumber,
         });
+        // Signal auto-stash eligibility to the submit handler. Only transient
+        // r2_put exhaustion (network dead the entire retry window — Sentry
+        // REACT-NATIVE-4 fingerprint) qualifies: presign / preflight / silence
+        // / confirm failures are not a "save and try later when online" UX.
+        if (phase === 'r2_put' && isTransientUploadError(error)) {
+          autoStashableFailuresRef.current.add(slot.id);
+        }
         return null;
       } finally {
         uploadingSlotIdsRef.current.delete(slot.id);
@@ -1760,6 +1779,73 @@ function RecordingSession() {
     }
   }, [session, autoSaveDraft]);
 
+  /**
+   * Auto-stash recovery for transient R2 upload exhaustion (Sentry
+   * REACT-NATIVE-4 fingerprint). Invoked when `uploadSlot` returns null
+   * AND set the slot's id in `autoStashableFailuresRef`. Mirrors the success
+   * path of `executeStash` but with copy that explains the network angle and
+   * emits one `recording_auto_stashed` event per slot we actually saved, so
+   * dashboards can count affected recordings rather than user-level
+   * aggregation.
+   *
+   * Returns true if a stash committed (caller should suppress the generic
+   * "upload failed" alert + nav home), false if no slots were eligible or
+   * stashSession refused — caller falls back to its existing failure UX.
+   */
+  const tryAutoStashOnNetworkDeath = useCallback(
+    async (candidateSlotIds: string[]): Promise<boolean> => {
+      const eligibleIds = candidateSlotIds.filter((id) =>
+        autoStashableFailuresRef.current.has(id)
+      );
+      if (eligibleIds.length === 0) return false;
+      // Consume the flags so a later retry doesn't auto-stash again on a
+      // different failure mode that happens to leave them set.
+      eligibleIds.forEach((id) => autoStashableFailuresRef.current.delete(id));
+
+      const session = sessionRef.current;
+      const success = await stashSession(session);
+      if (!success) return false;
+
+      session.slots.forEach((slot) => {
+        deleteOrphanServerRecording(slot);
+        deleteLocalSlotDraft(slot);
+      });
+
+      for (const id of eligibleIds) {
+        const idx = session.slots.findIndex((s) => s.id === id);
+        const slot = session.slots[idx];
+        if (!slot) continue;
+        trackEvent({
+          name: 'recording_auto_stashed',
+          props: {
+            reason: 'r2_put_dead_network',
+            slot_index: idx,
+            segment_count: slot.segments.length,
+            duration_s: Math.round(
+              slot.segments.reduce((sum, s) => sum + (s.duration ?? 0), 0)
+            ),
+          },
+        });
+      }
+
+      releaseResumedStashIfAny();
+      resetSession();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      Alert.alert(
+        'Saved for Later',
+        "Your network was unstable, so we saved this for you. Open it from Saved Sessions and tap Resume once you're back online."
+      );
+      return true;
+    },
+    [
+      stashSession,
+      releaseResumedStashIfAny,
+      resetSession,
+      deleteOrphanServerRecording,
+      deleteLocalSlotDraft,
+    ]
+  );
+
   const handleSubmitSingle = useCallback(
     (slotId: string) => {
       const slot = sessionRef.current.slots.find((s) => s.id === slotId);
@@ -1799,6 +1885,12 @@ function RecordingSession() {
               resetSession();
               router.push(`/recordings/${serverRecordingId}` as `/recordings/${string}`);
             }
+          } else {
+            // Upload returned null — uploadSlot already set the on-card error
+            // state and Sentry. If the failure was a transient r2_put network
+            // death (RN-4 fingerprint), salvage the work into a stash instead
+            // of leaving the user with an unactionable error badge.
+            await tryAutoStashOnNetworkDeath([slotId]);
           }
         } finally {
           clearSubmitIntent([slotId]);
@@ -1811,7 +1903,7 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny]
+    [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath]
   );
 
   const handleSubmitAll = useCallback(() => {
@@ -1862,11 +1954,15 @@ function RecordingSession() {
     (async () => {
       try {
         let allSuccess = true;
+        const failedSlotIds: string[] = [];
         // Sequential uploads to avoid network saturation
         for (const slot of slotsToUpload) {
           setSubmittingSlotId(slot.id);
           const recordingId = await uploadSlot(slot);
-          if (!recordingId) allSuccess = false;
+          if (!recordingId) {
+            allSuccess = false;
+            failedSlotIds.push(slot.id);
+          }
         }
 
         Haptics.notificationAsync(
@@ -1882,10 +1978,18 @@ function RecordingSession() {
           resetSession();
           router.push('/recordings');
         } else {
-          Alert.alert(
-            'Some Uploads Failed',
-            'Some recordings failed to upload. You can retry the failed ones.'
-          );
+          // If every failure was a transient r2_put exhaustion (network died
+          // during sequential upload), auto-stash the failed slots instead of
+          // making the user manually tap each one. tryAutoStash returns true
+          // only when at least one slot was eligible AND the stash committed —
+          // otherwise fall through to the generic retry-each alert.
+          const stashed = await tryAutoStashOnNetworkDeath(failedSlotIds);
+          if (!stashed) {
+            Alert.alert(
+              'Some Uploads Failed',
+              'Some recordings failed to upload. You can retry the failed ones.'
+            );
+          }
         }
       } finally {
         clearSubmitIntent(slotIdsToUpload);
@@ -1903,7 +2007,7 @@ function RecordingSession() {
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
-  }, [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny]);
+  }, [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();

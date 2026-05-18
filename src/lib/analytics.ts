@@ -88,6 +88,7 @@ export type AnalyticsEvent =
   | { name: 'stash_saved'; props: { slot_count: number } }
   | { name: 'stash_resumed'; props: { slot_count: number } }
   | { name: 'stash_discarded'; props: { slot_count: number } }
+  | { name: 'recording_auto_stashed'; props: { reason: AutoStashReason; slot_index: number; segment_count: number; duration_s: number } }
   | { name: 'stash_write_failed'; props: { reason: FailureReason } }
   | { name: 'draft_save_failed'; props: { reason: FailureReason } }
   | { name: 'draft_sync_retry_failed'; props: { attempt_number: number } }
@@ -117,6 +118,8 @@ export type NetworkState = 'wifi' | 'cellular' | 'none' | 'unknown';
 export type RefreshTrigger = 'recovery' | 'foreground' | 'on_auth_state' | 'device_registration' | 'manual';
 
 export type FailureReason = 'secure_store' | 'fs' | 'quota' | 'network' | 'other';
+
+export type AutoStashReason = 'r2_put_dead_network';
 
 export type SilenceCheckInconclusiveReason = 'missing_metering_long_recording' | 'ffmpeg_timeout' | 'ffmpeg_error';
 

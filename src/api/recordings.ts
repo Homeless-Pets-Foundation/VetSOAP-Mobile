@@ -88,7 +88,7 @@ export type UploadPhase =
   | 'create_draft'
   | 'unknown';
 
-type TaggedError = Error & { uploadPhase?: UploadPhase };
+type TaggedError = Error & { uploadPhase?: UploadPhase; httpStatus?: number };
 
 function tagPhase(error: unknown, phase: UploadPhase): never {
   if (error instanceof Error) {
@@ -100,9 +100,10 @@ function tagPhase(error: unknown, phase: UploadPhase): never {
   throw wrapped;
 }
 
-function phaseError(phase: UploadPhase, message: string): never {
+function phaseError(phase: UploadPhase, message: string, httpStatus?: number): never {
   const err = new Error(message) as TaggedError;
   err.uploadPhase = phase;
+  if (httpStatus !== undefined) err.httpStatus = httpStatus;
   throw err;
 }
 
@@ -111,6 +112,11 @@ export function getUploadPhase(error: unknown): UploadPhase {
     return (error as TaggedError).uploadPhase!;
   }
   return 'unknown';
+}
+
+export function getUploadHttpStatus(error: unknown): number | undefined {
+  if (error instanceof Error) return (error as TaggedError).httpStatus;
+  return undefined;
 }
 
 function generateIdempotencyKey(): string {
@@ -173,9 +179,27 @@ function withTimeout<T>(
  */
 const TRANSIENT_R2_ERROR_RE = /Failed to connect|Network request failed|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|Unable to resolve host|No address associated with hostname/i;
 
-function isTransientUploadError(err: unknown): boolean {
+export function isTransientUploadError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return TRANSIENT_R2_ERROR_RE.test(err.message ?? '');
+}
+
+/**
+ * Stale-presigned-URL detector. R2 returns 403 (sig mismatch / expired) or
+ * 401 when the presigned URL the client cached is no longer accepted —
+ * typically because device clock drifted, the URL expired between presign and
+ * PUT, or the upload pipeline retried with a URL that R2 has since rotated.
+ * Re-presigning once and retrying recovers most of these. Tracked as Sentry
+ * REACT-NATIVE-7 (HTTP 403 fingerprint, 8 events / 2 users over 6 days).
+ *
+ * Cap to a single re-presign in the retry loop — a genuine auth failure
+ * (bad sigv4, deleted bucket, IAM policy change) will surface as the same
+ * 401/403 on the second presign too and we want that to terminate, not loop.
+ */
+export function isStalePresignError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const status = (err as TaggedError).httpStatus;
+  return status === 401 || status === 403;
 }
 
 // 3 attempts total covers a typical WiFi handoff (~5–10s) plus a stale-AP
@@ -196,16 +220,25 @@ async function uploadOnceWithRetry<T>(
       return await buildAndRun(attempt);
     } catch (err) {
       lastErr = err;
-      if (!isTransientUploadError(err)) throw err;
+      const transient = isTransientUploadError(err);
+      // Re-presign on stale 401/403 only on the first attempt. `buildAndRun`
+      // already calls getUploadUrl() at the top of each attempt, so simply
+      // entering the next iteration produces a fresh presigned URL.
+      const stalePresign = attempt === 1 && isStalePresignError(err);
+      if (!transient && !stalePresign) throw err;
       if (attempt === MAX_R2_ATTEMPTS) throw err;
       const startedAt = Date.now();
-      const online = await waitForNetworkOnline(NET_RECOVERY_WAIT_MS);
+      // Stale-presign retries don't need a long network-wait — the socket
+      // succeeded, the URL was the problem. Skip the wait and re-attempt
+      // immediately (after the jitter sleep below).
+      const online = stalePresign ? true : await waitForNetworkOnline(NET_RECOVERY_WAIT_MS);
       const waitMs = Date.now() - startedAt;
-      breadcrumb('upload', 'r2_put_retry', {
+      breadcrumb('upload', stalePresign ? 'r2_put_403_retry' : 'r2_put_retry', {
         attempt,
         segment_index: context.segmentIndex,
         wait_ms: waitMs,
         was_online_at_retry: online,
+        http_status: (err as TaggedError).httpStatus,
         reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown',
       });
       // Tiny jitter so multiple concurrent uploads on the same device
@@ -484,7 +517,8 @@ export const recordingsApi = {
         if (!result || result.status < 200 || result.status >= 300) {
           phaseError(
             'r2_put',
-            `Upload to storage failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`
+            `Upload to storage failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`,
+            result?.status
           );
         }
         return result;
@@ -671,7 +705,8 @@ export const recordingsApi = {
           if (!result || result.status < 200 || result.status >= 300) {
             phaseError(
               'r2_put',
-              `Upload of segment ${i + 1} failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`
+              `Upload of segment ${i + 1} failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`,
+              result?.status
             );
           }
           return result;

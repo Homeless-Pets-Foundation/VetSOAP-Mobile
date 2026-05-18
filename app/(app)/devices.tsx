@@ -7,6 +7,7 @@ import { ChevronLeft, Smartphone, Tablet, Monitor, ShieldAlert } from 'lucide-re
 import * as Haptics from 'expo-haptics';
 import { useDeviceCapacity } from '../../src/hooks/useDeviceCapacity';
 import { devicesApi, type DeviceSession } from '../../src/api/devices';
+import { ApiError } from '../../src/api/client';
 import { secureStorage } from '../../src/lib/secureStorage';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
@@ -127,6 +128,9 @@ export default function DevicesScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     },
     onError: (error: unknown) => {
+      if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+        return;
+      }
       const message =
         error instanceof Error ? error.message : 'Could not revoke this device.';
       Alert.alert('Revoke Failed', message);

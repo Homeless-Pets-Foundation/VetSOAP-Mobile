@@ -66,6 +66,7 @@ export type AnalyticsEvent =
   | { name: 'auth_retry_fired'; props: { op: 'sign_in' | 'refresh_session' } }
   | { name: 'session_refresh_attempted'; props: { trigger: RefreshTrigger } }
   | { name: 'session_refresh_failed'; props: { trigger: RefreshTrigger; error_code: string } }
+  | { name: 'mfa_step_up_required'; props: { reason: string; current_level: string; next_level: string } }
   | { name: 'device_registration_failed'; props: { error_code: string } }
   // Recording lifecycle
   | { name: 'recording_started'; props: { slot_index: number } }

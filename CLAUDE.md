@@ -239,12 +239,25 @@ Pattern in `AuthProvider.tsx` startup useEffect: `setTimeout(() => { captureMess
 
 Tactical timeout on the specific call (`withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session')`) sits inside the watchdog — recovers to a usable state 3–5 s before the watchdog fires so the user lands on a real screen rather than a Sentry warning with no UX fix. Use both layers.
 
+### 30. MFA auth requests must use hardened network handling
+
+MFA endpoints (`/auth/mfa/*`) are auth routes, but they are still production network calls. `mfaAuthRequest()` in `src/auth/AuthProvider.tsx` must keep the same safety properties as `ApiClient.request()`:
+
+- Build URLs from `API_URL`, then call `validateRequestUrl(mfaUrl)` inside the request `try` so `finally` still runs.
+- Use `AbortController` + `MFA_REQUEST_TIMEOUT_MS`, and always `clearTimeout(timeout)` in `finally`.
+- Send `Authorization`, `X-Device-Id`, and `X-Supabase-Refresh-Token` when that route requires the refresh token.
+- Parse error JSON with `await response.json().catch(() => ({})) ?? {}`.
+- Throw `ApiError` with `mfaErrorMessage(...)`, not raw server `data.error`.
+
+`src/auth/mfaPolicy.ts` owns MFA error-code branching and safe user-facing messages. `app/(auth)/mfa.tsx` should use `isSetupApprovalCodeError()` + `mfaErrorMessage()` from that module. Never display raw MFA server error text; it can include implementation detail or account-identifying content.
+
 ## Device Binding
 
 Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, persist in SecureStore (survives sign-out — device-scoped, not user-scoped). Server `validateDeviceSession` requires it, can revoke specific devices.
 
 - `secureStorage.getDeviceId()` — gen + cache UUID
 - `ApiClient.doFetch()` — memory-caches device ID after first SecureStore read
+- MFA bearer routes in `AuthProvider.mfaAuthRequest()` also send `X-Device-Id`; don't route around device binding for auth-only endpoints.
 - `AuthProvider.registerDevice()` — called on sign-in AND session restore; **must return `boolean`** (true on success) so `ApiClient` can retry after auto-register
 - Server → `DEVICE_REGISTRATION_REQUIRED` (428) → `ApiClient` calls `registerDevice()` via `onDeviceRegistrationRequired` callback, retries once. Any `/api/*` call from a never-registered device returns 428 — do NOT treat 428 as a fatal error in new code
 - Server → `DEVICE_REVOKED` (401) → client forces sign-out + msg
@@ -254,6 +267,7 @@ Mobile sends `X-Device-Id` header every API req. UUID v4 gen'd on first launch, 
 
 - **Secrets:** `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` — EAS project-level (not `eas.json`).
 - **Credentials:** preview + production → `credentialsSource: "remote"` (EAS-managed).
+- **APK builds:** use EAS profile `production-apk`, not the `production` profile (`production` builds an AAB). Command: `npx --yes eas-cli@latest build --platform android --profile production-apk --non-interactive`. Android Studio alone is not the normal path because this is an EAS managed project with no committed `android/` directory. Local APKs require `eas build --local` or `expo prebuild` plus local Android/JDK/signing setup.
 - **Lock file:** sync via `npm install --legacy-peer-deps` pre-build if deps change. EAS uses `npm ci` → fails on mismatch. `.npmrc` has `legacy-peer-deps=true` for `@config-plugins/ffmpeg-kit-react-native` peer dep conflict w/ Expo SDK 55.
 - **Secrets sync:** after `.env` edit → `eas secret:push --scope project --env-file .env --force`. Stale EAS secret overrides local `.env` in prod builds.
 - **Metro cache:** after `.env` edit → `npx expo start --clear`. Metro inlines `EXPO_PUBLIC_*` at build time → stale cache silently uses old values. Dev mode: `config.ts` warns if Supabase vars empty.
@@ -359,7 +373,9 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/hooks/useStashedSessions.ts` — stash list + resume. `stashSession` moves segments to stash dir, writes metadata, then `draftStorage.deleteDraft()` for every slot w/ `draftSlotId` (stash owns audio post-commit). `convertToPatientSlots` restores `serverDraftId`/`draftSlotId` from stash payload.
 - `src/types/multiPatient.ts` — `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`. `PatientSlot` incl. `draftSlotId`/`serverDraftId` for auto-saved drafts.
 - `src/types/stash.ts` — `StashedSlot`/`StashedSegment`/`StashedSession`. `StashedSlot` carries optional `serverDraftId`/`draftSlotId` (rule 24).
-- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set. `signIn` retries once on `AuthRetryableFetchError` (rule 27). `registerDevice` sends `ios_phone` / `ios_tablet` / `android_tablet` based on `Platform.isPad` (rule 28).
+- `app/(auth)/mfa.tsx` — MFA challenge/enrollment screen. Uses `react-native-qrcode-svg` for TOTP enrollment QR codes. RN callbacks wrap async handlers with `.catch(() => {})`.
+- `src/auth/mfaPolicy.ts` — safe MFA error-code handling and UI messages. Keep setup approval-code checks here, and add executable tests in `tests/security-mfa.test.mjs` when new MFA codes are introduced.
+- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set. `signIn` retries once on `AuthRetryableFetchError` (rule 27). `registerDevice` sends `ios_phone` / `ios_tablet` / `android_tablet` based on `Platform.isPad` (rule 28). MFA helpers live here too; `mfaAuthRequest()` must follow rule 30.
 - `plugins/with-ffmpeg-ios-pod-source.js` — local Expo config plugin that inserts `pod 'ffmpeg-kit-ios-min', :podspec => '<self-hosted URL>'` into the iOS Podfile via `withDangerousMod`. Registered in `app.config.ts` right after `@config-plugins/ffmpeg-kit-react-native`. Override URL lives in `DEFAULT_PODSPEC_URL` at the top of the file — currently `raw.githubusercontent.com/.../ffmpeg-kit-ios-min.podspec.json`, flip to the Pages URL when Pages is healthy. Don't remove — without it, every `pod install` 404s on the arthenica GitHub release zip.
 - `src/api/client.ts` — sends `X-Device-Id` header all reqs. Memory-caches device ID. Handles `DEVICE_REGISTRATION_REQUIRED` (428) via `onDeviceRegistrationRequired` callback → `registerDevice()` + retry once. Handles `DEVICE_REVOKED`/`DEVICE_ID_REQUIRED` 401s before token refresh.
 - `src/api/recordings.ts` — `createWithFile()` single-segment, `createWithSegments()` multi. Both validate via `getInfoAsync()`, 250MB limit, 10min timeout. Both take optional `existingRecordingId` → skips `create()`, uses server draft as recording ID (promote path).

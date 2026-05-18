@@ -17,6 +17,7 @@ export default function AppLayout() {
     userFetchError,
     retryFetchUser,
     signOut,
+    mfaRequired,
   } = useAuth();
   const [isRetrying, setIsRetrying] = useState(false);
 
@@ -42,7 +43,7 @@ export default function AppLayout() {
   // network outage during cold-start fetchUser, and (b) a hung native bridge
   // call (SecureStore, registerDevice). Both leave isLoading=false but
   // userFetchState='loading' or 'idle' with user=null.
-  const isHalfAuth = isAuthenticated && !user && userFetchState !== 'error';
+  const isHalfAuth = isAuthenticated && !mfaRequired && !user && userFetchState !== 'error';
   useEffect(() => {
     if (!isHalfAuth) return;
     const t = setTimeout(() => {
@@ -66,6 +67,10 @@ export default function AppLayout() {
   if (!isAuthenticated) {
     if (__DEV__) console.log('[AppLayout] REDIRECTING to login — isAuthenticated is false');
     return <Redirect href="/(auth)/login" />;
+  }
+
+  if (mfaRequired) {
+    return <Redirect href={'/(auth)/mfa' as never} />;
   }
 
   // Half-authenticated loading: session is set but /auth/me is still in flight

@@ -5,8 +5,11 @@ import type { Session } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
 import * as ScreenCapture from 'expo-screen-capture';
 import { Paths, Directory, File as ExpoFile } from 'expo-file-system';
+import { usePathname, useRouter } from 'expo-router';
 import { safeDeleteFile } from '../lib/fileOps';
 import { supabase } from './supabase';
+import { API_URL } from '../config';
+import { validateRequestUrl } from '../lib/sslPinning';
 import {
   signInWithGoogleNative,
   signInWithAppleNative,
@@ -29,6 +32,7 @@ import { setLogoutReason } from '../lib/logoutReason';
 import { setMonitoringUser, clearMonitoringUser, captureException, captureMessage, breadcrumb } from '../lib/monitoring';
 import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib/analytics';
 import type { User } from '../types';
+import { MFA_REQUEST_TIMEOUT_MS, mfaErrorMessage } from './mfaPolicy';
 
 /**
  * Collapse Supabase AuthError into a small, PHI-safe enum suitable for an
@@ -72,6 +76,56 @@ export interface DeviceRegistrationBlock {
   capacity: DeviceCapacity | null;
 }
 
+type AuthAssuranceLevel = 'aal1' | 'aal2';
+
+interface MfaFactor {
+  id: string;
+  friendlyName: string | null;
+  factorType: string;
+  status: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+interface MfaEnrollment {
+  factorId: string;
+  uri: string;
+  secret: string;
+}
+
+interface MfaChallenge {
+  factorId: string;
+  challengeId: string;
+}
+
+interface MfaStatusResponse {
+  currentLevel?: AuthAssuranceLevel;
+  nextLevel?: AuthAssuranceLevel;
+  required?: boolean;
+  enrollmentRequired?: boolean;
+  staleSession?: boolean;
+  reason?: string;
+  verifiedAt?: number | null;
+  maxAgeSeconds?: number;
+}
+
+interface MfaApiResponse extends MfaStatusResponse {
+  user?: User;
+  factors?: unknown[];
+  factorId?: string;
+  challengeId?: string;
+  uri?: string;
+  secret?: string;
+  tokens?: {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt?: string | null;
+  };
+  mfa?: MfaStatusResponse;
+  code?: string;
+  error?: string;
+}
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
@@ -107,6 +161,18 @@ interface AuthContextType {
   isPasswordRecovery: boolean;
   /** Called by the reset-password screen after it finishes (success or cancel). */
   clearPasswordRecovery: () => void;
+  mfaRequired: boolean;
+  mfaReturnPath: string | null;
+  mfaReason: string | null;
+  mfaCurrentLevel: AuthAssuranceLevel;
+  mfaNextLevel: AuthAssuranceLevel;
+  refreshMfaStatus: () => Promise<MfaStatusResponse>;
+  listMfaFactors: () => Promise<MfaFactor[]>;
+  enrollMfaFactor: (friendlyName?: string, bootstrapCode?: string) => Promise<MfaEnrollment>;
+  startMfaChallenge: (factorId?: string) => Promise<MfaChallenge>;
+  verifyMfaChallenge: (code: string) => Promise<void>;
+  verifyMfaEnrollment: (factorId: string, code: string) => Promise<void>;
+  clearMfaChallenge: () => void;
 }
 
 export const AuthContext = createContext<AuthContextType>({
@@ -127,6 +193,22 @@ export const AuthContext = createContext<AuthContextType>({
   deviceRegistrationPending: false,
   isPasswordRecovery: false,
   clearPasswordRecovery: () => {},
+  mfaRequired: false,
+  mfaReturnPath: null,
+  mfaReason: null,
+  mfaCurrentLevel: 'aal1',
+  mfaNextLevel: 'aal1',
+  refreshMfaStatus: async () => ({ required: false }),
+  listMfaFactors: async () => [],
+  enrollMfaFactor: async () => {
+    throw new Error('MFA is not available.');
+  },
+  startMfaChallenge: async () => {
+    throw new Error('MFA is not available.');
+  },
+  verifyMfaChallenge: async () => {},
+  verifyMfaEnrollment: async () => {},
+  clearMfaChallenge: () => {},
 });
 
 /** Check if the Supabase session token has expired. */
@@ -259,6 +341,8 @@ function fetchUserErrorMessage(error: unknown): string {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -268,6 +352,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     useState<DeviceRegistrationBlock | null>(null);
   const [deviceRegistrationPending, setDeviceRegistrationPending] = useState(false);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaReturnPath, setMfaReturnPath] = useState<string | null>(null);
+  const [mfaReason, setMfaReason] = useState<string | null>(null);
+  const [mfaCurrentLevel, setMfaCurrentLevel] = useState<AuthAssuranceLevel>('aal1');
+  const [mfaNextLevel, setMfaNextLevel] = useState<AuthAssuranceLevel>('aal1');
+  const [activeMfaChallenge, setActiveMfaChallenge] = useState<MfaChallenge | null>(null);
 
   const clearPasswordRecovery = useCallback(() => {
     setIsPasswordRecovery(false);
@@ -289,6 +379,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const applyFetchedUser = useCallback((fetchedUser: User | null) => {
     setUser(fetchedUser);
+    if (fetchedUser) {
+      setMfaRequired(false);
+      setMfaReturnPath(null);
+      setMfaReason(null);
+      setActiveMfaChallenge(null);
+    }
     if (!fetchedUser?.id) return;
     const scopedUserId = fetchedUser.id;
     // Tag monitoring + analytics with the user id (no email / name / PHI).
@@ -320,6 +416,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
     }).catch(() => {});
+  }, []);
+
+  const handleMfaRequiredResponse = useCallback(
+    (data?: {
+      reason?: string;
+      currentLevel?: string;
+      nextLevel?: string;
+      staleSession?: boolean;
+      verifiedAt?: number | null;
+      maxAgeSeconds?: number;
+    }) => {
+      setMfaCurrentLevel(data?.currentLevel === 'aal2' ? 'aal2' : 'aal1');
+      setMfaNextLevel(data?.nextLevel === 'aal2' ? 'aal2' : 'aal1');
+      setMfaRequired(true);
+      setMfaReason(typeof data?.reason === 'string' ? data.reason : null);
+      setActiveMfaChallenge(null);
+      setUser(null);
+      setDeviceRegistrationPending(false);
+      const currentPath = pathname || '/';
+      if (!currentPath.includes('/mfa')) {
+        setMfaReturnPath(currentPath);
+        router.push('/(auth)/mfa' as never);
+      }
+      trackEvent({
+        name: 'mfa_step_up_required',
+        props: {
+          reason: data?.reason ?? 'unknown',
+          current_level: data?.currentLevel ?? 'unknown',
+          next_level: data?.nextLevel ?? 'unknown',
+        },
+      });
+    },
+    [pathname, router]
+  );
+
+  const clearMfaChallenge = useCallback(() => {
+    setActiveMfaChallenge(null);
   }, []);
 
   const registerDevice = useCallback(async (): Promise<boolean> => {
@@ -357,6 +490,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setDeviceRegistrationPending(false);
         return true;
       } catch (error) {
+        if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+          handleMfaRequiredResponse(error.data as MfaStatusResponse | undefined);
+          setDeviceRegistrationPending(false);
+          throw error;
+        }
         if (__DEV__) console.log('[Auth] device registration failed:', error);
         const errorCode =
           error instanceof ApiError
@@ -394,7 +532,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
     registerDeviceInFlightRef.current = promise;
     return promise;
-  }, []);
+  }, [handleMfaRequiredResponse]);
 
   const dismissDeviceRegistrationBlock = useCallback(() => {
     setDeviceRegistrationBlock(null);
@@ -422,10 +560,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // `enabled: !!user`-gated queries don't fire before the device has a
         // session row. Server rejects /api/* calls from unregistered devices
         // with 428 DEVICE_REGISTRATION_REQUIRED.
-        await registerDevice();
+        if (!(await registerDevice())) return true;
         applyFetchedUser(body.user ?? null);
         return true;
       } catch (error) {
+        if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+          handleMfaRequiredResponse(error.data as MfaStatusResponse | undefined);
+          return true;
+        }
         // A brand-new Google/Apple user has no app User row yet — /auth/me
         // returns 404. Bootstrap via the idempotent /auth/register endpoint
         // (server derives fullName/orgName from Supabase user_metadata), then
@@ -436,7 +578,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const retryBody = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
-            await registerDevice();
+            if (!(await registerDevice())) return true;
             applyFetchedUser(retryBody.user ?? null);
             return true;
           } catch (retryError) {
@@ -448,7 +590,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await apiClient.post('/auth/register', {});
             const body = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
-            await registerDevice();
+            if (!(await registerDevice())) return true;
             applyFetchedUser(body.user ?? null);
             return true;
           } catch (bootstrapError) {
@@ -489,7 +631,295 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (__DEV__) console.log('[Auth] fetchUser: all attempts failed', lastError);
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
-  }, [applyFetchedUser, registerDevice]);
+  }, [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
+
+  const applyBearerMfaTokens = useCallback(async (tokens?: MfaApiResponse['tokens']) => {
+    if (!tokens) return;
+    const { error } = await supabase.auth.setSession({
+      access_token: tokens.accessToken,
+      refresh_token: tokens.refreshToken,
+    });
+    if (error) {
+      throw new Error(error.message);
+    }
+    const nextSession = (await supabase.auth.getSession()).data.session;
+    setSession(nextSession);
+    sessionTimestampRef.current = Date.now();
+    apiClient.setToken(tokens.accessToken);
+  }, []);
+
+  const getRefreshTokenForMfa = useCallback(async (): Promise<string | null> => {
+    if (session?.refresh_token) return session.refresh_token;
+    const stored = await secureStorage.getSession();
+    if (!stored) return null;
+    try {
+      const parsed = JSON.parse(stored) as unknown;
+      if (typeof parsed !== 'object' || parsed === null) return null;
+      const root = parsed as Record<string, unknown>;
+      if (typeof root.refresh_token === 'string') return root.refresh_token;
+      const currentSession = root.currentSession;
+      if (typeof currentSession === 'object' && currentSession !== null) {
+        const token = (currentSession as Record<string, unknown>).refresh_token;
+        if (typeof token === 'string') return token;
+      }
+      const nestedSession = root.session;
+      if (typeof nestedSession === 'object' && nestedSession !== null) {
+        const token = (nestedSession as Record<string, unknown>).refresh_token;
+        if (typeof token === 'string') return token;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }, [session?.refresh_token]);
+
+  const mfaAuthRequest = useCallback(
+    async (
+      path: string,
+      options: {
+        method?: 'GET' | 'POST';
+        body?: unknown;
+        includeRefreshToken?: boolean;
+      } = {}
+    ): Promise<MfaApiResponse> => {
+      const token = session?.access_token ?? (await secureStorage.getToken());
+      if (!token) {
+        throw new ApiError('Authentication required.', 401, false, undefined, 'AUTH_REQUIRED');
+      }
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+      const deviceId = await secureStorage.getDeviceId();
+      if (deviceId) {
+        headers['X-Device-Id'] = deviceId;
+      }
+
+      if (options.includeRefreshToken) {
+        const refreshToken = await getRefreshTokenForMfa();
+        if (!refreshToken) {
+          throw new ApiError(
+            'Refresh token is required for MFA.',
+            401,
+            false,
+            undefined,
+            'REFRESH_TOKEN_REQUIRED'
+          );
+        }
+        headers['X-Supabase-Refresh-Token'] = refreshToken;
+      }
+
+      const mfaUrl = `${API_URL}${path}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), MFA_REQUEST_TIMEOUT_MS);
+
+      try {
+        validateRequestUrl(mfaUrl);
+        const response = await fetch(mfaUrl, {
+          method: options.method ?? 'GET',
+          headers,
+          body: options.body ? JSON.stringify(options.body) : undefined,
+          signal: controller.signal,
+        });
+        const data = ((await response.json().catch(() => ({}))) ?? {}) as MfaApiResponse;
+
+        if (!response.ok) {
+          const code = typeof data.code === 'string' ? data.code : undefined;
+          if (code === 'MFA_REQUIRED') {
+            handleMfaRequiredResponse(data);
+          }
+          throw new ApiError(
+            mfaErrorMessage({ status: response.status, code }),
+            response.status,
+            response.status === 429 || response.status >= 500,
+            undefined,
+            code,
+            data as Record<string, unknown>
+          );
+        }
+
+        await applyBearerMfaTokens(data.tokens);
+        return data;
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        const aborted = error instanceof Error && error.name === 'AbortError';
+        const code = aborted ? 'MFA_REQUEST_TIMEOUT' : undefined;
+        throw new ApiError(
+          mfaErrorMessage({ status: 0, code }),
+          0,
+          true,
+          undefined,
+          code
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    [
+      applyBearerMfaTokens,
+      getRefreshTokenForMfa,
+      handleMfaRequiredResponse,
+      session?.access_token,
+    ]
+  );
+
+  const refreshMfaStatus = useCallback(async (): Promise<MfaStatusResponse> => {
+    const data = await mfaAuthRequest('/auth/mfa/status');
+    const currentLevel = data.currentLevel === 'aal2' ? 'aal2' : 'aal1';
+    const nextLevel = data.nextLevel === 'aal2' ? 'aal2' : 'aal1';
+    const required = Boolean(data.required);
+    const status: MfaStatusResponse = {
+      currentLevel,
+      nextLevel,
+      required,
+      enrollmentRequired: Boolean(data.enrollmentRequired),
+      staleSession: Boolean(data.staleSession),
+      reason: typeof data.reason === 'string' ? data.reason : undefined,
+      verifiedAt: typeof data.verifiedAt === 'number' ? data.verifiedAt : null,
+      maxAgeSeconds: typeof data.maxAgeSeconds === 'number' ? data.maxAgeSeconds : undefined,
+    };
+    setMfaCurrentLevel(currentLevel);
+    setMfaNextLevel(nextLevel);
+    setMfaRequired(required);
+    setMfaReason(status.reason ?? null);
+    return status;
+  }, [mfaAuthRequest]);
+
+  const listMfaFactors = useCallback(async (): Promise<MfaFactor[]> => {
+    const data = await mfaAuthRequest('/auth/mfa/factors', { includeRefreshToken: true });
+    return (Array.isArray(data.factors) ? data.factors : [])
+      .map((factor) => {
+        if (typeof factor !== 'object' || factor === null) return null;
+        const raw = factor as Record<string, unknown>;
+        const id = typeof raw.id === 'string' ? raw.id : null;
+        if (!id) return null;
+        return {
+          id,
+          friendlyName:
+            typeof raw.friendly_name === 'string'
+              ? raw.friendly_name
+              : typeof raw.friendlyName === 'string'
+                ? raw.friendlyName
+                : null,
+          factorType:
+            typeof raw.factor_type === 'string'
+              ? raw.factor_type
+              : typeof raw.factorType === 'string'
+                ? raw.factorType
+                : 'totp',
+          status: typeof raw.status === 'string' ? raw.status : 'unknown',
+          createdAt: typeof raw.created_at === 'string' ? raw.created_at : null,
+          updatedAt: typeof raw.updated_at === 'string' ? raw.updated_at : null,
+        };
+      })
+      .filter((factor): factor is MfaFactor => factor !== null);
+  }, [mfaAuthRequest]);
+
+  const getVerifiedTotpFactor = useCallback(
+    async (factorId?: string): Promise<MfaFactor> => {
+      const factors = await listMfaFactors();
+      const factor = factors.find(
+        (item) =>
+          item.factorType === 'totp' &&
+          item.status === 'verified' &&
+          (!factorId || item.id === factorId)
+      );
+      if (!factor) {
+        throw new Error('No verified authenticator app is enrolled for this account.');
+      }
+      return factor;
+    },
+    [listMfaFactors]
+  );
+
+  const enrollMfaFactor = useCallback(
+    async (friendlyName?: string, bootstrapCode?: string): Promise<MfaEnrollment> => {
+      const data = await mfaAuthRequest('/auth/mfa/enroll', {
+        method: 'POST',
+        includeRefreshToken: true,
+        body: {
+          friendlyName,
+          ...(bootstrapCode ? { bootstrapCode } : {}),
+        },
+      });
+      if (!data.factorId || !data.uri || !data.secret) {
+        throw new Error('Failed to start authenticator setup.');
+      }
+      return { factorId: data.factorId, uri: data.uri, secret: data.secret };
+    },
+    [mfaAuthRequest]
+  );
+
+  const startMfaChallenge = useCallback(
+    async (factorId?: string): Promise<MfaChallenge> => {
+      const factor = await getVerifiedTotpFactor(factorId);
+      const data = await mfaAuthRequest('/auth/mfa/challenge', {
+        method: 'POST',
+        includeRefreshToken: true,
+        body: { factorId: factor.id },
+      });
+      if (!data.challengeId) {
+        throw new Error('Failed to start MFA challenge.');
+      }
+      const challenge = { factorId: factor.id, challengeId: data.challengeId };
+      setActiveMfaChallenge(challenge);
+      return challenge;
+    },
+    [getVerifiedTotpFactor, mfaAuthRequest]
+  );
+
+  const completeMfaWithProfile = useCallback(
+    async (data: MfaApiResponse): Promise<void> => {
+      setMfaRequired(Boolean(data.mfa?.required));
+      setMfaReason(typeof data.mfa?.reason === 'string' ? data.mfa.reason : null);
+      setMfaCurrentLevel(data.mfa?.currentLevel ?? 'aal2');
+      setMfaNextLevel(data.mfa?.nextLevel ?? 'aal2');
+      setActiveMfaChallenge(null);
+
+      if (data.user) {
+        if (!(await registerDevice())) return;
+        applyFetchedUser(data.user);
+        return;
+      }
+
+      await fetchUser();
+    },
+    [applyFetchedUser, fetchUser, registerDevice]
+  );
+
+  const verifyMfaEnrollment = useCallback(
+    async (factorId: string, code: string): Promise<void> => {
+      const challenge = await mfaAuthRequest('/auth/mfa/challenge', {
+        method: 'POST',
+        includeRefreshToken: true,
+        body: { factorId },
+      });
+      if (!challenge.challengeId) {
+        throw new Error('Failed to start MFA verification.');
+      }
+      const data = await mfaAuthRequest('/auth/mfa/verify', {
+        method: 'POST',
+        includeRefreshToken: true,
+        body: { factorId, challengeId: challenge.challengeId, code },
+      });
+      await completeMfaWithProfile(data);
+    },
+    [completeMfaWithProfile, mfaAuthRequest]
+  );
+
+  const verifyMfaChallenge = useCallback(
+    async (code: string): Promise<void> => {
+      const challenge = activeMfaChallenge ?? (await startMfaChallenge());
+      const data = await mfaAuthRequest('/auth/mfa/verify', {
+        method: 'POST',
+        includeRefreshToken: true,
+        body: { factorId: challenge.factorId, challengeId: challenge.challengeId, code },
+      });
+      await completeMfaWithProfile(data);
+    },
+    [activeMfaChallenge, completeMfaWithProfile, mfaAuthRequest, startMfaChallenge]
+  );
 
 
   const handleSignOut = useCallback(async () => {
@@ -534,6 +964,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setDeviceRegistrationBlock(null);
     setDeviceRegistrationPending(false);
     setIsPasswordRecovery(false);
+    setMfaRequired(false);
+    setMfaReturnPath(null);
+    setMfaReason(null);
+    setMfaCurrentLevel('aal1');
+    setMfaNextLevel('aal1');
+    setActiveMfaChallenge(null);
   }, []);
 
   // Block screenshots / screen recording of PHI in production builds only.
@@ -558,6 +994,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       handleSignOut().catch(() => {});
     });
     apiClient.setOnDeviceRegistrationRequired(() => registerDevice());
+    apiClient.setOnMfaRequired((request) => {
+      handleMfaRequiredResponse(request);
+    });
     apiClient.setOnUnauthorized(async () => {
       const sessionAge = Date.now() - sessionTimestampRef.current;
       if (__DEV__) console.log('[Auth] onUnauthorized fired, session age:', sessionAge, 'ms');
@@ -618,7 +1057,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       refreshPromiseRef.current = doRefresh();
       await refreshPromiseRef.current;
     });
-  }, [handleSignOut, registerDevice]);
+  }, [handleMfaRequiredResponse, handleSignOut, registerDevice]);
 
   useEffect(() => {
     // Belt-and-suspenders watchdog against hung native bridges in the cold-
@@ -788,6 +1227,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setDeviceRegistrationBlock(null);
             setDeviceRegistrationPending(false);
             setIsPasswordRecovery(false);
+            setMfaRequired(false);
+            setMfaReturnPath(null);
+            setMfaReason(null);
+            setMfaCurrentLevel('aal1');
+            setMfaNextLevel('aal1');
+            setActiveMfaChallenge(null);
           }
         } catch (error) {
           if (__DEV__) console.error('[Auth] onAuthStateChange error:', error);
@@ -987,6 +1432,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         deviceRegistrationPending,
         isPasswordRecovery,
         clearPasswordRecovery,
+        mfaRequired,
+        mfaReturnPath,
+        mfaReason,
+        mfaCurrentLevel,
+        mfaNextLevel,
+        refreshMfaStatus,
+        listMfaFactors,
+        enrollMfaFactor,
+        startMfaChallenge,
+        verifyMfaChallenge,
+        verifyMfaEnrollment,
+        clearMfaChallenge,
       }}
     >
       {children}

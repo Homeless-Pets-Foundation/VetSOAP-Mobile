@@ -63,6 +63,38 @@ function emitDraftFailure(name: 'draft_save_failed' | 'stash_write_failed', erro
   }
 }
 
+// Sentry adapters. Lazy-loaded to mirror analytics: avoids static import cycle
+// and stays safe when monitoring hasn't initialised yet (e.g. tests, early
+// startup before `initMonitoring()` ran).
+function draftBreadcrumb(
+  message: string,
+  data?: Record<string, string | number | boolean | null | undefined>,
+): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { breadcrumb } = require('./monitoring') as typeof import('./monitoring');
+    breadcrumb('draft', message, data);
+  } catch {
+    // swallow
+  }
+}
+
+function draftCaptureWarning(
+  message: string,
+  extra?: Record<string, unknown>,
+): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { captureMessage } = require('./monitoring') as typeof import('./monitoring');
+    captureMessage(message, 'warning', {
+      tags: { component: 'draft_storage' },
+      extra,
+    });
+  } catch {
+    // swallow
+  }
+}
+
 function emitDraftSyncRetryFailed(attemptNumber: number): void {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -494,6 +526,14 @@ export const draftStorage = {
         await writeDraftIndex(index);
       }
 
+      draftBreadcrumb('saved', {
+        slot_id: slot.id,
+        segment_count: draftSegments.length,
+        expected_segments: slot.segments.length,
+        has_server_draft: !!metadata.serverDraftId,
+        pending_sync: metadata.pendingSync,
+      });
+
       return slot.id;
     } catch (error) {
       // Preserve audio from any pre-existing complete-on-disk draft. The catch
@@ -504,6 +544,10 @@ export const draftStorage = {
       // line 378 for exactly this guard; the previous code only used it for
       // telemetry (`prior_valid_save` PostHog property).
       if (!priorValidSave) {
+        draftBreadcrumb('wiping_dir_on_save_fail', {
+          slot_id: slot.id,
+          segments_in: slot.segments.length,
+        });
         safeDeleteDirectory(dir);
       }
       emitDraftFailure('draft_save_failed', error);
@@ -521,14 +565,28 @@ export const draftStorage = {
 
     try {
       const metadata = await readDraftChunks(userId, slotId);
-      if (!metadata) return;
+      if (!metadata) {
+        // Server row exists (caller just created it) but local meta is gone.
+        // Without this signal the server row strands silently — exactly the
+        // rule-24 duplicate-on-submit risk.
+        draftCaptureWarning('draft_update_server_id_no_local_meta', {
+          slot_id: slotId,
+        });
+        return;
+      }
 
       metadata.serverDraftId = serverId;
       metadata.pendingSync = false;
 
       await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
-    } catch {
-      // Best-effort
+    } catch (error) {
+      // Failure here = local meta keeps `serverDraftId=null` while the server
+      // has a draft row → next Submit creates a duplicate (rule 24). Surface
+      // the silent SecureStore failure mode so it's visible in Sentry.
+      draftCaptureWarning('draft_update_server_id_failed', {
+        slot_id: slotId,
+        reason: classifyDraftFailure(error),
+      });
     }
   },
 
@@ -678,6 +736,13 @@ export const draftStorage = {
         if (!anyMissing && !emptyButServerLinked) continue;
         found++;
 
+        draftBreadcrumb('orphan_sweep_delete', {
+          slot_id: draft.slotId,
+          shape: anyMissing ? 'audio_missing' : 'empty_with_server',
+          segment_count: draft.segments.length,
+          has_server_draft: !!draft.serverDraftId,
+        });
+
         if (draft.serverDraftId) {
           try {
             await deleteServerDraft(draft.serverDraftId);
@@ -695,6 +760,15 @@ export const draftStorage = {
     }
     if (found > 0 || cleaned > 0) {
       emitDraftOrphanSweep(found, cleaned);
+    }
+    if (cleaned > 0) {
+      // App just wiped local drafts on this device. Loud signal in Sentry so
+      // a hyperactive sweep (e.g. transient fileExists() false-negative under
+      // filesystem pressure) is visible without waiting for user reports.
+      draftCaptureWarning('draft_orphan_sweep_deleted', {
+        found,
+        cleaned,
+      });
     }
     return cleaned;
   },

@@ -1621,6 +1621,17 @@ function RecordingSession() {
         await draftStorage.updateServerDraftId(draftSlotId, serverId);
         queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       } catch (error) {
+        // Phase 2 of draft persistence. Failure here means the local draft
+        // exists but never reached the server — silent in prod before this
+        // capture call. Tag with phase so it groups separately from
+        // auto_save_draft (Phase 1) in Sentry.
+        captureException(error, {
+          tags: { phase: 'sync_server_draft' },
+          extra: {
+            slot_id: slotId,
+            had_server_draft: !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId,
+          },
+        });
         if (__DEV__) console.warn('[Record] syncServerDraft failed:', error);
       }
     },

@@ -13,8 +13,25 @@ const KEYS = {
  * lazily so module-load in monitoring.ts staying zero-cost (rule 1). Rate
  * limiting happens inside `captureMessage` so a recurring Keystore fault
  * doesn't flood Sentry. Falls back to a no-op if monitoring isn't wired.
+ *
+ * Suppressed on iOS Simulator / Android emulator: simulator Keychain lacks
+ * the entitlement real-device Keychain has, so `getValueWithKeyAsync` throws
+ * every Supabase auto-refresh tick (~30s) → floods Sentry with sim-only
+ * noise that drowns real-device signal (RN-A, 483 evt / 2 sim users in 4 h).
  */
+function isRealDevice(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Device = require('expo-device') as typeof import('expo-device');
+    return Device.isDevice === true;
+  } catch {
+    // expo-device unavailable — assume real device, don't suppress
+    return true;
+  }
+}
+
 function reportSecureStoreFailure(op: string, error: unknown): void {
+  if (!isRealDevice()) return;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { captureMessage } = require('./monitoring') as typeof import('./monitoring');

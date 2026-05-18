@@ -8,18 +8,27 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
-test('recordings.ts exports isTransientUploadError, isStalePresignError, getUploadHttpStatus', async () => {
-  const src = await read('src/api/recordings.ts');
+test('uploadRetry.ts exports isTransientUploadError, isStalePresignError, getUploadHttpStatus', async () => {
+  const src = await read('src/api/uploadRetry.ts');
 
   assert.match(src, /export function isTransientUploadError\(/);
   assert.match(src, /export function isStalePresignError\(/);
   assert.match(src, /export function getUploadHttpStatus\(/);
 });
 
-test('isStalePresignError returns true only for 401 and 403 httpStatus', async () => {
+test('recordings.ts re-exports the upload-retry helpers for back-compat', async () => {
   const src = await read('src/api/recordings.ts');
 
-  // Extract the function body and confirm the gate is exactly 401/403.
+  assert.match(
+    src,
+    /export \{\s*isTransientUploadError,\s*isStalePresignError,\s*getUploadPhase,\s*getUploadHttpStatus,\s*\} from '\.\/uploadRetry';/
+  );
+  assert.match(src, /export type \{ UploadPhase, TaggedError \} from '\.\/uploadRetry';/);
+});
+
+test('isStalePresignError returns true only for 401 and 403 httpStatus', async () => {
+  const src = await read('src/api/uploadRetry.ts');
+
   const match = src.match(/export function isStalePresignError\([\s\S]*?\n\}/);
   assert.ok(match, 'isStalePresignError block should be findable');
   const body = match[0];
@@ -28,15 +37,15 @@ test('isStalePresignError returns true only for 401 and 403 httpStatus', async (
 });
 
 test('phaseError accepts httpStatus and TaggedError carries it', async () => {
-  const src = await read('src/api/recordings.ts');
+  const src = await read('src/api/uploadRetry.ts');
 
   assert.match(
     src,
-    /type TaggedError = Error & \{ uploadPhase\?: UploadPhase; httpStatus\?: number \}/
+    /export type TaggedError = Error & \{ uploadPhase\?: UploadPhase; httpStatus\?: number \}/
   );
   assert.match(
     src,
-    /function phaseError\(phase: UploadPhase, message: string, httpStatus\?: number\): never/
+    /export function phaseError\(phase: UploadPhase, message: string, httpStatus\?: number\): never/
   );
   assert.match(src, /if \(httpStatus !== undefined\) err\.httpStatus = httpStatus;/);
 });

@@ -28,7 +28,7 @@ import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi, getUploadPhase, isTransientUploadError } from '../../../src/api/recordings';
 import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
-import { trackEvent, type NetworkState } from '../../../src/lib/analytics';
+import { trackEvent, type NetworkState, type AutoStashReason } from '../../../src/lib/analytics';
 import { breadcrumb, captureException } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
@@ -426,14 +426,17 @@ function RecordingSession() {
   // Guard: if upload wins the race against deferred local draft persistence, auto-save
   // must immediately clean up the late draft instead of leaving it behind locally.
   const completedUploadSlotIdsRef = useRef<Set<string>>(new Set());
-  // Set when uploadSlot fails with transient r2_put exhaustion (Sentry
-  // REACT-NATIVE-4 fingerprint: DNS resolve or socket reset after all 3 retry
-  // attempts). Read by handleSubmitSingle / handleSubmitAll after uploadSlot
-  // returns null so they can fall through to auto-stash instead of leaving
-  // the user staring at a generic "upload failed" alert with no recovery
-  // path. Keyed by slot id so concurrent uploads don't collide; entries are
-  // consumed (deleted) by the read side.
-  const autoStashableFailuresRef = useRef<Set<string>>(new Set());
+  // Set when uploadSlot fails on a network-dead phase that the user should be
+  // able to recover from by going online later: transient r2_put exhaustion
+  // (Sentry REACT-NATIVE-4: DNS resolve / socket reset after 3 retries) or
+  // create_draft network failure (Sentry REACT-NATIVE-C: fetch() throws
+  // `Network request failed` while POSTing the draft row or validating an
+  // existing one). Read by handleSubmitSingle / handleSubmitAll after
+  // uploadSlot returns null so they can fall through to auto-stash instead of
+  // leaving the user staring at a generic "upload failed" alert with no
+  // recovery path. Value carries the AutoStashReason so the analytics event
+  // can attribute which phase triggered the rescue.
+  const autoStashableFailuresRef = useRef<Map<string, AutoStashReason>>(new Map());
   // Per-slot timers for debounced server-draft creation. Server POST
   // /api/recordings {isDraft:true} runs after DRAFT_DEBOUNCE_MS; if the user
   // taps Submit first, the timer is cancelled so no draft row ever exists to
@@ -1548,12 +1551,24 @@ function RecordingSession() {
           error_code: errorCode,
           attempt_number: attemptNumber,
         });
-        // Signal auto-stash eligibility to the submit handler. Only transient
-        // r2_put exhaustion (network dead the entire retry window — Sentry
-        // REACT-NATIVE-4 fingerprint) qualifies: presign / preflight / silence
-        // / confirm failures are not a "save and try later when online" UX.
-        if (phase === 'r2_put' && isTransientUploadError(error)) {
-          autoStashableFailuresRef.current.add(slot.id);
+        // Signal auto-stash eligibility to the submit handler. Two phases
+        // qualify, both characterized by a dead network mid-submit that the
+        // user can recover from by re-submitting once online:
+        //   - r2_put: transient exhaustion after all 3 retries (Sentry
+        //     REACT-NATIVE-4 fingerprint).
+        //   - create_draft: fetch() throws `Network request failed` while
+        //     POSTing the draft row or validating an existing serverDraftId
+        //     (Sentry REACT-NATIVE-C fingerprint, multi-patient Submit-All on
+        //     offline tablet).
+        // presign / preflight / silence / confirm failures stay excluded —
+        // those represent local-file / metering / server-side state problems
+        // that won't resolve just by stashing and retrying when back online.
+        if (isTransientUploadError(error)) {
+          if (phase === 'r2_put') {
+            autoStashableFailuresRef.current.set(slot.id, 'r2_put_dead_network');
+          } else if (phase === 'create_draft') {
+            autoStashableFailuresRef.current.set(slot.id, 'create_draft_dead_network');
+          }
         }
         return null;
       } finally {
@@ -1805,13 +1820,15 @@ function RecordingSession() {
    */
   const tryAutoStashOnNetworkDeath = useCallback(
     async (candidateSlotIds: string[]): Promise<boolean> => {
-      const eligibleIds = candidateSlotIds.filter((id) =>
-        autoStashableFailuresRef.current.has(id)
-      );
-      if (eligibleIds.length === 0) return false;
+      const eligible: { id: string; reason: AutoStashReason }[] = [];
+      for (const id of candidateSlotIds) {
+        const reason = autoStashableFailuresRef.current.get(id);
+        if (reason) eligible.push({ id, reason });
+      }
+      if (eligible.length === 0) return false;
       // Consume the flags so a later retry doesn't auto-stash again on a
       // different failure mode that happens to leave them set.
-      eligibleIds.forEach((id) => autoStashableFailuresRef.current.delete(id));
+      eligible.forEach(({ id }) => autoStashableFailuresRef.current.delete(id));
 
       const session = sessionRef.current;
       const success = await stashSession(session);
@@ -1822,14 +1839,14 @@ function RecordingSession() {
         deleteLocalSlotDraft(slot);
       });
 
-      for (const id of eligibleIds) {
+      for (const { id, reason } of eligible) {
         const idx = session.slots.findIndex((s) => s.id === id);
         const slot = session.slots[idx];
         if (!slot) continue;
         trackEvent({
           name: 'recording_auto_stashed',
           props: {
-            reason: 'r2_put_dead_network',
+            reason,
             slot_index: idx,
             segment_count: slot.segments.length,
             duration_s: Math.round(

@@ -120,7 +120,7 @@ export type RefreshTrigger = 'recovery' | 'foreground' | 'on_auth_state' | 'devi
 
 export type FailureReason = 'secure_store' | 'fs' | 'quota' | 'network' | 'other';
 
-export type AutoStashReason = 'r2_put_dead_network';
+export type AutoStashReason = 'r2_put_dead_network' | 'create_draft_dead_network';
 
 export type SilenceCheckInconclusiveReason = 'missing_metering_long_recording' | 'ffmpeg_timeout' | 'ffmpeg_error';
 

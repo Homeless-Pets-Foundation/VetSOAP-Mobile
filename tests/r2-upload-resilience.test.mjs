@@ -92,7 +92,7 @@ test('uploadOnceWithRetry re-presigns once on stale 401/403, never beyond attemp
 test('analytics.ts adds recording_auto_stashed event with AutoStashReason union', async () => {
   const src = await read('src/lib/analytics.ts');
 
-  assert.match(src, /export type AutoStashReason = 'r2_put_dead_network';/);
+  assert.match(src, /export type AutoStashReason = 'r2_put_dead_network' \| 'create_draft_dead_network';/);
   assert.match(
     src,
     /\| \{ name: 'recording_auto_stashed'; props: \{ reason: AutoStashReason; slot_index: number; segment_count: number; duration_s: number \} \}/
@@ -108,14 +108,17 @@ test('record.tsx imports isTransientUploadError from recordings module', async (
   );
 });
 
-test('record.tsx flags auto-stash eligibility only on transient r2_put exhaustion', async () => {
+test('record.tsx flags auto-stash eligibility on transient r2_put or create_draft network death', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
 
-  // The flag is set ONLY when phase === 'r2_put' AND transient. Narrower gates
-  // matter — a presign 403 or a silence-check throw must NOT trigger auto-stash.
+  // The flag is set only when the failure is transient AND on one of the two
+  // network-dead phases that recover by stashing-then-online-resubmit.
+  // Narrower gates matter — a presign 403 or a silence-check throw must NOT
+  // trigger auto-stash.
+  assert.match(src, /if \(isTransientUploadError\(error\)\) \{/);
   assert.match(
     src,
-    /if \(phase === 'r2_put' && isTransientUploadError\(error\)\) \{\s*autoStashableFailuresRef\.current\.add\(slot\.id\);\s*\}/
+    /if \(phase === 'r2_put'\) \{\s*autoStashableFailuresRef\.current\.set\(slot\.id, 'r2_put_dead_network'\);\s*\} else if \(phase === 'create_draft'\) \{\s*autoStashableFailuresRef\.current\.set\(slot\.id, 'create_draft_dead_network'\);\s*\}/
   );
   // Fresh attempt clears any stale flag so a retry-then-different-failure
   // doesn't accidentally stash.
@@ -130,21 +133,25 @@ test('record.tsx auto-stash helper consumes flags, stashes, emits per-slot analy
 
   // Helper present
   assert.match(src, /const tryAutoStashOnNetworkDeath = useCallback\(/);
-  // Eligibility derives from the ref, not a closure variable that could be stale
+  // Eligibility derives from the ref's value (carries the AutoStashReason),
+  // not a closure variable that could be stale
   assert.match(
     src,
-    /autoStashableFailuresRef\.current\.has\(id\)/
+    /const reason = autoStashableFailuresRef\.current\.get\(id\);/
   );
   // Flags are CONSUMED so a follow-up failure doesn't re-trigger
   assert.match(
     src,
-    /eligibleIds\.forEach\(\(id\) => autoStashableFailuresRef\.current\.delete\(id\)\)/
+    /eligible\.forEach\(\(\{ id \}\) => autoStashableFailuresRef\.current\.delete\(id\)\)/
   );
   // Stash is via the existing hook, not a bespoke duplicate path
   assert.match(src, /const success = await stashSession\(session\);/);
   // Per-slot analytics — one event per eligible slot, not aggregate
   assert.match(src, /name: 'recording_auto_stashed'/);
-  assert.match(src, /reason: 'r2_put_dead_network'/);
+  // Reason is threaded from the eligibility map so create_draft and r2_put
+  // failures get attributed correctly in PostHog instead of all collapsing
+  // onto r2_put_dead_network.
+  assert.match(src, /props: \{\s*reason,/);
   // Reset + nav home after stash commits
   assert.match(src, /releaseResumedStashIfAny\(\);\s*resetSession\(\);/);
 });

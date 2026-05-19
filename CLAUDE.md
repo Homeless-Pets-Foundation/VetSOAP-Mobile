@@ -1,5 +1,13 @@
 # Captivet Mobile — Project Guidelines
 
+
+
+
+
+
+
+
+
 ## Architecture
 
 - **Framework:** Expo SDK 55, RN 0.83.4, React 19
@@ -31,7 +39,7 @@ From prod crash audits. Break → Android APK crashes.
 
 ### 2. Never pass async fn to void callback
 
-RN callbacks (`onPress`, `onValueChange`, `AppState.addEventListener`, `Alert.onPress`, `Switch.onValueChange`, `RefreshControl.onRefresh`) typed `() => void` → async fn → discarded Promise. Hermes + unhandled rejection = **fatal crash**.
+RN callbacks (`onPress`, `onValueChange`, `AppState.addEventListener`, `Alert.onPress`, `Switch.onValueChange`, `RefreshControl.onRefresh`) typed `() => void` → async fn → discarded Promise. Hermes + unhandled rejection has crashed release builds (observed in production).
 
 ```tsx
 // BAD — unhandled rejection crashes Hermes
@@ -48,6 +56,10 @@ const handleChange = async (v: boolean) => {
 };
 <Switch onValueChange={handleChange} />
 ```
+
+Applies to:
+- **`AppState.addEventListener('change', handler)`** — handler **must** have outer try/catch + reset `isAuthenticating` in `finally`. Else biometric hw error → app permanently locked.
+- **`RefreshControl.onRefresh`** — `refetch()` returns Promise; wrap as `() => { refetch().catch(() => {}); }`.
 
 ### 3. Always wrap SecureStore / Keystore in try/catch
 
@@ -68,6 +80,8 @@ secureStorage.setToken(token).catch(() => {});
 await secureStorage.setToken(token); // inside try/catch block
 ```
 
+Same pattern for `Haptics.*Async()` — rejects on devices without haptic motor (tablets, emulators, budget phones); always `.catch(() => {})` in sync callbacks, including the shared `Button` (`src/components/ui/Button.tsx`) on every press.
+
 ### 5. Always use `finally` for loading state
 
 `isLoading = true` → reset in `finally`. Throw between → UI stuck loading forever.
@@ -87,79 +101,54 @@ try {
 }
 ```
 
-### 6. Guard biometric/auth in AppState handlers
+### 6. Audio recorder hook must recover from native failures
 
-`AppState.addEventListener('change', handler)` discards async. Handler **must** have outer try/catch + reset `isAuthenticating` in `finally`. Else biometric hw error → app permanently locked.
+`useAudioRecorder` ops call expo-audio → can throw anytime on interrupt (call, focus lost, permission revoked):
 
-### 7. expo-audio ops throw anytime
-
-`pause()`, `record()`, `stop()` throw on interrupt (call, focus lost, permission revoked). `record.tsx` wraps in try/catch + Alert. `pause()` + `record()` sync; `stop()` + `prepareToRecordAsync()` async. In `useAudioRecorder`: `pause()`/`resume()` catch, cleanup (stop recorder, save URI, reset audio mode), then **rethrow** — callers handle (show "Recording Saved" alert).
-
-### 8. Keep `validateRequestUrl()` inside try in `ApiClient.request()`
-
-SSL pin validation inside try/catch so `finally` runs `clearTimeout(timeout)`. Move out → timer leak + uncaught throw.
-
-### 9. Always `.catch(() => {})` on Haptics
-
-`Haptics.*Async()` rejects on devices lacking haptic hw (tablets, emulators, budget phones). Always fire-and-forget in sync callbacks → unhandled → Hermes fatal.
-
-```tsx
-// BAD — crashes on devices without haptic motor
-Haptics.selectionAsync();
-
-// GOOD
-Haptics.selectionAsync().catch(() => {});
-```
-
-Applies everywhere incl. shared `Button` (`src/components/ui/Button.tsx`) — every press.
-
-### 10. Sign-out awaits PHI cleanup before clearing auth
-
-`handleSignOut` in `AuthProvider.tsx` awaits all cleanup (stash storage, stash audio, cache audio, editor temp, drafts) via `Promise.all` **before** `setUser(null)` + `setSession(null)`. Prevents next-user-signs-in-during-prev-user-cleanup race on shared tablets. Cleanup has retry + `.catch()` to not block. In-memory state (audio editor bridge, clipboard) also cleared.
-
-### 11. Audio recorder hook must recover from native failures
-
-`useAudioRecorder` ops call expo-audio → can throw anytime:
 - **`stop()`** — swallow errors (try/catch, no rethrow). State + URI always cleaned.
 - **`pause()` / `resume()`** — catch, cleanup (capture duration, force `recorder.stop()`, save URI, state → `stopped`, reset audio mode), **rethrow**. Callers catch → show user feedback.
 
-Without → one native fail permanently corrupts hook.
+Without → one native fail permanently corrupts hook. `record.tsx` wraps calls in try/catch + Alert (e.g. "Recording Saved"). `pause()` + `record()` are sync; `stop()` + `prepareToRecordAsync()` are async.
 
 Recorder via expo-audio `useAudioRecorder` → auto-releases on unmount. Polling via `useAudioRecorderState(recorder, 500)` (500ms = responsiveness vs CPU on weak hw).
 
-### 12. Validate local files before upload
+### 7. Keep `validateRequestUrl()` inside try in `ApiClient.request()`
+
+SSL pin validation inside try/catch so `finally` runs `clearTimeout(timeout)`. Move out → timer leak + uncaught throw.
+
+### 8. Sign-out awaits PHI cleanup before clearing auth
+
+`handleSignOut` in `AuthProvider.tsx` awaits all cleanup (stash storage, stash audio, cache audio, editor temp, drafts) via `Promise.all` **before** `setUser(null)` + `setSession(null)`. Prevents next-user-signs-in-during-prev-user-cleanup race on shared tablets. Cleanup has retry + `.catch()` to not block. In-memory state (audio editor bridge, clipboard) also cleared.
+
+### 9. Validate local files before upload
 
 `recordingsApi.createWithFile()` + `createWithSegments()` — check `getInfoAsync(uri)` pre-upload. 250MB/file client limit (`MAX_FILE_SIZE_BYTES`), 10min timeout (`R2_UPLOAD_TIMEOUT_MS`) via `withTimeout()`. `createWithSegments()` validates each segment. Missing/empty → user-friendly throw, not silent 0-byte upload.
 
-### 13. Guard `response.json()` against null + unexpected shapes
+### 10. Guard `response.json()` against null + unexpected shapes
 
 API error body can be literal `null` (valid JSON). Always `?? {}` after `.catch(() => ({}))`. `Array.isArray()` before `.map()` on fields like `details`.
 
-### 14. Guard `new Date()` before Intl
+### 11. Guard `new Date()` before Intl
 
 `new Date(null)` / `new Date(undefined)` → "Invalid Date". Hermes + `.toLocaleDateString()` w/ Intl options → `RangeError`. Check `isNaN(parsedDate.getTime())` first.
 
-### 15. Wrap `refetch` before RefreshControl/onRefresh
+### 12. Gate `console.error` behind `__DEV__`
 
-`refetch()` returns Promise; `RefreshControl.onRefresh` typed `() => void`. Wrap: `() => { refetch().catch(() => {}); }`.
+Never log PHI strings; gate `console.error` behind `__DEV__` as defense-in-depth, since Android release logs are visible via `adb logcat` over USB on shared clinic tablets. All `console.error` → `if (__DEV__) console.error(...)`.
 
-### 16. Gate `console.error` behind `__DEV__`
-
-Android `console.error` visible via `adb logcat` even on release. Shared clinic tablets + USB = PHI leak risk. All `console.error` → `if (__DEV__) console.error(...)`.
-
-### 17. Stash/draft ops require user ID first
+### 13. Stash/draft ops require user ID first
 
 `stashStorage`, `stashAudioManager`, `draftStorage` — all user-scoped to prevent cross-user leak on shared tablets. All expose `setUserId(userId)` — **must** be called before any read/write. Called in `fetchUser()` in `AuthProvider.tsx`. Cleanup (orphaned dirs, legacy migration, orphan drafts) runs **after** `setUserId` — never on timer that could fire before `fetchUser`.
 
-### 18. Upload URL validation fail-closed
+### 14. Upload URL validation fail-closed
 
 `validateUploadUrl()` in `sslPinning.ts` throws if `R2_BUCKET_HOSTNAME` empty. All uploads fail in prod if EAS secret missing — intentional. Upload to unvalidated URL worse than failing.
 
-### 19. Validate segment URIs before accept
+### 15. Validate segment URIs before accept
 
 `RESTORE_SESSION` + `REPLACE_ALL_SEGMENTS` in `useMultiPatientSession.ts` run `validateSegments()` → keep only local `file://` or absolute `/`. Blocks corrupted stash / compromised editor bridge from injecting remote URL that exfiltrates audio on upload.
 
-### 20. Distinguish user sign-out from session expiry in `onAuthStateChange`
+### 16. Distinguish user sign-out from session expiry in `onAuthStateChange`
 
 Supabase emits `SIGNED_OUT` for explicit sign-out **and** expired/failed refresh. Clearing on every `SIGNED_OUT` → logs users out on transient network fail. Two refs in `AuthProvider.tsx`:
 
@@ -168,23 +157,23 @@ Supabase emits `SIGNED_OUT` for explicit sign-out **and** expired/failed refresh
 
 Don't remove either or collapse paths → reintroduces "transient glitch logs out user" bug OR infinite recovery loop.
 
-### 21. Supabase session storage writes must read-back verify
+### 17. Supabase session storage writes must read-back verify
 
 Post-rotate, old refresh token invalidated server-side. SecureStore silent fail → no valid refresh token → next refresh fails → user logged out despite successful rotation.
 
 Adapter in `src/auth/supabase.ts`: `setItem` writes → reads back → retries once if differ. On throw, wait 1.5s + retry. Never simplify to bare `await secureStorage.setSession(value)`.
 
-### 22. Foreground-resume refresh reads current session, not closure
+### 18. Foreground-resume refresh reads current session, not closure
 
 `AppState` `'active'` handler in `AuthProvider.tsx` calls `supabase.auth.getSession()` inside handler. Closure over `session?.expires_at` → stale / null `expires_at` from SecureStore → refresh skipped entirely. Effect deps stay `[]` — `supabase` module-singleton, `refreshPromiseRef` ref.
 
-### 23. Lazy-load optional native auth modules
+### 19. Lazy-load optional native auth modules
 
-`@react-native-google-signin/google-signin`, `expo-apple-authentication`, `expo-crypto` — `require()` on first use in `src/auth/socialAuth.ts` and `src/lib/secureStorage.ts` (see rule 26), **not** static import at the top of the module. Old dev-client APKs pre-these-deps → crash on module load if static. New optional native auth module → same pattern.
+`@react-native-google-signin/google-signin`, `expo-apple-authentication`, `expo-crypto` — `require()` on first use in `src/auth/socialAuth.ts` and `src/lib/secureStorage.ts` (see rule 21), **not** static import at the top of the module. Old dev-client APKs pre-these-deps → crash on module load if static. New optional native auth module → same pattern.
 
 Google Sign-In Expo config plugin in `app.config.ts` conditionally included only when `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` set — Android builds don't need iOS URL scheme; unconditional → prebuild fails on Android-only dev.
 
-### 24. Propagate new PatientSlot fields through stash round-trip
+### 20. Propagate new PatientSlot fields through stash round-trip
 
 Fields on `PatientSlot` that affect `uploadSlot` server behavior (`serverRecordingId`, `serverDraftId`, future idempotency keys) **must** land in all three sites:
 
@@ -194,18 +183,7 @@ Fields on `PatientSlot` that affect `uploadSlot` server behavior (`serverRecordi
 
 Miss any → Resume strips field → Submit hits fresh-create → duplicate server recording. Fix e.g. `397f109`.
 
-### 25. UI text truncation is a render bug, not a spelling bug
-
-Reports like "Cop" for "Copy", "Transcribin" for "Transcribing", "Please wait while your recording is" for "…is uploaded." are **not** source typos. Android TextView under-measures single-word `<Text>` inside flex-row parents and clips the last glyph; `flex-row` labels without `flex-1` also silently truncate (no ellipsis, because `numberOfLines` is unset). Grep the source for the FULL word before assuming a typo — it will be there, correctly spelled.
-
-Fixes by pattern:
-- **Row labels with long content** (stepper steps, list items): `flex-1` on the Text + `numberOfLines={2}` so it claims remaining row space and wraps instead of clipping.
-- **Short-word action buttons** (Copy, Copy All): trailing-space literal (`` `${label} ` ``) + `style={{ flexShrink: 0, paddingRight: 2 }}` on the Text + `flexShrink: 0` on sibling icons. Inline comment required — the trailing space looks like lint debris and gets "cleaned up" by future edits.
-- **Centered captions in narrow cards** (UploadOverlay): reduce outer padding pressure (`px-8` → `px-6`), prefer shorter active-voice phrasing (`"…uploads."` over `"…is being uploaded."`).
-
-Never `numberOfLines={1}` on a single-word Text in a `self-end` Pressable — makes it worse (`"Co..."` with ellipsis). Verify on physical Android device; iOS and Android emulator both hide this class of bug.
-
-### 26. Security-critical random via `expo-crypto`, not global `crypto`
+### 21. Security-critical random via `expo-crypto`, not global `crypto`
 
 Hermes on iOS does **not** expose `globalThis.crypto.getRandomValues` in RN 0.83.4 / Expo SDK 55 despite Hermes docs claiming it since 0.76. Silent fallthrough to null → `secureStorage.getDeviceId()` returns null → `X-Device-Id` header omitted → server 401 `DEVICE_ID_REQUIRED` → forced sign-out loop. Launch-blocker on iOS, verified 2026-04-19.
 
@@ -213,13 +191,13 @@ Pattern (`src/lib/secureStorage.ts`): prefer `require('expo-crypto').getRandomBy
 
 Non-security randomness (idempotency keys in `src/api/recordings.ts`) can still use Math.random as a last resort; security-critical IDs (device ID, nonces) must not.
 
-### 27. `signIn` retries once on `AuthRetryableFetchError`
+### 22. `signIn` retries once on `AuthRetryableFetchError`
 
 Supabase GoTrue's internal auto-refresh timer leaves a stale `AbortController` after `signOut`. The next `supabase.auth.signInWithPassword()` rejects immediately with `AuthRetryableFetchError` (status 0, "Network request failed"). Reproducibly fails on iOS after sign-out → sign-in loops.
 
-`signIn` in `AuthProvider.tsx` catches `error.name === 'AuthRetryableFetchError'` and retries `signInWithPassword` once after 500ms. The retry constructs a fresh `AbortController`, breaking the stale-state cycle. Do NOT try to "reset" state by calling `supabase.auth.signOut({ scope: 'local' })` before sign-in — that emits `SIGNED_OUT` which `onAuthStateChange` (rule 20) treats as unexpected loss and tries `refreshSession()` which hangs on the same poisoned controller. 90-second hang confirmed. The retry alone is sufficient.
+`signIn` in `AuthProvider.tsx` catches `error.name === 'AuthRetryableFetchError'` and retries `signInWithPassword` once after 500ms. The retry constructs a fresh `AbortController`, breaking the stale-state cycle. Do NOT try to "reset" state by calling `supabase.auth.signOut({ scope: 'local' })` before sign-in — that emits `SIGNED_OUT` which `onAuthStateChange` (rule 16) treats as unexpected loss and tries `refreshSession()` which hangs on the same poisoned controller. 90-second hang confirmed. The retry alone is sufficient.
 
-### 28. `registerDevice` uses `Platform.isPad` to pick iOS device type
+### 23. `registerDevice` uses `Platform.isPad` to pick iOS device type
 
 `Platform.OS === 'ios' ? 'ios_tablet' : 'android_tablet'` was wrong — every iPhone showed up as "iPad" in Settings → Manage Devices. `Platform.isPad` is the standard RN flag (static, set at launch from `UIUserInterfaceIdiom`). Pattern in `AuthProvider.registerDevice`:
 
@@ -231,7 +209,7 @@ const deviceType = Platform.OS === 'ios'
 
 `app/(app)/devices.tsx:formatDeviceTypeLabel` already maps `ios_phone` → "iPhone". Don't revert to the one-size-fits-all `'ios_tablet'` string.
 
-### 29. UI-gating async work must have a hard timeout
+### 24. UI-gating async work must have a hard timeout
 
 Any async call that gates a render decision — `isLoading`, `isLocked`, `isReady`, an early-return on a loader — **must** have a watchdog that flips the gate even if the underlying Promise never settles. Promises don't reject themselves; native bridges (Supabase GoTrue's auto-refresh `AbortController`, `expo-secure-store` Keystore reads on Direct Boot, `expo-local-authentication` biometric prompts, `expo-audio` recorder ops, `expo-file-system` on locked storage) can hang silently in post-update or low-storage scenarios. A `.finally(() => setIsLoading(false))` never fires if the chain never settles → the user stares at a spinner / blank screen until they force-quit.
 
@@ -239,7 +217,7 @@ Pattern in `AuthProvider.tsx` startup useEffect: `setTimeout(() => { captureMess
 
 Tactical timeout on the specific call (`withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session')`) sits inside the watchdog — recovers to a usable state 3–5 s before the watchdog fires so the user lands on a real screen rather than a Sentry warning with no UX fix. Use both layers.
 
-### 30. MFA auth requests must use hardened network handling
+### 25. MFA auth requests must use hardened network handling
 
 MFA endpoints (`/auth/mfa/*`) are auth routes, but they are still production network calls. `mfaAuthRequest()` in `src/auth/AuthProvider.tsx` must keep the same safety properties as `ApiClient.request()`:
 
@@ -356,13 +334,13 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 
 ## File Conventions
 
-- `src/lib/secureStorage.ts` — sole `expo-secure-store` interface. All calls try/catch. `getDeviceId()` → persistent UUID v4 on first call (memory-cached). Uses `expo-crypto.getRandomBytes` as primary random source with global `crypto.getRandomValues` as fallback (rule 26). `setItemAsync` has a keychainAccessible-less retry fallback for iOS Sim Keychain quirks. `DEVICE_ID` NOT deleted in `clearAll()` — device-scoped.
+- `src/lib/secureStorage.ts` — sole `expo-secure-store` interface. All calls try/catch. `getDeviceId()` → persistent UUID v4 on first call (memory-cached). Uses `expo-crypto.getRandomBytes` as primary random source with global `crypto.getRandomValues` as fallback (rule 21). `setItemAsync` has a keychainAccessible-less retry fallback for iOS Sim Keychain quirks. `DEVICE_ID` NOT deleted in `clearAll()` — device-scoped.
 - `src/lib/biometrics.ts` — sole `expo-local-authentication` + biometric pref interface. All wrapped.
 - `src/lib/fileOps.ts` — safe wrappers around `expo-file-system` `File`/`Directory`. Use `safeDeleteFile`/`safeDeleteDirectory`, never `.delete()` direct. Never import `expo-file-system/legacy` in new code.
 - `src/lib/secureClipboard.ts` — 30s auto-clear clipboard for sensitive data. `clearClipboard()` for sign-out.
 - `src/lib/audioEditorBridge.ts` — singleton bridging `record.tsx` ↔ `audio-editor.tsx`. `clear()` for sign-out.
 - `src/lib/stashStorage.ts` — encrypted stash metadata, chunked (Android 2KB limit). **User-scoped**: keys prefixed w/ user ID. `setUserId()` required first. `clearLegacyGlobalStashes()` one-time migration.
-- `src/lib/stashAudioManager.ts` — stashed audio in `documentDirectory/stashed-audio/{userId}/`. `setUserId()` first. Session IDs validated vs path traversal. `moveSegmentsToStashDir` persists `serverDraftId`/`draftSlotId` through round-trip (rule 24).
+- `src/lib/stashAudioManager.ts` — stashed audio in `documentDirectory/stashed-audio/{userId}/`. `setUserId()` first. Session IDs validated vs path traversal. `moveSegmentsToStashDir` persists `serverDraftId`/`draftSlotId` through round-trip (rule 20).
 - `src/lib/draftStorage.ts` — local audio draft persistence. SecureStore metadata (chunked) + audio at `documentDirectory/drafts/{userId}/{slotId}/`. **User-scoped**: `setUserId()` first. `saveDraft`/`getDraft`/`listDrafts`/`deleteDraft`/`clearAll`. `syncPending(createFn)` retries unsynced server-draft creations on reconnect. `cleanupOrphaned(deleteFn)` runs on Record mount → sweeps entries w/ missing local audio + deletes server row.
 - `src/config.ts` — env var access + graceful fallback. Exports `CONFIG_MISSING`.
 - `src/constants/strings.ts` — centralized user-facing UI labels (`PROCESSING_STEP_LABELS`, `UPLOAD_OVERLAY_COPY`, `SOAP_SECTION_ACTIONS`). Add new labels here rather than inline so one `grep` surfaces every rendering site; lightweight precursor to i18n.
@@ -372,10 +350,10 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/hooks/useMultiPatientSession.ts` — `useReducer` multi-patient state. ≤10 `PatientSlot`s w/ `segments[]`, recorder binding, upload status, `CONTINUE_RECORDING` for multi-segment. `RESTORE_SESSION` + `REPLACE_ALL_SEGMENTS` validate URIs. `SET_DRAFT_IDS` sets `draftSlotId`+`serverDraftId`.
 - `src/hooks/useStashedSessions.ts` — stash list + resume. `stashSession` moves segments to stash dir, writes metadata, then `draftStorage.deleteDraft()` for every slot w/ `draftSlotId` (stash owns audio post-commit). `convertToPatientSlots` restores `serverDraftId`/`draftSlotId` from stash payload.
 - `src/types/multiPatient.ts` — `PatientSlot`, `AudioSegment`, `SessionAction`, `SessionState`. `PatientSlot` incl. `draftSlotId`/`serverDraftId` for auto-saved drafts.
-- `src/types/stash.ts` — `StashedSlot`/`StashedSegment`/`StashedSession`. `StashedSlot` carries optional `serverDraftId`/`draftSlotId` (rule 24).
+- `src/types/stash.ts` — `StashedSlot`/`StashedSegment`/`StashedSession`. `StashedSlot` carries optional `serverDraftId`/`draftSlotId` (rule 20).
 - `app/(auth)/mfa.tsx` — MFA challenge/enrollment screen. Uses `react-native-qrcode-svg` for TOTP enrollment QR codes. RN callbacks wrap async handlers with `.catch(() => {})`.
 - `src/auth/mfaPolicy.ts` — safe MFA error-code handling and UI messages. Keep setup approval-code checks here, and add executable tests in `tests/security-mfa.test.mjs` when new MFA codes are introduced.
-- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set. `signIn` retries once on `AuthRetryableFetchError` (rule 27). `registerDevice` sends `ios_phone` / `ios_tablet` / `android_tablet` based on `Platform.isPad` (rule 28). MFA helpers live here too; `mfaAuthRequest()` must follow rule 30.
+- `src/auth/AuthProvider.tsx` — `handleSignOut` awaits stash + drafts PHI cleanup before clearing state. `fetchUser()` calls `setStashUserId()` + `draftStorage.setUserId()`. `registerDevice()` on sign-in + session restore. Cleanup only after user ID set. `signIn` retries once on `AuthRetryableFetchError` (rule 22). `registerDevice` sends `ios_phone` / `ios_tablet` / `android_tablet` based on `Platform.isPad` (rule 23). MFA helpers live here too; `mfaAuthRequest()` must follow rule 25.
 - `plugins/with-ffmpeg-ios-pod-source.js` — local Expo config plugin that inserts `pod 'ffmpeg-kit-ios-min', :podspec => '<self-hosted URL>'` into the iOS Podfile via `withDangerousMod`. Registered in `app.config.ts` right after `@config-plugins/ffmpeg-kit-react-native`. Override URL lives in `DEFAULT_PODSPEC_URL` at the top of the file — currently `raw.githubusercontent.com/.../ffmpeg-kit-ios-min.podspec.json`, flip to the Pages URL when Pages is healthy. Don't remove — without it, every `pod install` 404s on the arthenica GitHub release zip.
 - `src/api/client.ts` — sends `X-Device-Id` header all reqs. Memory-caches device ID. Handles `DEVICE_REGISTRATION_REQUIRED` (428) via `onDeviceRegistrationRequired` callback → `registerDevice()` + retry once. Handles `DEVICE_REVOKED`/`DEVICE_ID_REQUIRED` 401s before token refresh.
 - `src/api/recordings.ts` — `createWithFile()` single-segment, `createWithSegments()` multi. Both validate via `getInfoAsync()`, 250MB limit, 10min timeout. Both take optional `existingRecordingId` → skips `create()`, uses server draft as recording ID (promote path).
@@ -384,6 +362,19 @@ Inspector re-engaged → `am force-stop com.captivet.mobile` + relaunch is only 
 - `src/components/PatientTabStrip.tsx` — horizontal tab strip to switch slots. Status badges (recording, paused, stopped, uploaded).
 - `src/components/SubmitPanel.tsx` — bottom panel w/ "Submit All". Visible when multiple slots ready.
 - `src/components/RecordingCard.tsx` — list item. `status='draft'` → amber "Not Submitted" badge. Tap → `/(tabs)/record?draftSlotId=X` (resume) if local draft exists, else detail screen.
+
+## UI Gotchas
+
+### UI text truncation is a render bug, not a spelling bug
+
+Reports like "Cop" for "Copy", "Transcribin" for "Transcribing", "Please wait while your recording is" for "…is uploaded." are **not** source typos. Android TextView under-measures single-word `<Text>` inside flex-row parents and clips the last glyph; `flex-row` labels without `flex-1` also silently truncate (no ellipsis, because `numberOfLines` is unset). Grep the source for the FULL word before assuming a typo — it will be there, correctly spelled.
+
+Fixes by pattern:
+- **Row labels with long content** (stepper steps, list items): `flex-1` on the Text + `numberOfLines={2}` so it claims remaining row space and wraps instead of clipping.
+- **Short-word action buttons** (Copy, Copy All): trailing-space literal (`` `${label} ` ``) + `style={{ flexShrink: 0, paddingRight: 2 }}` on the Text + `flexShrink: 0` on sibling icons. Inline comment required — the trailing space looks like lint debris and gets "cleaned up" by future edits.
+- **Centered captions in narrow cards** (UploadOverlay): reduce outer padding pressure (`px-8` → `px-6`), prefer shorter active-voice phrasing (`"…uploads."` over `"…is being uploaded."`).
+
+Never `numberOfLines={1}` on a single-word Text in a `self-end` Pressable — makes it worse (`"Co..."` with ellipsis). Verify on physical Android device; iOS and Android emulator both hide this class of bug.
 
 ## Monitoring & Analytics
 
@@ -504,11 +495,11 @@ Finish tap → server `status='draft'` + local `draftStorage` entry → Home/Rec
 
 2. **Save for Later (stash)** — `stashSession` moves segments to stash dir, writes stash payload (incl. `serverDraftId`/`draftSlotId`), **then** `draftStorage.deleteDraft(draftSlotId)` → stash owns audio, local draft metadata removed. Server draft row stays (referenced via stash).
 
-3. **Resume** — `useStashedSessions.resumeSession` → `convertToPatientSlots` restores `draftSlotId` + `serverDraftId` from stash payload (rule 24). Session `audioState: stopped`, ready to submit.
+3. **Resume** — `useStashedSessions.resumeSession` → `convertToPatientSlots` restores `draftSlotId` + `serverDraftId` from stash payload (rule 20). Session `audioState: stopped`, ready to submit.
 
 4. **Submit** — `uploadSlot()` sees `slot.serverDraftId` → adds `existingRecordingId` in `createWithFile`/`createWithSegments` → server promotes draft in place (no duplicate). Post-success: `draftStorage.deleteDraft(draftSlotId)` + local audio delete.
 
-5. **Orphan sweep** — Record tab mount runs `draftStorage.cleanupOrphaned(recordingsApi.delete)` → drafts w/ missing local audio → delete server row + local metadata. Clears "Not Submitted" zombies from older clients that stashed before rule 24 was enforced.
+5. **Orphan sweep** — Record tab mount runs `draftStorage.cleanupOrphaned(recordingsApi.delete)` → drafts w/ missing local audio → delete server row + local metadata. Clears "Not Submitted" zombies from older clients that stashed before rule 20 was enforced.
 
 ### Storage Layout
 
@@ -518,24 +509,4 @@ Finish tap → server `status='draft'` + local `draftStorage` entry → Home/Rec
 
 ### Sign-Out Cleanup
 
-`handleSignOut` in `AuthProvider.tsx` → `draftStorage.clearAll()` in `Promise.all` alongside stash cleanup. Blocks `setUser(null)`/`setSession(null)` until all PHI gone (shared tablet safety, rule 10).
-
-## Karpathy Guidelines
-
-Behavioral guidelines to reduce common LLM coding mistakes. On conflict, project-specific rules above take precedence.
-
-### 1. Think Before Coding
-
-Don't assume. Don't hide confusion. Surface tradeoffs. Before implementing: state assumptions explicitly, present multiple interpretations instead of picking silently, push back when a simpler approach exists, and stop to ask when something is unclear.
-
-### 2. Simplicity First
-
-Minimum code that solves the problem. No features beyond what was asked, no abstractions for single-use code, no speculative "flexibility" or "configurability", no error handling for impossible scenarios. If 200 lines could be 50, rewrite it.
-
-### 3. Surgical Changes
-
-Touch only what you must. Don't "improve" adjacent code, comments, or formatting. Don't refactor things that aren't broken. Match existing style. Remove imports/variables/functions that YOUR changes made unused, but don't remove pre-existing dead code unless asked. Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-
-Define success criteria. Loop until verified. Transform tasks into verifiable goals ("Add validation" → "Write tests for invalid inputs, then make them pass"). For multi-step tasks, state a brief plan with verification checks at each step.
+`handleSignOut` in `AuthProvider.tsx` → `draftStorage.clearAll()` in `Promise.all` alongside stash cleanup. Blocks `setUser(null)`/`setSession(null)` until all PHI gone (shared tablet safety, rule 8).

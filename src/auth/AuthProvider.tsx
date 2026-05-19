@@ -1,6 +1,7 @@
 import React, { createContext, useEffect, useState, useCallback, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import type { Session } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
 import * as ScreenCapture from 'expo-screen-capture';
@@ -272,12 +273,34 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | n
   const safeguard = new Promise<null>((resolve) => {
     timer = setTimeout(() => {
       breadcrumb('auth', 'init_watchdog_fired', { label, ms });
-      // captureMessage is rate-limited per-message at the 'warning' channel,
-      // so a spamming caller can't drain Sentry quota.
-      captureMessage('init_watchdog_fired', 'warning', {
-        tags: { phase: 'init_watchdog', op: label },
-        extra: { timeout_ms: ms },
-      });
+      // Snapshot diagnostic context at fire time so we can tell apart the
+      // distinct hang modes that all look identical from the watchdog (Sentry
+      // REACT-NATIVE-9): a network-blackholed cold start, a foreground
+      // resume against a poisoned Supabase auto-refresh AbortController
+      // (rule 27), and a SecureStore Keystore read that never returns. Run
+      // the NetInfo lookup off the resolve path so a hanging NetInfo bridge
+      // can't extend the very stall we're trying to capture.
+      const appStateAtFire = AppState.currentState;
+      NetInfo.fetch()
+        .catch(() => null)
+        .then((net) => {
+          captureMessage('init_watchdog_fired', 'warning', {
+            tags: {
+              phase: 'init_watchdog',
+              op: label,
+              app_state: appStateAtFire,
+              net_type: net?.type ?? 'unknown',
+              net_reachable:
+                net?.isInternetReachable === null
+                  ? 'unknown'
+                  : net?.isInternetReachable === true
+                  ? 'true'
+                  : 'false',
+            },
+            extra: { timeout_ms: ms },
+          });
+        })
+        .catch(() => { /* never let diagnostic capture crash Hermes */ });
       resolve(null);
     }, ms);
   });

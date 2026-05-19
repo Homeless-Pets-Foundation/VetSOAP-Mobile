@@ -5,7 +5,7 @@ import {
   safeDeleteDirectory,
   ensureDirectory,
 } from './fileOps';
-import type { PatientSlot } from '../types/multiPatient';
+import type { PatientSlot, AudioSegment } from '../types/multiPatient';
 import type { CreateRecording } from '../types/index';
 
 const STORE_OPTIONS = {
@@ -390,10 +390,13 @@ export const draftStorage = {
 
   /**
    * Save a draft from a patient slot.
-   * Copies all audio segments to documentDirectory and stores metadata in SecureStore.
-   * Returns the slotId for reference.
+   * Copies all audio segments to documentDirectory and stores metadata in
+   * SecureStore. Returns the slotId plus the promoted segment array — the
+   * caller MUST dispatch PROMOTE_SEGMENTS_TO_DRAFT with these URIs so session
+   * state stops pointing at recorder-temp paths that the OS can reap. See
+   * docs/2026-05-17-promote-segments-to-draft.md (Sentry REACT-NATIVE-8).
    */
-  async saveDraft(slot: PatientSlot): Promise<string> {
+  async saveDraft(slot: PatientSlot): Promise<{ draftSlotId: string; promotedSegments: AudioSegment[] }> {
     const userId = currentUserId;
     if (!userId) throw new Error('Draft storage: no user ID set');
 
@@ -534,7 +537,13 @@ export const draftStorage = {
         pending_sync: metadata.pendingSync,
       });
 
-      return slot.id;
+      const promotedSegments: AudioSegment[] = draftSegments.map((s) => ({
+        uri: s.uri,
+        duration: s.duration,
+        peakMetering: s.peakMetering,
+      }));
+
+      return { draftSlotId: slot.id, promotedSegments };
     } catch (error) {
       // Preserve audio from any pre-existing complete-on-disk draft. The catch
       // used to wipe `dir` unconditionally, which destroyed prior successful

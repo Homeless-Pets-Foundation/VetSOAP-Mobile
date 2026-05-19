@@ -371,6 +371,40 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ),
       };
 
+    case 'PROMOTE_SEGMENTS_TO_DRAFT': {
+      // URI-only rewrite. Defense-in-depth: refuse to promote if the count or
+      // any per-segment duration disagrees with current state — that would
+      // signal a saveDraft partial-success that the caller should have already
+      // filtered out (record.tsx autoSaveDraft length-guards before
+      // dispatching). On mismatch we leave state untouched; the prior
+      // wipe-on-resave guard (PR #46) keeps the on-disk draft intact and the
+      // next successful saveDraft can promote all-or-nothing.
+      return {
+        ...state,
+        slots: state.slots.map((slot) => {
+          if (slot.id !== action.slotId) return slot;
+          if (slot.segments.length !== action.segments.length) {
+            if (__DEV__) console.warn(
+              '[PROMOTE_SEGMENTS_TO_DRAFT] segment count mismatch; skipping',
+              { slotId: slot.id, currentLen: slot.segments.length, incomingLen: action.segments.length }
+            );
+            return slot;
+          }
+          const durationsMatch = slot.segments.every(
+            (seg, i) => Math.abs((seg.duration ?? 0) - (action.segments[i].duration ?? 0)) < 0.01
+          );
+          if (!durationsMatch) {
+            if (__DEV__) console.warn(
+              '[PROMOTE_SEGMENTS_TO_DRAFT] per-segment duration mismatch; skipping',
+              { slotId: slot.id }
+            );
+            return slot;
+          }
+          return { ...slot, segments: action.segments };
+        }),
+      };
+    }
+
     default:
       return state;
   }

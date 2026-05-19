@@ -60,7 +60,14 @@ export type SessionAction =
   | { type: 'DELETE_SEGMENT'; slotId: string; segmentIndex: number }
   | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] }
   | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null }
-  | { type: 'CLEAR_DRAFT_DIRTY'; slotId: string };
+  | { type: 'CLEAR_DRAFT_DIRTY'; slotId: string }
+  // Re-point a slot's segments at durable draft copies after draftStorage.saveDraft
+  // succeeds. Without this, slot.segments[].uri keeps pointing at recorder-temp
+  // paths the OS can reap, which is the trigger for Sentry REACT-NATIVE-8
+  // (`Draft storage: all N segment copies failed (copy_threw)`). URI-only — the
+  // reducer must NOT touch audioState, recorderBoundToSlotId, uploadStatus, or
+  // any other slot field.
+  | { type: 'PROMOTE_SEGMENTS_TO_DRAFT'; slotId: string; segments: AudioSegment[] };
 
 export interface SessionState {
   slots: PatientSlot[];

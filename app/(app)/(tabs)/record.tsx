@@ -113,6 +113,19 @@ function isSlotActivelyRecording(slot: PatientSlot): boolean {
   return slot.audioState === 'recording' || slot.audioState === 'paused';
 }
 
+/**
+ * Match URIs owned by `draftStorage` so segment-URI cleanup paths skip them.
+ * Post-PROMOTE_SEGMENTS_TO_DRAFT (Sentry REACT-NATIVE-8 fix), a slot's
+ * `segments[].uri` points at durable copies under
+ * `documentDirectory/drafts/{userId}/{slotId}/seg_N.m4a`. That directory is
+ * the authority of `draftStorage.deleteDraft`; double-deleting from
+ * `discardSlot` races and can leave a half-cleaned draft visible if the slot
+ * is also referenced from a pinned stash.
+ */
+function isDraftOwnedUri(uri: string): boolean {
+  return uri.includes('/drafts/');
+}
+
 // -35 dBFS: covers soft speech close to the mic without missing dead-mic recordings
 // (mic noise floor sits around -60 to -70 dBFS). Earlier value (-20 dBFS) tripped
 // false positives on Pixel devices where expo-audio reports a depressed peak even
@@ -787,7 +800,15 @@ function RecordingSession() {
 
     session.slots.forEach((slot) => {
       slot.segments.forEach((seg) => {
-        safeDeleteFile(seg.uri);
+        // Post-PROMOTE_SEGMENTS_TO_DRAFT, segment URIs may live under the draft
+        // directory. Those files are owned by draftStorage; deleteSlotDraft
+        // (below) is the authoritative deleter. Calling safeDeleteFile here
+        // would race with draftStorage's own cleanup and could leave a half-
+        // deleted draft on disk if the user re-resumes from a stash that
+        // captured the same URIs.
+        if (!isDraftOwnedUri(seg.uri)) {
+          safeDeleteFile(seg.uri);
+        }
       });
       // Best-effort delete any server recording left mid-confirm — the user is
       // abandoning this session entirely.
@@ -1058,7 +1079,11 @@ function RecordingSession() {
             onPress: () => {
               if (slot) {
                 slot.segments.forEach((seg) => {
-                  safeDeleteFile(seg.uri);
+                  // draftStorage owns draft-directory files; deleteSlotDraft
+                  // below is the authoritative deleter for those.
+                  if (!isDraftOwnedUri(seg.uri)) {
+                    safeDeleteFile(seg.uri);
+                  }
                 });
                 deleteOrphanServerRecording(slot);
                 // Drop any auto-saved draft + server draft row — otherwise the
@@ -1108,7 +1133,11 @@ function RecordingSession() {
                       recorder.reset();
                     }
                     slot.segments.forEach((seg) => {
-                      safeDeleteFile(seg.uri);
+                      // draftStorage owns draft-directory files; deleteSlotDraft
+                      // below is the authoritative deleter for those.
+                      if (!isDraftOwnedUri(seg.uri)) {
+                        safeDeleteFile(seg.uri);
+                      }
                     });
                     deleteOrphanServerRecording(slot);
                     // Slot is about to disappear — delete its draft row + local
@@ -1704,7 +1733,27 @@ function RecordingSession() {
       try {
         // Phase 1: persist the local draft (audio + metadata). Always runs
         // regardless of connectivity so the user can resume offline.
-        const draftSlotId = await draftStorage.saveDraft(slot);
+        const { draftSlotId, promotedSegments } = await draftStorage.saveDraft(slot);
+        // Promote session-state segment URIs to the durable draft copies. This
+        // is the core RN-8 fix (docs/2026-05-17-promote-segments-to-draft.md):
+        // without this, slot.segments[].uri keeps pointing at recorder-temp
+        // paths that the OS can reap between Finish and a later re-save,
+        // making every subsequent saveDraft loop fail with `copy_threw`. The
+        // length guard skips promotion on a partial saveDraft success — the
+        // wipe-on-resave guard (PR #46) keeps the on-disk draft intact and
+        // the next successful re-save can promote all-or-nothing. Dispatch
+        // BEFORE SET_DRAFT_IDS so any subsequent read from sessionRef sees
+        // the durable URIs before scheduleDraftSync snapshots the slot.
+        if (promotedSegments.length === slot.segments.length) {
+          dispatch({
+            type: 'PROMOTE_SEGMENTS_TO_DRAFT',
+            slotId: slot.id,
+            segments: promotedSegments,
+          });
+        } else if (__DEV__) {
+          console.warn('[Record] segment-count mismatch in autoSaveDraft promotion',
+            { input: slot.segments.length, promoted: promotedSegments.length });
+        }
         // Preserve the existing serverDraftId here — the server draft (if any)
         // still represents this slot's recording. Nulling it would orphan the
         // server row on every stop/continue cycle.
@@ -2420,7 +2469,10 @@ function RecordingSession() {
           // Delete old segment files that are no longer in the result
           const newUris = new Set(result.segments.map((s) => s.uri));
           originalSegments.forEach((seg) => {
-            if (!newUris.has(seg.uri)) {
+            if (!newUris.has(seg.uri) && !isDraftOwnedUri(seg.uri)) {
+              // draftStorage owns draft-dir files; the subsequent autoSaveDraft
+              // overwrites them with the edited segment data, so deleting here
+              // would race with the re-save and leave a half-cleaned dir.
               safeDeleteFile(seg.uri);
             }
           });

@@ -21,6 +21,8 @@ import { fileExists } from '../../../../src/lib/fileOps';
 import { PROCESSING_STEP_LABELS } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
+import { reportClientError } from '../../../../src/api/telemetry';
+import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 
 const PROCESSING_STEPS = [
   { status: 'uploading', label: PROCESSING_STEP_LABELS.uploading },
@@ -217,6 +219,7 @@ export default function RecordingDetailScreen() {
     !!pollingStartedAtRef.current &&
     Date.now() - pollingStartedAtRef.current > 30 * 60 * 1000 &&
     !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording?.status ?? '');
+  const recordingPermissions = useRecordingPermissions(recording);
 
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
@@ -275,6 +278,15 @@ export default function RecordingDetailScreen() {
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!id) return;
+      if (!recordingPermissions.canDelete) {
+        throw new ApiError(
+          recordingPermissions.deleteBlockedReason ?? 'You do not have permission to delete this recording.',
+          403,
+          false,
+          undefined,
+          'RECORDING_DELETE_FORBIDDEN'
+        );
+      }
       await recordingsApi.delete(id);
       // If a local draft points at this server row, purge it too so the
       // "Not Submitted" card won't resurrect on next focus.
@@ -289,6 +301,15 @@ export default function RecordingDetailScreen() {
       router.navigate('/recordings');
     },
     onError: (error: Error) => {
+      if (id) {
+        reportClientError({
+          phase: 'delete_draft',
+          severity: 'error',
+          errorCode: error instanceof ApiError ? error.code ?? String(error.status) : 'unknown',
+          message: error instanceof Error ? error.message : 'Draft delete failed',
+          recordingId: id,
+        });
+      }
       Alert.alert(
         'Delete Failed',
         error instanceof ApiError ? error.message : 'Could not delete this draft. Please try again.'
@@ -348,6 +369,8 @@ export default function RecordingDetailScreen() {
   }
 
   const isProcessing = !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording.status);
+  const deleteDraftBlockedReason =
+    recordingPermissions.deleteBlockedReason ?? 'You do not have permission to delete this draft.';
   const parsedDate = new Date(recording.createdAt);
   const formattedDate = isNaN(parsedDate.getTime())
     ? ''
@@ -505,15 +528,21 @@ export default function RecordingDetailScreen() {
                     >
                       Continue Recording
                     </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onPress={confirmDeleteDraft}
-                      loading={deleteMutation.isPending}
-                      accessibilityLabel="Delete draft"
-                    >
-                      Delete Draft
-                    </Button>
+                    {recordingPermissions.canDelete ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onPress={confirmDeleteDraft}
+                        loading={deleteMutation.isPending}
+                        accessibilityLabel="Delete draft"
+                      >
+                        Delete Draft
+                      </Button>
+                    ) : (
+                      <Text className="text-caption text-stone-500 flex-1">
+                        {deleteDraftBlockedReason}
+                      </Text>
+                    )}
                   </View>
                 </View>
               </View>
@@ -532,15 +561,21 @@ export default function RecordingDetailScreen() {
                     you recorded it, or delete it here to clean up.
                   </Text>
                   <View className="self-start">
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onPress={confirmDeleteDraft}
-                      loading={deleteMutation.isPending}
-                      accessibilityLabel="Delete draft"
-                    >
-                      Delete Draft
-                    </Button>
+                    {recordingPermissions.canDelete ? (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onPress={confirmDeleteDraft}
+                        loading={deleteMutation.isPending}
+                        accessibilityLabel="Delete draft"
+                      >
+                        Delete Draft
+                      </Button>
+                    ) : (
+                      <Text className="text-caption text-stone-500">
+                        {deleteDraftBlockedReason}
+                      </Text>
+                    )}
                   </View>
                 </View>
               </View>

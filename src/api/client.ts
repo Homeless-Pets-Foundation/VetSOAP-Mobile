@@ -176,6 +176,12 @@ export class ApiClient {
     if (status === 403 && errorBody.code === 'MFA_REQUIRED') {
       return (errorBody.error as string) || 'Multi-factor authentication is required.';
     }
+    if (status === 403 && errorBody.code === 'ROLE_FORBIDDEN') {
+      return 'Your role cannot create, upload, or delete recordings.';
+    }
+    if (status === 403 && errorBody.code === 'RECORDING_DELETE_FORBIDDEN') {
+      return 'Only the recording owner or an administrator can delete this recording.';
+    }
     if (status === 403) return 'You do not have permission to perform this action.';
     if (status === 404) return 'The requested resource was not found.';
     if (status === 422 && details.length) return details.map((d) => d.message).join(', ');

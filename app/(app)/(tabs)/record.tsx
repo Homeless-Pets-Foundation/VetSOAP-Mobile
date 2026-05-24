@@ -126,6 +126,10 @@ function isDraftOwnedUri(uri: string): boolean {
   return uri.includes('/drafts/');
 }
 
+function isNetworkRequestFailed(error: unknown): boolean {
+  return error instanceof TypeError && /network request failed/i.test(error.message);
+}
+
 // -35 dBFS: covers soft speech close to the mic without missing dead-mic recordings
 // (mic noise floor sits around -60 to -70 dBFS). Earlier value (-20 dBFS) tripped
 // false positives on Pixel devices where expo-audio reports a depressed peak even
@@ -1665,6 +1669,14 @@ function RecordingSession() {
         await draftStorage.updateServerDraftId(draftSlotId, serverId);
         queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       } catch (error) {
+        const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
+        if (isNetworkRequestFailed(error)) {
+          breadcrumb('draft', 'sync_server_draft_transient_network', {
+            slot_id: slotId,
+            had_server_draft: hadServerDraft,
+          });
+          return;
+        }
         // Phase 2 of draft persistence. Failure here means the local draft
         // exists but never reached the server — silent in prod before this
         // capture call. Tag with phase so it groups separately from
@@ -1673,7 +1685,7 @@ function RecordingSession() {
           tags: { phase: 'sync_server_draft' },
           extra: {
             slot_id: slotId,
-            had_server_draft: !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId,
+            had_server_draft: hadServerDraft,
           },
         });
         if (__DEV__) console.warn('[Record] syncServerDraft failed:', error);

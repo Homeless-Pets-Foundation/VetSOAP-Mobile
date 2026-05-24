@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { File as ExpoFile, Paths } from 'expo-file-system';
 import {
   fileExists,
+  safeDeleteFile,
   safeDeleteDirectory,
   ensureDirectory,
 } from './fileOps';
@@ -186,6 +187,33 @@ function userDraftDirForUser(userId: string): string {
 function slotDraftDirForUser(userId: string, slotId: string): string {
   validateSlotId(slotId);
   return `${userDraftDirForUser(userId)}${slotId}/`;
+}
+
+function normalizeFileUriForCompare(uri: string): string {
+  try {
+    return decodeURI(uri);
+  } catch {
+    return uri;
+  }
+}
+
+function sameFileUri(a: string, b: string): boolean {
+  return a === b || normalizeFileUriForCompare(a) === normalizeFileUriForCompare(b);
+}
+
+function copyFileReplacing(sourceUri: string, destUri: string): boolean {
+  const tempUri = `${destUri}.tmp-${Date.now()}`;
+  safeDeleteFile(tempUri);
+
+  try {
+    new ExpoFile(sourceUri).copy(new ExpoFile(tempUri));
+    if (!fileExists(tempUri)) return false;
+    safeDeleteFile(destUri);
+    new ExpoFile(tempUri).move(new ExpoFile(destUri));
+    return fileExists(destUri);
+  } finally {
+    safeDeleteFile(tempUri);
+  }
 }
 
 /** Validate slotId to prevent path traversal attacks. */
@@ -452,7 +480,21 @@ export const draftStorage = {
 
         const destUri = `${dir}seg_${i}.m4a`;
         try {
-          new ExpoFile(segment.uri).copy(new ExpoFile(destUri));
+          if (sameFileUri(segment.uri, destUri)) {
+            draftSegments.push({
+              uri: destUri,
+              duration: segment.duration,
+              peakMetering:
+                typeof segment.peakMetering === 'number'
+                  ? segment.peakMetering
+                  : undefined,
+            });
+            continue;
+          }
+          if (!copyFileReplacing(segment.uri, destUri)) {
+            failureReasons.push('dest_missing_after_copy');
+            continue;
+          }
         } catch (err) {
           // Pin the underlying error into the reason tag so the next RN-8
           // event tells us which errno (ENOSPC / EPERM / …) is firing.

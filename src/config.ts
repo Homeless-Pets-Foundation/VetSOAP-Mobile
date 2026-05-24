@@ -1,4 +1,6 @@
 const configErrors: string[] = [];
+const CANONICAL_API_URL = 'https://api.captivet.com';
+const RAILWAY_FALLBACK_HOST = 'api-production-8e5e.up.railway.app';
 
 // IMPORTANT: Expo/Metro only inlines EXPO_PUBLIC_* env vars when accessed
 // via static dot notation (e.g. process.env.EXPO_PUBLIC_API_URL).
@@ -25,13 +27,30 @@ function requireValue(name: string, value: string | undefined): string {
   return value;
 }
 
+function normalizeProductionApiUrl(value: string | undefined): string {
+  if (!value) return CANONICAL_API_URL;
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' || parsed.hostname === RAILWAY_FALLBACK_HOST) {
+      return CANONICAL_API_URL;
+    }
+    if (parsed.hostname !== 'api.captivet.com') {
+      return CANONICAL_API_URL;
+    }
+    return CANONICAL_API_URL;
+  } catch {
+    return CANONICAL_API_URL;
+  }
+}
+
 // Production default is the canonical host (CLAUDE.md rule: clients MUST use
 // api.captivet.com). Missing env in a production build falls back to this
 // literal instead of a startup error — prevents the Railway fallback URL
 // from sneaking back in via a misconfigured .env.
 export const API_URL = __DEV__
   ? (process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000')
-  : (process.env.EXPO_PUBLIC_API_URL || 'https://api.captivet.com');
+  : normalizeProductionApiUrl(process.env.EXPO_PUBLIC_API_URL);
 
 export const SUPABASE_URL = __DEV__
   ? (process.env.EXPO_PUBLIC_SUPABASE_URL || '')

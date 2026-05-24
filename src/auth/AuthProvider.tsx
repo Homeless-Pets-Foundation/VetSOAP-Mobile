@@ -1108,13 +1108,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const existingSession = result?.data?.session ?? null;
       if (existingSession) {
         if (existingSession.access_token) {
-          const { data: { user: validatedUser }, error: validateError } =
-            await supabase.auth.getUser(existingSession.access_token);
-          if (validateError || !validatedUser) {
+          const validateResult = await withTimeout(
+            supabase.auth.getUser(existingSession.access_token),
+            8000,
+            'auth_init_get_user'
+          );
+          const validatedUser = validateResult?.data?.user ?? null;
+          const validateError = validateResult?.error ?? null;
+          if (!validateResult || validateError || !validatedUser) {
             if (__DEV__) console.log('[Auth] session restore: server rejected token, attempting refresh');
             trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'recovery' } });
-            const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-            if (refreshError || !refreshData.session) {
+            const refreshResult = await withTimeout(
+              supabase.auth.refreshSession(),
+              8000,
+              'auth_init_refresh_session'
+            );
+            const refreshData = refreshResult?.data ?? null;
+            const refreshError = refreshResult?.error ?? null;
+            if (!refreshResult || refreshError || !refreshData?.session) {
               if (__DEV__) console.log('[Auth] session restore: refresh also failed, clearing');
               trackEvent({
                 name: 'session_refresh_failed',

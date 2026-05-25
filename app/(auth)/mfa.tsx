@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -40,6 +40,7 @@ export default function MfaScreen() {
     verifyMfaEnrollment,
     refreshMfaStatus,
     clearMfaChallenge,
+    retryFetchUser,
     signOut,
   } = useAuth();
   const [mode, setMode] = useState<MfaMode>('loading');
@@ -50,6 +51,7 @@ export default function MfaScreen() {
   const [error, setError] = useState<string | null>(null);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const autoBootstrapKeyRef = useRef<string | null>(null);
 
   const returnToApp = useCallback(() => {
     router.replace((mfaReturnPath || '/') as never);
@@ -92,9 +94,12 @@ export default function MfaScreen() {
 
       const status = await refreshMfaStatus();
       const stillRequired = Boolean(status.required);
-      if (!stillRequired && !mfaRequired) {
-        returnToApp();
-        return;
+      if (!stillRequired) {
+        const profileLoaded = await retryFetchUser();
+        if (profileLoaded) {
+          returnToApp();
+          return;
+        }
       }
 
       if (status.enrollmentRequired) {
@@ -136,17 +141,20 @@ export default function MfaScreen() {
     isAuthenticated,
     listMfaFactors,
     mfaReason,
-    mfaRequired,
     refreshMfaStatus,
+    retryFetchUser,
     returnToApp,
     router,
     startEnrollment,
     startMfaChallenge,
   ]);
 
+  const bootstrapKey = `${isAuthenticated ? '1' : '0'}:${mfaRequired ? '1' : '0'}:${mfaReason ?? ''}`;
   useEffect(() => {
+    if (autoBootstrapKeyRef.current === bootstrapKey) return;
+    autoBootstrapKeyRef.current = bootstrapKey;
     bootstrapMfa().catch(() => {});
-  }, [bootstrapMfa]);
+  }, [bootstrapKey, bootstrapMfa]);
 
   const handleCodeChange = useCallback((value: string) => {
     setCode(value.replace(/\D/g, '').slice(0, 6));

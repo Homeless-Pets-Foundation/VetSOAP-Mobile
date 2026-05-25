@@ -23,13 +23,15 @@ export interface UseDeviceCapacityResult {
  * already faster than typical ground-truth.
  */
 export function useDeviceCapacity(): UseDeviceCapacityResult {
-  const { user } = useAuth();
+  const { user, deviceRegistrationBlock, deviceRegistrationPending } = useAuth();
   const isTabFocused = useIsFocused();
+  const canQueryDeviceSessions =
+    !!user && !deviceRegistrationBlock && !deviceRegistrationPending;
 
   const query = useQuery({
     queryKey: ['device-sessions'],
     queryFn: () => devicesApi.list(),
-    enabled: !!user,
+    enabled: canQueryDeviceSessions,
     refetchInterval: isTabFocused ? 60_000 : false,
     refetchOnWindowFocus: true,
     staleTime: 30_000,

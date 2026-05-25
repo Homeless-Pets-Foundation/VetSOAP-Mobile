@@ -66,6 +66,7 @@ function classifyAuthError(error: { name?: string; message?: string; status?: nu
  *               user-scoped storage.
  */
 type UserFetchState = 'idle' | 'loading' | 'success' | 'error';
+type FetchUserAttemptResult = 'loaded' | 'deferred';
 
 /**
  * Surfaced when POST /api/device-sessions/register returns 403
@@ -134,7 +135,7 @@ interface AuthContextType {
   isLoading: boolean;
   userFetchState: UserFetchState;
   userFetchError: string | null;
-  retryFetchUser: () => Promise<void>;
+  retryFetchUser: () => Promise<boolean>;
   signIn: (email: string, password: string) => Promise<AuthResult>;
   signInWithGoogle: () => Promise<AuthResult>;
   signInWithApple: () => Promise<AuthResult>;
@@ -183,7 +184,7 @@ export const AuthContext = createContext<AuthContextType>({
   isLoading: true,
   userFetchState: 'idle',
   userFetchError: null,
-  retryFetchUser: async () => {},
+  retryFetchUser: async () => false,
   signIn: async () => ({ error: null }),
   signInWithGoogle: async () => ({ error: null }),
   signInWithApple: async () => ({ error: null }),
@@ -389,11 +390,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
   const handleSignOutRef = useRef<() => Promise<void>>(async () => {});
-  // Single-flight guard for registerDevice. `fetchUser()` already calls
-  // registerDevice() internally, and session-restore / sign-in paths also fire
-  // it in parallel — without this guard both callers race to set the
-  // deviceRegistrationPending flag and the later resolution wins (possibly
-  // inverting the correct state).
+  // Single-flight guard for registerDevice. `fetchUser()` owns the normal
+  // sign-in/session-restore registration path, while API 428 handlers and the
+  // device-limit modal can still retry manually.
   const registerDeviceInFlightRef = useRef<Promise<boolean> | null>(null);
   // Distinguishes user-initiated sign-out from session expiry in onAuthStateChange.
   // When Supabase emits SIGNED_OUT due to a failed refresh, this flag is false —
@@ -566,7 +565,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [registerDevice]
   );
 
-  const fetchUser = useCallback(async () => {
+  const fetchUser = useCallback(async (): Promise<boolean> => {
     const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
     setUserFetchState('loading');
     setUserFetchError(null);
@@ -574,22 +573,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // One attempt: returns true on success. Throws on failure.
     // The 404 bootstrap path is self-contained: it either succeeds and returns
     // true, forces sign-out and returns true, or throws a retryable error.
-    const attempt = async (): Promise<boolean> => {
+    const attempt = async (): Promise<FetchUserAttemptResult> => {
       try {
         if (__DEV__) console.log('[Auth] fetchUser: requesting /auth/me');
         const body = await requestMe();
         if (__DEV__) console.log('[Auth] fetchUser: success, user:', body.user?.email ?? 'null');
-        // Register the device before setting user state so that React Query's
+        // Try to register before setting user state so React Query's
         // `enabled: !!user`-gated queries don't fire before the device has a
-        // session row. Server rejects /api/* calls from unregistered devices
-        // with 428 DEVICE_REGISTRATION_REQUIRED.
-        if (!(await registerDevice())) return true;
+        // session row. If registration fails without requiring MFA (device
+        // limit, offline, transient server error), still apply the profile so
+        // the device-registration recovery UI can render instead of leaving the
+        // app in a half-authenticated retry loop.
+        await registerDevice();
         applyFetchedUser(body.user ?? null);
-        return true;
+        return 'loaded';
       } catch (error) {
         if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
           handleMfaRequiredResponse(error.data as MfaStatusResponse | undefined);
-          return true;
+          return 'deferred';
         }
         // A brand-new Google/Apple user has no app User row yet — /auth/me
         // returns 404. Bootstrap via the idempotent /auth/register endpoint
@@ -601,9 +602,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const retryBody = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
-            if (!(await registerDevice())) return true;
+            await registerDevice();
             applyFetchedUser(retryBody.user ?? null);
-            return true;
+            return 'loaded';
           } catch (retryError) {
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync still missing user', retryError);
           }
@@ -613,14 +614,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await apiClient.post('/auth/register', {});
             const body = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
-            if (!(await registerDevice())) return true;
+            await registerDevice();
             applyFetchedUser(body.user ?? null);
-            return true;
+            return 'loaded';
           } catch (bootstrapError) {
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap failed', bootstrapError);
             setLogoutReason('session_expired');
             await handleSignOutRef.current();
-            return true;
+            return 'deferred';
           }
         }
         throw error;
@@ -635,12 +636,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let lastError: unknown;
     for (let attemptIdx = 0; attemptIdx <= delays.length; attemptIdx++) {
       try {
-        const ok = await attempt();
-        if (ok) {
+        const result = await attempt();
+        if (result === 'loaded') {
           setUserFetchState('success');
           setUserFetchError(null);
-          return;
+          return true;
         }
+        setUserFetchState('idle');
+        return false;
       } catch (error) {
         lastError = error;
         if (!isRetryableFetchUserError(error) || attemptIdx === delays.length) {
@@ -654,6 +657,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (__DEV__) console.log('[Auth] fetchUser: all attempts failed', lastError);
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
+    return false;
   }, [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
 
   const applyBearerMfaTokens = useCallback(async (tokens?: MfaApiResponse['tokens']) => {
@@ -804,10 +808,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     setMfaCurrentLevel(currentLevel);
     setMfaNextLevel(nextLevel);
-    setMfaRequired(required);
-    setMfaReason(status.reason ?? null);
+    if (required || user) {
+      setMfaRequired(required);
+      setMfaReason(status.reason ?? null);
+    }
     return status;
-  }, [mfaAuthRequest]);
+  }, [mfaAuthRequest, user]);
 
   const listMfaFactors = useCallback(async (): Promise<MfaFactor[]> => {
     const data = await mfaAuthRequest('/auth/mfa/factors', { includeRefreshToken: true });
@@ -901,8 +907,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setActiveMfaChallenge(null);
 
       if (data.user) {
-        if (!(await registerDevice())) return;
+        await registerDevice();
         applyFetchedUser(data.user);
+        setUserFetchState('success');
+        setUserFetchError(null);
         return;
       }
 
@@ -1140,7 +1148,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             sessionTimestampRef.current = Date.now();
             apiClient.setToken(refreshData.session.access_token);
             fetchUser().catch(() => {});
-            registerDevice().catch(() => {});
             return;
           }
 
@@ -1148,7 +1155,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           sessionTimestampRef.current = Date.now();
           apiClient.setToken(existingSession.access_token);
           fetchUser().catch(() => {});
-          registerDevice().catch(() => {});
         } else {
           setSession(existingSession);
         }
@@ -1398,9 +1404,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { error: 'Invalid email or password' };
     }
     if (__DEV__) console.log('[Auth] signIn: success');
-    registerDevice().catch(() => {});
     return { error: null };
-  }, [registerDevice]);
+  }, []);
 
   const signInWithGoogle = useCallback(async () => {
     if (__DEV__) console.log('[Auth] signInWithGoogle: attempting');
@@ -1408,7 +1413,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const result = await signInWithGoogleNative();
     if (!result.error && !result.cancelled) {
       if (__DEV__) console.log('[Auth] signInWithGoogle: success');
-      registerDevice().catch(() => {});
     } else if (result.error) {
       if (__DEV__) console.log('[Auth] signInWithGoogle: failed', result.error);
       trackEvent({
@@ -1417,7 +1421,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
     }
     return result;
-  }, [registerDevice]);
+  }, []);
 
   const signInWithApple = useCallback(async () => {
     if (__DEV__) console.log('[Auth] signInWithApple: attempting');
@@ -1425,7 +1429,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const result = await signInWithAppleNative();
     if (!result.error && !result.cancelled) {
       if (__DEV__) console.log('[Auth] signInWithApple: success');
-      registerDevice().catch(() => {});
     } else if (result.error) {
       if (__DEV__) console.log('[Auth] signInWithApple: failed', result.error);
       trackEvent({
@@ -1434,7 +1437,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
     }
     return result;
-  }, [registerDevice]);
+  }, []);
 
   handleSignOutRef.current = handleSignOut;
 

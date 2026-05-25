@@ -223,11 +223,18 @@ export default function RecordingDetailScreen() {
 
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
-    onSuccess: () => {
+    onSuccess: (updatedRecording) => {
+      if (id && updatedRecording?.id === id) {
+        queryClient.setQueryData(['recording', id], updatedRecording);
+        pollingStartedAtRef.current = null;
+      }
       queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
     },
     onError: (error: Error) => {
+      if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+        return;
+      }
       Alert.alert(
         'Retry Failed',
         error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'

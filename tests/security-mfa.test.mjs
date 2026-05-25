@@ -80,6 +80,62 @@ test('mobile exposes MFA auth route and protects app layout from half-auth timeo
   assert.match(authLayout, /<Stack\.Screen name="mfa"/);
   assert.match(appLayout, /mfaRequired/);
   assert.match(mfaScreen, /Verify your identity/);
+  assert.match(mfaScreen, /autoBootstrapKeyRef/);
+  assert.match(mfaScreen, /const bootstrapKey = `\$\{isAuthenticated \? '1' : '0'\}:\$\{mfaRequired \? '1' : '0'\}:\$\{mfaReason \?\? ''\}`/);
+  assert.match(mfaScreen, /if \(autoBootstrapKeyRef\.current === bootstrapKey\) return;/);
+  assert.match(mfaScreen, /const profileLoaded = await retryFetchUser\(\);[\s\S]*if \(profileLoaded\) \{[\s\S]*returnToApp\(\);/);
+});
+
+test('mobile auth provider does not mark MFA_REQUIRED as a loaded user profile', async () => {
+  const provider = await read('src/auth/AuthProvider.tsx');
+
+  assert.match(provider, /type FetchUserAttemptResult = 'loaded' \| 'deferred'/);
+  assert.match(provider, /retryFetchUser: \(\) => Promise<boolean>/);
+  assert.match(
+    provider,
+    /error instanceof ApiError && error\.code === 'MFA_REQUIRED'[\s\S]*return 'deferred';/
+  );
+  assert.match(provider, /if \(result === 'loaded'\) \{[\s\S]*setUserFetchState\('success'\)/);
+  assert.match(provider, /return true;/);
+  assert.match(provider, /setUserFetchState\('idle'\);\s*return false;/);
+});
+
+test('mobile auth provider applies profile when device registration needs recovery UI', async () => {
+  const provider = await read('src/auth/AuthProvider.tsx');
+  const mfaScreen = await read('app/(auth)/mfa.tsx');
+  const deviceCapacity = await read('src/hooks/useDeviceCapacity.ts');
+
+  assert.match(
+    provider,
+    /await registerDevice\(\);\s*applyFetchedUser\(body\.user \?\? null\);\s*return 'loaded';/
+  );
+  assert.match(
+    provider,
+    /await registerDevice\(\);\s*applyFetchedUser\(data\.user\);\s*setUserFetchState\('success'\);/
+  );
+  assert.doesNotMatch(provider, /if \(!\(await registerDevice\(\)\)\) return 'deferred';/);
+  assert.doesNotMatch(provider, /if \(!\(await registerDevice\(\)\)\) return;/);
+  assert.match(provider, /if \(required \|\| user\) \{[\s\S]*setMfaRequired\(required\);/);
+  assert.match(mfaScreen, /if \(!stillRequired\) \{[\s\S]*const profileLoaded = await retryFetchUser\(\);/);
+  assert.match(deviceCapacity, /deviceRegistrationBlock/);
+  assert.match(deviceCapacity, /deviceRegistrationPending/);
+  assert.match(
+    deviceCapacity,
+    /enabled: canQueryDeviceSessions/
+  );
+});
+
+test('recording retry keeps detail data visible and lets MFA redirect own MFA errors', async () => {
+  const detailScreen = await read('app/(app)/(tabs)/recordings/[id].tsx');
+
+  assert.match(
+    detailScreen,
+    /onSuccess: \(updatedRecording\) => \{[\s\S]*queryClient\.setQueryData\(\['recording', id\], updatedRecording\)/
+  );
+  assert.match(
+    detailScreen,
+    /if \(error instanceof ApiError && error\.code === 'MFA_REQUIRED'\) \{\s*return;\s*\}/
+  );
 });
 
 test('mobile MFA enrollment handles required setup approval codes', async () => {

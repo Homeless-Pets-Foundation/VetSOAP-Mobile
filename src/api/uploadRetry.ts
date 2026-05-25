@@ -69,13 +69,23 @@ export function getUploadHttpStatus(error: unknown): number | undefined {
  * fresh socket. Mirrors the rule-27 single-retry pattern used for `signIn`
  * against AuthRetryableFetchError.
  *
+ * A third fingerprint (Teat2 incident, 2026-05-25): okhttp's
+ * SocketTimeoutException when the upload PUT stalls mid-body. expo-file-system
+ * surfaces it as an Error whose literal message is the single word "timeout"
+ * (client_telemetry phase=r2_put, message="timeout", okhttp 4.12.0). This is a
+ * transport-level socket death like the others and succeeds on a fresh socket,
+ * so it must auto-retry. Matched via `\btimeout\b` / `SocketTimeout` — NOT the
+ * two-word "timed out", which is the 10-minute withTimeout hard-cap message and
+ * deliberately fails fast instead of retrying up to 3 × 10 min.
+ *
  * Match list intentionally narrow: only signatures that come from the
- * expo-file-system native layer, Android's DNS resolver, or Hermes' fetch
- * when the *socket* dies. HTTP-level errors (non-2xx responses) are caught
- * further out by the status-range check and must NOT match here — those are
- * not transient and are routed through isStalePresignError instead.
+ * expo-file-system native layer, Android's DNS resolver, okhttp's socket
+ * timeout, or Hermes' fetch when the *socket* dies. HTTP-level errors (non-2xx
+ * responses) are caught further out by the status-range check and must NOT
+ * match here — those are not transient and are routed through
+ * isStalePresignError instead.
  */
-const TRANSIENT_R2_ERROR_RE = /Failed to connect|Network request failed|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|Unable to resolve host|No address associated with hostname/i;
+const TRANSIENT_R2_ERROR_RE = /Failed to connect|Network request failed|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|Unable to resolve host|No address associated with hostname|SocketTimeout|\btimeout\b/i;
 
 export function isTransientUploadError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;

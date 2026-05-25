@@ -70,6 +70,16 @@ test('isTransientUploadError matches every fingerprint we have in production', a
   assert.equal(isTransientUploadError(new Error('EHOSTUNREACH')), true);
   assert.equal(isTransientUploadError(new Error('ENETUNREACH')), true);
   assert.equal(isTransientUploadError(new Error('EAI_AGAIN dns lookup failed')), true);
+  // Android okhttp SocketTimeoutException — expo-file-system upload stalled
+  // mid-body and the socket read/write timed out. The literal message okhttp
+  // surfaces is the single word "timeout" (Teat2 incident 2026-05-25:
+  // client_telemetry phase=r2_put, message="timeout", okhttp 4.12.0). Before
+  // this fingerprint was added the timeout was classified non-transient, so
+  // uploadOnceWithRetry threw on the first attempt with no auto-retry and the
+  // user had to manually resubmit twice before a fresh socket succeeded.
+  assert.equal(isTransientUploadError(new Error('timeout')), true);
+  assert.equal(isTransientUploadError(new Error('java.net.SocketTimeoutException: timeout')), true);
+  assert.equal(isTransientUploadError(new Error('SocketTimeoutException')), true);
 });
 
 test('isTransientUploadError refuses HTTP-status messages (those route through isStalePresignError)', async () => {
@@ -77,6 +87,11 @@ test('isTransientUploadError refuses HTTP-status messages (those route through i
 
   assert.equal(isTransientUploadError(new Error('Upload to storage failed (HTTP 403). Please try again.')), false);
   assert.equal(isTransientUploadError(new Error('Upload to storage failed (HTTP 500). Please try again.')), false);
+  // The 10-minute withTimeout hard-cap ("Upload timed out…") is deliberately
+  // NOT transient: a genuinely 10-min-stalled upload should fail fast, not
+  // auto-retry up to 3 × 10 min. "timed out" (two words) must stay outside the
+  // \btimeout\b socket-timeout fingerprint added above.
+  assert.equal(isTransientUploadError(new Error('Upload timed out. Please check your connection and try again.')), false);
   // Non-Error inputs are silently rejected — the retry loop expects Errors only.
   assert.equal(isTransientUploadError('Failed to connect'), false);
   assert.equal(isTransientUploadError(null), false);

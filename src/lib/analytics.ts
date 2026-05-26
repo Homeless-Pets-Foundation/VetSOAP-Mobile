@@ -74,6 +74,10 @@ export type AnalyticsEvent =
   | { name: 'recording_resumed'; props: { slot_index: number } }
   | { name: 'recording_finished'; props: { slot_index: number; duration_s: number; segment_count: number } }
   | { name: 'recording_discarded'; props: { slot_index: number } }
+  | { name: 'recording_checkpoint_requested'; props: { reason: RecordingCheckpointReason; slot_index: number; segment_count: number; duration_s: number } }
+  | { name: 'recording_checkpoint_saved'; props: { reason: RecordingCheckpointReason; slot_index: number; segment_count: number; duration_s: number } }
+  | { name: 'recording_checkpoint_restart_failed'; props: { reason: RecordingCheckpointReason; slot_index: number; segment_count: number; duration_s: number } }
+  | { name: 'recording_background_flush_requested'; props: { slot_index: number; segment_count: number; duration_s: number } }
   | { name: 'template_selected'; props: { template_kind: string } }
   | { name: 'audio_quality_measured'; props: { slot_index: number; duration_s: number; size_bytes: number; kbps_estimated: number; segment_count: number } }
   | { name: 'audio_bitrate_anomaly'; props: { slot_index: number; duration_s: number; size_bytes: number; kbps_estimated: number; expected_min: number; expected_max: number } }
@@ -121,6 +125,8 @@ export type RefreshTrigger = 'recovery' | 'foreground' | 'on_auth_state' | 'devi
 export type FailureReason = 'secure_store' | 'fs' | 'quota' | 'network' | 'other';
 
 export type AutoStashReason = 'r2_put_dead_network' | 'create_draft_dead_network';
+
+export type RecordingCheckpointReason = 'interval' | 'background_transition';
 
 export type SilenceCheckInconclusiveReason = 'missing_metering_long_recording' | 'ffmpeg_timeout' | 'ffmpeg_error';
 

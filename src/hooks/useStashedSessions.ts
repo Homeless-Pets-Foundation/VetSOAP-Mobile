@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { draftStorage } from '../lib/draftStorage';
+import { recoveryIntent } from '../lib/recoveryIntent';
 import { safeDeleteFile } from '../lib/fileOps';
 import { getSecureRandomHex } from '../lib/random';
 import type { StashedSession } from '../types/stash';
@@ -225,6 +226,7 @@ export function useStashedSessions(userId: string | null) {
         for (const slot of slotsToStash) {
           if (slot.draftSlotId) {
             await draftStorage.deleteDraft(slot.draftSlotId).catch(() => {});
+            await recoveryIntent.clearForDraftSlot(slot.draftSlotId).catch(() => {});
           }
         }
 

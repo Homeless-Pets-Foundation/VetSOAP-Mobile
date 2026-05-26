@@ -8,15 +8,28 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
-test('draftStorage avoids self-copying durable draft segments and uses temp-copy replacement', async () => {
+test('draftStorage avoids self-copying durable draft segments and falls back to legacy copy/move', async () => {
   const src = await read('src/lib/draftStorage.ts');
 
   assert.match(src, /function sameFileUri\(a: string, b: string\): boolean/);
-  assert.match(src, /function copyFileReplacing\(sourceUri: string, destUri: string\): boolean/);
+  assert.match(src, /copyAsync as legacyCopyAsync/);
+  assert.match(src, /moveAsync as legacyMoveAsync/);
+  assert.match(src, /async function copyFileReplacing\(sourceUri: string, destUri: string\): Promise<boolean>/);
   assert.match(src, /if \(sameFileUri\(segment\.uri, destUri\)\)/);
   assert.match(src, /const tempUri = `\$\{destUri\}\.tmp-\$\{Date\.now\(\)\}`/);
   assert.match(src, /new ExpoFile\(sourceUri\)\.copy\(new ExpoFile\(tempUri\)\)/);
+  assert.match(src, /await legacyCopyAsync\(\{ from: sourceUri, to: tempUri \}\)/);
   assert.match(src, /new ExpoFile\(tempUri\)\.move\(new ExpoFile\(destUri\)\)/);
+  assert.match(src, /await legacyMoveAsync\(\{ from: tempUri, to: destUri \}\)/);
+  assert.match(src, /await copyFileReplacing\(segment\.uri, destUri\)/);
+});
+
+test('draft orphan sweep stays out of Sentry warnings after successful cleanup', async () => {
+  const src = await read('src/lib/draftStorage.ts');
+
+  assert.match(src, /emitDraftOrphanSweep\(found, cleaned\)/);
+  assert.match(src, /draftBreadcrumb\('orphan_sweep_deleted', \{ found, cleaned \}\)/);
+  assert.doesNotMatch(src, /draftCaptureWarning\('draft_orphan_sweep_deleted'/);
 });
 
 test('production API URL ignores missing or Railway fallback env values', async () => {

@@ -17,6 +17,7 @@ import { Button } from '../../../../src/components/ui/Button';
 import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
+import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { fileExists } from '../../../../src/lib/fileOps';
 import { PROCESSING_STEP_LABELS } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
@@ -299,6 +300,7 @@ export default function RecordingDetailScreen() {
       // "Not Submitted" card won't resurrect on next focus.
       if (draftLocalSlotId) {
         await draftStorage.deleteDraft(draftLocalSlotId).catch(() => {});
+        await recoveryIntent.clearForDraftSlot(draftLocalSlotId).catch(() => {});
       }
     },
     onSuccess: () => {

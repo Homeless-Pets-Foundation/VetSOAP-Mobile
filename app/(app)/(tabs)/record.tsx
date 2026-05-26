@@ -13,6 +13,7 @@ import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import { OVERSIZED_CONFIRM_COPY, SILENT_CHECK_COPY } from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
+import { recoveryIntent, type RecoveryIntentReason } from '../../../src/lib/recoveryIntent';
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
@@ -137,6 +138,12 @@ function isNetworkRequestFailed(error: unknown): boolean {
 const SILENT_METERING_THRESHOLD_DB = -35;
 const SHORT_AUDIO_FFMPEG_SILENCE_SECONDS = 15;
 const MISSING_METERING_FFMPEG_MAX_SECONDS = 180;
+const RECORDING_CHECKPOINT_MS = 5 * 60 * 1000;
+const CHECKPOINT_RESTART_DELAY_MS = 250;
+const BACKGROUND_FLUSH_MIN_MS = 30_000;
+const RECORDING_KEEP_AWAKE_TAG = 'captivet-recording';
+
+type RecordingCheckpointReason = 'interval' | 'background_transition';
 
 type SilenceCheckReason =
   | 'metering_all_below_threshold'
@@ -328,6 +335,7 @@ function RecordingSession() {
   /** Delete only the local auto-saved draft metadata/audio for a slot. */
   const deleteLocalSlotDraft = useCallback((slot: PatientSlot) => {
     draftStorage.deleteDraft(slot.id).catch(() => {});
+    recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
   }, []);
 
   /**
@@ -423,6 +431,8 @@ function RecordingSession() {
   const pendingStashRef = useRef(false);
   // Track pending draft for "stop recorder then auto-save draft" flow
   const pendingDraftSlotIdRef = useRef<string | null>(null);
+  const pendingDraftMinSegmentCountRef = useRef<number>(0);
+  const pendingDraftRecoveryReasonRef = useRef<Map<string, RecoveryIntentReason>>(new Map());
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
   // Single-flight guard for startRecordingForSlot. Prevents a second concurrent
@@ -463,6 +473,46 @@ function RecordingSession() {
   const pendingDraftTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // Suppress the next stopped-audio capture when the current segment is being discarded.
   const skipNextAudioCaptureRef = useRef(false);
+  const checkpointTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const checkpointInFlightRef = useRef(false);
+  const checkpointRestartSlotIdRef = useRef<string | null>(null);
+  const checkpointReasonRef = useRef<RecordingCheckpointReason | null>(null);
+  const recordingSegmentStartedAtMsRef = useRef<number | null>(null);
+  const checkpointPendingResumeRef = useRef<{ slotId: string } | null>(null);
+  const checkpointRestartFailureContextRef = useRef<{
+    slotId: string;
+    reason: RecordingCheckpointReason;
+    slotIndex: number;
+    segmentCount: number;
+    durationSeconds: number;
+  } | null>(null);
+  const [checkpointPendingResume, setCheckpointPendingResume] = useState<{ slotId: string } | null>(null);
+
+  const clearCheckpointTimer = useCallback(() => {
+    if (checkpointTimerRef.current) {
+      clearTimeout(checkpointTimerRef.current);
+      checkpointTimerRef.current = null;
+    }
+  }, []);
+
+  const setPendingCheckpointResume = useCallback((value: { slotId: string } | null) => {
+    checkpointPendingResumeRef.current = value;
+    setCheckpointPendingResume(value);
+  }, []);
+
+  const resetCheckpointRefs = useCallback(() => {
+    checkpointInFlightRef.current = false;
+    checkpointRestartSlotIdRef.current = null;
+    checkpointReasonRef.current = null;
+  }, []);
+  const recorderStateRef = useRef(recorder.state);
+  recorderStateRef.current = recorder.state;
+  const recorderStopRef = useRef(recorder.stop);
+  recorderStopRef.current = recorder.stop;
+  const recorderSnapshotRef = useRef(recorder.getPersistableSnapshot);
+  recorderSnapshotRef.current = recorder.getPersistableSnapshot;
+  const recorderResetWithoutDeleteRef = useRef(recorder.resetWithoutDelete);
+  recorderResetWithoutDeleteRef.current = recorder.resetWithoutDelete;
 
   const cancelScheduledDraft = useCallback((slotId: string) => {
     const timer = pendingDraftTimersRef.current.get(slotId);
@@ -509,6 +559,141 @@ function RecordingSession() {
     []
   );
 
+  const requestRecordingCheckpoint = useCallback(
+    (reason: RecordingCheckpointReason): boolean => {
+      if (checkpointInFlightRef.current) return false;
+      if (pendingStashRef.current || skipNextAudioCaptureRef.current) return false;
+      if (pendingStartSlotQueueRef.current.length > 0 || isSubmittingAll || submittingSlotId) return false;
+      if (recorderStateRef.current !== 'recording') return false;
+
+      const slotId = sessionRef.current.recorderBoundToSlotId;
+      if (!slotId) return false;
+      const slotIndex = sessionRef.current.slots.findIndex((slot) => slot.id === slotId);
+      const slot = sessionRef.current.slots[slotIndex];
+      if (!slot || slot.uploadStatus === 'uploading' || slot.uploadStatus === 'success') return false;
+
+      const currentSegmentAgeMs = Date.now() - (recordingSegmentStartedAtMsRef.current ?? Date.now());
+      if (reason === 'background_transition' && currentSegmentAgeMs < BACKGROUND_FLUSH_MIN_MS) {
+        return false;
+      }
+
+      clearCheckpointTimer();
+      checkpointInFlightRef.current = true;
+      checkpointRestartSlotIdRef.current = slotId;
+      checkpointReasonRef.current = reason;
+
+      const durationSeconds = Math.round(
+        slot.segments.reduce((sum, segment) => sum + (segment.duration ?? 0), 0) +
+          Math.max(0, currentSegmentAgeMs / 1000)
+      );
+      const segmentCount = slot.segments.length + 1;
+
+      if (reason === 'background_transition') {
+        trackEvent({
+          name: 'recording_background_flush_requested',
+          props: {
+            slot_index: slotIndex,
+            segment_count: segmentCount,
+            duration_s: durationSeconds,
+          },
+        });
+      }
+      trackEvent({
+        name: 'recording_checkpoint_requested',
+        props: {
+          reason,
+          slot_index: slotIndex,
+          segment_count: segmentCount,
+          duration_s: durationSeconds,
+        },
+      });
+      breadcrumb('record', 'checkpoint_requested', {
+        reason,
+        slot_index: slotIndex,
+        segment_count: segmentCount,
+        duration_s: durationSeconds,
+      });
+
+      const commitCheckpointSnapshot = () => {
+        if (reason !== 'background_transition') return;
+        if (audioCaptureDoneRef.current) return;
+        if (
+          checkpointRestartSlotIdRef.current !== slotId ||
+          checkpointReasonRef.current !== reason
+        ) {
+          return;
+        }
+
+        const snapshot = recorderSnapshotRef.current();
+        if (!snapshot.audioUri) {
+          resetCheckpointRefs();
+          captureException(new Error('Background checkpoint stop produced no audio URI'), {
+            tags: { phase: 'recording_checkpoint_capture', reason },
+            extra: {
+              slot_index: slotIndex,
+              segment_count: segmentCount,
+              duration_s: durationSeconds,
+            },
+          });
+          return;
+        }
+
+        const persistedSlot = buildPersistedSlot(slotId, snapshot);
+        if (!persistedSlot) return;
+
+        audioCaptureDoneRef.current = true;
+        saveAudio(slotId, snapshot.audioUri, snapshot.duration, snapshot.maxMetering);
+        pendingDraftSlotIdRef.current = slotId;
+        pendingDraftMinSegmentCountRef.current = persistedSlot.segments.length;
+        pendingDraftRecoveryReasonRef.current.set(slotId, 'background_flush');
+        recordingSegmentStartedAtMsRef.current = null;
+
+        trackEvent({
+          name: 'recording_checkpoint_saved',
+          props: {
+            reason,
+            slot_index: slotIndex,
+            segment_count: persistedSlot.segments.length,
+            duration_s: Math.round(persistedSlot.audioDuration),
+          },
+        });
+        breadcrumb('record', 'checkpoint_saved_direct', {
+          reason,
+          slot_index: slotIndex,
+          segment_count: persistedSlot.segments.length,
+          duration_s: Math.round(persistedSlot.audioDuration),
+        });
+
+        recorderResetWithoutDeleteRef.current();
+        setPendingCheckpointResume({ slotId });
+        resetCheckpointRefs();
+      };
+
+      recorderStopRef.current().then(commitCheckpointSnapshot).catch((error) => {
+        resetCheckpointRefs();
+        captureException(error, {
+          tags: { phase: 'recording_checkpoint_stop', reason },
+          extra: {
+            slot_index: slotIndex,
+            segment_count: segmentCount,
+            duration_s: durationSeconds,
+          },
+        });
+      });
+
+      return true;
+    },
+    [
+      clearCheckpointTimer,
+      buildPersistedSlot,
+      isSubmittingAll,
+      resetCheckpointRefs,
+      saveAudio,
+      setPendingCheckpointResume,
+      submittingSlotId,
+    ]
+  );
+
   // Clear any pending debounce timers on unmount so they don't fire against a
   // dead component (and because the user navigating away from Record = intent
   // to keep the session as a local-only draft, not push a server row).
@@ -517,8 +702,10 @@ function RecordingSession() {
     return () => {
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
+      clearCheckpointTimer();
+      deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
     };
-  }, []);
+  }, [clearCheckpointTimer]);
 
   // Auto-select default template for first slot once templates load
   useEffect(() => {
@@ -560,13 +747,62 @@ function RecordingSession() {
         snapshot.duration,
         snapshot.maxMetering
       );
+      const checkpointReason = checkpointRestartSlotIdRef.current === slotId
+        ? checkpointReasonRef.current
+        : null;
       pendingDraftSlotIdRef.current = persistedSlot ? slotId : null;
+      pendingDraftMinSegmentCountRef.current = persistedSlot?.segments.length ?? 0;
+      if (checkpointReason) {
+        pendingDraftRecoveryReasonRef.current.set(
+          slotId,
+          checkpointReason === 'background_transition' ? 'background_flush' : 'checkpoint'
+        );
+      } else if (persistedSlot) {
+        pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
+      }
+      recordingSegmentStartedAtMsRef.current = null;
 
       // If there's a pending stash, just reset the recorder here.
       // Don't call executeStash() yet — saveAudio dispatch hasn't been processed,
       // so `session` still has 0 segments. A separate effect fires executeStash
       // on the next render after SAVE_AUDIO updates the session state.
-      if (pendingStashRef.current) {
+      if (checkpointReason && persistedSlot) {
+        const slotIndex = sessionRef.current.slots.findIndex((slot) => slot.id === slotId);
+        const durationSeconds = Math.round(persistedSlot.audioDuration);
+        const segmentCount = persistedSlot.segments.length;
+        trackEvent({
+          name: 'recording_checkpoint_saved',
+          props: {
+            reason: checkpointReason,
+            slot_index: slotIndex,
+            segment_count: segmentCount,
+            duration_s: durationSeconds,
+          },
+        });
+        breadcrumb('record', 'checkpoint_saved', {
+          reason: checkpointReason,
+          slot_index: slotIndex,
+          segment_count: segmentCount,
+          duration_s: durationSeconds,
+        });
+        recorder.resetWithoutDelete();
+        if (checkpointReason === 'background_transition' && appStateRef.current !== 'active') {
+          setPendingCheckpointResume({ slotId });
+          resetCheckpointRefs();
+        } else {
+          checkpointRestartFailureContextRef.current = {
+            slotId,
+            reason: checkpointReason,
+            slotIndex,
+            segmentCount,
+            durationSeconds,
+          };
+          timerId = setTimeout(() => {
+            startRecordingRef.current(slotId);
+            resetCheckpointRefs();
+          }, CHECKPOINT_RESTART_DELAY_MS);
+        }
+      } else if (pendingStashRef.current) {
         recorder.resetWithoutDelete();
       } else if (pendingStartSlotQueueRef.current.length > 0) {
         // Pop the head of the queue. Subsequent queued slots will be drained
@@ -583,14 +819,25 @@ function RecordingSession() {
       // Null audioUri — native pause/stop both failed. Clean up the dead binding.
       audioCaptureDoneRef.current = true;
       const boundSlotId = session.recorderBoundToSlotId;
+      const checkpointReason = checkpointRestartSlotIdRef.current === boundSlotId
+        ? checkpointReasonRef.current
+        : null;
       const boundSlot = session.slots.find((s) => s.id === boundSlotId);
       unbindRecorder();
+      resetCheckpointRefs();
+      recordingSegmentStartedAtMsRef.current = null;
 
       if (boundSlot) {
         setAudioState(boundSlotId, boundSlot.segments.length > 0 ? 'stopped' : 'idle');
       }
 
-      if (pendingStashRef.current) {
+      if (checkpointReason) {
+        recorder.reset();
+        captureException(new Error('Checkpoint stop produced no audio URI'), {
+          tags: { phase: 'recording_checkpoint_capture', reason: checkpointReason },
+          extra: { slot_id: boundSlotId },
+        });
+      } else if (pendingStashRef.current) {
         // Native recorder failed to produce audio. The deferred stash effect will
         // still fire (unbindRecorder makes recorderBoundToSlotId null). It will stash
         // any previously-saved segments, but this recording is lost.
@@ -741,6 +988,39 @@ function RecordingSession() {
       audioFocus.stopMonitoring().catch(() => {});
     }
   }, [recorder.state, interruptionPendingResume]);
+
+  useEffect(() => {
+    clearCheckpointTimer();
+    if (recorder.state !== 'recording' || !session.recorderBoundToSlotId) return;
+    if (checkpointInFlightRef.current) return;
+
+    checkpointTimerRef.current = setTimeout(() => {
+      requestRecordingCheckpoint('interval');
+    }, RECORDING_CHECKPOINT_MS);
+
+    return clearCheckpointTimer;
+  }, [
+    clearCheckpointTimer,
+    recorder.state,
+    requestRecordingCheckpoint,
+    session.recorderBoundToSlotId,
+  ]);
+
+  useEffect(() => {
+    const shouldStayAwake =
+      recorder.state === 'recording' ||
+      !!checkpointPendingResume ||
+      !!checkpointRestartSlotIdRef.current;
+    if (!shouldStayAwake) {
+      deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+      return;
+    }
+
+    activateKeepAwakeAsync(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+    return () => {
+      deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+    };
+  }, [checkpointPendingResume, recorder.state]);
 
   const persistSessionDraftsForBackground = useCallback(async () => {
     if (backgroundPersistingRef.current) return;
@@ -977,17 +1257,49 @@ function RecordingSession() {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
           bindRecorder(slotId);
           await recorder.start();
+          recordingSegmentStartedAtMsRef.current = Date.now();
           setAudioState(slotId, 'recording');
         } catch (error) {
           unbindRecorder();
+          const restartContext =
+            checkpointRestartFailureContextRef.current?.slotId === slotId
+              ? checkpointRestartFailureContextRef.current
+              : null;
+          if (restartContext) {
+            trackEvent({
+              name: 'recording_checkpoint_restart_failed',
+              props: {
+                reason: restartContext.reason,
+                slot_index: restartContext.slotIndex,
+                segment_count: restartContext.segmentCount,
+                duration_s: restartContext.durationSeconds,
+              },
+            });
+            captureException(error, {
+              tags: {
+                phase: 'recording_checkpoint_restart',
+                reason: restartContext.reason,
+              },
+              extra: {
+                slot_index: restartContext.slotIndex,
+                segment_count: restartContext.segmentCount,
+                duration_s: restartContext.durationSeconds,
+              },
+            });
+          }
           const errMsg = error instanceof Error ? error.message.toLowerCase() : '';
-          const msg = errMsg.includes('permission')
+          const msg = restartContext
+            ? 'The last recording segment was saved, but recording could not auto-resume. Tap Continue Recording to add another segment.'
+            : errMsg.includes('permission')
             ? 'Microphone permission is required. Please grant access in Settings.'
             : errMsg.includes('not ready')
               ? 'The recorder is still finishing a previous recording. Please try again in a moment.'
               : 'Could not start recording. Please check that your device has a microphone and it is not in use by another app.';
           Alert.alert('Recording Error', msg);
         } finally {
+          if (checkpointRestartFailureContextRef.current?.slotId === slotId) {
+            checkpointRestartFailureContextRef.current = null;
+          }
           startInFlightRef.current = false;
         }
       })().catch(() => {
@@ -1026,6 +1338,7 @@ function RecordingSession() {
         try {
           Haptics.selectionAsync().catch(() => {});
           await recorder.resume();
+          recordingSegmentStartedAtMsRef.current ??= Date.now();
           setAudioState(slotId, 'recording');
         } catch {
           // resume() rethrows after internal cleanup (stops recorder, sets state to 'stopped').
@@ -1479,6 +1792,7 @@ function RecordingSession() {
         if (splitTempDir) safeDeleteDirectory(splitTempDir);
         // Clean up local draft after successful upload
         draftStorage.deleteDraft(slot.id).catch(() => {});
+        recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
 
         const latencyMs = Date.now() - uploadStartedAt;
         trackEvent({
@@ -1625,6 +1939,7 @@ function RecordingSession() {
         if (!slot) return;
         if (completedUploadSlotIdsRef.current.has(slotId)) {
           draftStorage.deleteDraft(slotId).catch(() => {});
+          recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
           return;
         }
         if (!isConnected || submitIntentSlotIdsRef.current.has(slotId)) return;
@@ -1646,6 +1961,7 @@ function RecordingSession() {
 
           if (completedUploadSlotIdsRef.current.has(slotId)) {
             draftStorage.deleteDraft(slotId).catch(() => {});
+            recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
             return;
           }
           if (submitIntentSlotIdsRef.current.has(slotId)) return;
@@ -1660,6 +1976,7 @@ function RecordingSession() {
             deleteRecordingWithRetry(serverId).catch(() => {});
             if (completedUploadSlotIdsRef.current.has(slotId)) {
               draftStorage.deleteDraft(slotId).catch(() => {});
+              recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
             }
             return;
           }
@@ -1775,9 +2092,22 @@ function RecordingSession() {
           draftSlotId,
           serverDraftId: slot.serverDraftId ?? null,
         });
+        const recoveryReason =
+          pendingDraftRecoveryReasonRef.current.get(slot.id) ?? 'draft_finish';
+        pendingDraftRecoveryReasonRef.current.delete(slot.id);
+        if (recoveryReason === 'checkpoint' || recoveryReason === 'background_flush') {
+          await recoveryIntent.save({
+            userId: user?.id,
+            draftSlotId,
+            reason: recoveryReason,
+          });
+        } else {
+          await recoveryIntent.clearForDraftSlot(draftSlotId);
+        }
 
         if (completedUploadSlotIdsRef.current.has(slot.id)) {
           draftStorage.deleteDraft(slot.id).catch(() => {});
+          recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
           return;
         }
 
@@ -1803,7 +2133,7 @@ function RecordingSession() {
         if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
       }
     },
-    [dispatch, isConnected, scheduleDraftSync]
+    [dispatch, isConnected, scheduleDraftSync, user?.id]
   );
 
   autoSaveDraftRef.current = autoSaveDraft;
@@ -1817,6 +2147,7 @@ function RecordingSession() {
         previousState === 'active' &&
         (nextState === 'inactive' || nextState === 'background')
       ) {
+        requestRecordingCheckpoint('background_transition');
         persistSessionDraftsForBackground().catch(() => {});
       }
 
@@ -1843,24 +2174,48 @@ function RecordingSession() {
           }
         }, 500);
       }
+
+      if (
+        nextState === 'active' &&
+        previousState !== 'active' &&
+        checkpointPendingResumeRef.current
+      ) {
+        const resume = checkpointPendingResumeRef.current;
+        setPendingCheckpointResume(null);
+        checkpointRestartFailureContextRef.current = {
+          slotId: resume.slotId,
+          reason: 'background_transition',
+          slotIndex: sessionRef.current.slots.findIndex((slot) => slot.id === resume.slotId),
+          segmentCount:
+            sessionRef.current.slots.find((slot) => slot.id === resume.slotId)?.segments.length ?? 0,
+          durationSeconds: Math.round(
+            sessionRef.current.slots.find((slot) => slot.id === resume.slotId)?.audioDuration ?? 0
+          ),
+        };
+        setTimeout(() => {
+          startRecordingRef.current(resume.slotId);
+        }, 500);
+      }
     };
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => {
       subscription.remove();
     };
-  }, [persistSessionDraftsForBackground]);
+  }, [persistSessionDraftsForBackground, requestRecordingCheckpoint, setPendingCheckpointResume]);
 
   // Effect: auto-save draft after segment-affecting state updates have been
   // processed by React. The ref is set after audio capture and editor commits,
   // but the actual save is deferred until session.slots reflects the new
   // segment list.
   useEffect(() => {
-    if (pendingDraftSlotIdRef.current && !session.recorderBoundToSlotId) {
+    if (pendingDraftSlotIdRef.current) {
       const slotId = pendingDraftSlotIdRef.current;
-      pendingDraftSlotIdRef.current = null;
       const slot = session.slots.find((s) => s.id === slotId);
-      if (slot && slot.segments.length > 0) {
+      const minSegmentCount = pendingDraftMinSegmentCountRef.current;
+      if (slot && slot.segments.length > 0 && slot.segments.length >= minSegmentCount) {
+        pendingDraftSlotIdRef.current = null;
+        pendingDraftMinSegmentCountRef.current = 0;
         autoSaveDraft(slot).catch(() => {});
       }
     }
@@ -2238,6 +2593,7 @@ function RecordingSession() {
                       recordingsApi.delete(draft.serverDraftId).catch(() => {});
                     }
                     draftStorage.deleteDraft(slotId).catch(() => {});
+                    recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
                     resetSession();
                     // Navigate to clear the param so this effect doesn't re-fire
                     router.replace('/(tabs)/record' as any);
@@ -2497,6 +2853,8 @@ function RecordingSession() {
           // Re-persist the edited segment set so a restart can't reopen the
           // pre-edit draft audio.
           pendingDraftSlotIdRef.current = result.slotId;
+          pendingDraftMinSegmentCountRef.current = result.segments.length;
+          pendingDraftRecoveryReasonRef.current.set(result.slotId, 'draft_finish');
         }
       });
 
@@ -2668,6 +3026,19 @@ function RecordingSession() {
           <View className="w-2 h-2 rounded-full bg-orange-500 mr-3" />
           <Text className="text-body-sm font-semibold text-orange-800 flex-1">
             Recording paused for call — auto-resuming when you return.
+          </Text>
+        </View>
+      )}
+
+      {checkpointPendingResume && (
+        <View
+          className="mx-5 mb-2 px-3 py-3 bg-amber-100 border-2 border-amber-400 rounded-lg flex-row items-center"
+          accessibilityLiveRegion="polite"
+          accessibilityRole="alert"
+        >
+          <View className="w-2 h-2 rounded-full bg-amber-500 mr-3" />
+          <Text className="text-body-sm font-semibold text-amber-800 flex-1">
+            Recording saved while the app paused — auto-resuming when you return.
           </Text>
         </View>
       )}

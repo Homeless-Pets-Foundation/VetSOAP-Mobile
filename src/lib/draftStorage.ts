@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { File as ExpoFile, Paths } from 'expo-file-system';
+import { copyAsync as legacyCopyAsync, moveAsync as legacyMoveAsync } from 'expo-file-system/legacy';
 import {
   fileExists,
   safeDeleteFile,
@@ -201,15 +202,44 @@ function sameFileUri(a: string, b: string): boolean {
   return a === b || normalizeFileUriForCompare(a) === normalizeFileUriForCompare(b);
 }
 
-function copyFileReplacing(sourceUri: string, destUri: string): boolean {
+function conciseCopyError(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error ?? 'unknown'))
+    .replace(/file:\/\/\S+/g, '<path>')
+    .slice(0, 120);
+}
+
+async function copyFileReplacing(sourceUri: string, destUri: string): Promise<boolean> {
   const tempUri = `${destUri}.tmp-${Date.now()}`;
   safeDeleteFile(tempUri);
 
   try {
-    new ExpoFile(sourceUri).copy(new ExpoFile(tempUri));
+    try {
+      new ExpoFile(sourceUri).copy(new ExpoFile(tempUri));
+    } catch (primaryCopyError) {
+      try {
+        await legacyCopyAsync({ from: sourceUri, to: tempUri });
+      } catch (legacyCopyError) {
+        throw new Error(
+          `copy_failed:new_api=${conciseCopyError(primaryCopyError)};legacy=${conciseCopyError(legacyCopyError)}`
+        );
+      }
+    }
+
     if (!fileExists(tempUri)) return false;
     safeDeleteFile(destUri);
-    new ExpoFile(tempUri).move(new ExpoFile(destUri));
+
+    try {
+      new ExpoFile(tempUri).move(new ExpoFile(destUri));
+    } catch (primaryMoveError) {
+      try {
+        await legacyMoveAsync({ from: tempUri, to: destUri });
+      } catch (legacyMoveError) {
+        throw new Error(
+          `move_failed:new_api=${conciseCopyError(primaryMoveError)};legacy=${conciseCopyError(legacyMoveError)}`
+        );
+      }
+    }
+
     return fileExists(destUri);
   } finally {
     safeDeleteFile(tempUri);
@@ -491,7 +521,7 @@ export const draftStorage = {
             });
             continue;
           }
-          if (!copyFileReplacing(segment.uri, destUri)) {
+          if (!(await copyFileReplacing(segment.uri, destUri))) {
             failureReasons.push('dest_missing_after_copy');
             continue;
           }
@@ -813,13 +843,7 @@ export const draftStorage = {
       emitDraftOrphanSweep(found, cleaned);
     }
     if (cleaned > 0) {
-      // App just wiped local drafts on this device. Loud signal in Sentry so
-      // a hyperactive sweep (e.g. transient fileExists() false-negative under
-      // filesystem pressure) is visible without waiting for user reports.
-      draftCaptureWarning('draft_orphan_sweep_deleted', {
-        found,
-        cleaned,
-      });
+      draftBreadcrumb('orphan_sweep_deleted', { found, cleaned });
     }
     return cleaned;
   },

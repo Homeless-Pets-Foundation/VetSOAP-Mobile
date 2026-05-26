@@ -40,6 +40,8 @@ export default function MfaScreen() {
     verifyMfaEnrollment,
     refreshMfaStatus,
     clearMfaChallenge,
+    pendingRecoveryDraftSlotId,
+    consumePendingRecoveryDraftSlotId,
     retryFetchUser,
     signOut,
   } = useAuth();
@@ -54,8 +56,23 @@ export default function MfaScreen() {
   const autoBootstrapKeyRef = useRef<string | null>(null);
 
   const returnToApp = useCallback(() => {
+    if (pendingRecoveryDraftSlotId) {
+      const draftSlotId = consumePendingRecoveryDraftSlotId();
+      if (draftSlotId) {
+        router.replace({
+          pathname: '/(tabs)/record',
+          params: { draftSlotId },
+        } as never);
+        return;
+      }
+    }
     router.replace((mfaReturnPath || '/') as never);
-  }, [mfaReturnPath, router]);
+  }, [
+    consumePendingRecoveryDraftSlotId,
+    mfaReturnPath,
+    pendingRecoveryDraftSlotId,
+    router,
+  ]);
 
   const startEnrollment = useCallback(
     async (setupApprovalCode?: string) => {

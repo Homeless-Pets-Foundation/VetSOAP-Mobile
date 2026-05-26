@@ -23,6 +23,14 @@ import type { PendingConfirm } from '../types/multiPatient';
 import { trackEvent } from '../lib/analytics';
 import { breadcrumb } from '../lib/monitoring';
 import { waitForNetworkOnline } from '../lib/networkWait';
+import {
+  tagPhase,
+  phaseError,
+  isTransientUploadError,
+  isStalePresignError,
+  type TaggedError,
+  type UploadPhase,
+} from './uploadRetry';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
@@ -83,15 +91,6 @@ export {
   getUploadHttpStatus,
 } from './uploadRetry';
 export type { UploadPhase, TaggedError } from './uploadRetry';
-
-import {
-  tagPhase,
-  phaseError,
-  isTransientUploadError,
-  isStalePresignError,
-  type TaggedError,
-  type UploadPhase,
-} from './uploadRetry';
 
 function generateIdempotencyKey(): string {
   // expo-crypto → global crypto → Math.random (per CLAUDE.md rule 26: the

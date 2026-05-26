@@ -6,6 +6,7 @@ const KEYS = {
   REFRESH_TOKEN: 'captivet_refresh_token',
   SESSION: 'captivet_session',
   DEVICE_ID: 'captivet_device_id',
+  RECOVERY_INTENT: 'captivet_recovery_intent',
 } as const;
 
 /**
@@ -152,5 +153,36 @@ export const secureStorage = {
     try { await SecureStore.deleteItemAsync('vetsoap:refresh_token'); } catch { /* ignore */ }
     try { await SecureStore.deleteItemAsync('vetsoap:session'); } catch { /* ignore */ }
     try { await SecureStore.deleteItemAsync('vetsoap:biometric_enabled'); } catch { /* ignore */ }
+    try { await SecureStore.deleteItemAsync(KEYS.RECOVERY_INTENT); } catch { /* ignore */ }
+  },
+
+  async getRecoveryIntentRaw(): Promise<string | null> {
+    try {
+      return await SecureStore.getItemAsync(KEYS.RECOVERY_INTENT);
+    } catch (error) {
+      if (__DEV__) console.error('[SecureStorage] getRecoveryIntentRaw failed:', error);
+      reportSecureStoreFailure('getRecoveryIntentRaw', error);
+      return null;
+    }
+  },
+
+  async setRecoveryIntentRaw(value: string): Promise<void> {
+    try {
+      await SecureStore.setItemAsync(KEYS.RECOVERY_INTENT, value, {
+        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+      });
+    } catch (error) {
+      if (__DEV__) console.error('[SecureStorage] setRecoveryIntentRaw failed:', error);
+      reportSecureStoreFailure('setRecoveryIntentRaw', error);
+    }
+  },
+
+  async deleteRecoveryIntent(): Promise<void> {
+    try {
+      await SecureStore.deleteItemAsync(KEYS.RECOVERY_INTENT);
+    } catch (error) {
+      if (__DEV__) console.error('[SecureStorage] deleteRecoveryIntent failed:', error);
+      reportSecureStoreFailure('deleteRecoveryIntent', error);
+    }
   },
 };

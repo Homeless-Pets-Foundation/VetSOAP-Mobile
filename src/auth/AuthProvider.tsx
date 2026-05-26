@@ -24,6 +24,7 @@ import type { DeviceCapacity, DeviceSession } from '../api/devices';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { draftStorage } from '../lib/draftStorage';
+import { recoveryIntent } from '../lib/recoveryIntent';
 import { audioTempFiles } from '../lib/audioTempFiles';
 import { queryClient } from '../lib/queryClient';
 import { audioEditorBridge } from '../lib/audioEditorBridge';
@@ -67,6 +68,9 @@ function classifyAuthError(error: { name?: string; message?: string; status?: nu
  */
 type UserFetchState = 'idle' | 'loading' | 'success' | 'error';
 type FetchUserAttemptResult = 'loaded' | 'deferred';
+type LocalRecoveryState = 'idle' | 'scanning' | 'ready' | 'error';
+
+const LOCAL_RECOVERY_SCAN_TIMEOUT_MS = 5_000;
 
 /**
  * Surfaced when POST /api/device-sessions/register returns 403
@@ -135,6 +139,9 @@ interface AuthContextType {
   isLoading: boolean;
   userFetchState: UserFetchState;
   userFetchError: string | null;
+  localRecoveryState: LocalRecoveryState;
+  pendingRecoveryDraftSlotId: string | null;
+  consumePendingRecoveryDraftSlotId: () => string | null;
   retryFetchUser: () => Promise<boolean>;
   signIn: (email: string, password: string) => Promise<AuthResult>;
   signInWithGoogle: () => Promise<AuthResult>;
@@ -184,6 +191,9 @@ export const AuthContext = createContext<AuthContextType>({
   isLoading: true,
   userFetchState: 'idle',
   userFetchError: null,
+  localRecoveryState: 'idle',
+  pendingRecoveryDraftSlotId: null,
+  consumePendingRecoveryDraftSlotId: () => null,
   retryFetchUser: async () => false,
   signIn: async () => ({ error: null }),
   signInWithGoogle: async () => ({ error: null }),
@@ -372,6 +382,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [userFetchState, setUserFetchState] = useState<UserFetchState>('idle');
   const [userFetchError, setUserFetchError] = useState<string | null>(null);
+  const [localRecoveryState, setLocalRecoveryState] = useState<LocalRecoveryState>('idle');
+  const [pendingRecoveryDraftSlotId, setPendingRecoveryDraftSlotId] = useState<string | null>(null);
   const [deviceRegistrationBlock, setDeviceRegistrationBlock] =
     useState<DeviceRegistrationBlock | null>(null);
   const [deviceRegistrationPending, setDeviceRegistrationPending] = useState(false);
@@ -398,16 +410,94 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // When Supabase emits SIGNED_OUT due to a failed refresh, this flag is false —
   // allowing one recovery refresh attempt before clearing auth state.
   const userInitiatedSignOutRef = useRef<boolean>(false);
+  const pendingRecoveryDraftSlotIdRef = useRef<string | null>(null);
+  const localRecoveryScanIdRef = useRef(0);
+
+  const setRecoveryDraftSlotId = useCallback((slotId: string | null) => {
+    pendingRecoveryDraftSlotIdRef.current = slotId;
+    setPendingRecoveryDraftSlotId(slotId);
+  }, []);
+
+  const consumePendingRecoveryDraftSlotId = useCallback((): string | null => {
+    const slotId = pendingRecoveryDraftSlotIdRef.current;
+    if (slotId) {
+      setRecoveryDraftSlotId(null);
+    }
+    return slotId;
+  }, [setRecoveryDraftSlotId]);
+
+  const scanLocalRecoveryIntent = useCallback(
+    (userId: string) => {
+      const scanId = localRecoveryScanIdRef.current + 1;
+      localRecoveryScanIdRef.current = scanId;
+      setLocalRecoveryState('scanning');
+      setRecoveryDraftSlotId(null);
+      const timeout = setTimeout(() => {
+        if (localRecoveryScanIdRef.current !== scanId) return;
+        localRecoveryScanIdRef.current += 1;
+        setLocalRecoveryState('ready');
+        captureMessage('local_recovery_scan_watchdog_fired', 'warning', {
+          tags: { phase: 'local_recovery_scan' },
+          extra: { timeout_ms: LOCAL_RECOVERY_SCAN_TIMEOUT_MS },
+        });
+      }, LOCAL_RECOVERY_SCAN_TIMEOUT_MS);
+
+      (async () => {
+        try {
+          const intent = await recoveryIntent.getForUser(userId);
+          if (localRecoveryScanIdRef.current !== scanId) return;
+          if (!intent) {
+            setLocalRecoveryState('ready');
+            return;
+          }
+
+          const draft = await draftStorage.getDraft(intent.draftSlotId);
+          if (localRecoveryScanIdRef.current !== scanId) return;
+          if (draft && draft.segments.length > 0) {
+            setRecoveryDraftSlotId(intent.draftSlotId);
+            breadcrumb('auth', 'local_recovery_intent_ready', {
+              reason: intent.reason,
+              segment_count: draft.segments.length,
+              pending_sync: draft.pendingSync,
+            });
+          } else {
+            await recoveryIntent.clearForDraftSlot(intent.draftSlotId);
+            breadcrumb('auth', 'local_recovery_intent_stale', {
+              reason: intent.reason,
+            });
+          }
+          setLocalRecoveryState('ready');
+        } catch (error) {
+          if (localRecoveryScanIdRef.current !== scanId) return;
+          setLocalRecoveryState('error');
+          captureException(error, { tags: { phase: 'local_recovery_scan' } });
+        } finally {
+          clearTimeout(timeout);
+        }
+      })().catch(() => {
+        clearTimeout(timeout);
+        if (localRecoveryScanIdRef.current === scanId) {
+          setLocalRecoveryState('error');
+        }
+      });
+    },
+    [setRecoveryDraftSlotId]
+  );
 
   const applyFetchedUser = useCallback((fetchedUser: User | null) => {
-    setUser(fetchedUser);
+    if (!fetchedUser?.id) {
+      localRecoveryScanIdRef.current += 1;
+      setLocalRecoveryState('idle');
+      setRecoveryDraftSlotId(null);
+      setUser(fetchedUser);
+      return;
+    }
     if (fetchedUser) {
       setMfaRequired(false);
       setMfaReturnPath(null);
       setMfaReason(null);
       setActiveMfaChallenge(null);
     }
-    if (!fetchedUser?.id) return;
     const scopedUserId = fetchedUser.id;
     // Tag monitoring + analytics with the user id (no email / name / PHI).
     setMonitoringUser(scopedUserId, fetchedUser.organizationId);
@@ -418,6 +508,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setStashUserId(scopedUserId);
     draftStorage.setUserId(scopedUserId);
+    scanLocalRecoveryIntent(scopedUserId);
+    setUser(fetchedUser);
     // Now that user ID is set, safe to clean up orphaned stash data.
     // Must run AFTER setStashUserId or getStashedSessions returns []
     // and all stash audio dirs get deleted as "orphaned".
@@ -438,7 +530,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
     }).catch(() => {});
-  }, []);
+  }, [scanLocalRecoveryIntent, setRecoveryDraftSlotId]);
 
   const handleMfaRequiredResponse = useCallback(
     (data?: {
@@ -992,6 +1084,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
     setUserFetchState('idle');
     setUserFetchError(null);
+    localRecoveryScanIdRef.current += 1;
+    setLocalRecoveryState('idle');
+    setRecoveryDraftSlotId(null);
     setDeviceRegistrationBlock(null);
     setDeviceRegistrationPending(false);
     setIsPasswordRecovery(false);
@@ -1001,7 +1096,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMfaCurrentLevel('aal1');
     setMfaNextLevel('aal1');
     setActiveMfaChallenge(null);
-  }, []);
+  }, [setRecoveryDraftSlotId]);
 
   // Block screenshots / screen recording of PHI in production builds only.
   // Gated on extra.isProduction (set by APP_VARIANT=production in app.config.ts)
@@ -1264,6 +1359,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             clearTelemetryIdentity();
             setUser(null);
             setSession(null);
+            localRecoveryScanIdRef.current += 1;
+            setLocalRecoveryState('idle');
+            setRecoveryDraftSlotId(null);
             setDeviceRegistrationBlock(null);
             setDeviceRegistrationPending(false);
             setIsPasswordRecovery(false);
@@ -1285,7 +1383,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, [fetchUser, registerDevice]);
+  }, [fetchUser, registerDevice, setRecoveryDraftSlotId]);
 
   // Proactively refresh token when app returns from background.
   // Uses getSession() rather than the stale closure value of session?.expires_at
@@ -1458,6 +1556,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         userFetchState,
         userFetchError,
+        localRecoveryState,
+        pendingRecoveryDraftSlotId,
+        consumePendingRecoveryDraftSlotId,
         retryFetchUser: fetchUser,
         signIn,
         signInWithGoogle,

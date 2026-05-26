@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Redirect, Stack } from 'expo-router';
+import { Redirect, Stack, useRouter } from 'expo-router';
 import { useAuth } from '../../src/hooks/useAuth';
 import { View, Text, ActivityIndicator, Pressable } from 'react-native';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
@@ -9,6 +9,7 @@ import { breadcrumb } from '../../src/lib/monitoring';
 const HALF_AUTH_TIMEOUT_MS = 30_000;
 
 export default function AppLayout() {
+  const router = useRouter();
   const {
     isAuthenticated,
     isLoading,
@@ -18,6 +19,9 @@ export default function AppLayout() {
     retryFetchUser,
     signOut,
     mfaRequired,
+    localRecoveryState,
+    pendingRecoveryDraftSlotId,
+    consumePendingRecoveryDraftSlotId,
   } = useAuth();
   const [isRetrying, setIsRetrying] = useState(false);
 
@@ -54,6 +58,23 @@ export default function AppLayout() {
     return () => clearTimeout(t);
   }, [isHalfAuth, signOut]);
 
+  useEffect(() => {
+    if (!user || mfaRequired || localRecoveryState !== 'ready' || !pendingRecoveryDraftSlotId) return;
+    const draftSlotId = consumePendingRecoveryDraftSlotId();
+    if (!draftSlotId) return;
+    router.replace({
+      pathname: '/(tabs)/record',
+      params: { draftSlotId },
+    } as never);
+  }, [
+    consumePendingRecoveryDraftSlotId,
+    localRecoveryState,
+    mfaRequired,
+    pendingRecoveryDraftSlotId,
+    router,
+    user,
+  ]);
+
   if (__DEV__) console.log('[AppLayout] render: isLoading=', isLoading, 'isAuthenticated=', isAuthenticated);
 
   if (isLoading) {
@@ -79,6 +100,14 @@ export default function AppLayout() {
   // and a previous user's scope could otherwise leak across sign-out/sign-in
   // on a shared tablet. Also avoids gated queries firing with the wrong scope.
   if (!user && userFetchState !== 'error') {
+    return (
+      <View className="flex-1 justify-center items-center bg-stone-50">
+        <ActivityIndicator size="large" color="#0d8775" />
+      </View>
+    );
+  }
+
+  if (user && localRecoveryState === 'scanning') {
     return (
       <View className="flex-1 justify-center items-center bg-stone-50">
         <ActivityIndicator size="large" color="#0d8775" />

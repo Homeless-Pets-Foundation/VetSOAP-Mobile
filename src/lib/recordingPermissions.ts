@@ -1,5 +1,11 @@
 import type { Recording, User } from '../types';
 
+const RECORD_APPOINTMENT_ROLES = new Set(['owner', 'admin', 'veterinarian']);
+
+export const RECORD_APPOINTMENT_PERMISSION_TITLE = 'Recording Not Available';
+export const RECORD_APPOINTMENT_PERMISSION_MESSAGE =
+  'This account cannot record or submit appointments. If this tablet already has unsent recordings, do not sign out or clear app data. Ask an owner, administrator, or veterinarian to recover them on this tablet, or have this same account temporarily promoted before submitting.';
+
 export interface RecordingPermissions {
   canEdit: boolean;
   canDelete: boolean;
@@ -17,6 +23,10 @@ const NO_PERMISSIONS: RecordingPermissions = {
   canRetry: false,
   deleteBlockedReason: 'Sign in to delete recordings.',
 };
+
+export function canRecordAppointments(role: string | null | undefined): boolean {
+  return !!role && RECORD_APPOINTMENT_ROLES.has(role);
+}
 
 function deleteBlockedReason(
   user: Pick<User, 'id' | 'role'>,

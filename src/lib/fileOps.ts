@@ -61,3 +61,22 @@ export function ensureDirectory(uri: string): boolean {
     return false;
   }
 }
+
+/**
+ * Copy a file using the current expo-file-system File API. The underlying copy
+ * call is synchronous, so this wrapper yields before and after the native call
+ * to keep multi-file recovery flows from monopolizing one JS turn.
+ */
+export async function safeCopyFile(sourceUri: string, destUri: string): Promise<boolean> {
+  if (!fileExists(sourceUri)) return false;
+  safeDeleteFile(destUri);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  try {
+    new File(sourceUri).copy(new File(destUri));
+  } catch {
+    return false;
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return fileExists(destUri);
+}

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Redirect, Stack, useRouter } from 'expo-router';
 import { useAuth } from '../../src/hooks/useAuth';
-import { View, Text, ActivityIndicator, Pressable } from 'react-native';
+import { View, Text, ActivityIndicator, Pressable, Alert } from 'react-native';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
 import { DeviceRegistrationBanner } from '../../src/components/DeviceRegistrationBanner';
 import { breadcrumb } from '../../src/lib/monitoring';
@@ -24,9 +24,11 @@ export default function AppLayout() {
     consumePendingRecoveryDraftSlotId,
   } = useAuth();
   const [isRetrying, setIsRetrying] = useState(false);
+  const [halfAuthTimedOut, setHalfAuthTimedOut] = useState(false);
 
   const handleRetry = useCallback(() => {
     if (isRetrying) return;
+    setHalfAuthTimedOut(false);
     setIsRetrying(true);
     retryFetchUser()
       .catch(() => {
@@ -36,27 +38,44 @@ export default function AppLayout() {
       .finally(() => setIsRetrying(false));
   }, [isRetrying, retryFetchUser]);
 
-  const handleSignOut = useCallback(() => {
-    signOut().catch(() => {});
+  const performBestEffortSignOut = useCallback(() => {
+    signOut({ recoveryMode: 'best_effort' }).catch(() => {});
   }, [signOut]);
 
+  const handleSignOut = useCallback(() => {
+    if (isAuthenticated && !user) {
+      Alert.alert(
+        'Sign Out Without Profile?',
+        'Your account profile has not loaded, so the app cannot verify whether local support-staff recordings can be protected. Sign out only if you understand unsent local recordings may not be recoverable.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Sign Out', style: 'destructive', onPress: performBestEffortSignOut },
+        ]
+      );
+      return;
+    }
+    performBestEffortSignOut();
+  }, [isAuthenticated, performBestEffortSignOut, user]);
+
   // Half-auth fallback: when the layout is stuck on the spinner branch below
-  // (session present but /auth/me hasn't returned), force a sign-out after a
-  // grace period so the user reaches the login screen instead of an
-  // indefinite blank spinner. The two paths into this state are (a) a hard
-  // network outage during cold-start fetchUser, and (b) a hung native bridge
-  // call (SecureStore, registerDevice). Both leave isLoading=false but
-  // userFetchState='loading' or 'idle' with user=null.
+  // (session present but /auth/me hasn't returned), show an explicit recovery
+  // choice after a grace period. We avoid silently signing out because the app
+  // cannot know whether local support-staff recordings need preservation until
+  // the profile is loaded.
   const isHalfAuth = isAuthenticated && !mfaRequired && !user && userFetchState !== 'error';
   useEffect(() => {
-    if (!isHalfAuth) return;
+    if (!isHalfAuth) {
+      setHalfAuthTimedOut(false);
+      return;
+    }
+    if (halfAuthTimedOut) return;
     const t = setTimeout(() => {
-      if (__DEV__) console.warn('[AppLayout] half-auth spinner stuck >30s, forcing signOut');
+      if (__DEV__) console.warn('[AppLayout] half-auth spinner stuck >30s, showing recovery prompt');
       breadcrumb('auth', 'half_auth_timeout', {});
-      signOut().catch(() => {});
+      setHalfAuthTimedOut(true);
     }, HALF_AUTH_TIMEOUT_MS);
     return () => clearTimeout(t);
-  }, [isHalfAuth, signOut]);
+  }, [halfAuthTimedOut, isHalfAuth]);
 
   useEffect(() => {
     if (!user || mfaRequired || localRecoveryState !== 'ready' || !pendingRecoveryDraftSlotId) return;
@@ -99,6 +118,37 @@ export default function AppLayout() {
   // safely unconfigured — draftStorage/stashStorage both check currentUserId
   // and a previous user's scope could otherwise leak across sign-out/sign-in
   // on a shared tablet. Also avoids gated queries firing with the wrong scope.
+  if (isHalfAuth && halfAuthTimedOut) {
+    return (
+      <View className="flex-1 justify-center items-center bg-stone-50 px-8">
+        <Text className="text-2xl font-semibold text-stone-900 text-center mb-3">
+          Still Loading Account
+        </Text>
+        <Text className="text-base text-stone-600 text-center mb-8">
+          We could not finish loading your account profile. Stay signed in and retry if this tablet may have unsent local recordings.
+        </Text>
+        <Pressable
+          onPress={handleRetry}
+          disabled={isRetrying}
+          className="w-full bg-[#0d8775] rounded-lg py-4 mb-3 items-center"
+          style={{ opacity: isRetrying ? 0.6 : 1 }}
+        >
+          {isRetrying ? (
+            <ActivityIndicator color="#ffffff" />
+          ) : (
+            <Text className="text-white font-semibold text-base">Retry</Text>
+          )}
+        </Pressable>
+        <Pressable
+          onPress={handleSignOut}
+          className="w-full border border-stone-300 rounded-lg py-4 items-center"
+        >
+          <Text className="text-stone-700 font-medium text-base">Sign out</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   if (!user && userFetchState !== 'error') {
     return (
       <View className="flex-1 justify-center items-center bg-stone-50">

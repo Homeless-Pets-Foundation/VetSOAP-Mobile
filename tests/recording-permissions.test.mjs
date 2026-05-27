@@ -55,6 +55,41 @@ test('recording permission matrix mirrors server delete authorization', async ()
   assert.equal(supportStaff.deleteBlockedReason, 'Your role cannot delete recordings.');
 });
 
+test('recording role gate allows only roles that can submit recordings', async () => {
+  const {
+    canRecordAppointments,
+    RECORD_APPOINTMENT_PERMISSION_MESSAGE,
+  } = await loadTsModule('src/lib/recordingPermissions.ts');
+
+  assert.equal(canRecordAppointments('owner'), true);
+  assert.equal(canRecordAppointments('admin'), true);
+  assert.equal(canRecordAppointments('veterinarian'), true);
+  assert.equal(canRecordAppointments('support_staff'), false);
+  assert.equal(canRecordAppointments('receptionist'), false);
+  assert.equal(canRecordAppointments(null), false);
+  assert.equal(canRecordAppointments(undefined), false);
+
+  assert.match(RECORD_APPOINTMENT_PERMISSION_MESSAGE, /do not sign out/i);
+  assert.match(RECORD_APPOINTMENT_PERMISSION_MESSAGE, /same account temporarily promoted/i);
+});
+
+test('support staff recording gate covers entrypoints and submit paths', async () => {
+  const tabsLayout = await read('app/(app)/(tabs)/_layout.tsx');
+  const home = await read('app/(app)/(tabs)/index.tsx');
+  const recordings = await read('app/(app)/(tabs)/recordings/index.tsx');
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  assert.match(tabsLayout, /event\.preventDefault\(\);\s*showRecordPermissionAlert\(\);/);
+  assert.match(home, /if \(!canRecordAppointments\(user\?\.role\)\) \{/);
+  assert.match(recordings, /if \(!canRecordAppointments\(user\?\.role\)\) \{/);
+  assert.match(record, /const roleBlocked = !!user && !canRecordAppointments\(user\.role\);/);
+  assert.match(record, /if \(roleBlocked\) \{\s*return <RecordingRoleGate \/>;\s*\}/);
+  assert.match(record, /if \(!canRecordAppointments\(user\?\.role\)\) \{\s*showRecordPermissionAlert\(\);\s*return null;\s*\}/);
+  assert.match(record, /const handleSubmitSingle = useCallback\([\s\S]*?if \(!canRecordAppointments\(user\?\.role\)\)/);
+  assert.match(record, /const handleSubmitAll = useCallback\(\(\) => \{\s*if \(!canRecordAppointments\(user\?\.role\)\)/);
+  assert.match(record, /if \(!user\?\.id \|\| !canRecordAppointments\(user\.role\)\) return;/);
+});
+
 test('API client maps known 403 recording permission codes to safe messages', async () => {
   const client = await read('src/api/client.ts');
 

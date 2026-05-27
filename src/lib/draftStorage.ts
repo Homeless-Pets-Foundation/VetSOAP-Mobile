@@ -398,11 +398,8 @@ async function deleteDraftChunks(userId: string, slotId: string): Promise<void> 
   ).catch(() => {});
 }
 
-/** Read the draft index for the current user. */
-async function readDraftIndex(): Promise<string[]> {
-  const userId = currentUserId;
-  if (!userId) return [];
-
+/** Read the draft index for a specific user without mutating module scope. */
+async function readDraftIndexForUser(userId: string): Promise<string[]> {
   try {
     const raw = await SecureStore.getItemAsync(draftIndexKeyForUser(userId));
     if (!raw) return [];
@@ -411,6 +408,13 @@ async function readDraftIndex(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/** Read the draft index for the current user. */
+async function readDraftIndex(): Promise<string[]> {
+  const userId = currentUserId;
+  if (!userId) return [];
+  return readDraftIndexForUser(userId);
 }
 
 /** Write the draft index for the current user. */
@@ -715,12 +719,22 @@ export const draftStorage = {
     const userId = currentUserId;
     if (!userId) return [];
 
+    return this.listDraftsForUser(userId);
+  },
+
+  /**
+   * List drafts for a specific user without rebinding the global draft scope.
+   * Used by device recovery scanners so they cannot clobber the active user.
+   */
+  async listDraftsForUser(userId: string): Promise<DraftMetadata[]> {
+    if (!userId) return [];
+
     try {
-      const slotIds = await readDraftIndex();
+      const slotIds = await readDraftIndexForUser(userId);
       const drafts: DraftMetadata[] = [];
 
       for (const slotId of slotIds) {
-        const draft = await this.getDraft(slotId);
+        const draft = await readDraftChunks(userId, slotId);
         if (draft) {
           drafts.push(draft);
         }

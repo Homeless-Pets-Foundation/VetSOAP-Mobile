@@ -31,6 +31,11 @@ import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
 import { clearPeakCache } from '../lib/waveformCache';
 import { setLogoutReason } from '../lib/logoutReason';
+import {
+  SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED,
+  supportStaffRecoveryVault,
+  type RecoveryPreserveResult,
+} from '../lib/supportStaffRecoveryVault';
 import { setMonitoringUser, clearMonitoringUser, captureException, captureMessage, breadcrumb } from '../lib/monitoring';
 import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib/analytics';
 import type { User } from '../types';
@@ -69,8 +74,14 @@ function classifyAuthError(error: { name?: string; message?: string; status?: nu
 type UserFetchState = 'idle' | 'loading' | 'success' | 'error';
 type FetchUserAttemptResult = 'loaded' | 'deferred';
 type LocalRecoveryState = 'idle' | 'scanning' | 'ready' | 'error';
+export type SignOutRecoveryMode = 'required' | 'best_effort' | 'destructive';
+export interface SignOutOptions {
+  recoveryMode?: SignOutRecoveryMode;
+}
 
 const LOCAL_RECOVERY_SCAN_TIMEOUT_MS = 5_000;
+const SUPPORT_STAFF_RECOVERY_BEST_EFFORT_TIMEOUT_MS = 5_000;
+const SUPPORT_STAFF_RECOVERY_REQUIRED_TIMEOUT_MS = 60_000;
 
 /**
  * Surfaced when POST /api/device-sessions/register returns 403
@@ -146,7 +157,7 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<AuthResult>;
   signInWithGoogle: () => Promise<AuthResult>;
   signInWithApple: () => Promise<AuthResult>;
-  signOut: () => Promise<void>;
+  signOut: (options?: SignOutOptions) => Promise<void>;
   /** Set when device registration is blocked by the per-user device cap. */
   deviceRegistrationBlock: DeviceRegistrationBlock | null;
   /** User dismissed the modal manually (e.g. backdrop tap). */
@@ -327,6 +338,87 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | n
   ]);
 }
 
+function withRejectingTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      captureMessage('required_timeout_fired', 'warning', {
+        tags: { phase: 'required_timeout', op: label },
+        extra: { timeout_ms: ms },
+      });
+      reject(new Error(`${label}_timeout`));
+    }, ms);
+  });
+
+  return Promise.race([
+    p.finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    timeout,
+  ]);
+}
+
+function captureSupportStaffRecoveryFailure(
+  mode: SignOutRecoveryMode,
+  result: RecoveryPreserveResult | null,
+  error?: unknown
+): void {
+  captureMessage('support_staff_recovery_preserve_failed', 'warning', {
+    tags: {
+      phase: 'support_staff_recovery',
+      recovery_mode: mode,
+      error_code: result?.errorCode ?? (error instanceof Error && error.message.includes('timeout') ? 'timeout' : 'unknown'),
+    },
+    extra: {
+      recoverable_count: result?.recoverableCount,
+      preserved_count: result?.preservedCount,
+      failed_count: result?.failedCount,
+    },
+  });
+  if (error) {
+    captureException(error, { tags: { phase: 'support_staff_recovery', recovery_mode: mode } });
+  }
+}
+
+async function preserveSupportStaffRecordings(
+  sourceUser: User | null | undefined,
+  mode: SignOutRecoveryMode
+): Promise<void> {
+  if (sourceUser?.role !== 'support_staff' || mode === 'destructive') {
+    return;
+  }
+
+  try {
+    const preserve = supportStaffRecoveryVault.preserveScopedUserRecordings(sourceUser);
+    const result =
+      mode === 'required'
+        ? await withRejectingTimeout(
+            preserve,
+            SUPPORT_STAFF_RECOVERY_REQUIRED_TIMEOUT_MS,
+            'support_staff_recovery_preserve'
+          )
+        : await withTimeout(
+            preserve,
+            SUPPORT_STAFF_RECOVERY_BEST_EFFORT_TIMEOUT_MS,
+            'support_staff_recovery_preserve'
+          );
+
+    if (!result?.ok) {
+      captureSupportStaffRecoveryFailure(mode, result ?? null);
+      if (mode === 'required') {
+        throw new Error(SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Error && error.message === SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED)) {
+      captureSupportStaffRecoveryFailure(mode, null, error);
+    }
+    if (mode === 'required') {
+      throw new Error(SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED);
+    }
+  }
+}
+
 async function performPhiCleanup(): Promise<void> {
   try {
     await Promise.all([
@@ -388,6 +480,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     useState<DeviceRegistrationBlock | null>(null);
   const [deviceRegistrationPending, setDeviceRegistrationPending] = useState(false);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+  const activeUserRef = useRef<User | null>(null);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaReturnPath, setMfaReturnPath] = useState<string | null>(null);
   const [mfaReason, setMfaReason] = useState<string | null>(null);
@@ -401,7 +494,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Tracks when the current session was established, so we can ignore stale 401s
   const sessionTimestampRef = useRef<number>(0);
-  const handleSignOutRef = useRef<() => Promise<void>>(async () => {});
+  const handleSignOutRef = useRef<(options?: SignOutOptions) => Promise<void>>(async () => {});
   // Single-flight guard for registerDevice. `fetchUser()` owns the normal
   // sign-in/session-restore registration path, while API 428 handlers and the
   // device-limit modal can still retry manually.
@@ -495,6 +588,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       recoveryScannedUserIdRef.current = null;
       setLocalRecoveryState('idle');
       setRecoveryDraftSlotId(null);
+      activeUserRef.current = fetchedUser;
       setUser(fetchedUser);
       return;
     }
@@ -522,6 +616,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       recoveryScannedUserIdRef.current = scopedUserId;
       scanLocalRecoveryIntent(scopedUserId);
     }
+    activeUserRef.current = fetchedUser;
     setUser(fetchedUser);
     // Now that user ID is set, safe to clean up orphaned stash data.
     // Must run AFTER setStashUserId or getStashedSessions returns []
@@ -725,7 +820,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           } catch (bootstrapError) {
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap failed', bootstrapError);
             setLogoutReason('session_expired');
-            await handleSignOutRef.current();
+            await handleSignOutRef.current({ recoveryMode: 'best_effort' });
             return 'deferred';
           }
         }
@@ -1058,8 +1153,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
 
-  const handleSignOut = useCallback(async () => {
+  const handleSignOut = useCallback(async (options: SignOutOptions = {}) => {
     if (__DEV__) console.log('[Auth] handleSignOut: starting');
+    const recoveryMode = options.recoveryMode ?? 'best_effort';
+    await preserveSupportStaffRecordings(activeUserRef.current, recoveryMode);
     userInitiatedSignOutRef.current = true;
     // Clear in-memory token immediately
     apiClient.setToken(null);
@@ -1112,6 +1209,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setActiveMfaChallenge(null);
   }, [setRecoveryDraftSlotId]);
 
+  useEffect(() => {
+    activeUserRef.current = user;
+  }, [user]);
+
   // Block screenshots / screen recording of PHI in production builds only.
   // Gated on extra.isProduction (set by APP_VARIANT=production in app.config.ts)
   // so dev sessions keep normal capture for debugging. Fire-and-forget with
@@ -1131,7 +1232,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Register the 401 handler: attempt token refresh before signing out
   useEffect(() => {
     apiClient.setOnDeviceRevoked(() => {
-      handleSignOut().catch(() => {});
+      handleSignOut({ recoveryMode: 'best_effort' }).catch(() => {});
     });
     apiClient.setOnDeviceRegistrationRequired(() => registerDevice());
     apiClient.setOnMfaRequired((request) => {
@@ -1173,7 +1274,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 props: { trigger: 'on_auth_state', error_code: `retry_${classifyAuthError(retryError)}` },
               });
               setLogoutReason('session_expired');
-              await handleSignOut();
+              await handleSignOut({ recoveryMode: 'best_effort' });
             } else {
               if (__DEV__) console.log('[Auth] onUnauthorized: retry succeeded');
             }
@@ -1188,7 +1289,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           });
           captureException(e, { tags: { phase: 'auth_refresh' } });
           setLogoutReason('session_expired');
-          handleSignOut().catch(() => {});
+          handleSignOut({ recoveryMode: 'best_effort' }).catch(() => {});
         } finally {
           refreshPromiseRef.current = null;
         }
@@ -1348,6 +1449,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setIsLoading(true);
             if (__DEV__) console.log('[Auth] no access_token, clearing session');
             apiClient.setToken(null);
+            await preserveSupportStaffRecordings(activeUserRef.current, 'best_effort');
             // Full PHI cleanup before clearing auth state — mirrors handleSignOut.
             // Prevents the next user on a shared tablet from seeing stashed patient
             // data, drafts, cached audio, or waveform peaks when a session expires

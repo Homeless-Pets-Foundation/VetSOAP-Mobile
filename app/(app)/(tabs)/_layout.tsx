@@ -1,11 +1,24 @@
 import React from 'react';
+import { Alert } from 'react-native';
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Mic, FileText, Users } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { useAuth } from '../../../src/hooks/useAuth';
+import {
+  canRecordAppointments,
+  RECORD_APPOINTMENT_PERMISSION_MESSAGE,
+  RECORD_APPOINTMENT_PERMISSION_TITLE,
+} from '../../../src/lib/recordingPermissions';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+
+  const showRecordPermissionAlert = React.useCallback(() => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    Alert.alert(RECORD_APPOINTMENT_PERMISSION_TITLE, RECORD_APPOINTMENT_PERMISSION_MESSAGE);
+  }, []);
 
   return (
     <Tabs
@@ -46,6 +59,13 @@ export default function TabsLayout() {
       />
       <Tabs.Screen
         name="record"
+        listeners={{
+          tabPress: (event) => {
+            if (canRecordAppointments(user?.role)) return;
+            event.preventDefault();
+            showRecordPermissionAlert();
+          },
+        }}
         options={{
           title: 'Record',
           tabBarIcon: ({ color, size }) => <Mic color={color} size={size} />,

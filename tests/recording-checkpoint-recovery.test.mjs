@@ -74,3 +74,26 @@ test('auth gates recovered draft routing until local recovery scan completes', a
   assert.match(mfaScreen, /pendingRecoveryDraftSlotId/);
   assert.match(mfaScreen, /consumePendingRecoveryDraftSlotId/);
 });
+
+test('local recovery scan runs once per authenticated user, not on every re-fetch', async () => {
+  const provider = await read('src/auth/AuthProvider.tsx');
+
+  // One-shot guard ref must exist...
+  assert.match(provider, /const recoveryScannedUserIdRef = useRef<string \| null>\(null\);/);
+  // ...and gate scanLocalRecoveryIntent so a TOKEN_REFRESHED-driven re-fetch of
+  // the already-loaded user does not re-enter 'scanning' (which blanks the app
+  // and unmounts an active recording).
+  assert.match(provider, /recoveryScannedUserIdRef\.current !== scopedUserId/);
+  assert.match(
+    provider,
+    /if \(recoveryScannedUserIdRef\.current !== scopedUserId\) \{\s*recoveryScannedUserIdRef\.current = scopedUserId;\s*scanLocalRecoveryIntent\(scopedUserId\);\s*\}/
+  );
+  // The guard must be reset on every user-clear path so a fresh sign-in re-scans.
+  // Three reset sites: applyFetchedUser null-branch, handleSignOut cleanup,
+  // and the SIGNED_OUT session-expiry cleanup in onAuthStateChange.
+  const resetMatches = provider.match(/recoveryScannedUserIdRef\.current = null;/g) ?? [];
+  assert.ok(
+    resetMatches.length >= 3,
+    `expected >=3 recoveryScannedUserIdRef resets, found ${resetMatches.length}`
+  );
+});

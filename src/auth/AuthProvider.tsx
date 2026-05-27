@@ -412,6 +412,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const userInitiatedSignOutRef = useRef<boolean>(false);
   const pendingRecoveryDraftSlotIdRef = useRef<string | null>(null);
   const localRecoveryScanIdRef = useRef(0);
+  // Recovery scan is a one-shot per authenticated user. Without this, every
+  // TOKEN_REFRESHED-driven fetchUser re-enters 'scanning', blanking the app
+  // (the "dashboard reloads") and unmounting an active recording. Reset on
+  // user clear so a fresh sign-in re-scans.
+  const recoveryScannedUserIdRef = useRef<string | null>(null);
 
   const setRecoveryDraftSlotId = useCallback((slotId: string | null) => {
     pendingRecoveryDraftSlotIdRef.current = slotId;
@@ -487,6 +492,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const applyFetchedUser = useCallback((fetchedUser: User | null) => {
     if (!fetchedUser?.id) {
       localRecoveryScanIdRef.current += 1;
+      recoveryScannedUserIdRef.current = null;
       setLocalRecoveryState('idle');
       setRecoveryDraftSlotId(null);
       setUser(fetchedUser);
@@ -508,7 +514,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setStashUserId(scopedUserId);
     draftStorage.setUserId(scopedUserId);
-    scanLocalRecoveryIntent(scopedUserId);
+    // One-shot per user: only scan on the first authenticated load (cold-start
+    // session restore or fresh sign-in). Subsequent re-fetches of the same user
+    // (TOKEN_REFRESHED, MFA re-check, foreground resume) skip the scan so the
+    // 'scanning' gate in (app)/_layout.tsx never re-fires mid-session.
+    if (recoveryScannedUserIdRef.current !== scopedUserId) {
+      recoveryScannedUserIdRef.current = scopedUserId;
+      scanLocalRecoveryIntent(scopedUserId);
+    }
     setUser(fetchedUser);
     // Now that user ID is set, safe to clean up orphaned stash data.
     // Must run AFTER setStashUserId or getStashedSessions returns []
@@ -1085,6 +1098,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserFetchState('idle');
     setUserFetchError(null);
     localRecoveryScanIdRef.current += 1;
+    recoveryScannedUserIdRef.current = null;
     setLocalRecoveryState('idle');
     setRecoveryDraftSlotId(null);
     setDeviceRegistrationBlock(null);
@@ -1360,6 +1374,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(null);
             setSession(null);
             localRecoveryScanIdRef.current += 1;
+            recoveryScannedUserIdRef.current = null;
             setLocalRecoveryState('idle');
             setRecoveryDraftSlotId(null);
             setDeviceRegistrationBlock(null);

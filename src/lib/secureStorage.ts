@@ -45,7 +45,58 @@ function reportSecureStoreFailure(op: string, error: unknown): void {
   }
 }
 
+async function getRawSecureItem(key: string, op: string): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch (error) {
+    if (__DEV__) console.error(`[SecureStorage] ${op} failed:`, error);
+    reportSecureStoreFailure(op, error);
+    return null;
+  }
+}
+
+async function setRawSecureItem(key: string, value: string, op: string): Promise<boolean> {
+  try {
+    await SecureStore.setItemAsync(key, value, {
+      keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+    });
+    return true;
+  } catch (error) {
+    if (__DEV__) console.error(`[SecureStorage] ${op} failed:`, error);
+    reportSecureStoreFailure(op, error);
+    try {
+      await SecureStore.setItemAsync(key, value);
+      return true;
+    } catch (retryError) {
+      if (__DEV__) console.error(`[SecureStorage] ${op} retry failed:`, retryError);
+      reportSecureStoreFailure(`${op}RetryFallback`, retryError);
+      return false;
+    }
+  }
+}
+
+async function deleteRawSecureItem(key: string, op: string): Promise<void> {
+  try {
+    await SecureStore.deleteItemAsync(key);
+  } catch (error) {
+    if (__DEV__) console.error(`[SecureStorage] ${op} failed:`, error);
+    reportSecureStoreFailure(op, error);
+  }
+}
+
 export const secureStorage = {
+  async getRawItem(key: string, op = 'getRawItem'): Promise<string | null> {
+    return getRawSecureItem(key, op);
+  },
+
+  async setRawItem(key: string, value: string, op = 'setRawItem'): Promise<boolean> {
+    return setRawSecureItem(key, value, op);
+  },
+
+  async deleteRawItem(key: string, op = 'deleteRawItem'): Promise<void> {
+    await deleteRawSecureItem(key, op);
+  },
+
   async getToken(): Promise<string | null> {
     try {
       return await SecureStore.getItemAsync(KEYS.ACCESS_TOKEN);

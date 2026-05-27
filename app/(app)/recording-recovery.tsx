@@ -207,8 +207,14 @@ export default function RecordingRecoveryScreen() {
           style: 'destructive',
           onPress: () => {
             setDeletingId(item.id);
-            supportStaffRecoveryVault.deleteItem(item.id)
-              .then(() => loadItems())
+            supportStaffRecoveryVault.deleteItem(user, item.id)
+              .then((deleted) => {
+                if (!deleted) {
+                  Alert.alert('Delete Failed', 'Could not delete this recovery copy.');
+                  return;
+                }
+                return loadItems();
+              })
               .catch(() => {
                 Alert.alert('Delete Failed', 'Could not delete this recovery copy.');
               })
@@ -219,7 +225,7 @@ export default function RecordingRecoveryScreen() {
         },
       ]
     );
-  }, [loadItems]);
+  }, [loadItems, user]);
 
   const sortedItems = useMemo(
     () => [...items].sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime()),

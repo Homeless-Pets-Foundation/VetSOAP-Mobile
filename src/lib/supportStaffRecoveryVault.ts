@@ -1,21 +1,17 @@
-import * as SecureStore from 'expo-secure-store';
-import { File as ExpoFile, Paths } from 'expo-file-system';
-import { copyAsync as legacyCopyAsync } from 'expo-file-system/legacy';
+import { Paths } from 'expo-file-system';
 import { draftStorage, type DraftMetadata } from './draftStorage';
 import { stashStorage } from './stashStorage';
 import {
   ensureDirectory,
   fileExists,
+  safeCopyFile,
   safeDeleteDirectory,
-  safeDeleteFile,
 } from './fileOps';
+import { secureStorage } from './secureStorage';
+import { captureMessage } from './monitoring';
 import type { CreateRecording, User } from '../types';
 import type { StashedSession, StashedSlot } from '../types/stash';
 import type { PatientSlot, AudioSegment } from '../types/multiPatient';
-
-const STORE_OPTIONS = {
-  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-};
 
 const CHUNK_SIZE = 1900;
 const MAX_RECOVERY_ITEMS = 50;
@@ -117,7 +113,10 @@ function parseItems(raw: string): RecoveryItem[] {
 }
 
 async function readItemsForGeneration(generation: Generation): Promise<RecoveryItem[] | null> {
-  const countRaw = await SecureStore.getItemAsync(generationCountKey(generation));
+  const countRaw = await secureStorage.getRawItem(
+    generationCountKey(generation),
+    'supportStaffRecovery.getGenerationCount'
+  );
   if (!countRaw) return null;
   const count = parseInt(countRaw, 10);
   if (Number.isNaN(count) || count < 0) return null;
@@ -126,7 +125,7 @@ async function readItemsForGeneration(generation: Generation): Promise<RecoveryI
   const prefix = generationPrefix(generation);
   const chunks: string[] = [];
   for (let i = 0; i < count; i++) {
-    const chunk = await SecureStore.getItemAsync(`${prefix}${i}`);
+    const chunk = await secureStorage.getRawItem(`${prefix}${i}`, 'supportStaffRecovery.getChunk');
     if (chunk === null) return null;
     chunks.push(chunk);
   }
@@ -139,20 +138,23 @@ async function readItemsForGeneration(generation: Generation): Promise<RecoveryI
 }
 
 async function deleteGeneration(generation: Generation): Promise<void> {
-  const countRaw = await SecureStore.getItemAsync(generationCountKey(generation));
+  const countRaw = await secureStorage.getRawItem(
+    generationCountKey(generation),
+    'supportStaffRecovery.getDeleteGenerationCount'
+  );
   const count = countRaw ? parseInt(countRaw, 10) : 0;
   if (!Number.isNaN(count) && count > 0) {
     const prefix = generationPrefix(generation);
     for (let i = 0; i < count; i++) {
-      await SecureStore.deleteItemAsync(`${prefix}${i}`).catch(() => {});
+      await secureStorage.deleteRawItem(`${prefix}${i}`, 'supportStaffRecovery.deleteChunk');
     }
   }
-  await SecureStore.deleteItemAsync(generationCountKey(generation)).catch(() => {});
+  await secureStorage.deleteRawItem(generationCountKey(generation), 'supportStaffRecovery.deleteGenerationCount');
 }
 
 async function readItems(): Promise<RecoveryItem[]> {
   try {
-    const active = await SecureStore.getItemAsync(ACTIVE_KEY);
+    const active = await secureStorage.getRawItem(ACTIVE_KEY, 'supportStaffRecovery.getActiveGeneration');
     if (active === 'a' || active === 'b') {
       const activeItems = await readItemsForGeneration(active);
       if (activeItems !== null) return activeItems;
@@ -172,7 +174,7 @@ async function readItems(): Promise<RecoveryItem[]> {
 
 async function saveItems(items: RecoveryItem[]): Promise<boolean> {
   try {
-    const activeRaw = await SecureStore.getItemAsync(ACTIVE_KEY);
+    const activeRaw = await secureStorage.getRawItem(ACTIVE_KEY, 'supportStaffRecovery.getActiveGenerationForSave');
     const active: Generation = activeRaw === 'b' ? 'b' : 'a';
     const next: Generation = active === 'a' ? 'b' : 'a';
     await deleteGeneration(next);
@@ -186,10 +188,21 @@ async function saveItems(items: RecoveryItem[]): Promise<boolean> {
     const prefix = generationPrefix(next);
 
     for (let i = 0; i < chunkCount; i++) {
-      await SecureStore.setItemAsync(`${prefix}${i}`, raw.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE), STORE_OPTIONS);
+      const savedChunk = await secureStorage.setRawItem(
+        `${prefix}${i}`,
+        raw.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
+        'supportStaffRecovery.setChunk'
+      );
+      if (!savedChunk) return false;
     }
-    await SecureStore.setItemAsync(generationCountKey(next), String(chunkCount), STORE_OPTIONS);
-    await SecureStore.setItemAsync(ACTIVE_KEY, next, STORE_OPTIONS);
+    const savedCount = await secureStorage.setRawItem(
+      generationCountKey(next),
+      String(chunkCount),
+      'supportStaffRecovery.setGenerationCount'
+    );
+    if (!savedCount) return false;
+    const savedActive = await secureStorage.setRawItem(ACTIVE_KEY, next, 'supportStaffRecovery.setActiveGeneration');
+    if (!savedActive) return false;
     await deleteGeneration(active);
     return true;
   } catch {
@@ -201,18 +214,7 @@ async function copySegmentToRecovery(
   sourceUri: string,
   destUri: string
 ): Promise<boolean> {
-  if (!fileExists(sourceUri)) return false;
-  safeDeleteFile(destUri);
-  try {
-    new ExpoFile(sourceUri).copy(new ExpoFile(destUri));
-  } catch {
-    try {
-      await legacyCopyAsync({ from: sourceUri, to: destUri });
-    } catch {
-      return false;
-    }
-  }
-  return fileExists(destUri);
+  return safeCopyFile(sourceUri, destUri);
 }
 
 function sourceFromUser(user: RecoverySourceUser): RecoverySourceFields {
@@ -278,6 +280,18 @@ async function buildItemFromSlots(
   }
 
   if (recoveredSlots.length === 0 || copiedSegments < expectedSegments) {
+    if (copiedSegments < expectedSegments) {
+      captureMessage('support_staff_recovery_copy_incomplete', 'warning', {
+        tags: {
+          phase: 'support_staff_recovery',
+          kind: params.kind,
+        },
+        extra: {
+          expected_segments: expectedSegments,
+          copied_segments: copiedSegments,
+        },
+      });
+    }
     safeDeleteDirectory(dir);
     return null;
   }
@@ -579,16 +593,21 @@ export const supportStaffRecoveryVault = {
     }
 
     if (restoredSlotIds.length > 0) {
-      await this.deleteItem(item.id);
+      await this.deleteItem(user, item.id);
     }
 
     return restoredSlotIds;
   },
 
-  async deleteItem(itemId: string): Promise<void> {
+  async deleteItem(user: RecoveryUser | null | undefined, itemId: string): Promise<boolean> {
+    if (!canUseRecovery(user)) return false;
     const items = await readItems();
+    const item = items.find((candidate) => candidate.id === itemId);
+    if (!item || !itemVisibleToUser(item, user)) return false;
     const filtered = items.filter((item) => item.id !== itemId);
-    await saveItems(filtered);
+    const saved = await saveItems(filtered);
+    if (!saved) return false;
     safeDeleteDirectory(recoveryDir(itemId));
+    return true;
   },
 };

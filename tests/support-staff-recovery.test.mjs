@@ -22,8 +22,10 @@ async function loadRecoveryVaultForTest() {
 
   const secureStore = new Map();
   const files = new Set();
+  const copyFailures = new Set();
   const drafts = { current: [] };
   const stashes = { current: [] };
+  const messages = [];
 
   class MockFile {
     constructor(uri) {
@@ -93,15 +95,16 @@ async function loadRecoveryVaultForTest() {
         getStashedSessions: async () => stashes.current,
       },
     },
-    './stashAudioManager': {
-      stashAudioManager: {
-        readRecoveryManifest: async () => null,
-      },
-    },
     './fileOps': {
       directoryExists: () => false,
       ensureDirectory: () => true,
       fileExists: (uri) => files.has(uri),
+      safeCopyFile: async (from, to) => {
+        if (!files.has(from) || copyFailures.has(from)) return false;
+        files.delete(to);
+        files.add(to);
+        return true;
+      },
       safeDeleteDirectory: (dir) => {
         for (const file of [...files]) {
           if (file.startsWith(dir)) files.delete(file);
@@ -109,6 +112,23 @@ async function loadRecoveryVaultForTest() {
       },
       safeDeleteFile: (uri) => {
         files.delete(uri);
+      },
+    },
+    './secureStorage': {
+      secureStorage: {
+        getRawItem: async (key) => secureStore.get(key) ?? null,
+        setRawItem: async (key, value) => {
+          secureStore.set(key, value);
+          return true;
+        },
+        deleteRawItem: async (key) => {
+          secureStore.delete(key);
+        },
+      },
+    },
+    './monitoring': {
+      captureMessage: (message, level, context) => {
+        messages.push({ message, level, context });
       },
     },
   };
@@ -128,6 +148,8 @@ async function loadRecoveryVaultForTest() {
     drafts,
     stashes,
     files,
+    copyFailures,
+    messages,
   };
 }
 
@@ -182,6 +204,14 @@ test('support staff recovery vault filters by organization and avoids global sco
   assert.match(vault, /async scanForLeftoverRecordingsForUser\(user: RecoveryUser/);
   assert.match(vault, /item\.sourceOrganizationId === user\.organizationId/);
   assert.match(vault, /RECOVERY_ROLES = new Set\(\['owner', 'admin', 'veterinarian'\]\)/);
+  assert.match(vault, /secureStorage\.getRawItem/);
+  assert.match(vault, /secureStorage\.setRawItem/);
+  assert.match(vault, /secureStorage\.deleteRawItem/);
+  assert.match(vault, /safeCopyFile\(sourceUri, destUri\)/);
+  assert.match(vault, /support_staff_recovery_copy_incomplete/);
+  assert.doesNotMatch(vault, /expo-file-system\/legacy/);
+  assert.doesNotMatch(vault, /SecureStore\./);
+  assert.doesNotMatch(vault, /legacyCopyAsync/);
   assert.match(vault, /Older draft\/stash directories do not carry organization metadata/);
   assert.match(vault, /await readValidItemsAndPrune\(\)/);
   assert.doesNotMatch(vault, /scanDraftDirectoryForUser/);
@@ -253,6 +283,52 @@ test('recovery vault blocks preservation when capacity would drop new recordings
   assert.equal(await supportStaffRecoveryVault.countItemsForUser(privilegedUser), 49);
 });
 
+test('recovery vault reports copy failures and keeps delete scoped to the current organization', async () => {
+  const { supportStaffRecoveryVault, drafts, files, copyFailures, messages } = await loadRecoveryVaultForTest();
+  const sourceUser = {
+    id: 'support-user',
+    email: 'csr@example.com',
+    fullName: 'Support User',
+    role: 'support_staff',
+    organizationId: 'org-1',
+  };
+  const sameOrgUser = {
+    id: 'admin-user',
+    role: 'admin',
+    organizationId: 'org-1',
+  };
+  const otherOrgUser = {
+    id: 'other-admin',
+    role: 'admin',
+    organizationId: 'org-2',
+  };
+
+  const failedDraft = makeDraft('failed-copy');
+  drafts.current = [failedDraft];
+  files.add(failedDraft.segments[0].uri);
+  copyFailures.add(failedDraft.segments[0].uri);
+
+  const failed = await supportStaffRecoveryVault.preserveScopedUserRecordings(sourceUser);
+  assert.equal(failed.ok, false);
+  assert.equal(failed.errorCode, 'copy_failed');
+  assert.equal(messages.some((entry) => entry.message === 'support_staff_recovery_copy_incomplete'), true);
+  assert.equal(await supportStaffRecoveryVault.countItemsForUser(sameOrgUser), 0);
+
+  copyFailures.clear();
+  drafts.current = [makeDraft('saved-copy')];
+  files.add(drafts.current[0].segments[0].uri);
+
+  const saved = await supportStaffRecoveryVault.preserveScopedUserRecordings(sourceUser);
+  assert.equal(saved.ok, true);
+  const items = await supportStaffRecoveryVault.listItemsForUser(sameOrgUser);
+  assert.equal(items.length, 1);
+
+  assert.equal(await supportStaffRecoveryVault.deleteItem(otherOrgUser, items[0].id), false);
+  assert.equal(await supportStaffRecoveryVault.countItemsForUser(sameOrgUser), 1);
+  assert.equal(await supportStaffRecoveryVault.deleteItem(sameOrgUser, items[0].id), true);
+  assert.equal(await supportStaffRecoveryVault.countItemsForUser(sameOrgUser), 0);
+});
+
 test('restore is same-org, all-or-nothing, strips server draft state, and consumes recovery copy', async () => {
   const vault = await read('src/lib/supportStaffRecoveryVault.ts');
 
@@ -260,7 +336,9 @@ test('restore is same-org, all-or-nothing, strips server draft state, and consum
   assert.match(vault, /!item \|\| !itemVisibleToUser\(item, user\)/);
   assert.match(vault, /if \(slotsToRestore\.some\(\(entry\) => entry === null\)\) return \[\]/);
   assert.match(vault, /Promise\.all\(restoredSlotIds\.map\(\(slotId\) => draftStorage\.deleteDraft\(slotId\)\.catch\(\(\) => \{\}\)\)\)/);
-  assert.match(vault, /await this\.deleteItem\(item\.id\)/);
+  assert.match(vault, /await this\.deleteItem\(user, item\.id\)/);
+  assert.match(vault, /deleteItem\(user: RecoveryUser \| null \| undefined, itemId: string\): Promise<boolean>/);
+  assert.match(vault, /if \(!item \|\| !itemVisibleToUser\(item, user\)\) return false/);
   assert.match(vault, /serverRecordingId: null/);
   assert.match(vault, /serverDraftId: null/);
   assert.match(vault, /pendingConfirm: null/);
@@ -290,6 +368,7 @@ test('settings and recovery screens use scoped recovery APIs and expose destruct
   assert.match(recovery, /scanTimedOut/);
   assert.match(recovery, /Only recovery copies saved during support staff sign-out can be restored automatically/);
   assert.match(recovery, /restoreItemToCurrentUserDrafts\(user, item\.id, overrides\)/);
+  assert.match(recovery, /deleteItem\(user, item\.id\)/);
   assert.match(recovery, /Patient Details Required/);
   assert.match(recovery, /router\.replace\(\{\s*pathname: '\/\(tabs\)\/record'/);
   assert.doesNotMatch(recovery, /listItems\(\)/);

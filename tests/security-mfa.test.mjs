@@ -84,6 +84,13 @@ test('mobile exposes MFA auth route and protects app layout from half-auth timeo
   assert.match(mfaScreen, /const bootstrapKey = `\$\{isAuthenticated \? '1' : '0'\}:\$\{mfaRequired \? '1' : '0'\}:\$\{mfaReason \?\? ''\}`/);
   assert.match(mfaScreen, /if \(autoBootstrapKeyRef\.current === bootstrapKey\) return;/);
   assert.match(mfaScreen, /const profileLoaded = await retryFetchUser\(\);[\s\S]*if \(profileLoaded\) \{[\s\S]*returnToApp\(\);/);
+  assert.match(appLayout, /HALF_AUTH_TIMEOUT_MS = 30_000/);
+  assert.match(appLayout, /halfAuthTimedOut/);
+  assert.match(appLayout, /half_auth_timeout/);
+  assert.match(appLayout, /\}, \[halfAuthTimedOut, isHalfAuth\]\)/);
+  assert.match(appLayout, /Sign Out Without Profile/);
+  assert.match(appLayout, /signOut\(\{ recoveryMode: 'best_effort' \}\)/);
+  assert.doesNotMatch(appLayout, /forcing signOut/);
 });
 
 test('mobile auth provider does not mark MFA_REQUIRED as a loaded user profile', async () => {

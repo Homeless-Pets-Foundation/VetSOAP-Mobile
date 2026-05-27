@@ -95,6 +95,45 @@ async function readSessionsForKeys(
   }
 }
 
+async function getStashedSessionsForUserId(userId: string): Promise<StashedSession[]> {
+  if (!userId) return [];
+
+  try {
+    const activeGeneration = await SecureStore.getItemAsync(activeGenerationKeyForUser(userId));
+    if (activeGeneration === 'a' || activeGeneration === 'b') {
+      const activeSessions = await readSessionsForKeys(
+        generationCountKeyForUser(userId, activeGeneration),
+        generationPrefixForUser(userId, activeGeneration)
+      );
+      if (activeSessions !== null) return activeSessions;
+    }
+
+    const legacySessions = await readSessionsForKeys(
+      legacyCountKeyForUser(userId),
+      legacyPrefixForUser(userId)
+    );
+    if (legacySessions !== null) return legacySessions;
+
+    // Last-resort recovery if the active pointer is missing but one generation is intact.
+    const genBSessions = await readSessionsForKeys(
+      generationCountKeyForUser(userId, 'b'),
+      generationPrefixForUser(userId, 'b')
+    );
+    const genASessions = await readSessionsForKeys(
+      generationCountKeyForUser(userId, 'a'),
+      generationPrefixForUser(userId, 'a')
+    );
+
+    if (genBSessions !== null && genBSessions.length > 0) return genBSessions;
+    if (genASessions !== null && genASessions.length > 0) return genASessions;
+    if (genBSessions !== null) return genBSessions;
+    if (genASessions !== null) return genASessions;
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Encrypted stash storage using expo-secure-store with chunked writes.
  *
@@ -119,40 +158,12 @@ export const stashStorage = {
     const userId = currentUserId;
     if (!userId) return [];
 
-    try {
-      const activeGeneration = await SecureStore.getItemAsync(activeGenerationKeyForUser(userId));
-      if (activeGeneration === 'a' || activeGeneration === 'b') {
-        const activeSessions = await readSessionsForKeys(
-          generationCountKeyForUser(userId, activeGeneration),
-          generationPrefixForUser(userId, activeGeneration)
-        );
-        if (activeSessions !== null) return activeSessions;
-      }
+    return getStashedSessionsForUserId(userId);
+  },
 
-      const legacySessions = await readSessionsForKeys(
-        legacyCountKeyForUser(userId),
-        legacyPrefixForUser(userId)
-      );
-      if (legacySessions !== null) return legacySessions;
-
-      // Last-resort recovery if the active pointer is missing but one generation is intact.
-      const genBSessions = await readSessionsForKeys(
-        generationCountKeyForUser(userId, 'b'),
-        generationPrefixForUser(userId, 'b')
-      );
-      const genASessions = await readSessionsForKeys(
-        generationCountKeyForUser(userId, 'a'),
-        generationPrefixForUser(userId, 'a')
-      );
-
-      if (genBSessions !== null && genBSessions.length > 0) return genBSessions;
-      if (genASessions !== null && genASessions.length > 0) return genASessions;
-      if (genBSessions !== null) return genBSessions;
-      if (genASessions !== null) return genASessions;
-      return [];
-    } catch {
-      return [];
-    }
+  /** Read stashes for a specific user without rebinding the global stash scope. */
+  async getStashedSessionsForUser(userId: string): Promise<StashedSession[]> {
+    return getStashedSessionsForUserId(userId);
   },
 
   async saveStashedSessions(sessions: StashedSession[]): Promise<boolean> {

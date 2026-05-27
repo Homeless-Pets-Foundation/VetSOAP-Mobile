@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { Alert, View, Text, Pressable } from 'react-native';
 import Animated, {
   FadeInDown,
   FadeInUp,
@@ -19,6 +19,11 @@ import { recordingsApi } from '../../../src/api/recordings';
 import { ApiError } from '../../../src/api/client';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { buildDraftResumeMap, mergeDraftRecordings } from '../../../src/lib/draftRecordings';
+import {
+  canRecordAppointments,
+  RECORD_APPOINTMENT_PERMISSION_MESSAGE,
+  RECORD_APPOINTMENT_PERMISSION_TITLE,
+} from '../../../src/lib/recordingPermissions';
 import { RecordingCard } from '../../../src/components/RecordingCard';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { SkeletonCard } from '../../../src/components/ui/Skeleton';
@@ -111,6 +116,17 @@ export default function HomeScreen() {
     refreshLocalDrafts();
   }, [refetch, refetchDrafts, refreshLocalDrafts]);
 
+  const handleRecordPress = useCallback(() => {
+    if (!canRecordAppointments(user?.role)) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      Alert.alert(RECORD_APPOINTMENT_PERMISSION_TITLE, RECORD_APPOINTMENT_PERMISSION_MESSAGE);
+      return;
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    router.push('/record');
+  }, [router, user?.role]);
+
   // Refresh on every screen focus — required so drafts created elsewhere
   // (e.g. after tapping Finish on the Record tab) or deleted elsewhere
   // disappear when the user returns to Home without a full app remount.
@@ -169,10 +185,7 @@ export default function HomeScreen() {
 
       {/* Quick Action */}
       <AnimatedPressable
-        onPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-          router.push('/record');
-        }}
+        onPress={handleRecordPress}
         onPressIn={() => {
           ctaScale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
         }}

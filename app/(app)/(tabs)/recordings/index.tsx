@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { Alert, View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search } from 'lucide-react-native';
+import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
 import { ApiError } from '../../../../src/api/client';
 import { draftStorage } from '../../../../src/lib/draftStorage';
@@ -14,6 +15,11 @@ import {
   mergeDraftRecordings,
   sortRecordingsByCreatedAt,
 } from '../../../../src/lib/draftRecordings';
+import {
+  canRecordAppointments,
+  RECORD_APPOINTMENT_PERMISSION_MESSAGE,
+  RECORD_APPOINTMENT_PERMISSION_TITLE,
+} from '../../../../src/lib/recordingPermissions';
 import { useAuth } from '../../../../src/hooks/useAuth';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
@@ -205,6 +211,16 @@ export default function RecordingsListScreen() {
     }
   }, [fetchNextPage, hasNextPage, isFetchingNextPage, shouldLoadRecordings]);
 
+  const handleRecordPress = useCallback(() => {
+    if (!canRecordAppointments(user?.role)) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      Alert.alert(RECORD_APPOINTMENT_PERMISSION_TITLE, RECORD_APPOINTMENT_PERMISSION_MESSAGE);
+      return;
+    }
+
+    router.push('/record');
+  }, [router, user?.role]);
+
   // Disable entry animations after initial data load
   useEffect(() => {
     if ((data || draftData) && isInitialMountRef.current) {
@@ -339,7 +355,7 @@ export default function RecordingsListScreen() {
               description={emptyMessage}
               action={!debouncedSearch && selectedStatusFilter === 'all' ? {
                 label: 'Record Appointment',
-                onPress: () => router.push('/record'),
+                onPress: handleRecordPress,
               } : undefined}
             />
           )

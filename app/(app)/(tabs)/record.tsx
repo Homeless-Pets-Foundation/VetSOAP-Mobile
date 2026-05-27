@@ -36,6 +36,11 @@ import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
 import { recordSubmitAttempt } from '../../../src/lib/submitTiming';
 import { setSessionActivity } from '../../../src/lib/sessionActivity';
+import {
+  canRecordAppointments,
+  RECORD_APPOINTMENT_PERMISSION_MESSAGE,
+  RECORD_APPOINTMENT_PERMISSION_TITLE,
+} from '../../../src/lib/recordingPermissions';
 import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../../src/components/SubmitPanel';
@@ -104,6 +109,43 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
           accessibilityLabel="Continue to microphone permission prompt"
         >
           Continue
+        </Button>
+      </View>
+    </ScreenContainer>
+  );
+}
+
+function showRecordPermissionAlert(): void {
+  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+  Alert.alert(RECORD_APPOINTMENT_PERMISSION_TITLE, RECORD_APPOINTMENT_PERMISSION_MESSAGE);
+}
+
+function RecordingRoleGate() {
+  const router = useRouter();
+  const { scale } = useResponsive();
+
+  return (
+    <ScreenContainer>
+      <View className="flex-1 justify-center items-center px-6">
+        <View
+          className="bg-stone-100 rounded-full justify-center items-center mb-6"
+          style={{ width: scale(96), height: scale(96) }}
+        >
+          <Mic color="#78716c" size={scale(40)} />
+        </View>
+        <Text className="text-display font-bold text-stone-900 text-center mb-3">
+          {RECORD_APPOINTMENT_PERMISSION_TITLE}
+        </Text>
+        <Text className="text-body text-stone-500 text-center mb-8">
+          {RECORD_APPOINTMENT_PERMISSION_MESSAGE}
+        </Text>
+        <Button
+          variant="secondary"
+          size="lg"
+          onPress={() => router.replace('/')}
+          accessibilityLabel="Return to home"
+        >
+          Back to Home
         </Button>
       </View>
     </ScreenContainer>
@@ -1196,6 +1238,11 @@ function RecordingSession() {
 
   const handleStart = useCallback(
     (slotId: string) => {
+      if (!canRecordAppointments(user?.role)) {
+        showRecordPermissionAlert();
+        return;
+      }
+
       // If another slot owns the recorder, prompt to stop it first
       if (session.recorderBoundToSlotId && session.recorderBoundToSlotId !== slotId) {
         const boundSlot = session.slots.find((s) => s.id === session.recorderBoundToSlotId);
@@ -1245,7 +1292,7 @@ function RecordingSession() {
       startRecordingForSlot(slotId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- startRecordingForSlot accessed via startRecordingRef
-    [session.recorderBoundToSlotId, session.slots, recorder]
+    [session.recorderBoundToSlotId, session.slots, recorder, user?.role]
   );
 
   const startRecordingForSlot = useCallback(
@@ -1493,6 +1540,10 @@ function RecordingSession() {
       // before the most recent `SET_DRAFT_IDS` dispatch — reading fresh here
       // guarantees we see `serverDraftId` / `draftMetadataDirty` / etc.
       const slot = sessionRef.current.slots.find((s) => s.id === slotArg.id) ?? slotArg;
+      if (!canRecordAppointments(user?.role)) {
+        showRecordPermissionAlert();
+        return null;
+      }
       if (slot.segments.length === 0 || slot.uploadStatus === 'uploading') return null;
       if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
       // Synchronous ref guard — prevents a second concurrent upload of the same slot
@@ -1924,7 +1975,7 @@ function RecordingSession() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- netInfo read via networkStateForTelemetry closure; derivation is pure
-    [setUploadStatus, dispatch]
+    [setUploadStatus, dispatch, user?.id, user?.role]
   );
 
   // Phase 2 of autoSaveDraft — the network half. Patches an existing draft in
@@ -1935,6 +1986,7 @@ function RecordingSession() {
   const syncServerDraft = useCallback(
     async (slotId: string, draftSlotId: string) => {
       try {
+        if (!canRecordAppointments(user?.role)) return;
         const slot = sessionRef.current.slots.find((s) => s.id === slotId);
         if (!slot) return;
         if (completedUploadSlotIdsRef.current.has(slotId)) {
@@ -2008,7 +2060,7 @@ function RecordingSession() {
         if (__DEV__) console.warn('[Record] syncServerDraft failed:', error);
       }
     },
-    [dispatch, isConnected, queryClient]
+    [dispatch, isConnected, queryClient, user?.role]
   );
 
   // Schedule phase 2. With DRAFT_DEBOUNCE_MS > 0, delays the server POST so
@@ -2294,6 +2346,10 @@ function RecordingSession() {
     (slotId: string) => {
       const slot = sessionRef.current.slots.find((s) => s.id === slotId);
       if (!slot) return;
+      if (!canRecordAppointments(user?.role)) {
+        showRecordPermissionAlert();
+        return;
+      }
       if (slotHasLiveRecorder(slot)) {
         Alert.alert(
           'Finish Recording First',
@@ -2347,10 +2403,14 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath]
+    [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
   );
 
   const handleSubmitAll = useCallback(() => {
+    if (!canRecordAppointments(user?.role)) {
+      showRecordPermissionAlert();
+      return;
+    }
     if (sessionRef.current.slots.some(slotHasLiveRecorder)) {
       Alert.alert(
         'Finish Active Recordings',
@@ -2451,7 +2511,7 @@ function RecordingSession() {
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
-  }, [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath]);
+  }, [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();
@@ -2708,7 +2768,7 @@ function RecordingSession() {
 
   // Effect: sync pending drafts when network becomes available
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !canRecordAppointments(user.role)) return;
     const unsubscribe = NetInfo.addEventListener((state: any) => {
       if (state.isConnected) {
         draftStorage.syncPending(user.id, (formData) => recordingsApi.create(formData, { isDraft: true })).catch(() => {});
@@ -2719,7 +2779,7 @@ function RecordingSession() {
         unsubscribe();
       }
     };
-  }, [user?.id]);
+  }, [user?.id, user?.role]);
 
   // Effect: on mount (once per user), sweep local drafts whose audio files
   // are missing on disk. Those are "zombie" drafts — they'll render as "Not
@@ -3123,9 +3183,13 @@ function RecordingSession() {
 }
 
 export default function RecordScreen() {
+  const { user } = useAuth();
   const [permissionStatus, setPermissionStatus] = useState<'checking' | 'granted' | 'denied'>('checking');
+  const roleBlocked = !!user && !canRecordAppointments(user.role);
 
   useEffect(() => {
+    if (roleBlocked) return;
+
     getRecordingPermissionsAsync()
       .then(({ granted }) => {
         setPermissionStatus(granted ? 'granted' : 'denied');
@@ -3133,7 +3197,11 @@ export default function RecordScreen() {
       .catch(() => {
         setPermissionStatus('denied');
       });
-  }, []);
+  }, [roleBlocked]);
+
+  if (roleBlocked) {
+    return <RecordingRoleGate />;
+  }
 
   if (permissionStatus === 'checking') {
     return (

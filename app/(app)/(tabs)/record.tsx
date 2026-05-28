@@ -454,6 +454,7 @@ function RecordingSession() {
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
   const backgroundPersistingRef = useRef(false);
   // Track pending slots for "stop A then start B (then C…)" flow. FIFO queue —
   // rapid tap of Start across multiple slots during a stop-in-progress used to
@@ -1033,16 +1034,20 @@ function RecordingSession() {
 
   useEffect(() => {
     clearCheckpointTimer();
+    if (!isAppActive) return;
     if (recorder.state !== 'recording' || !session.recorderBoundToSlotId) return;
     if (checkpointInFlightRef.current) return;
+    if (appStateRef.current !== 'active') return;
 
     checkpointTimerRef.current = setTimeout(() => {
+      if (appStateRef.current !== 'active') return;
       requestRecordingCheckpoint('interval');
     }, RECORDING_CHECKPOINT_MS);
 
     return clearCheckpointTimer;
   }, [
     clearCheckpointTimer,
+    isAppActive,
     recorder.state,
     requestRecordingCheckpoint,
     session.recorderBoundToSlotId,
@@ -2194,12 +2199,17 @@ function RecordingSession() {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       const previousState = appStateRef.current;
       appStateRef.current = nextState;
+      setIsAppActive(nextState === 'active');
 
       if (
         previousState === 'active' &&
         (nextState === 'inactive' || nextState === 'background')
       ) {
-        requestRecordingCheckpoint('background_transition');
+        clearCheckpointTimer();
+        // Do not checkpoint-stop the live recorder on screen lock/background.
+        // Android may only allow microphone capture while the already-started
+        // foreground service is running; stopping here and waiting for
+        // AppState 'active' to restart drops the rest of a screen-off exam.
         persistSessionDraftsForBackground().catch(() => {});
       }
 
@@ -2254,7 +2264,7 @@ function RecordingSession() {
     return () => {
       subscription.remove();
     };
-  }, [persistSessionDraftsForBackground, requestRecordingCheckpoint, setPendingCheckpointResume]);
+  }, [clearCheckpointTimer, persistSessionDraftsForBackground, setPendingCheckpointResume]);
 
   // Effect: auto-save draft after segment-affecting state updates have been
   // processed by React. The ref is set after audio capture and editor commits,

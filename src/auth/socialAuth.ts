@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID } from '../config';
+import { captureMessage } from '../lib/monitoring';
 
 // Lazy-load social auth native modules to avoid crashing on dev client APKs
 // built before these dependencies were added. Each module is only required
@@ -26,6 +27,97 @@ export type AuthResult = {
 let googleConfigured = false;
 let pendingAppleProfileSync: Promise<void> | null = null;
 let resolvePendingAppleProfileSync: (() => void) | null = null;
+
+type GoogleAuthStage =
+  | 'not_configured'
+  | 'configure'
+  | 'native_sign_in'
+  | 'missing_id_token'
+  | 'supabase_exchange';
+
+type JwtPayload = {
+  aud?: unknown;
+  azp?: unknown;
+  iss?: unknown;
+  exp?: unknown;
+};
+
+function errorCodeOf(error: unknown): string {
+  const maybeError = error as { code?: unknown; name?: unknown; status?: unknown };
+  if (typeof maybeError.code === 'string' && maybeError.code.length > 0) return maybeError.code;
+  if (typeof maybeError.status === 'number') return `status_${maybeError.status}`;
+  if (typeof maybeError.name === 'string' && maybeError.name.length > 0) return maybeError.name;
+  return 'unknown';
+}
+
+function errorStatusOf(error: unknown): number | null {
+  const status = (error as { status?: unknown })?.status;
+  return typeof status === 'number' ? status : null;
+}
+
+function decodeJwtPayload(token: string): JwtPayload | null {
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  try {
+    const padded = payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '=');
+    return JSON.parse(atob(padded)) as JwtPayload;
+  } catch {
+    return null;
+  }
+}
+
+function classifyGoogleClientId(value: unknown): 'web' | 'ios' | 'other_google' | 'missing' | 'unknown' {
+  if (typeof value !== 'string' || value.length === 0) return 'missing';
+  if (value === GOOGLE_WEB_CLIENT_ID) return 'web';
+  if (value === GOOGLE_IOS_CLIENT_ID) return 'ios';
+  if (value.endsWith('.apps.googleusercontent.com')) return 'other_google';
+  return 'unknown';
+}
+
+function expState(exp: unknown): 'future' | 'expired' | 'invalid' | 'missing' {
+  if (exp === undefined || exp === null) return 'missing';
+  if (typeof exp !== 'number') return 'invalid';
+  return exp * 1000 > Date.now() ? 'future' : 'expired';
+}
+
+function reportGoogleAuthFailure(
+  stage: GoogleAuthStage,
+  error?: unknown,
+  extra?: Record<string, unknown>
+): void {
+  captureMessage('google_sign_in_failed', 'warning', {
+    tags: {
+      phase: 'auth_sign_in',
+      auth_provider: 'google',
+      google_auth_stage: stage,
+      platform: Platform.OS,
+      error_code: errorCodeOf(error),
+    },
+    extra: {
+      error_status: errorStatusOf(error),
+      google_web_client_configured: GOOGLE_WEB_CLIENT_ID.length > 0,
+      google_ios_client_configured: GOOGLE_IOS_CLIENT_ID.length > 0,
+      ...extra,
+    },
+  });
+}
+
+function googleTokenDiagnostics(idToken: string): Record<string, unknown> {
+  const payload = decodeJwtPayload(idToken);
+  return {
+    id_token_present: true,
+    id_token_payload_decoded: Boolean(payload),
+    id_token_aud: classifyGoogleClientId(payload?.aud),
+    id_token_azp: classifyGoogleClientId(payload?.azp),
+    id_token_issuer:
+      payload?.iss === 'https://accounts.google.com' || payload?.iss === 'accounts.google.com'
+        ? 'accounts_google'
+        : typeof payload?.iss === 'string'
+          ? 'other'
+          : 'missing',
+    id_token_exp: expState(payload?.exp),
+  };
+}
 
 function isGoogleSignInConfiguredForCurrentPlatform(): boolean {
   if (!GOOGLE_WEB_CLIENT_ID) return false;
@@ -90,6 +182,7 @@ export function configureGoogleSignIn(): void {
     });
     googleConfigured = true;
   } catch (error) {
+    reportGoogleAuthFailure('configure', error);
     if (__DEV__) console.error('[socialAuth] GoogleSignin.configure failed:', error);
   }
 }
@@ -101,6 +194,9 @@ export function configureGoogleSignIn(): void {
  */
 export async function signInWithGoogleNative(): Promise<AuthResult> {
   if (!isGoogleSignInConfiguredForCurrentPlatform()) {
+    reportGoogleAuthFailure('not_configured', undefined, {
+      required_ios_client: Platform.OS === 'ios',
+    });
     return {
       error:
         Platform.OS === 'ios'
@@ -124,6 +220,10 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
 
     const idToken = response.data.idToken;
     if (!idToken) {
+      reportGoogleAuthFailure('missing_id_token', undefined, {
+        id_token_present: false,
+        response_type: response.type,
+      });
       return { error: 'Google did not return an identity token. Please try again.' };
     }
 
@@ -132,6 +232,7 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
       token: idToken,
     });
     if (error) {
+      reportGoogleAuthFailure('supabase_exchange', error, googleTokenDiagnostics(idToken));
       if (__DEV__) console.error('[socialAuth] Supabase Google sign-in failed:', error);
       return { error: 'Could not sign you in with Google. Please try again.' };
     }
@@ -148,6 +249,7 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
     if (code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
       return { error: 'Google Play Services is not available on this device.' };
     }
+    reportGoogleAuthFailure('native_sign_in', error);
     if (__DEV__) console.error('[socialAuth] Google sign-in threw:', error);
     return { error: 'Google Sign-In failed. Please try again.' };
   }

@@ -1350,6 +1350,13 @@ function RecordingSession() {
 
           const persistedSlot = buildPersistedSlot(targetSlotId, snapshot);
           if (!persistedSlot) {
+            const orphanedSlot = sessionRef.current.slots.find((s) => s.id === targetSlotId);
+            unbindRecorder();
+            resetCheckpointRefs();
+            recordingSegmentStartedAtMsRef.current = null;
+            if (orphanedSlot) {
+              setAudioState(targetSlotId, orphanedSlot.segments.length > 0 ? 'stopped' : 'idle');
+            }
             recorder.resetWithoutDelete();
             Alert.alert(
               'Recording Error',

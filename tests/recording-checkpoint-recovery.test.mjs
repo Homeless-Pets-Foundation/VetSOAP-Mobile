@@ -57,6 +57,10 @@ test('manual Finish persists the completed draft before clearing recorder state'
   assert.match(src, /setFinishingDraftSlotId\(targetSlotId\)/);
   assert.match(src, /const snapshot = recorder\.getPersistableSnapshot\(\);/);
   assert.match(src, /const persistedSlot = buildPersistedSlot\(targetSlotId, snapshot\);/);
+  assert.match(
+    src,
+    /if \(!persistedSlot\) \{\s*\n\s*const orphanedSlot = sessionRef\.current\.slots\.find\(\(s\) => s\.id === targetSlotId\);\s*\n\s*unbindRecorder\(\);\s*\n\s*resetCheckpointRefs\(\);\s*\n\s*recordingSegmentStartedAtMsRef\.current = null;/
+  );
   assert.match(src, /pendingDraftRecoveryReasonRef\.current\.set\(targetSlotId, 'draft_finish'\);/);
   assert.match(src, /saveAudio\(\s*targetSlotId,\s*snapshot\.audioUri,\s*snapshot\.duration,\s*snapshot\.maxMetering\s*\);/);
   assert.match(src, /const saved = await autoSaveDraftRef\.current\(persistedSlot\);/);

@@ -1037,7 +1037,6 @@ function RecordingSession() {
     if (!isAppActive) return;
     if (recorder.state !== 'recording' || !session.recorderBoundToSlotId) return;
     if (checkpointInFlightRef.current) return;
-    if (appStateRef.current !== 'active') return;
 
     checkpointTimerRef.current = setTimeout(() => {
       if (appStateRef.current !== 'active') return;

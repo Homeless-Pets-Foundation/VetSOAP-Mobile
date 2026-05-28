@@ -426,6 +426,7 @@ function RecordingSession() {
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
   const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
   const [isStashing, setIsStashing] = useState(false);
+  const [finishingDraftSlotId, setFinishingDraftSlotId] = useState<string | null>(null);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
   // Set when an audio session interruption (incoming call, Siri, etc.) tore
   // down the recording mid-stream. The hook captures the partial segment and
@@ -484,9 +485,12 @@ function RecordingSession() {
   // second's catch unbinds while the first's success writes audioState='recording',
   // leaving slot.audioState='recording' with recorderBoundToSlotId=null.
   const startInFlightRef = useRef(false);
-  const autoSaveDraftRef = useRef<(slot: PatientSlot) => Promise<void>>(async () => {});
+  const autoSaveDraftRef = useRef<(slot: PatientSlot) => Promise<boolean>>(async () => false);
   // Guard: prevent the audio-capture effect from saving twice for the same stop
   const audioCaptureDoneRef = useRef(false);
+  // Manual Finish owns its own capture + local draft save so a force-stop after
+  // "Recording Complete" can recover the draft instead of racing the effect path.
+  const manualFinishSlotIdRef = useRef<string | null>(null);
   // Guard: track which slot IDs are actively uploading to prevent double-submission
   // across React render batches (useRef is synchronous; useState is not).
   const uploadingSlotIdsRef = useRef<Set<string>>(new Set());
@@ -765,6 +769,9 @@ function RecordingSession() {
     if (recorder.state !== 'stopped') {
       // Reset guard when recorder leaves stopped state (e.g. after reset → new recording)
       audioCaptureDoneRef.current = false;
+      return () => { if (timerId) clearTimeout(timerId); };
+    }
+    if (manualFinishSlotIdRef.current && manualFinishSlotIdRef.current === session.recorderBoundToSlotId) {
       return () => { if (timerId) clearTimeout(timerId); };
     }
     if (skipNextAudioCaptureRef.current && !audioCaptureDoneRef.current) {
@@ -1405,17 +1412,73 @@ function RecordingSession() {
   );
 
   const handleStop = useCallback(
-    (_slotId: string) => {
+    (slotId: string) => {
       (async () => {
+        const targetSlotId = sessionRef.current.recorderBoundToSlotId ?? slotId;
+        if (manualFinishSlotIdRef.current) return;
+        manualFinishSlotIdRef.current = targetSlotId;
+        setFinishingDraftSlotId(targetSlotId);
+
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
           await recorder.stop();
+
+          const snapshot = recorder.getPersistableSnapshot();
+          if (!snapshot.audioUri) {
+            const boundSlot = sessionRef.current.slots.find((s) => s.id === targetSlotId);
+            unbindRecorder();
+            resetCheckpointRefs();
+            recordingSegmentStartedAtMsRef.current = null;
+            if (boundSlot) {
+              setAudioState(targetSlotId, boundSlot.segments.length > 0 ? 'stopped' : 'idle');
+            }
+            recorder.reset();
+            Alert.alert(
+              'Recording Error',
+              'The recording could not be captured. Any previously saved segments are still available.'
+            );
+            return;
+          }
+
+          const persistedSlot = buildPersistedSlot(targetSlotId, snapshot);
+          if (!persistedSlot) {
+            recorder.resetWithoutDelete();
+            Alert.alert(
+              'Recording Error',
+              'The recording could not be linked to this patient. Please try recording again.'
+            );
+            return;
+          }
+
+          audioCaptureDoneRef.current = true;
+          pendingDraftSlotIdRef.current = null;
+          pendingDraftMinSegmentCountRef.current = 0;
+          pendingDraftRecoveryReasonRef.current.set(targetSlotId, 'draft_finish');
+          recordingSegmentStartedAtMsRef.current = null;
+          saveAudio(
+            targetSlotId,
+            snapshot.audioUri,
+            snapshot.duration,
+            snapshot.maxMetering
+          );
+          recorder.resetWithoutDelete();
+
+          const saved = await autoSaveDraftRef.current(persistedSlot);
+          if (!saved) {
+            Alert.alert(
+              'Recording Saved',
+              'The recording is available on this screen, but it could not be saved for restart recovery. Submit it or use Save for Later before leaving the app.'
+            );
+          }
         } catch {
           Alert.alert('Recording Error', 'Failed to stop recording.');
+        } finally {
+          manualFinishSlotIdRef.current = null;
+          setFinishingDraftSlotId((current) => current === targetSlotId ? null : current);
         }
       })().catch(() => {});
     },
-    [recorder]
+    [buildPersistedSlot, recorder, resetCheckpointRefs, saveAudio, setAudioState, unbindRecorder]
   );
 
   const handleContinueRecording = useCallback(
@@ -2151,27 +2214,24 @@ function RecordingSession() {
         const recoveryReason =
           pendingDraftRecoveryReasonRef.current.get(slot.id) ?? 'draft_finish';
         pendingDraftRecoveryReasonRef.current.delete(slot.id);
-        if (recoveryReason === 'checkpoint' || recoveryReason === 'background_flush') {
-          await recoveryIntent.save({
-            userId: user?.id,
-            draftSlotId,
-            reason: recoveryReason,
-          });
-        } else {
-          await recoveryIntent.clearForDraftSlot(draftSlotId);
-        }
+        await recoveryIntent.save({
+          userId: user?.id,
+          draftSlotId,
+          reason: recoveryReason,
+        });
 
         if (completedUploadSlotIdsRef.current.has(slot.id)) {
           draftStorage.deleteDraft(slot.id).catch(() => {});
           recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
-          return;
+          return true;
         }
 
-        if (!isConnected || submitIntentSlotIdsRef.current.has(slot.id)) return;
+        if (!isConnected || submitIntentSlotIdsRef.current.has(slot.id)) return true;
 
         // Phase 2: server sync. Debounced so a user who immediately taps
         // Submit never writes a draft row to the server.
         scheduleDraftSync(slot.id, draftSlotId);
+        return true;
       } catch (error) {
         // Draft save is best-effort — never surface errors to the user.
         // The recording is still in session state and can still be submitted.
@@ -2187,6 +2247,7 @@ function RecordingSession() {
           },
         });
         if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
+        return false;
       }
     },
     [dispatch, isConnected, scheduleDraftSync, user?.id]
@@ -2355,6 +2416,13 @@ function RecordingSession() {
     (slotId: string) => {
       const slot = sessionRef.current.slots.find((s) => s.id === slotId);
       if (!slot) return;
+      if (finishingDraftSlotId === slotId) {
+        Alert.alert(
+          'Saving Recording',
+          'Please wait until the recording is saved before submitting.'
+        );
+        return;
+      }
       if (!canRecordAppointments(user?.role)) {
         showRecordPermissionAlert();
         return;
@@ -2412,12 +2480,19 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
+    [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
   );
 
   const handleSubmitAll = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
       showRecordPermissionAlert();
+      return;
+    }
+    if (finishingDraftSlotId) {
+      Alert.alert(
+        'Saving Recording',
+        'Please wait until the recording is saved before submitting all patients.'
+      );
       return;
     }
     if (sessionRef.current.slots.some(slotHasLiveRecorder)) {
@@ -2520,7 +2595,7 @@ function RecordingSession() {
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
-  }, [clearSubmitIntent, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
+  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
     addSlot();
@@ -2691,6 +2766,7 @@ function RecordingSession() {
           pendingConfirm: null,
         };
         restoreSession([restoredSlot]);
+        recoveryIntent.clearForDraftSlot(draft.slotId).catch(() => {});
       } catch (error) {
         if (__DEV__) console.warn('[Record] loadDraft failed:', error);
         Alert.alert('Error', 'Could not load the draft recording.');
@@ -2938,7 +3014,8 @@ function RecordingSession() {
   const showStashList = !stashesLoading && stashCount > 0 && !hasUnsavedRecordings;
 
   // Show stash button when there are unsaved recordings to stash
-  const canStash = hasUnsavedRecordings && !isSubmittingAll && !isStashing;
+  const canStash =
+    hasUnsavedRecordings && !isSubmittingAll && !isStashing && finishingDraftSlotId === null;
   const isAnyUploading = session.slots.some((s) => s.uploadStatus === 'uploading');
 
   // Upload overlay visibility
@@ -2953,7 +3030,7 @@ function RecordingSession() {
   const recorderBusy =
     session.recorderBoundToSlotId !== null &&
     (recorder.state === 'recording' || recorder.state === 'paused');
-  const hasActiveRecording = session.slots.some(slotHasLiveRecorder);
+  const hasActiveRecording = session.slots.some(slotHasLiveRecorder) || finishingDraftSlotId !== null;
 
   const renderSlotCard = useCallback(
     ({ item, index }: { item: PatientSlot; index: number }) => {
@@ -2966,6 +3043,7 @@ function RecordingSession() {
           isRecorderOwner={isRecorderOwner}
           recorder={recorder}
           recorderBusy={recorderBusy && !isRecorderOwner}
+          isFinishSaving={finishingDraftSlotId === item.id}
           templates={templates}
           templatesLoading={templatesLoading}
           width={screenWidth}
@@ -3002,6 +3080,7 @@ function RecordingSession() {
       handleSubmitSingle,
       handleEditRecording,
       slotHasLiveRecorder,
+      finishingDraftSlotId,
     ]
   );
 

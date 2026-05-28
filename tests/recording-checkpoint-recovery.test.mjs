@@ -38,11 +38,29 @@ test('record screen persists PHI-free recovery intent after local draft save and
   assert.match(src, /pendingDraftRecoveryReasonRef/);
   assert.match(src, /reason: recoveryReason/);
   assert.match(src, /recoveryIntent\.save\(\{/);
-  assert.match(src, /recoveryReason === 'checkpoint' \|\| recoveryReason === 'background_flush'/);
-  assert.match(src, /recoveryIntent\.clearForDraftSlot\(draftSlotId\)/);
+  assert.doesNotMatch(src, /recoveryReason === 'checkpoint' \|\| recoveryReason === 'background_flush'/);
+  assert.match(src, /pendingDraftRecoveryReasonRef\.current\.set\(slotId, 'draft_finish'\)/);
+  assert.match(src, /recoveryIntent\.clearForDraftSlot\(draft\.slotId\)/);
   assert.match(src, /userId: user\?\.id/);
   assert.match(src, /recoveryIntent\.clearForDraftSlot\(slot\.id\)/);
   assert.match(src, /recoveryIntent\.clearForDraftSlot\(slotId\)/);
+});
+
+test('manual Finish persists the completed draft before clearing recorder state', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+
+  assert.match(src, /const manualFinishSlotIdRef = useRef<string \| null>\(null\);/);
+  assert.match(src, /const \[finishingDraftSlotId, setFinishingDraftSlotId\] = useState<string \| null>\(null\);/);
+  assert.match(src, /manualFinishSlotIdRef\.current === session\.recorderBoundToSlotId/);
+  assert.match(src, /setFinishingDraftSlotId\(targetSlotId\)/);
+  assert.match(src, /const snapshot = recorder\.getPersistableSnapshot\(\);/);
+  assert.match(src, /const persistedSlot = buildPersistedSlot\(targetSlotId, snapshot\);/);
+  assert.match(src, /pendingDraftRecoveryReasonRef\.current\.set\(targetSlotId, 'draft_finish'\);/);
+  assert.match(src, /saveAudio\(\s*targetSlotId,\s*snapshot\.audioUri,\s*snapshot\.duration,\s*snapshot\.maxMetering\s*\);/);
+  assert.match(src, /const saved = await autoSaveDraftRef\.current\(persistedSlot\);/);
+  assert.match(src, /recorder\.resetWithoutDelete\(\);/);
+  assert.match(src, /isFinishSaving=\{finishingDraftSlotId === item\.id\}/);
+  assert.match(src, /hasActiveRecording = session\.slots\.some\(slotHasLiveRecorder\) \|\| finishingDraftSlotId !== null/);
 });
 
 test('recoveryIntent stores only route and IDs, never draft form data', async () => {

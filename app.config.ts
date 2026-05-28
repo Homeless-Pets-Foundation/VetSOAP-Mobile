@@ -2,8 +2,28 @@ import { ExpoConfig, ConfigContext } from 'expo/config';
 
 const IS_DEV = process.env.APP_VARIANT === 'development';
 const IS_PRODUCTION = process.env.APP_VARIANT === 'production';
+const IS_IOS_EAS_BUILD = process.env.EAS_BUILD_PLATFORM === 'ios';
+
+function requireGoogleIosBuildConfig(): void {
+  if (!IS_IOS_EAS_BUILD || IS_DEV) return;
+
+  const missing = [
+    'EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID',
+    'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID',
+    'EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME',
+  ].filter((key) => !process.env[key]);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing Google Sign-In iOS build config: ${missing.join(', ')}. ` +
+        'Set these in the EAS environment before building iOS.'
+    );
+  }
+}
 
 export default ({ config }: ConfigContext): ExpoConfig => {
+  requireGoogleIosBuildConfig();
+
   const plugins: ExpoConfig['plugins'] = [
     'expo-router',
     'expo-asset',
@@ -82,7 +102,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     name: 'Captivet',
     slug: 'vetsoap-mobile',
     scheme: 'captivet',
-    version: '1.12.3',
+    version: '1.12.4',
     orientation: 'default',
     icon: './assets/icon.png',
     userInterfaceStyle: 'light',

@@ -47,6 +47,7 @@ interface PatientSlotCardProps {
   isRecorderOwner: boolean;
   recorder: UseAudioRecorderReturn;
   recorderBusy: boolean;
+  isFinishSaving: boolean;
   templates: Template[];
   templatesLoading: boolean;
   width: number;
@@ -105,6 +106,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   isRecorderOwner,
   recorder,
   recorderBusy,
+  isFinishSaving,
   templates,
   templatesLoading,
   width,
@@ -196,9 +198,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const metering = isRecorderOwner ? recorder.metering : -160;
 
   // Allow recording when idle (even with existing segments — for continuation)
-  const canStartRecording = hasRequiredFields && audioState === 'idle' && !recorder.isStarting;
+  const canStartRecording = hasRequiredFields && audioState === 'idle' && !recorder.isStarting && !isFinishSaving;
   const showSubmitCard = hasRequiredFields && slot.segments.length > 0 && slot.uploadStatus !== 'success';
-  const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading';
+  const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading' && !isFinishSaving;
 
   return (
     <ScrollView
@@ -251,7 +253,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
         {/* Status badge */}
         <View className="mb-4" accessibilityLiveRegion="polite">
-          {isRecording && isRecorderOwner ? (
+          {isFinishSaving ? (
+            <Badge variant="warning">Saving recording...</Badge>
+          ) : isRecording && isRecorderOwner ? (
             <View className="flex-row items-center">
               <PulsingDot />
               <Badge variant="danger">Recording...</Badge>
@@ -382,7 +386,13 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           )}
 
           {/* Stopped with segments: continue, edit, or discard */}
-          {isStopped && hasSegments && (
+          {isStopped && hasSegments && isFinishSaving && (
+            <Text className="text-body-sm text-stone-500 text-center" accessibilityLiveRegion="polite">
+              Saving recording...
+            </Text>
+          )}
+
+          {isStopped && hasSegments && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
               <Button variant="primary" size="lg" onPress={handleContinueRecording} icon={<Plus color="#fff" size={18} />}>
                 Continue Recording
@@ -405,14 +415,14 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           )}
 
           {/* Stopped with no segments (error recovery) */}
-          {isStopped && !hasSegments && (
+          {isStopped && !hasSegments && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)}>
               <Button variant="primary" onPress={handleContinueRecording}>Try Again</Button>
             </Animated.View>
           )}
         </View>
 
-        {isStopped && hasSegments && !isRecorderOwner && (
+        {isStopped && hasSegments && !isRecorderOwner && !isFinishSaving && (
           <Text className="text-caption text-stone-400 mt-2" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             Processing usually takes 1-2 minutes.
           </Text>

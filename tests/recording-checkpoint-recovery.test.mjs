@@ -12,21 +12,23 @@ test('record screen checkpoints active recordings without stopping on screen loc
   const src = await read('app/(app)/(tabs)/record.tsx');
 
   assert.match(src, /const RECORDING_CHECKPOINT_MS = 5 \* 60 \* 1000;/);
-  assert.match(src, /const BACKGROUND_FLUSH_MIN_MS = 30_000;/);
-  assert.match(src, /type RecordingCheckpointReason = 'interval' \| 'background_transition';/);
+  assert.doesNotMatch(src, /BACKGROUND_FLUSH_MIN_MS/);
+  assert.match(src, /type RecordingCheckpointReason = 'interval';/);
   assert.match(src, /const requestRecordingCheckpoint = useCallback/);
   assert.match(src, /const \[isAppActive, setIsAppActive\] = useState\(AppState\.currentState === 'active'\);/);
   assert.match(src, /if \(!isAppActive\) return;/);
   assert.match(src, /requestRecordingCheckpoint\('interval'\)/);
   assert.match(src, /if \(appStateRef\.current !== 'active'\) return;\s*\n\s*requestRecordingCheckpoint\('interval'\);/);
   assert.doesNotMatch(src, /requestRecordingCheckpoint\('background_transition'\)/);
+  assert.doesNotMatch(src, /checkpointPendingResume/);
+  assert.doesNotMatch(src, /background_flush/);
   assert.match(src, /Do not checkpoint-stop the live recorder on screen lock\/background/);
   assert.match(src, /clearCheckpointTimer\(\);\s*\n\s*\/\/ Do not checkpoint-stop the live recorder on screen lock\/background/);
   assert.match(src, /persistSessionDraftsForBackground\(\)\.catch\(\(\) => \{\}\);/);
+  assert.match(src, /const handleAppStateChange = \(nextState: AppStateStatus\) => \{\s*\n\s*try \{/);
+  assert.match(src, /catch \(error\) \{\s*\n\s*if \(__DEV__\) console\.error\('\[Record\] AppState handler failed:', error\);/);
   assert.match(src, /checkpointRestartSlotIdRef\.current === slotId/);
   assert.match(src, /saveAudio\(\s*slotId,\s*audioUri,/);
-  assert.match(src, /recorderSnapshotRef\.current\(\)/);
-  assert.match(src, /checkpoint_saved_direct/);
   assert.match(src, /startRecordingRef\.current\(slotId\);/);
   assert.match(src, /RECORDING_KEEP_AWAKE_TAG/);
 });

@@ -797,6 +797,90 @@ export const draftStorage = {
     }
   },
 
+  /** True if this draft still has at least one segment audio file on disk. */
+  async draftHasLocalAudio(meta: DraftMetadata): Promise<boolean> {
+    if (!meta.segments || meta.segments.length === 0) return false;
+    return meta.segments.some((s) => fileExists(s.uri));
+  },
+
+  /**
+   * Status-aware, age-based eviction of local drafts. Bounds disk growth on
+   * shared tablets WITHOUT silently destroying clinical data.
+   *
+   * Policy per draft older than `warnAgeDays`:
+   *  - Server-confirmed uploaded (serverDraftId set AND server status not in
+   *    {draft, failed, error}): the local copy is redundant. At >= maxAgeDays
+   *    the local audio + metadata are deleted silently — the real recording
+   *    lives on the server; the server row is left untouched.
+   *  - Un-sent (no serverDraftId, server still draft/failed/error, or status
+   *    unverifiable): NEVER deleted here. Returned to the caller so the UI can
+   *    warn first — `expiring` (>= warnAgeDays, < maxAgeDays) drives a heads-up
+   *    indicator; `expired` (>= maxAgeDays) drives a Submit-now / Delete prompt.
+   *
+   * Offline (isOnline === false): the uploaded-confirm branch is skipped for
+   * drafts carrying a serverDraftId (status unverifiable -> defer, never
+   * delete). Drafts with no serverDraftId still classify with no network.
+   */
+  async evictExpired(
+    opts: { maxAgeDays?: number; warnAgeDays?: number; isOnline?: boolean },
+    getStatus?: (serverDraftId: string) => Promise<string | null>
+  ): Promise<{ expired: DraftMetadata[]; expiring: DraftMetadata[] }> {
+    const expired: DraftMetadata[] = [];
+    const expiring: DraftMetadata[] = [];
+    const userId = currentUserId;
+    if (!userId) return { expired, expiring };
+
+    const maxAgeDays = opts.maxAgeDays ?? 30;
+    const warnAgeDays = opts.warnAgeDays ?? 23;
+    const isOnline = opts.isOnline ?? true;
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    try {
+      const drafts = await this.listDrafts();
+      for (const draft of drafts) {
+        const savedMs = new Date(draft.savedAt).getTime();
+        if (isNaN(savedMs)) continue; // unparseable timestamp — never evict blind
+        const ageDays = (now - savedMs) / dayMs;
+        if (ageDays < warnAgeDays) continue;
+
+        let uploadedConfirmed = false;
+        if (draft.serverDraftId && isOnline && getStatus) {
+          try {
+            const status = await getStatus(draft.serverDraftId);
+            // null/unknown => unverifiable => treat as un-sent (defer).
+            uploadedConfirmed =
+              status != null &&
+              status !== 'draft' &&
+              status !== 'failed' &&
+              status !== 'error';
+          } catch {
+            uploadedConfirmed = false; // unverifiable -> defer
+          }
+        }
+
+        if (uploadedConfirmed) {
+          // Redundant local copy. Delete silently only once truly old.
+          if (ageDays >= maxAgeDays) {
+            await this.deleteDraft(draft.slotId);
+          }
+          continue;
+        }
+
+        // Un-sent (or unverifiable): warn-first, never auto-delete here.
+        if (ageDays >= maxAgeDays) {
+          expired.push(draft);
+        } else {
+          expiring.push(draft);
+        }
+      }
+    } catch {
+      // Best-effort
+    }
+
+    return { expired, expiring };
+  },
+
   /**
    * Sweep orphaned drafts whose local audio files have been deleted (e.g. by
    * an older client that stashed a session before stash preserved

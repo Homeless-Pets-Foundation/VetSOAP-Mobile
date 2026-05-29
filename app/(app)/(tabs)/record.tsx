@@ -13,6 +13,7 @@ import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import { OVERSIZED_CONFIRM_COPY, SILENT_CHECK_COPY } from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
+import { stashStorage } from '../../../src/lib/stashStorage';
 import { recoveryIntent, type RecoveryIntentReason } from '../../../src/lib/recoveryIntent';
 import {
   getRecordingPermissionsAsync,
@@ -2786,6 +2787,90 @@ function RecordingSession() {
     // own try/catch — this only wipes leftovers.
     cleanupSplitTempDirs(user.id);
   }, [user?.id, queryClient]);
+
+  // Effect: status-aware 30-day eviction of un-sent recordings (drafts +
+  // stashes). Bounds disk growth on shared tablets WITHOUT silently destroying
+  // clinical data: server-confirmed-uploaded drafts are swept silently inside
+  // evictExpired; un-sent drafts/stashes are surfaced warn-first and only
+  // deleted after the vet acknowledges the prompt. Keyed on user.id (not a
+  // lifetime boolean) so a shared-tablet user switch (A → sign-out → B without
+  // unmount) re-sweeps for each user instead of silently skipping everyone
+  // after the first.
+  const evictionSweptUserRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!user?.id) return;
+    if (evictionSweptUserRef.current === user.id) return;
+    evictionSweptUserRef.current = user.id;
+    const online = isConnected !== false;
+    (async () => {
+      try {
+        const getStatus = async (id: string): Promise<string | null> => {
+          try {
+            const rec = await recordingsApi.get(id);
+            return rec?.status ?? null;
+          } catch {
+            return null;
+          }
+        };
+        const draftResult = await draftStorage.evictExpired(
+          { maxAgeDays: 30, warnAgeDays: 23, isOnline: online },
+          getStatus
+        );
+        const stashResult = await stashStorage.evictExpired({ maxAgeDays: 30, warnAgeDays: 23 });
+
+        const expiredDrafts = draftResult.expired;
+        const expiredStashes = stashResult.expired;
+        const totalExpired = expiredDrafts.length + expiredStashes.length;
+        const totalExpiring = draftResult.expiring.length + stashResult.expiring.length;
+
+        if (totalExpired > 0) {
+          const n = totalExpired;
+          const noun = n === 1 ? 'recording' : 'recordings';
+          const verb = n === 1 ? 'is' : 'are';
+          const obj = n === 1 ? 'it' : 'them';
+          const extra = totalExpiring > 0 ? ` ${totalExpiring} more will expire soon.` : '';
+          Alert.alert(
+            'Recordings Expiring',
+            `${n} ${noun} on this device ${verb} over 30 days old and still not sent for SOAP notes. Submit ${obj} now, or delete from this device?${extra}`,
+            [
+              { text: 'Keep for now', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: () => {
+                  (async () => {
+                    for (const draft of expiredDrafts) {
+                      try {
+                        if (draft.serverDraftId) {
+                          await recordingsApi.delete(draft.serverDraftId).catch(() => {});
+                        }
+                        await draftStorage.deleteDraft(draft.slotId);
+                      } catch {
+                        // best-effort
+                      }
+                    }
+                    for (const stash of expiredStashes) {
+                      try {
+                        await deleteStash(stash.id);
+                      } catch {
+                        // best-effort
+                      }
+                    }
+                    queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+                  })().catch(() => {});
+                },
+              },
+            ]
+          );
+        } else if (totalExpiring > 0 && __DEV__) {
+          console.log(`[record] ${totalExpiring} unsent recording(s) approaching 30-day expiry`);
+        }
+      } catch (error) {
+        if (__DEV__) console.error('[record] eviction sweep failed:', error);
+      }
+    })().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per user; isConnected read via closure at mount
+  }, [user?.id]);
 
   const handleResumeStash = useCallback(
     (stashId: string) => {

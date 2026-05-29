@@ -18,7 +18,39 @@ import { Card } from '../../../src/components/ui/Card';
 import { IconButton } from '../../../src/components/ui/IconButton';
 import { ListItem } from '../../../src/components/ui/ListItem';
 import { Toggle } from '../../../src/components/ui/Toggle';
+import { draftStorage } from '../../../src/lib/draftStorage';
+import { stashStorage } from '../../../src/lib/stashStorage';
 import Constants from 'expo-constants';
+
+/**
+ * Count un-sent recordings on this device for the current user: local drafts
+ * with audio segments, plus stashed (deliberately-parked) sessions. Used to
+ * warn the vet before sign-out that work will stay on the device. Best-effort:
+ * any failure returns the partial count and never blocks sign-out. Assumes
+ * draftStorage/stashStorage user scoping is already set (AuthProvider.fetchUser),
+ * which is guaranteed once Settings renders.
+ */
+async function countUnsentRecordings(): Promise<number> {
+  let drafts = 0;
+  try {
+    const list = await draftStorage.listDrafts();
+    // Count only drafts whose audio still exists on disk — a draft with metadata
+    // but no segment files is a zombie (cleanupOrphaned sweeps it), not unsent
+    // work, so it must not inflate the pre-sign-out warning.
+    const hasAudio = await Promise.all(list.map((meta) => draftStorage.draftHasLocalAudio(meta)));
+    drafts = hasAudio.filter(Boolean).length;
+  } catch {
+    // best-effort
+  }
+  let stashes = 0;
+  try {
+    const sessions = await stashStorage.getStashedSessions();
+    stashes = sessions.filter((s) => !s.resumedAt).length;
+  } catch {
+    // best-effort
+  }
+  return drafts + stashes;
+}
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -145,7 +177,31 @@ export default function SettingsScreen() {
 
   const handleSignOut = () => {
     if (user?.role !== 'support_staff') {
-      showStandardSignOutPrompt();
+      // Non-support-staff: recordings now SURVIVE logout (2026-05-29 decision).
+      // Warn the vet that unsent work stays parked on this device, with a path
+      // to go review/submit it. Best-effort count; never blocks sign-out.
+      countUnsentRecordings()
+        .then((unsentCount) => {
+          if (unsentCount > 0) {
+            // Haptic only on the warning path; showStandardSignOutPrompt fires
+            // its own Warning haptic, so firing here too would double-pulse.
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+            Alert.alert(
+              'Unsent Recordings',
+              `You have ${unsentCount} recording${unsentCount === 1 ? '' : 's'} on this device not yet sent for SOAP notes. They'll stay on this device — sign out anyway?`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Review', onPress: () => { router.replace('/(app)/(tabs)/record'); } },
+                { text: 'Sign Out', style: 'destructive', onPress: () => runSignOut('best_effort') },
+              ]
+            );
+          } else {
+            showStandardSignOutPrompt();
+          }
+        })
+        .catch(() => {
+          showStandardSignOutPrompt();
+        });
       return;
     }
 

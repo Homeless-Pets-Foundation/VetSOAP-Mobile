@@ -229,6 +229,49 @@ export const stashStorage = {
     }
   },
 
+  /**
+   * Age-based eviction of stashed sessions. A stash is a deliberately-parked
+   * UN-SENT recording, so this NEVER deletes silently — it only classifies by
+   * age and returns the candidates so the caller can warn-first (mirror of
+   * draftStorage.evictExpired). Actual removal happens only after the vet
+   * acknowledges the prompt. Uses `stashedAt` for age; ignores resumed stashes
+   * (pinned to an active session, not parked).
+   */
+  async evictExpired(opts: {
+    maxAgeDays?: number;
+    warnAgeDays?: number;
+  }): Promise<{ expired: StashedSession[]; expiring: StashedSession[] }> {
+    const expired: StashedSession[] = [];
+    const expiring: StashedSession[] = [];
+    const userId = currentUserId;
+    if (!userId) return { expired, expiring };
+
+    const maxAgeDays = opts.maxAgeDays ?? 30;
+    const warnAgeDays = opts.warnAgeDays ?? 23;
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    try {
+      const sessions = await this.getStashedSessions();
+      for (const session of sessions) {
+        if (session.resumedAt) continue;
+        const savedMs = new Date(session.stashedAt).getTime();
+        if (isNaN(savedMs)) continue; // unparseable timestamp — never evict blind
+        const ageDays = (now - savedMs) / dayMs;
+        if (ageDays < warnAgeDays) continue;
+        if (ageDays >= maxAgeDays) {
+          expired.push(session);
+        } else {
+          expiring.push(session);
+        }
+      }
+    } catch {
+      // Best-effort
+    }
+
+    return { expired, expiring };
+  },
+
   async clearAllStashes(): Promise<void> {
     try {
       await this.deleteAllChunks();

@@ -187,7 +187,7 @@ test('auth supports required recovery preservation before destructive sign-out c
   );
   assert.match(
     auth,
-    /await preserveSupportStaffRecordings\(activeUserRef\.current, recoveryMode\);[\s\S]*?await withTimeout\(performPhiCleanup\(\), 3000, 'phi_cleanup'\);/
+    /await preserveSupportStaffRecordings\(activeUserRef\.current, recoveryMode\);[\s\S]*?await withTimeout\(clearTransientCaches\(\), 3000, 'transient_caches_cleanup'\);/
   );
   assert.match(auth, /preserveSupportStaffRecordings\(activeUserRef\.current, 'best_effort'\)/);
 });

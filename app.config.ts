@@ -165,10 +165,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         'android.permission.ACCESS_COARSE_LOCATION',
         'android.permission.CAMERA',
         // Google Play rejected versionCode 45 under the photo/video
-        // permissions policy. expo-screen-capture declares READ_MEDIA_IMAGES
-        // for its addScreenshotListener API (Android 13 only), which we do
-        // not use — we only call preventScreenCaptureAsync. VIDEO is blocked
-        // pre-emptively in case any transitive Android dep adds it later.
+        // permissions policy. expo-screen-capture (still installed but now
+        // unused — screen-capture prevention was removed; see CLAUDE.md
+        // APP_VARIANT note) autolinks and declares READ_MEDIA_IMAGES for its
+        // addScreenshotListener API (Android 13 only), which we never call.
+        // VIDEO is blocked pre-emptively in case any transitive Android dep
+        // adds it later.
         'android.permission.READ_MEDIA_IMAGES',
         'android.permission.READ_MEDIA_VIDEO',
       ],

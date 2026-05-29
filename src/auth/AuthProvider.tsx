@@ -3,8 +3,6 @@ import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import type { Session } from '@supabase/supabase-js';
-import Constants from 'expo-constants';
-import * as ScreenCapture from 'expo-screen-capture';
 import { Paths, Directory, File as ExpoFile } from 'expo-file-system';
 import { usePathname, useRouter } from 'expo-router';
 import { safeDeleteFile } from '../lib/fileOps';
@@ -419,16 +417,22 @@ async function preserveSupportStaffRecordings(
   }
 }
 
-async function performPhiCleanup(): Promise<void> {
+/**
+ * Clear only genuinely-transient, non-PHI scratch state on logout.
+ *
+ * Intentionally does NOT delete local drafts, stashes, or their audio: per the
+ * 2026-05-29 owner decision (vet recordings carry no security concern),
+ * recordings must survive every logout — explicit sign-out and involuntary
+ * session-expiry alike — and reappear when that user signs back in. Per-user
+ * disk scoping (rule 13) keeps them isolated on shared tablets; bounded growth
+ * is handled by the status-aware eviction sweep, not by wiping on logout.
+ *
+ * The targets below are all scratch/cache scoped (cacheDirectory or in-memory),
+ * so none can touch documentDirectory/drafts/** or stashed-audio/**.
+ */
+async function clearTransientCaches(): Promise<void> {
   try {
     await Promise.all([
-      stashStorage.clearAllStashes().catch(() =>
-        stashStorage.clearAllStashes()
-      ).catch(() => {}),
-      stashAudioManager.deleteAllStashedAudio().catch(() =>
-        stashAudioManager.deleteAllStashedAudio()
-      ).catch(() => {}),
-      draftStorage.clearAll().catch(() => {}),
       Promise.resolve(cleanupAudioCache()),
       Promise.resolve(audioTempFiles.cleanupAll()),
       Promise.resolve(clearPeakCache()),
@@ -1178,10 +1182,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Clear cached PHI from React Query
     queryClient.clear();
 
-    // Await critical PHI cleanup before clearing auth state.
-    // This prevents a race where the next user signs in while the previous
-    // user's stash data and audio files are still on disk.
-    await withTimeout(performPhiCleanup(), 3000, 'phi_cleanup');
+    // Await transient-cache cleanup before clearing auth state so in-memory
+    // bridges + cacheDirectory scratch are flushed. Drafts, stashes, and their
+    // audio intentionally REMAIN on disk across logout (rule 8); per-user disk
+    // scoping (rule 13) keeps them isolated on shared tablets.
+    await withTimeout(clearTransientCaches(), 3000, 'transient_caches_cleanup');
 
     // Now clear stash user scoping and auth state
     setStashUserId(null);
@@ -1212,16 +1217,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     activeUserRef.current = user;
   }, [user]);
-
-  // Block screenshots / screen recording of PHI in production builds only.
-  // Gated on extra.isProduction (set by APP_VARIANT=production in app.config.ts)
-  // so dev sessions keep normal capture for debugging. Fire-and-forget with
-  // .catch() — a native failure must not crash Hermes (rules 4 + 9).
-  useEffect(() => {
-    const isProduction = Constants.expoConfig?.extra?.isProduction === true;
-    if (!isProduction) return;
-    ScreenCapture.preventScreenCaptureAsync().catch(() => {});
-  }, []);
 
   // Mutex for token refresh: prevents concurrent 401 handlers from racing
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
@@ -1450,14 +1445,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (__DEV__) console.log('[Auth] no access_token, clearing session');
             apiClient.setToken(null);
             await preserveSupportStaffRecordings(activeUserRef.current, 'best_effort');
-            // Full PHI cleanup before clearing auth state — mirrors handleSignOut.
-            // Prevents the next user on a shared tablet from seeing stashed patient
-            // data, drafts, cached audio, or waveform peaks when a session expires
-            // or is revoked by the server. Each step is bounded by withTimeout so
-            // a hung native bridge can't trap setIsLoading(true) forever — the
-            // common observable symptom is a blank spinner on cold start that
-            // only clears via force-quit + relaunch.
-            await withTimeout(performPhiCleanup(), 3000, 'phi_cleanup');
+            // Transient-cache cleanup before clearing auth state — mirrors
+            // handleSignOut. Clears only cached audio, waveform peaks, and
+            // in-memory bridges; drafts/stashes/their audio intentionally REMAIN
+            // on disk across an expired/revoked session (rule 8), isolated per
+            // user (rule 13). Each step is bounded by withTimeout so a hung
+            // native bridge can't trap setIsLoading(true) forever — the common
+            // observable symptom is a blank spinner on cold start that only
+            // clears via force-quit + relaunch.
+            await withTimeout(clearTransientCaches(), 3000, 'transient_caches_cleanup');
             await withTimeout(signOutNativeGoogle(), 2000, 'google_signout');
             await withTimeout(
               secureStorage.clearAll().catch(() => {}),

@@ -204,7 +204,11 @@ export const secureStorage = {
     try { await SecureStore.deleteItemAsync('vetsoap:refresh_token'); } catch { /* ignore */ }
     try { await SecureStore.deleteItemAsync('vetsoap:session'); } catch { /* ignore */ }
     try { await SecureStore.deleteItemAsync('vetsoap:biometric_enabled'); } catch { /* ignore */ }
-    try { await SecureStore.deleteItemAsync(KEYS.RECOVERY_INTENT); } catch { /* ignore */ }
+    // RECOVERY_INTENT is intentionally NOT deleted here. clearAll() runs on both
+    // explicit sign-out and involuntary session-expiry; wiping recovery intent on
+    // either path would orphan a user's un-uploaded recording (the "Lela bug").
+    // recoveryIntent.clear()/clearForDraftSlot() still clear it at the right
+    // moments (post-submit, record.tsx). DEVICE_ID is likewise preserved.
   },
 
   async getRecoveryIntentRaw(): Promise<string | null> {

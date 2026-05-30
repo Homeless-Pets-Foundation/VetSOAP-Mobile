@@ -256,11 +256,11 @@ export default function SettingsScreen() {
             <View className="w-12 h-12 rounded-full bg-brand-500 justify-center items-center mr-3.5">
               <User color="#fff" size={iconMd} />
             </View>
-            <View>
-              <Text className="text-body-lg font-semibold text-stone-900">
+            <View className="flex-1">
+              <Text className="text-body-lg font-semibold text-stone-900" numberOfLines={1}>
                 {user?.fullName || 'User'}
               </Text>
-              <Text className="text-body-sm text-stone-500 mt-0.5">
+              <Text className="text-body-sm text-stone-500 mt-0.5" numberOfLines={1}>
                 {user?.email || ''}
               </Text>
               {user?.role && (
@@ -278,19 +278,19 @@ export default function SettingsScreen() {
         </Text>
 
         {biometricAvailable && (
-          <Card className="mb-2">
-            <View className="flex-row items-center flex-1">
-              <Shield color="#0d8775" size={iconSm} style={{ marginRight: 12 }} />
+          <ListItem
+            title={`${biometricType} Lock`}
+            subtitle={`Require ${biometricType.toLowerCase()} when returning to the app`}
+            leading={<Shield color="#0d8775" size={iconSm} />}
+            trailing={
               <Toggle
                 value={biometricEnabled}
                 onValueChange={toggleBiometric}
-                label={`${biometricType} Lock`}
-                description={`Require ${biometricType.toLowerCase()} when returning to the app`}
                 accessibilityLabel={`Toggle ${biometricType} lock`}
-                className="flex-1"
               />
-            </View>
-          </Card>
+            }
+            className="mb-4"
+          />
         )}
 
         <ListItem

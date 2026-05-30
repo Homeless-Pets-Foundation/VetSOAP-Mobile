@@ -698,13 +698,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // on UIUserInterfaceIdiom. iPadOS apps running the iPhone binary
         // (unlikely on EAS builds, but possible) still report isPad=false,
         // which matches what the server should classify them as for session
-        // rules. Android-side is all tablets for now (phones not a ship target).
+        // rules. Android phone vs tablet comes from expo-device's screen-diagonal
+        // heuristic (PHONE = 3–6.9", TABLET = 7–18"). Lazy-require so old
+        // dev-client APKs without expo-device don't crash at load (rule 19);
+        // default to 'android_tablet' on UNKNOWN/unavailable since clinic
+        // hardware is tablet-first and over-classifying as phone is worse.
+        let androidDeviceType = 'android_tablet';
+        try {
+          const Device = require('expo-device') as typeof import('expo-device');
+          if (Device.deviceType === Device.DeviceType.PHONE) {
+            androidDeviceType = 'android_phone';
+          }
+        } catch {
+          // expo-device unavailable — keep the tablet default
+        }
         const deviceType =
           Platform.OS === 'ios'
             ? Platform.isPad
               ? 'ios_tablet'
               : 'ios_phone'
-            : 'android_tablet';
+            : androidDeviceType;
         await apiClient.post('/api/device-sessions/register', {
           deviceId,
           deviceType,

@@ -181,11 +181,7 @@ function isNetworkRequestFailed(error: unknown): boolean {
 const SILENT_METERING_THRESHOLD_DB = -35;
 const SHORT_AUDIO_FFMPEG_SILENCE_SECONDS = 15;
 const MISSING_METERING_FFMPEG_MAX_SECONDS = 180;
-const RECORDING_CHECKPOINT_MS = 5 * 60 * 1000;
-const CHECKPOINT_RESTART_DELAY_MS = 250;
 const RECORDING_KEEP_AWAKE_TAG = 'captivet-recording';
-
-type RecordingCheckpointReason = 'interval';
 
 type SilenceCheckReason =
   | 'metering_all_below_threshold'
@@ -455,7 +451,6 @@ function RecordingSession() {
   const isScrollingRef = useRef(false);
   const swipeChangeRef = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
-  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
   const backgroundPersistingRef = useRef(false);
   // Track pending slots for "stop A then start B (then C…)" flow. FIFO queue —
   // rapid tap of Start across multiple slots during a stop-in-progress used to
@@ -520,31 +515,7 @@ function RecordingSession() {
   const pendingDraftTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // Suppress the next stopped-audio capture when the current segment is being discarded.
   const skipNextAudioCaptureRef = useRef(false);
-  const checkpointTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const checkpointInFlightRef = useRef(false);
-  const checkpointRestartSlotIdRef = useRef<string | null>(null);
-  const checkpointReasonRef = useRef<RecordingCheckpointReason | null>(null);
   const recordingSegmentStartedAtMsRef = useRef<number | null>(null);
-  const checkpointRestartFailureContextRef = useRef<{
-    slotId: string;
-    reason: RecordingCheckpointReason;
-    slotIndex: number;
-    segmentCount: number;
-    durationSeconds: number;
-  } | null>(null);
-
-  const clearCheckpointTimer = useCallback(() => {
-    if (checkpointTimerRef.current) {
-      clearTimeout(checkpointTimerRef.current);
-      checkpointTimerRef.current = null;
-    }
-  }, []);
-
-  const resetCheckpointRefs = useCallback(() => {
-    checkpointInFlightRef.current = false;
-    checkpointRestartSlotIdRef.current = null;
-    checkpointReasonRef.current = null;
-  }, []);
   const recorderStateRef = useRef(recorder.state);
   recorderStateRef.current = recorder.state;
   const recorderStopRef = useRef(recorder.stop);
@@ -595,70 +566,6 @@ function RecordingSession() {
     []
   );
 
-  const requestRecordingCheckpoint = useCallback(
-    (reason: RecordingCheckpointReason): boolean => {
-      if (checkpointInFlightRef.current) return false;
-      if (pendingStashRef.current || skipNextAudioCaptureRef.current) return false;
-      if (pendingStartSlotQueueRef.current.length > 0 || isSubmittingAll || submittingSlotId) return false;
-      if (recorderStateRef.current !== 'recording') return false;
-
-      const slotId = sessionRef.current.recorderBoundToSlotId;
-      if (!slotId) return false;
-      const slotIndex = sessionRef.current.slots.findIndex((slot) => slot.id === slotId);
-      const slot = sessionRef.current.slots[slotIndex];
-      if (!slot || slot.uploadStatus === 'uploading' || slot.uploadStatus === 'success') return false;
-
-      const currentSegmentAgeMs = Date.now() - (recordingSegmentStartedAtMsRef.current ?? Date.now());
-
-      clearCheckpointTimer();
-      checkpointInFlightRef.current = true;
-      checkpointRestartSlotIdRef.current = slotId;
-      checkpointReasonRef.current = reason;
-
-      const durationSeconds = Math.round(
-        slot.segments.reduce((sum, segment) => sum + (segment.duration ?? 0), 0) +
-          Math.max(0, currentSegmentAgeMs / 1000)
-      );
-      const segmentCount = slot.segments.length + 1;
-
-      trackEvent({
-        name: 'recording_checkpoint_requested',
-        props: {
-          reason,
-          slot_index: slotIndex,
-          segment_count: segmentCount,
-          duration_s: durationSeconds,
-        },
-      });
-      breadcrumb('record', 'checkpoint_requested', {
-        reason,
-        slot_index: slotIndex,
-        segment_count: segmentCount,
-        duration_s: durationSeconds,
-      });
-
-      recorderStopRef.current().catch((error) => {
-        resetCheckpointRefs();
-        captureException(error, {
-          tags: { phase: 'recording_checkpoint_stop', reason },
-          extra: {
-            slot_index: slotIndex,
-            segment_count: segmentCount,
-            duration_s: durationSeconds,
-          },
-        });
-      });
-
-      return true;
-    },
-    [
-      clearCheckpointTimer,
-      isSubmittingAll,
-      resetCheckpointRefs,
-      submittingSlotId,
-    ]
-  );
-
   // Clear any pending debounce timers on unmount so they don't fire against a
   // dead component (and because the user navigating away from Record = intent
   // to keep the session as a local-only draft, not push a server row).
@@ -667,10 +574,9 @@ function RecordingSession() {
     return () => {
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
-      clearCheckpointTimer();
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
     };
-  }, [clearCheckpointTimer]);
+  }, []);
 
   // Auto-select default template for first slot once templates load
   useEffect(() => {
@@ -715,14 +621,9 @@ function RecordingSession() {
         snapshot.duration,
         snapshot.maxMetering
       );
-      const checkpointReason = checkpointRestartSlotIdRef.current === slotId
-        ? checkpointReasonRef.current
-        : null;
       pendingDraftSlotIdRef.current = persistedSlot ? slotId : null;
       pendingDraftMinSegmentCountRef.current = persistedSlot?.segments.length ?? 0;
-      if (checkpointReason) {
-        pendingDraftRecoveryReasonRef.current.set(slotId, 'checkpoint');
-      } else if (persistedSlot) {
+      if (persistedSlot) {
         pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
       }
       recordingSegmentStartedAtMsRef.current = null;
@@ -731,38 +632,7 @@ function RecordingSession() {
       // Don't call executeStash() yet — saveAudio dispatch hasn't been processed,
       // so `session` still has 0 segments. A separate effect fires executeStash
       // on the next render after SAVE_AUDIO updates the session state.
-      if (checkpointReason && persistedSlot) {
-        const slotIndex = sessionRef.current.slots.findIndex((slot) => slot.id === slotId);
-        const durationSeconds = Math.round(persistedSlot.audioDuration);
-        const segmentCount = persistedSlot.segments.length;
-        trackEvent({
-          name: 'recording_checkpoint_saved',
-          props: {
-            reason: checkpointReason,
-            slot_index: slotIndex,
-            segment_count: segmentCount,
-            duration_s: durationSeconds,
-          },
-        });
-        breadcrumb('record', 'checkpoint_saved', {
-          reason: checkpointReason,
-          slot_index: slotIndex,
-          segment_count: segmentCount,
-          duration_s: durationSeconds,
-        });
-        recorder.resetWithoutDelete();
-        checkpointRestartFailureContextRef.current = {
-          slotId,
-          reason: checkpointReason,
-          slotIndex,
-          segmentCount,
-          durationSeconds,
-        };
-        timerId = setTimeout(() => {
-          startRecordingRef.current(slotId);
-          resetCheckpointRefs();
-        }, CHECKPOINT_RESTART_DELAY_MS);
-      } else if (pendingStashRef.current) {
+      if (pendingStashRef.current) {
         recorder.resetWithoutDelete();
       } else if (pendingStartSlotQueueRef.current.length > 0) {
         // Pop the head of the queue. Subsequent queued slots will be drained
@@ -779,25 +649,15 @@ function RecordingSession() {
       // Null audioUri — native pause/stop both failed. Clean up the dead binding.
       audioCaptureDoneRef.current = true;
       const boundSlotId = session.recorderBoundToSlotId;
-      const checkpointReason = checkpointRestartSlotIdRef.current === boundSlotId
-        ? checkpointReasonRef.current
-        : null;
       const boundSlot = session.slots.find((s) => s.id === boundSlotId);
       unbindRecorder();
-      resetCheckpointRefs();
       recordingSegmentStartedAtMsRef.current = null;
 
       if (boundSlot) {
         setAudioState(boundSlotId, boundSlot.segments.length > 0 ? 'stopped' : 'idle');
       }
 
-      if (checkpointReason) {
-        recorder.reset();
-        captureException(new Error('Checkpoint stop produced no audio URI'), {
-          tags: { phase: 'recording_checkpoint_capture', reason: checkpointReason },
-          extra: { slot_id: boundSlotId },
-        });
-      } else if (pendingStashRef.current) {
+      if (pendingStashRef.current) {
         // Native recorder failed to produce audio. The deferred stash effect will
         // still fire (unbindRecorder makes recorderBoundToSlotId null). It will stash
         // any previously-saved segments, but this recording is lost.
@@ -949,30 +809,23 @@ function RecordingSession() {
     }
   }, [recorder.state, interruptionPendingResume]);
 
-  useEffect(() => {
-    clearCheckpointTimer();
-    if (!isAppActive) return;
-    if (recorder.state !== 'recording' || !session.recorderBoundToSlotId) return;
-    if (checkpointInFlightRef.current) return;
-
-    checkpointTimerRef.current = setTimeout(() => {
-      if (appStateRef.current !== 'active') return;
-      requestRecordingCheckpoint('interval');
-    }, RECORDING_CHECKPOINT_MS);
-
-    return clearCheckpointTimer;
-  }, [
-    clearCheckpointTimer,
-    isAppActive,
-    recorder.state,
-    requestRecordingCheckpoint,
-    session.recorderBoundToSlotId,
-  ]);
+  // NO periodic interval checkpoint. We deliberately never stop the live
+  // recorder mid-exam. The previous "flush a durable segment every 5 min"
+  // timer (commit 7889744) tore down and recreated the native MediaRecorder,
+  // which on real tablets (verified SM-T220, 2026-06-02) produced a ~1.1s
+  // mic-capture gap — the "recording pauses at 5/10 min" staff reports — and
+  // split one continuous recording into multiple segments, dropping ~1s of
+  // audio at each boundary. The fire time also drifted (timer re-armed on
+  // every dep change), so it landed at 5 OR 10 min unpredictably.
+  //
+  // Durability across screen-lock / app-switch comes from
+  // persistSessionDraftsForBackground (which persists already-captured
+  // segments WITHOUT stopping the recorder) plus the OS keeping the recorder
+  // alive via the Android foreground-service mic + iOS background-audio mode.
+  // The live recording stays owned by expo-audio until the user taps Finish.
 
   useEffect(() => {
-    const shouldStayAwake =
-      recorder.state === 'recording' ||
-      !!checkpointRestartSlotIdRef.current;
+    const shouldStayAwake = recorder.state === 'recording';
     if (!shouldStayAwake) {
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
       return;
@@ -1228,45 +1081,14 @@ function RecordingSession() {
           setAudioState(slotId, 'recording');
         } catch (error) {
           unbindRecorder();
-          const restartContext =
-            checkpointRestartFailureContextRef.current?.slotId === slotId
-              ? checkpointRestartFailureContextRef.current
-              : null;
-          if (restartContext) {
-            trackEvent({
-              name: 'recording_checkpoint_restart_failed',
-              props: {
-                reason: restartContext.reason,
-                slot_index: restartContext.slotIndex,
-                segment_count: restartContext.segmentCount,
-                duration_s: restartContext.durationSeconds,
-              },
-            });
-            captureException(error, {
-              tags: {
-                phase: 'recording_checkpoint_restart',
-                reason: restartContext.reason,
-              },
-              extra: {
-                slot_index: restartContext.slotIndex,
-                segment_count: restartContext.segmentCount,
-                duration_s: restartContext.durationSeconds,
-              },
-            });
-          }
           const errMsg = error instanceof Error ? error.message.toLowerCase() : '';
-          const msg = restartContext
-            ? 'The last recording segment was saved, but recording could not auto-resume. Tap Continue Recording to add another segment.'
-            : errMsg.includes('permission')
+          const msg = errMsg.includes('permission')
             ? 'Microphone permission is required. Please grant access in Settings.'
             : errMsg.includes('not ready')
               ? 'The recorder is still finishing a previous recording. Please try again in a moment.'
               : 'Could not start recording. Please check that your device has a microphone and it is not in use by another app.';
           Alert.alert('Recording Error', msg);
         } finally {
-          if (checkpointRestartFailureContextRef.current?.slotId === slotId) {
-            checkpointRestartFailureContextRef.current = null;
-          }
           startInFlightRef.current = false;
         }
       })().catch(() => {
@@ -1336,7 +1158,6 @@ function RecordingSession() {
           if (!snapshot.audioUri) {
             const boundSlot = sessionRef.current.slots.find((s) => s.id === targetSlotId);
             unbindRecorder();
-            resetCheckpointRefs();
             recordingSegmentStartedAtMsRef.current = null;
             if (boundSlot) {
               setAudioState(targetSlotId, boundSlot.segments.length > 0 ? 'stopped' : 'idle');
@@ -1353,7 +1174,6 @@ function RecordingSession() {
           if (!persistedSlot) {
             const orphanedSlot = sessionRef.current.slots.find((s) => s.id === targetSlotId);
             unbindRecorder();
-            resetCheckpointRefs();
             recordingSegmentStartedAtMsRef.current = null;
             if (orphanedSlot) {
               setAudioState(targetSlotId, orphanedSlot.segments.length > 0 ? 'stopped' : 'idle');
@@ -1394,7 +1214,7 @@ function RecordingSession() {
         }
       })().catch(() => {});
     },
-    [buildPersistedSlot, recorder, resetCheckpointRefs, saveAudio, setAudioState, unbindRecorder]
+    [buildPersistedSlot, recorder, saveAudio, setAudioState, unbindRecorder]
   );
 
   const handleContinueRecording = useCallback(
@@ -2176,17 +1996,16 @@ function RecordingSession() {
       try {
         const previousState = appStateRef.current;
         appStateRef.current = nextState;
-        setIsAppActive(nextState === 'active');
 
         if (
           previousState === 'active' &&
           (nextState === 'inactive' || nextState === 'background')
         ) {
-          clearCheckpointTimer();
-          // Do not checkpoint-stop the live recorder on screen lock/background.
-          // Android may only allow microphone capture while the already-started
-          // foreground service is running; stopping here and waiting for
-          // AppState 'active' to restart drops the rest of a screen-off exam.
+          // Do not stop the live recorder on screen lock/background. Android may
+          // only allow microphone capture while the already-started foreground
+          // service is running; stopping here and waiting for AppState 'active'
+          // to restart drops the rest of a screen-off exam. We only persist
+          // drafts for slots that already have captured segments.
           persistSessionDraftsForBackground().catch(() => {});
         }
 
@@ -2223,7 +2042,7 @@ function RecordingSession() {
     return () => {
       subscription.remove();
     };
-  }, [clearCheckpointTimer, persistSessionDraftsForBackground]);
+  }, [persistSessionDraftsForBackground]);
 
   // Effect: auto-save draft after segment-affecting state updates have been
   // processed by React. The ref is set after audio capture and editor commits,

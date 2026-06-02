@@ -8,29 +8,41 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
-test('record screen checkpoints active recordings without stopping on screen lock', async () => {
+test('record screen never stops the live recorder mid-exam (no interval checkpoint)', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
 
-  assert.match(src, /const RECORDING_CHECKPOINT_MS = 5 \* 60 \* 1000;/);
-  assert.doesNotMatch(src, /BACKGROUND_FLUSH_MIN_MS/);
-  assert.match(src, /type RecordingCheckpointReason = 'interval';/);
-  assert.match(src, /const requestRecordingCheckpoint = useCallback/);
-  assert.match(src, /const \[isAppActive, setIsAppActive\] = useState\(AppState\.currentState === 'active'\);/);
-  assert.match(src, /if \(!isAppActive\) return;/);
-  assert.match(src, /requestRecordingCheckpoint\('interval'\)/);
-  assert.match(src, /if \(appStateRef\.current !== 'active'\) return;\s*\n\s*requestRecordingCheckpoint\('interval'\);/);
-  assert.doesNotMatch(src, /requestRecordingCheckpoint\('background_transition'\)/);
-  assert.doesNotMatch(src, /checkpointPendingResume/);
-  assert.doesNotMatch(src, /background_flush/);
-  assert.match(src, /Do not checkpoint-stop the live recorder on screen lock\/background/);
-  assert.match(src, /clearCheckpointTimer\(\);\s*\n\s*\/\/ Do not checkpoint-stop the live recorder on screen lock\/background/);
+  // The 5-min interval checkpoint that tore down + recreated the native
+  // MediaRecorder — causing the ~1s mic-capture "pause" and lost audio at the
+  // 5/10-min mark on clinic tablets (verified live on SM-T220, 2026-06-02) —
+  // must be gone entirely. The recorder stays owned by expo-audio until Finish.
+  assert.doesNotMatch(src, /RECORDING_CHECKPOINT_MS/);
+  assert.doesNotMatch(src, /CHECKPOINT_RESTART_DELAY_MS/);
+  assert.doesNotMatch(src, /requestRecordingCheckpoint/);
+  assert.doesNotMatch(src, /RecordingCheckpointReason/);
+  assert.doesNotMatch(src, /checkpointInFlightRef/);
+  assert.doesNotMatch(src, /checkpointRestartSlotIdRef/);
+  assert.doesNotMatch(src, /checkpointReasonRef/);
+  assert.doesNotMatch(src, /checkpointRestartFailureContextRef/);
+  assert.doesNotMatch(src, /clearCheckpointTimer/);
+  assert.doesNotMatch(src, /resetCheckpointRefs/);
+  assert.doesNotMatch(src, /recording_checkpoint/);
+  assert.doesNotMatch(src, /isAppActive/);
+
+  // The explanatory comment documenting the deliberate removal must remain so a
+  // future change doesn't re-introduce the stop/restart.
+  assert.match(src, /NO periodic interval checkpoint/);
+  assert.match(src, /WITHOUT stopping the recorder/);
+
+  // On background / screen-lock we persist already-captured segments WITHOUT
+  // stopping the live recorder (Android foreground-service mic keeps it alive).
+  assert.match(src, /Do not stop the live recorder on screen lock\/background/);
   assert.match(src, /persistSessionDraftsForBackground\(\)\.catch\(\(\) => \{\}\);/);
   assert.match(src, /const handleAppStateChange = \(nextState: AppStateStatus\) => \{\s*\n\s*try \{/);
   assert.match(src, /catch \(error\) \{\s*\n\s*if \(__DEV__\) console\.error\('\[Record\] AppState handler failed:', error\);/);
-  assert.match(src, /checkpointRestartSlotIdRef\.current === slotId/);
-  assert.match(src, /saveAudio\(\s*slotId,\s*audioUri,/);
-  assert.match(src, /startRecordingRef\.current\(slotId\);/);
+
+  // Screen stays awake while actively recording.
   assert.match(src, /RECORDING_KEEP_AWAKE_TAG/);
+  assert.match(src, /const shouldStayAwake = recorder\.state === 'recording';/);
 });
 
 test('record screen persists PHI-free recovery intent after local draft save and clears it with draft deletion', async () => {
@@ -59,7 +71,7 @@ test('manual Finish persists the completed draft before clearing recorder state'
   assert.match(src, /const persistedSlot = buildPersistedSlot\(targetSlotId, snapshot\);/);
   assert.match(
     src,
-    /if \(!persistedSlot\) \{\s*\n\s*const orphanedSlot = sessionRef\.current\.slots\.find\(\(s\) => s\.id === targetSlotId\);\s*\n\s*unbindRecorder\(\);\s*\n\s*resetCheckpointRefs\(\);\s*\n\s*recordingSegmentStartedAtMsRef\.current = null;/
+    /if \(!persistedSlot\) \{\s*\n\s*const orphanedSlot = sessionRef\.current\.slots\.find\(\(s\) => s\.id === targetSlotId\);\s*\n\s*unbindRecorder\(\);\s*\n\s*recordingSegmentStartedAtMsRef\.current = null;/
   );
   assert.match(src, /pendingDraftRecoveryReasonRef\.current\.set\(targetSlotId, 'draft_finish'\);/);
   assert.match(src, /saveAudio\(\s*targetSlotId,\s*snapshot\.audioUri,\s*snapshot\.duration,\s*snapshot\.maxMetering\s*\);/);

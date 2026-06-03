@@ -28,12 +28,12 @@ import {
   phaseError,
   isTransientUploadError,
   isStalePresignError,
+  uploadTimeoutMs,
   type TaggedError,
   type UploadPhase,
 } from './uploadRetry';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
-const R2_UPLOAD_TIMEOUT_MS = 600_000; // 10 minutes per file upload
 
 /**
  * Expected bitrate range for a healthy recording. Outside this window we
@@ -439,7 +439,7 @@ export const recordingsApi = {
         );
         const result = await withTimeout(
           uploadTask.uploadAsync(),
-          R2_UPLOAD_TIMEOUT_MS,
+          uploadTimeoutMs(fileSizeBytes),
           'Upload timed out. Please check your connection and try again.',
           () => { uploadTask.cancelAsync().catch(() => {}); }
         );
@@ -627,7 +627,7 @@ export const recordingsApi = {
           );
           const result = await withTimeout(
             uploadTask.uploadAsync(),
-            R2_UPLOAD_TIMEOUT_MS,
+            uploadTimeoutMs(fileSizeBytes),
             `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
             () => { uploadTask.cancelAsync().catch(() => {}); }
           );

@@ -200,3 +200,38 @@ test('recordings.ts no longer defines duplicate predicates locally', async () =>
   assert.doesNotMatch(src, /^export function isStalePresignError\(/m);
   assert.doesNotMatch(src, /^const TRANSIENT_R2_ERROR_RE\s*=/m);
 });
+
+test('uploadTimeoutMs scales with file size and clamps to [10min, 30min]', async () => {
+  const { uploadTimeoutMs, UPLOAD_TIMEOUT_MIN_MS, UPLOAD_TIMEOUT_MAX_MS } =
+    await loadTsModule('src/api/uploadRetry.ts');
+
+  const MB = 1024 * 1024;
+
+  // Small files keep the proven 10-min floor (Sentry REACT-NATIVE-N regression
+  // guard — must NOT shrink the budget that already works for short uploads).
+  assert.equal(uploadTimeoutMs(1 * MB), UPLOAD_TIMEOUT_MIN_MS);
+  assert.equal(uploadTimeoutMs(5 * MB), UPLOAD_TIMEOUT_MIN_MS);
+
+  // The 250 MB ceiling case (MAX_FILE_SIZE_BYTES) clamps to the 30-min cap so
+  // a large file on a slow link gets headroom but never blocks the UI forever.
+  assert.equal(uploadTimeoutMs(250 * MB), UPLOAD_TIMEOUT_MAX_MS);
+
+  // A mid-size file lands strictly between the bounds and above the old fixed
+  // 10-min cap.
+  const mid = uploadTimeoutMs(50 * MB);
+  assert.ok(mid > UPLOAD_TIMEOUT_MIN_MS && mid < UPLOAD_TIMEOUT_MAX_MS, `mid was ${mid}`);
+
+  // Degenerate sizes (0, NaN, negative) fall back to the floor, never below it.
+  assert.equal(uploadTimeoutMs(0), UPLOAD_TIMEOUT_MIN_MS);
+  assert.equal(uploadTimeoutMs(NaN), UPLOAD_TIMEOUT_MIN_MS);
+  assert.equal(uploadTimeoutMs(-1), UPLOAD_TIMEOUT_MIN_MS);
+
+  // Monotonic non-decreasing across the range.
+  const sizes = [0, 10 * MB, 30 * MB, 80 * MB, 150 * MB, 250 * MB];
+  for (let i = 1; i < sizes.length; i++) {
+    assert.ok(
+      uploadTimeoutMs(sizes[i]) >= uploadTimeoutMs(sizes[i - 1]),
+      `non-monotonic at ${sizes[i]}`
+    );
+  }
+});

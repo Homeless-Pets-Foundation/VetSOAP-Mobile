@@ -75,8 +75,9 @@ export function getUploadHttpStatus(error: unknown): number | undefined {
  * (client_telemetry phase=r2_put, message="timeout", okhttp 4.12.0). This is a
  * transport-level socket death like the others and succeeds on a fresh socket,
  * so it must auto-retry. Matched via `\btimeout\b` / `SocketTimeout` — NOT the
- * two-word "timed out", which is the 10-minute withTimeout hard-cap message and
- * deliberately fails fast instead of retrying up to 3 × 10 min.
+ * two-word "timed out", which is the withTimeout hard-cap message (now
+ * size-adaptive, see `uploadTimeoutMs`) and deliberately fails fast instead of
+ * retrying up to 3 × the cap.
  *
  * Match list intentionally narrow: only signatures that come from the
  * expo-file-system native layer, Android's DNS resolver, okhttp's socket
@@ -90,6 +91,28 @@ const TRANSIENT_R2_ERROR_RE = /Failed to connect|Network request failed|ECONNRES
 export function isTransientUploadError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return TRANSIENT_R2_ERROR_RE.test(err.message ?? '');
+}
+
+/**
+ * Adaptive R2 PUT timeout. The old fixed 10-min cap was too short for large
+ * files on slow mobile links — 250 MB needs ~400 KB/s sustained to finish in
+ * 10 min, which a congested/unknown link won't hit (Sentry REACT-NATIVE-N,
+ * 2026-06-02: iPad, network_state unknown, hit the cap and surfaced
+ * "Upload timed out" with no retry). Scale the cap by file size against a
+ * conservative throughput floor, clamped so small files keep the proven 10-min
+ * budget and huge files never block the UI past 30 min. This only widens the
+ * hard cap — the two-word "timed out" rejection still fails fast (it is
+ * excluded from TRANSIENT_R2_ERROR_RE on purpose).
+ */
+export const UPLOAD_TIMEOUT_MIN_MS = 600_000; // 10 min floor (unchanged for small files)
+export const UPLOAD_TIMEOUT_MAX_MS = 1_800_000; // 30 min ceiling
+const UPLOAD_TIMEOUT_BASE_MS = 60_000; // connection/setup overhead
+const UPLOAD_THROUGHPUT_FLOOR_BPS = 50 * 1024; // 50 KB/s worst-case sustained
+
+export function uploadTimeoutMs(fileSizeBytes: number): number {
+  const size = Number.isFinite(fileSizeBytes) && fileSizeBytes > 0 ? fileSizeBytes : 0;
+  const budget = UPLOAD_TIMEOUT_BASE_MS + Math.ceil(size / UPLOAD_THROUGHPUT_FLOOR_BPS) * 1000;
+  return Math.min(UPLOAD_TIMEOUT_MAX_MS, Math.max(UPLOAD_TIMEOUT_MIN_MS, budget));
 }
 
 /**

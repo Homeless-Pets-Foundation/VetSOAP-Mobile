@@ -208,7 +208,11 @@ export class ApiClient {
     }
     const deviceId = this.cachedDeviceId ?? null;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
 
     try {
       validateRequestUrl(url);
@@ -230,6 +234,15 @@ export class ApiClient {
 
       if (__DEV__) console.log('[ApiClient]', method, path, 'status:', response.status);
       return response;
+    } catch (error) {
+      // Our own timeout aborts surface as a bare AbortError ("Aborted"), which
+      // the upload retry classifier treats as non-transient (it can't tell a
+      // timeout from a user cancel). Rethrow with an explicit timeout message
+      // so isTransientUploadError matches and the upload flow auto-retries.
+      if (timedOut) {
+        throw new Error(`Request timeout after ${timeoutMs}ms`, { cause: error });
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }

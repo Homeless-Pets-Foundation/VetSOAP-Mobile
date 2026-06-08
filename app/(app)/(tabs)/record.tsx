@@ -29,6 +29,7 @@ import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi, getUploadPhase, isTransientUploadError } from '../../../src/api/recordings';
+import { ApiError } from '../../../src/api/client';
 import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import { trackEvent, type NetworkState, type AutoStashReason } from '../../../src/lib/analytics';
 import { breadcrumb, captureException } from '../../../src/lib/monitoring';
@@ -119,6 +120,15 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
 function showRecordPermissionAlert(): void {
   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
   Alert.alert(RECORD_APPOINTMENT_PERMISSION_TITLE, RECORD_APPOINTMENT_PERMISSION_MESSAGE);
+}
+
+function isExpectedSubmitApiFailure(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  return (
+    error.code === 'ROLE_FORBIDDEN' ||
+    error.code === 'CREDENTIALS_REQUIRED' ||
+    error.status === 404
+  );
 }
 
 function RecordingRoleGate() {
@@ -1701,6 +1711,7 @@ function RecordingSession() {
         const errorCode =
           (looksLikeRealCode && rawCode) ||
           (errorObj?.status ? `HTTP_${errorObj.status}` : phase.toUpperCase());
+        const telemetrySeverity = isExpectedSubmitApiFailure(error) ? 'warning' : 'error';
 
         trackEvent({
           name: 'submit_failed',
@@ -1718,7 +1729,7 @@ function RecordingSession() {
         });
         reportClientError({
           phase,
-          severity: 'error',
+          severity: telemetrySeverity,
           errorCode,
           message: msg,
           recordingId: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
@@ -1729,23 +1740,25 @@ function RecordingSession() {
           networkState: netState,
           attemptNumber,
         });
-        captureException(error, {
-          tags: {
-            phase,
-            error_code: errorCode,
-            network_state: netState,
-            has_existing_draft: String(!!slot.serverDraftId),
-          },
-          extra: {
-            slot_index: slotIndex,
-            attempt_number: attemptNumber,
-            segment_count: segmentCount,
-            duration_s: durationSeconds,
-            file_size_bytes: uploadSizeBytes || undefined,
-            latency_ms: latencyMs,
-            recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
-          },
-        });
+        if (!isExpectedSubmitApiFailure(error)) {
+          captureException(error, {
+            tags: {
+              phase,
+              error_code: errorCode,
+              network_state: netState,
+              has_existing_draft: String(!!slot.serverDraftId),
+            },
+            extra: {
+              slot_index: slotIndex,
+              attempt_number: attemptNumber,
+              segment_count: segmentCount,
+              duration_s: durationSeconds,
+              file_size_bytes: uploadSizeBytes || undefined,
+              latency_ms: latencyMs,
+              recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
+            },
+          });
+        }
         breadcrumb('upload', 'submit_failed', {
           slot_index: slotIndex,
           phase,

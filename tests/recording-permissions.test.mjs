@@ -90,12 +90,14 @@ test('support staff recording gate covers entrypoints and submit paths', async (
   assert.match(record, /if \(!user\?\.id \|\| !canRecordAppointments\(user\.role\)\) return;/);
 });
 
-test('API client maps known 403 recording permission codes to safe messages', async () => {
+test('API client maps known recording API error codes to safe messages', async () => {
   const client = await read('src/api/client.ts');
 
   assert.match(client, /errorBody\.code === 'MFA_REQUIRED'/);
   assert.match(client, /errorBody\.code === 'ROLE_FORBIDDEN'/);
   assert.match(client, /Your role cannot create, upload, or delete recordings\./);
+  assert.match(client, /errorBody\.code === 'CREDENTIALS_REQUIRED'/);
+  assert.match(client, /Service credentials are required to submit recordings\./);
   assert.match(client, /errorBody\.code === 'RECORDING_DELETE_FORBIDDEN'/);
   assert.match(client, /Only the recording owner or an administrator can delete this recording\./);
 });

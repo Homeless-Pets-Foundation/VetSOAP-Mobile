@@ -73,3 +73,22 @@ test('sync_server_draft network failures are breadcrumbed, not captured as Sentr
     'transient network branch must run before captureException'
   );
 });
+
+test('expected submit API failures are telemetry warnings, not Sentry exceptions', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+
+  assert.match(src, /function isExpectedSubmitApiFailure\(error: unknown\): boolean/);
+  assert.match(src, /error instanceof ApiError/);
+  assert.match(src, /error\.code === 'ROLE_FORBIDDEN'/);
+  assert.match(src, /error\.code === 'CREDENTIALS_REQUIRED'/);
+  assert.match(src, /const telemetrySeverity = isExpectedSubmitApiFailure\(error\) \? 'warning' : 'error';/);
+  assert.match(src, /severity: telemetrySeverity,/);
+
+  const severityIndex = src.indexOf("const telemetrySeverity = isExpectedSubmitApiFailure(error) ? 'warning' : 'error';");
+  assert.ok(severityIndex > -1, 'uploadSlot telemetry severity branch must be findable');
+  const telemetryBody = src.slice(severityIndex, severityIndex + 2000);
+  assert.match(
+    telemetryBody,
+    /if \(!isExpectedSubmitApiFailure\(error\)\) \{\s*captureException\(error,/
+  );
+});

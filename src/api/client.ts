@@ -182,6 +182,13 @@ export class ApiClient {
     if (status === 403 && errorBody.code === 'RECORDING_DELETE_FORBIDDEN') {
       return 'Only the recording owner or an administrator can delete this recording.';
     }
+    if (errorBody.code === 'CREDENTIALS_REQUIRED') {
+      return (
+        (errorBody.error as string) ||
+        (errorBody.message as string) ||
+        'Service credentials are required to submit recordings.'
+      );
+    }
     if (status === 403) return 'You do not have permission to perform this action.';
     if (status === 404) return 'The requested resource was not found.';
     if (status === 422 && details.length) return details.map((d) => d.message).join(', ');

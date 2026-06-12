@@ -93,6 +93,11 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
   // current value through a ref instead of declaring a false timeout.
   const isLoadedRef = useRef(isLoaded);
   isLoadedRef.current = isLoaded;
+  // Which URI the player actually accepted (set only after loadSource resolves,
+  // i.e. replace() did not throw). The watchdog's "already loaded" branch must
+  // verify the loaded source is THIS segment — a stale isLoaded from the prior
+  // segment would otherwise report ready and play the wrong part.
+  const lastLoadedUriRef = useRef<string | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -132,9 +137,11 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
       watchdogRef.current = setTimeout(() => {
         if (!mountedRef.current) return;
-        if (isLoadedRef.current) {
+        if (isLoadedRef.current && lastLoadedUriRef.current === uri) {
           // Source actually loaded but the state value never changed (no
           // false→true transition for the effect to catch) — not a failure.
+          // The URI check rejects a stale isLoaded left over from the prior
+          // segment when a switch silently failed.
           setPhase('ready');
           return;
         }
@@ -154,6 +161,7 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
       }, LOAD_WATCHDOG_MS);
       try {
         await playback.loadSource(uri);
+        lastLoadedUriRef.current = uri;
       } catch (error) {
         if (watchdogRef.current) {
           clearTimeout(watchdogRef.current);

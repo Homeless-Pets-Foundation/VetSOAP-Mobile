@@ -901,8 +901,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // 1B startup resilience: before stranding the user on the error screen,
     // fall back to the cached minimal profile. Only applies when the cached id
     // matches the current session's user id (user-swap safety on shared
-    // tablets — keeps rule-13 storage scoping correct). Both reads are bounded
-    // (rule 24): a hung SecureStore/GoTrue bridge must not stall the error UI.
+    // tablets — keeps rule-13 storage scoping correct) AND the failure was
+    // retryable (network/timeout/5xx). A terminal 401/403 means the API
+    // refused this account (role/org revoked) — rendering the app from cache
+    // would bypass that refusal. Both reads are bounded (rule 24): a hung
+    // SecureStore/GoTrue bridge must not stall the error UI.
+    if (!isRetryableFetchUserError(lastError)) {
+      breadcrumb('auth', 'profile_cache_skipped_terminal_error', {});
+      setUserFetchState('error');
+      setUserFetchError(fetchUserErrorMessage(lastError));
+      return false;
+    }
     try {
       const sessionResult = await withTimeout(
         supabase.auth.getSession(),

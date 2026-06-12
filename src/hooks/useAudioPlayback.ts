@@ -134,6 +134,11 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
         player.replace({ uri });
       } catch (error) {
         if (__DEV__) console.error('[Playback] loadSource failed:', error);
+        // Rethrow so callers can distinguish "source swapped" from "player
+        // still holds the previous source" — swallowing here let a failed
+        // segment switch report ready and play the prior segment. Every call
+        // site attaches .catch or try/catch (verified 2026-06-12).
+        throw error;
       }
     },
     [player, ensurePlaybackMode]

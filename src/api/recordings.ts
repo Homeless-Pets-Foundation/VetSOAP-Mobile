@@ -242,6 +242,10 @@ const DRAFT_NULLABLE_FIELDS = new Set<keyof CreateRecording>([
   'species',
   'breed',
   'appointmentType',
+  // Deselecting a template (PatientForm allowDeselect → undefined) must reach
+  // the server as an explicit null — dropping the key leaves the old template
+  // on the draft and the SOAP note generates with a template the user removed.
+  'templateId',
 ]);
 
 function normalizeValidatedRecordingPayload(

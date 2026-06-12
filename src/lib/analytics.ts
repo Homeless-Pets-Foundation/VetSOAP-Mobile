@@ -26,6 +26,15 @@ function loadPostHog(): typeof PostHog | null {
 
 let _client: PostHog | null = null;
 
+// initAnalytics() is deferred off the cold-start critical path (called after
+// the first frame in RootLayout). Events fired before it runs — including
+// AuthProvider's startup events, whose effects run before RootLayout's — are
+// queued here and drained on init. Bounded drop-oldest so a pre-init error
+// storm can't grow memory; nulled once init resolves (success or failure) so
+// the steady state has no queue overhead.
+const PRE_INIT_QUEUE_CAP = 50;
+let _preInitQueue: AnalyticsEvent[] | null = [];
+
 // Lazy so old dev-client APKs without the expo-application native module
 // don't throw at module-load. See CLAUDE.md rule 23.
 function getAppVersion(): string {
@@ -170,12 +179,14 @@ export type ErrorPhase =
 export function initAnalytics(): void {
   if (_client) return;
   if (!POSTHOG_KEY) {
+    _preInitQueue = null;
     if (__DEV__) console.log('[PostHog] Disabled — EXPO_PUBLIC_POSTHOG_KEY not set');
     return;
   }
 
   const PostHogCtor = loadPostHog();
   if (!PostHogCtor) {
+    _preInitQueue = null;
     if (__DEV__) console.log('[PostHog] Disabled — posthog-react-native native module unavailable');
     return;
   }
@@ -206,11 +217,20 @@ export function initAnalytics(): void {
     // signal that tells us when the rate limiter is masking a bug.
     startSuppressionSummaryTimer();
 
+    // Drain events that fired before init — through the normal gate so a
+    // pre-init retry storm still can't drain PostHog quota.
+    const queued = _preInitQueue;
+    _preInitQueue = null;
+    if (queued) {
+      for (const event of queued) emitEvent(event);
+    }
+
     if (__DEV__) console.log('[PostHog] Initialized');
   } catch (error) {
     // Never let analytics init crash the app — rule 1.
     if (__DEV__) console.error('[PostHog] Init failed', error);
     _client = null;
+    _preInitQueue = null;
   }
 }
 
@@ -289,6 +309,19 @@ function subKeyForEvent(event: AnalyticsEvent): string {
  * limiter wraps the emission so a retry loop can't drain PostHog quota.
  */
 export function trackEvent<E extends AnalyticsEvent>(event: E): void {
+  if (!_client) {
+    // Pre-init window: hold the event for the drain in initAnalytics().
+    // The rate-limit gate runs at drain time, not here.
+    if (_preInitQueue) {
+      if (_preInitQueue.length >= PRE_INIT_QUEUE_CAP) _preInitQueue.shift();
+      _preInitQueue.push(event);
+    }
+    return;
+  }
+  emitEvent(event);
+}
+
+function emitEvent(event: AnalyticsEvent): void {
   if (!_client) return;
   const gate = shouldEmit('track_event', subKeyForEvent(event));
   if (!gate.emit) return;

@@ -235,3 +235,99 @@ test('uploadTimeoutMs scales with file size and clamps to [10min, 30min]', async
     );
   }
 });
+
+test('uploadTimeoutMs widens the budget under parallelism but keeps the clamps', async () => {
+  const { uploadTimeoutMs, UPLOAD_TIMEOUT_MIN_MS, UPLOAD_TIMEOUT_MAX_MS } =
+    await loadTsModule('src/api/uploadRetry.ts');
+
+  const MB = 1024 * 1024;
+
+  // Concurrent lanes share the link, so the per-lane budget must not shrink.
+  for (const size of [1 * MB, 30 * MB, 80 * MB, 250 * MB]) {
+    assert.ok(
+      uploadTimeoutMs(size, 3) >= uploadTimeoutMs(size, 1),
+      `parallelism must never shrink the budget (size=${size})`
+    );
+  }
+
+  // A mid-size segment that fits the floor solo needs more headroom at 3 lanes.
+  assert.equal(uploadTimeoutMs(1 * MB, 3), UPLOAD_TIMEOUT_MIN_MS, 'tiny files keep the floor');
+  assert.ok(uploadTimeoutMs(30 * MB, 3) > uploadTimeoutMs(30 * MB), '30MB at 3 lanes needs > solo budget');
+
+  // The ceiling still binds — no unbounded waits.
+  assert.equal(uploadTimeoutMs(250 * MB, 3), UPLOAD_TIMEOUT_MAX_MS);
+
+  // Degenerate parallelism values behave like 1.
+  assert.equal(uploadTimeoutMs(30 * MB, 0), uploadTimeoutMs(30 * MB));
+  assert.equal(uploadTimeoutMs(30 * MB, NaN), uploadTimeoutMs(30 * MB));
+  assert.equal(uploadTimeoutMs(30 * MB, undefined), uploadTimeoutMs(30 * MB));
+});
+
+test('runWithConcurrency runs every index once and respects the concurrency bound', async () => {
+  const { runWithConcurrency } = await loadTsModule('src/api/uploadRetry.ts');
+
+  const started = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  await runWithConcurrency(10, 3, async (i) => {
+    started.push(i);
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    // Vary completion order so the cursor hands out indexes out of lockstep.
+    await new Promise((r) => setTimeout(r, (i % 3) * 5));
+    inFlight--;
+  });
+
+  assert.deepEqual([...started].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.equal(started.length, 10, 'each index must run exactly once');
+  assert.ok(maxInFlight <= 3, `in-flight exceeded the bound: ${maxInFlight}`);
+  assert.ok(maxInFlight >= 2, 'pool should actually run tasks concurrently');
+});
+
+test('runWithConcurrency aborts on first failure: no new tasks start, first error identity rethrown', async () => {
+  const { runWithConcurrency } = await loadTsModule('src/api/uploadRetry.ts');
+
+  const boom = new Error('segment 2 died');
+  boom.uploadPhase = 'r2_put';
+  const started = [];
+
+  let caught;
+  try {
+    await runWithConcurrency(10, 2, async (i) => {
+      started.push(i);
+      await new Promise((r) => setTimeout(r, 5));
+      if (i === 2) throw boom;
+    });
+  } catch (e) {
+    caught = e;
+  }
+
+  assert.equal(caught, boom, 'must rethrow the same Error instance (phase tag intact)');
+  assert.equal(caught.uploadPhase, 'r2_put');
+  // With concurrency 2 and the failure at index 2, at most one more task
+  // (index 3) was already in flight when the failure landed; everything
+  // after must never start.
+  assert.ok(!started.includes(9), 'tail tasks must not start after a failure');
+  assert.ok(started.length <= 4, `expected an early stop, but ${started.length} tasks started`);
+});
+
+test('runWithConcurrency handles degenerate inputs', async () => {
+  const { runWithConcurrency } = await loadTsModule('src/api/uploadRetry.ts');
+
+  // Zero / negative / non-integer totals resolve without invoking the task.
+  let calls = 0;
+  await runWithConcurrency(0, 3, async () => { calls++; });
+  await runWithConcurrency(-1, 3, async () => { calls++; });
+  assert.equal(calls, 0);
+
+  // Concurrency larger than total still runs each index exactly once.
+  const seen = [];
+  await runWithConcurrency(2, 8, async (i) => { seen.push(i); });
+  assert.deepEqual([...seen].sort(), [0, 1]);
+
+  // Concurrency below 1 degrades to sequential, not zero workers.
+  const sequential = [];
+  await runWithConcurrency(3, 0, async (i) => { sequential.push(i); });
+  assert.deepEqual(sequential, [0, 1, 2]);
+});

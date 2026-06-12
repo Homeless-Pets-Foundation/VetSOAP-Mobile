@@ -67,7 +67,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       {
         android: {
           usesCleartextTraffic: IS_DEV, // Only allow HTTP in dev
-          enableProguardInReleaseBuilds: true,
+          enableMinifyInReleaseBuilds: true, // R8 code shrinking (replaces deprecated enableProguardInReleaseBuilds)
+          enableShrinkResourcesInReleaseBuilds: true, // strip unreferenced res/ entries (requires minify)
           allowBackup: false, // Prevent unencrypted backup extraction
           minSdkVersion: 24, // Required by ffmpeg-kit-react-native
           extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',

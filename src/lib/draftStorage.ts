@@ -43,6 +43,31 @@ export type ServerDraftPresence = 'present' | 'missing' | 'unknown';
 /** Current user ID — set by AuthProvider to scope draft data per-user. */
 let currentUserId: string | null = null;
 
+// In-memory cache for the chunked SecureStore sweep behind listDrafts —
+// Home + Recordings re-list on every tab focus, and each list is 1 index
+// read + (meta + N chunk) reads per draft. Single entry, keyed by userId:
+// keying by user (rather than relying on setUserId invalidation alone) makes
+// a wrong-user hit structurally impossible even while syncPending temporarily
+// rebinds currentUserId without going through setUserId. Invalidated on every
+// write; the version counter stops a slow in-flight read from caching
+// pre-write data after a concurrent write already invalidated.
+let draftsListCache: { userId: string; drafts: DraftMetadata[] } | null = null;
+let draftsCacheVersion = 0;
+
+function invalidateDraftsCache(): void {
+  draftsListCache = null;
+  draftsCacheVersion++;
+}
+
+// Clone on cache read/write so callers can never mutate cached entries.
+function cloneDraftMetadata(d: DraftMetadata): DraftMetadata {
+  return {
+    ...d,
+    formData: { ...d.formData },
+    segments: d.segments.map((s) => ({ ...s })),
+  };
+}
+
 /**
  * Classify a draft-storage failure into a bounded reason. Lazy-loaded to
  * avoid a static import cycle and to stay safe if analytics isn't wired.
@@ -443,6 +468,7 @@ export const draftStorage = {
   /** Set the current user ID. Must be called before any draft operations. */
   setUserId(userId: string | null): void {
     currentUserId = userId;
+    invalidateDraftsCache();
   },
 
   /** Read the currently scoped user ID. */
@@ -605,6 +631,10 @@ export const draftStorage = {
         await writeDraftIndex(index);
       }
 
+      // Invalidate AFTER the last write — invalidating earlier would let a
+      // concurrent listDrafts repopulate the cache from pre-index-write state.
+      invalidateDraftsCache();
+
       draftBreadcrumb('saved', {
         slot_id: slot.id,
         segment_count: draftSegments.length,
@@ -635,6 +665,7 @@ export const draftStorage = {
         });
         safeDeleteDirectory(dir);
       }
+      invalidateDraftsCache();
       emitDraftFailure('draft_save_failed', error);
       throw error;
     }
@@ -664,6 +695,7 @@ export const draftStorage = {
       metadata.pendingSync = false;
 
       await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+      invalidateDraftsCache();
     } catch (error) {
       // Failure here = local meta keeps `serverDraftId=null` while the server
       // has a draft row → next Submit creates a duplicate (rule 24). Surface
@@ -692,6 +724,7 @@ export const draftStorage = {
       metadata.pendingSync = false;
 
       await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+      invalidateDraftsCache();
     } catch {
       // Best-effort
     }
@@ -729,7 +762,12 @@ export const draftStorage = {
   async listDraftsForUser(userId: string): Promise<DraftMetadata[]> {
     if (!userId) return [];
 
+    if (draftsListCache && draftsListCache.userId === userId) {
+      return draftsListCache.drafts.map(cloneDraftMetadata);
+    }
+
     try {
+      const versionAtReadStart = draftsCacheVersion;
       const slotIds = await readDraftIndexForUser(userId);
       const drafts: DraftMetadata[] = [];
 
@@ -738,6 +776,12 @@ export const draftStorage = {
         if (draft) {
           drafts.push(draft);
         }
+      }
+
+      // Only populate if no write invalidated mid-read — a slow sweep must
+      // not resurrect pre-write data as the cache.
+      if (draftsCacheVersion === versionAtReadStart) {
+        draftsListCache = { userId, drafts: drafts.map(cloneDraftMetadata) };
       }
 
       return drafts;
@@ -768,6 +812,10 @@ export const draftStorage = {
       await writeDraftIndex(filtered);
     } catch {
       // Best-effort cleanup
+    } finally {
+      // After the last write (and on partial failure) so neither the old
+      // entry nor mid-delete state survives in the cache.
+      invalidateDraftsCache();
     }
   },
 
@@ -792,6 +840,7 @@ export const draftStorage = {
       } catch {
         // Ignore
       }
+      invalidateDraftsCache();
     } catch {
       // Best-effort cleanup
     }

@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { View, Text, Pressable, Alert, AppState } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
+import * as SplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from '../src/auth/AuthProvider';
@@ -14,6 +15,7 @@ import { DeviceLimitModal } from '../src/components/DeviceLimitModal';
 import { initMonitoring, captureException } from '../src/lib/monitoring';
 import { initAnalytics, trackEvent } from '../src/lib/analytics';
 import { getSessionActivity } from '../src/lib/sessionActivity';
+import { useAuth } from '../src/hooks/useAuth';
 import '../global.css';
 
 // Cold-start marker — sampled at module-load time and attached to the first
@@ -27,10 +29,21 @@ function coarseAppState(state: string): AppStateCoarse {
   return 'unknown';
 }
 
-// Initialize Sentry + PostHog at module load so early crashes are captured.
-// Both internally try/catch and no-op if keys are unset — safe under rule 1.
+// Initialize Sentry at module load so early crashes are captured. It
+// internally try/catches and no-ops if the DSN is unset — safe under rule 1.
+// PostHog init is deferred to after the first frame (see RootLayout) to keep
+// its module + expo-application/expo-device requires off the cold-start
+// critical path; pre-init events are queued inside analytics.ts.
 initMonitoring();
-initAnalytics();
+
+// Hold the native splash until the auth gate resolves (SplashGate below).
+// Without this the first React frame is the bare auth-loading spinner, so
+// users see a splash→spinner→content double transition on every cold start.
+try {
+  SplashScreen.preventAutoHideAsync().catch(() => {});
+} catch {
+  // noop — splash auto-hides, worst case is the old double transition (rule 1)
+}
 
 // Initialize native Google Sign-In once at module load, before any component
 // renders. Safe to call with missing/empty client IDs — configureGoogleSignIn
@@ -51,6 +64,13 @@ class ErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // A crash during startup renders this boundary instead of SplashGate —
+    // hide explicitly so the error UI isn't stranded behind the splash.
+    try {
+      SplashScreen.hideAsync().catch(() => {});
+    } catch {
+      // noop
+    }
     captureException(error, {
       tags: { boundary: 'root' },
       extra: { componentStack: info.componentStack ?? '' },
@@ -84,8 +104,54 @@ class ErrorBoundary extends React.Component<
   }
 }
 
+function SplashGate() {
+  const { isLoading } = useAuth();
+
+  useEffect(() => {
+    if (!isLoading) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [isLoading]);
+
+  // Rule 24 watchdog: auth init hanging (Keystore read, dead network) must
+  // never strand the user behind the splash. 10s sits below AuthProvider's
+  // 15s watchdog so the splash always yields first; hideAsync is idempotent.
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, 10_000);
+    return () => clearTimeout(timeout);
+  }, []);
+
+  return null;
+}
+
 export default function RootLayout() {
   const router = useRouter();
+
+  // Deferred PostHog init — after the first frame so the posthog module +
+  // expo-application/expo-device requires stay off the cold-start critical
+  // path. Events fired before this (incl. AuthProvider startup events, whose
+  // effects run before this parent's) are queued in analytics.ts and drained
+  // on init. Idempotent, so a remount is harmless.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      try {
+        initAnalytics();
+      } catch {
+        // rule 1 — analytics must never crash the app
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // The CONFIG_MISSING early return below bypasses SplashGate — hide the
+  // splash explicitly so the config-error screen is actually visible.
+  useEffect(() => {
+    if (CONFIG_MISSING) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, []);
 
   useEffect(() => {
     if (_coldStartReported) return;
@@ -212,6 +278,7 @@ export default function RootLayout() {
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            <SplashGate />
             <StatusBar style="dark" />
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="(auth)" />

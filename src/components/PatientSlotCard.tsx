@@ -15,6 +15,7 @@ import Animated, {
 import { Mic, X, Plus, Scissors, Trash2, Check } from 'lucide-react-native';
 import { PatientForm } from './PatientForm';
 import { AudioWaveform } from './AudioWaveform';
+import { RecorderLiveReadout } from './RecorderLiveReadout';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
@@ -98,7 +99,9 @@ function formatDuration(seconds: number) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-// WARNING: update the comparator below when adding new props
+// Shallow-memoized: the parent passes slot-id-parameterized stable callbacks,
+// and recorder ticks no longer re-render the parent (live metering/timer is
+// polled inside RecorderLiveReadout), so default prop equality is sufficient.
 export const PatientSlotCard = React.memo(function PatientSlotCard({
   slot,
   slotIndex,
@@ -195,7 +198,6 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const duration = isRecorderOwner
     ? previousSegmentsDuration + recorder.duration
     : slot.audioDuration;
-  const metering = isRecorderOwner ? recorder.metering : -160;
 
   // Allow recording when idle (even with existing segments — for continuation)
   const canStartRecording = hasRequiredFields && audioState === 'idle' && !recorder.isStarting && !isFinishSaving;
@@ -271,23 +273,18 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           )}
         </View>
 
-        {/* Waveform or completion message */}
+        {/* Waveform or completion message. The owner branch polls the
+            recorder inside RecorderLiveReadout so metering/timer ticks
+            re-render that leaf only — never this card or the record screen. */}
         {isRecorderOwner ? (
-          <>
-            <AudioWaveform
-              isActive={isRecording || isPaused}
-              isPaused={isPaused}
-              metering={metering}
-            />
-            <Text
-              className={`text-timer font-bold mb-5 ${
-                isRecording ? 'text-brand-500' : 'text-stone-900'
-              }`}
-              style={styles.timerText}
-            >
-              {formatDuration(duration)}
-            </Text>
-          </>
+          <RecorderLiveReadout
+            getLiveStats={recorder.getLiveStats}
+            isLive={isRecording || isPaused}
+            isRecording={isRecording}
+            isPaused={isPaused}
+            baseDurationSeconds={previousSegmentsDuration}
+            fallbackDurationSeconds={recorder.duration}
+          />
         ) : isStopped ? (
           <Text className="text-body text-stone-600 mb-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             {slot.segments.length > 1
@@ -303,10 +300,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           </>
         )}
 
-        {/* Non-blocking warning for multi-hour recordings. Peak extraction scales with
-            FFmpeg seek cost on the edit path, which is slow on low-end Android (A7 Lite,
-            MediaTek P22T). No cap — staff sometimes legitimately need long sessions. */}
-        {duration >= LONG_RECORDING_WARNING_THRESHOLD_SEC && (
+        {/* Non-blocking warning for multi-hour recordings (non-owner cards;
+            the owner card's warning lives inside RecorderLiveReadout so it
+            appears during a live recording, not only after a transition). */}
+        {!isRecorderOwner && duration >= LONG_RECORDING_WARNING_THRESHOLD_SEC && (
           <View
             className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 mb-4 self-stretch"
             accessibilityRole="alert"

@@ -2,6 +2,7 @@ import React from 'react';
 import { View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { Skeleton } from './ui/Skeleton';
+import { useThemeColors } from '../hooks/useThemeColors';
 
 interface StaticWaveformProps {
   peaks: number[];
@@ -31,6 +32,7 @@ export const StaticWaveform = React.memo(function StaticWaveform({
   visibleStartSec,
   visibleEndSec,
 }: StaticWaveformProps) {
+  const colors = useThemeColors();
   const [layoutWidth, setLayoutWidth] = React.useState(0);
 
   // Windowed view: compute which slice of peaks corresponds to the visible region, and
@@ -93,7 +95,7 @@ export const StaticWaveform = React.memo(function StaticWaveform({
     return (
       <View
         style={{ height }}
-        className="rounded-lg bg-stone-100 items-center justify-center"
+        className="rounded-lg bg-surface-sunken items-center justify-center"
       />
     );
   }
@@ -104,16 +106,16 @@ export const StaticWaveform = React.memo(function StaticWaveform({
       accessibilityLabel={`Audio waveform. Duration ${Math.floor(duration)} seconds.`}
       onLayout={(e) => setLayoutWidth(e.nativeEvent.layout.width)}
       style={{ height }}
-      className="rounded-lg bg-stone-100 overflow-hidden"
+      className="rounded-lg bg-surface-sunken overflow-hidden"
     >
       {layoutWidth > 0 && (
         <Svg width={layoutWidth} height={height}>
           {/* Waveform bars — 2 Path elements instead of N*2 Rects */}
           {dimmedPath.length > 0 && (
-            <Path d={dimmedPath} fill="#a8a29e" opacity={0.4} />
+            <Path d={dimmedPath} fill={colors.contentTertiary} opacity={0.4} />
           )}
           {activePath.length > 0 && (
-            <Path d={activePath} fill="#0d8775" opacity={1} />
+            <Path d={activePath} fill={colors.brand500} opacity={1} />
           )}
         </Svg>
       )}

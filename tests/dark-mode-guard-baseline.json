@@ -4,10 +4,10 @@
     "src/components"
   ],
   "patterns": {
-    "text-stone-": 171,
-    "bg-white": 14,
-    "color=\"#": 98,
-    "placeholderTextColor=\"#": 8
+    "text-stone-": 0,
+    "bg-white": 0,
+    "color=\"#": 0,
+    "placeholderTextColor=\"#": 0
   },
-  "total": 291
+  "total": 0
 }

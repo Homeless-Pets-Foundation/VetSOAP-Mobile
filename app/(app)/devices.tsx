@@ -18,6 +18,7 @@ import { Badge } from '../../src/components/ui/Badge';
 import { EmptyState } from '../../src/components/ui/EmptyState';
 import { IconButton } from '../../src/components/ui/IconButton';
 import { ListItem } from '../../src/components/ui/ListItem';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
 
 function formatRelativeTime(isoDate: string): string {
   const date = new Date(isoDate);
@@ -68,6 +69,7 @@ interface DeviceRowProps {
 
 function DeviceRow({ device, isCurrent, onRevoke, isRevoking }: DeviceRowProps) {
   const { iconMd } = useResponsive();
+  const colors = useThemeColors();
   const Icon = getDeviceIcon(device.deviceType);
   const typeLabel = formatDeviceTypeLabel(device.deviceType);
 
@@ -77,8 +79,8 @@ function DeviceRow({ device, isCurrent, onRevoke, isRevoking }: DeviceRowProps) 
       subtitle={`${typeLabel}${device.appVersion ? ` · v${device.appVersion}` : ''}`}
       meta={`Last active ${formatRelativeTime(device.lastSeenAt)}`}
       leading={
-        <View className="w-10 h-10 rounded-full bg-stone-100 justify-center items-center">
-          <Icon color="#0d8775" size={iconMd} />
+        <View className="w-10 h-10 rounded-full bg-surface-sunken justify-center items-center">
+          <Icon color={colors.brand500} size={iconMd} />
         </View>
       }
       badge={isCurrent ? <Badge variant="success">This device</Badge> : undefined}
@@ -102,6 +104,7 @@ function DeviceRow({ device, isCurrent, onRevoke, isRevoking }: DeviceRowProps) 
 export default function DevicesScreen() {
   const router = useRouter();
   const { iconMd, iconLg } = useResponsive();
+  const colors = useThemeColors();
   const queryClient = useQueryClient();
   const { devices, capacity, isLoading, isError, refetch } = useDeviceCapacity();
   const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
@@ -170,10 +173,10 @@ export default function DevicesScreen() {
 
   const capacityRatio = capacity ? capacity.count / Math.max(1, capacity.limit) : 0;
   const barTone = capacity?.isAtLimit
-    ? 'bg-danger-500'
+    ? 'bg-status-danger'
     : capacity?.isNearLimit
-      ? 'bg-warning-500'
-      : 'bg-success-500';
+      ? 'bg-status-warning'
+      : 'bg-status-success';
 
   return (
     <SafeAreaView className="screen items-center">
@@ -181,13 +184,13 @@ export default function DevicesScreen() {
         <View className="px-5 pt-5">
           <View className="flex-row items-center mb-6">
             <IconButton
-              icon={<ChevronLeft color="#1c1917" size={iconMd} />}
+              icon={<ChevronLeft color={colors.contentPrimary} size={iconMd} />}
               label="Go back"
               onPress={() => router.back()}
               className="mr-3"
             />
             <Text
-              className="text-display font-bold text-stone-900"
+              className="text-display font-bold text-content-primary"
               accessibilityRole="header"
             >
               Manage Devices
@@ -197,24 +200,24 @@ export default function DevicesScreen() {
           {capacity ? (
             <Card className="mb-4">
               <View className="flex-row items-baseline justify-between mb-2">
-                <Text className="text-body font-semibold text-stone-900">
+                <Text className="text-body font-semibold text-content-primary">
                   {capacity.count} of {capacity.limit} devices in use
                 </Text>
                 {capacity.isAtLimit ? (
-                  <Text className="text-caption font-semibold text-danger-600">
+                  <Text className="text-caption font-semibold text-status-danger">
                     Limit reached
                   </Text>
                 ) : capacity.isNearLimit ? (
-                  <Text className="text-caption font-semibold text-warning-600">
+                  <Text className="text-caption font-semibold text-status-warning">
                     Approaching limit
                   </Text>
                 ) : (
-                  <Text className="text-caption text-stone-500">
+                  <Text className="text-caption text-content-tertiary">
                     {capacity.remaining} remaining
                   </Text>
                 )}
               </View>
-              <View className="h-2 rounded-full bg-stone-200 overflow-hidden">
+              <View className="h-2 rounded-full bg-surface-sunken overflow-hidden">
                 <View
                   className={`h-full ${barTone}`}
                   style={{ width: `${Math.min(100, Math.round(capacityRatio * 100))}%` }}
@@ -241,7 +244,7 @@ export default function DevicesScreen() {
             <EmptyState
               contained
               icon={ShieldAlert}
-              iconColor="#dc2626"
+              iconColor={colors.statusDangerFg}
               iconSize={iconLg}
               description="Could not load your devices."
               action={{

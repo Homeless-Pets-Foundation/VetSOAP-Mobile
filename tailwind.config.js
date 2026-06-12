@@ -2,17 +2,60 @@
 module.exports = {
   content: ['./app/**/*.{ts,tsx}', './src/**/*.{ts,tsx}'],
   presets: [require('nativewind/preset')],
+  // Required for NativeWind v4 setColorScheme(); later sweeps migrate screens onto these tokens.
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
+        // Semantic tokens (dark-mode groundwork). Backed by CSS vars in global.css
+        // that resolve to today's stone palette in light mode. New code uses
+        // these; old screens keep literal stone-* classes until they're swept.
+        surface: 'rgb(var(--color-surface) / <alpha-value>)',
+        'surface-raised': 'rgb(var(--color-surface-raised) / <alpha-value>)',
+        'surface-sunken': 'rgb(var(--color-surface-sunken) / <alpha-value>)',
+        'content-primary': 'rgb(var(--color-content-primary) / <alpha-value>)',
+        'content-body': 'rgb(var(--color-content-body) / <alpha-value>)',
+        'content-secondary': 'rgb(var(--color-content-secondary) / <alpha-value>)',
+        'content-tertiary': 'rgb(var(--color-content-tertiary) / <alpha-value>)',
+        'content-inverse': 'rgb(var(--color-content-inverse) / <alpha-value>)',
+        'content-on-brand': 'rgb(var(--content-on-brand) / <alpha-value>)',
+        'border-default': 'rgb(var(--color-border-default) / <alpha-value>)',
+        'border-strong': 'rgb(var(--color-border-strong) / <alpha-value>)',
+        scrim: 'rgb(var(--scrim))',
+        toast: {
+          bg: 'rgb(var(--toast-bg) / <alpha-value>)',
+          fg: 'rgb(var(--toast-fg) / <alpha-value>)',
+        },
+        status: {
+          info: {
+            bg: 'rgb(var(--status-info-bg) / <alpha-value>)',
+            border: 'rgb(var(--status-info-border) / <alpha-value>)',
+            fg: 'rgb(var(--status-info-fg) / <alpha-value>)',
+          },
+          warning: {
+            bg: 'rgb(var(--status-warning-bg) / <alpha-value>)',
+            border: 'rgb(var(--status-warning-border) / <alpha-value>)',
+            fg: 'rgb(var(--status-warning-fg) / <alpha-value>)',
+          },
+          danger: {
+            bg: 'rgb(var(--status-danger-bg) / <alpha-value>)',
+            border: 'rgb(var(--status-danger-border) / <alpha-value>)',
+            fg: 'rgb(var(--status-danger-fg) / <alpha-value>)',
+          },
+          success: {
+            bg: 'rgb(var(--status-success-bg) / <alpha-value>)',
+            border: 'rgb(var(--status-success-border) / <alpha-value>)',
+            fg: 'rgb(var(--status-success-fg) / <alpha-value>)',
+          },
+        },
         brand: {
           50: '#eefbf7',
           100: '#d5f5ec',
           200: '#aeead9',
           300: '#79d9c2',
           400: '#44c1a5',
-          500: '#0d8775',
-          600: '#0a7465',
+          500: 'rgb(var(--brand-500) / <alpha-value>)',
+          600: 'rgb(var(--brand-600) / <alpha-value>)',
           700: '#095e53',
           800: '#084b43',
           900: '#063e38',
@@ -61,10 +104,10 @@ module.exports = {
           700: '#1d4ed8',
         },
         soap: {
-          subjective: '#0d8775',
-          objective: '#2563eb',
-          assessment: '#d97706',
-          plan: '#7c3aed',
+          subjective: 'rgb(var(--soap-subjective) / <alpha-value>)',
+          objective: 'rgb(var(--soap-objective) / <alpha-value>)',
+          assessment: 'rgb(var(--soap-assessment) / <alpha-value>)',
+          plan: 'rgb(var(--soap-plan) / <alpha-value>)',
         },
       },
       fontSize: {

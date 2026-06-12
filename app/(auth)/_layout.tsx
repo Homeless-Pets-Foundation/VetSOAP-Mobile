@@ -2,14 +2,16 @@ import React from 'react';
 import { Redirect, Stack } from 'expo-router';
 import { useAuth } from '../../src/hooks/useAuth';
 import { View, ActivityIndicator } from 'react-native';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
 
 export default function AuthLayout() {
   const { isAuthenticated, isPasswordRecovery, isLoading, mfaRequired } = useAuth();
+  const colors = useThemeColors();
 
   if (isLoading) {
     return (
-      <View className="flex-1 justify-center items-center bg-stone-50">
-        <ActivityIndicator size="large" color="#0d8775" />
+      <View className="flex-1 justify-center items-center bg-surface">
+        <ActivityIndicator size="large" color={colors.brand500} />
       </View>
     );
   }

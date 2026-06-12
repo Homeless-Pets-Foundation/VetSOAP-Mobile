@@ -15,6 +15,21 @@ const STORE_OPTIONS = {
 /** Current user ID — set by AuthProvider to scope stash data per-user. */
 let currentUserId: string | null = null;
 
+// In-memory cache of the active generation's raw JSON, keyed by userId —
+// the Saved Sessions list re-walks count + chunk SecureStore keys on every
+// tab focus otherwise. Caching the raw string (not parsed objects) keeps the
+// read path's parse + shape-validation semantics identical and hands every
+// caller fresh objects. Write-through on successful save; invalidated on
+// setUserId/clear/failed save. The version counter blocks a slow in-flight
+// read from caching pre-write data after a concurrent write invalidated.
+let stashRawCache: { userId: string; raw: string } | null = null;
+let stashCacheVersion = 0;
+
+function invalidateStashCache(): void {
+  stashRawCache = null;
+  stashCacheVersion++;
+}
+
 function activeGenerationKeyForUser(userId: string): string {
   return `captivet_stash_${userId}_active`;
 }
@@ -73,13 +88,13 @@ function parseSessions(raw: string): StashedSession[] {
 async function readSessionsForKeys(
   scopedCountKey: string,
   scopedPrefix: string
-): Promise<StashedSession[] | null> {
+): Promise<{ raw: string; sessions: StashedSession[] } | null> {
   const countStr = await SecureStore.getItemAsync(scopedCountKey);
   if (!countStr) return null;
 
   const count = parseInt(countStr, 10);
   if (isNaN(count) || count < 0) return null;
-  if (count === 0) return [];
+  if (count === 0) return { raw: '[]', sessions: [] };
 
   const chunks: string[] = [];
   for (let i = 0; i < count; i++) {
@@ -89,7 +104,8 @@ async function readSessionsForKeys(
   }
 
   try {
-    return parseSessions(chunks.join(''));
+    const raw = chunks.join('');
+    return { raw, sessions: parseSessions(raw) };
   } catch {
     return null;
   }
@@ -98,21 +114,38 @@ async function readSessionsForKeys(
 async function getStashedSessionsForUserId(userId: string): Promise<StashedSession[]> {
   if (!userId) return [];
 
+  if (stashRawCache && stashRawCache.userId === userId) {
+    try {
+      return parseSessions(stashRawCache.raw);
+    } catch {
+      invalidateStashCache();
+    }
+  }
+
   try {
+    const versionAtReadStart = stashCacheVersion;
     const activeGeneration = await SecureStore.getItemAsync(activeGenerationKeyForUser(userId));
     if (activeGeneration === 'a' || activeGeneration === 'b') {
-      const activeSessions = await readSessionsForKeys(
+      const active = await readSessionsForKeys(
         generationCountKeyForUser(userId, activeGeneration),
         generationPrefixForUser(userId, activeGeneration)
       );
-      if (activeSessions !== null) return activeSessions;
+      if (active !== null) {
+        // Cache only the healthy active-generation path — legacy/recovery
+        // fallbacks below are rare one-shot corruption paths; keep the cache
+        // logic out of them. Skip populating if a write landed mid-read.
+        if (stashCacheVersion === versionAtReadStart) {
+          stashRawCache = { userId, raw: active.raw };
+        }
+        return active.sessions;
+      }
     }
 
     const legacySessions = await readSessionsForKeys(
       legacyCountKeyForUser(userId),
       legacyPrefixForUser(userId)
     );
-    if (legacySessions !== null) return legacySessions;
+    if (legacySessions !== null) return legacySessions.sessions;
 
     // Last-resort recovery if the active pointer is missing but one generation is intact.
     const genBSessions = await readSessionsForKeys(
@@ -124,10 +157,10 @@ async function getStashedSessionsForUserId(userId: string): Promise<StashedSessi
       generationPrefixForUser(userId, 'a')
     );
 
-    if (genBSessions !== null && genBSessions.length > 0) return genBSessions;
-    if (genASessions !== null && genASessions.length > 0) return genASessions;
-    if (genBSessions !== null) return genBSessions;
-    if (genASessions !== null) return genASessions;
+    if (genBSessions !== null && genBSessions.sessions.length > 0) return genBSessions.sessions;
+    if (genASessions !== null && genASessions.sessions.length > 0) return genASessions.sessions;
+    if (genBSessions !== null) return genBSessions.sessions;
+    if (genASessions !== null) return genASessions.sessions;
     return [];
   } catch {
     return [];
@@ -147,6 +180,7 @@ export const stashStorage = {
   /** Set the current user ID. Must be called before any stash operations. */
   setUserId(userId: string | null): void {
     currentUserId = userId;
+    invalidateStashCache();
   },
 
   /** Read the currently scoped user ID. Used to guard async recovery flows. */
@@ -198,12 +232,21 @@ export const stashStorage = {
         STORE_OPTIONS
       );
 
+      // Write-through: the pointer flip committed `raw` as the active
+      // generation. Bump the version first so a concurrent in-flight read
+      // can't repopulate over this with pre-flip data.
+      stashCacheVersion++;
+      stashRawCache = { userId, raw };
+
       // Cleanup is best-effort after the pointer flips. A failure here should
       // not invalidate the committed generation.
       await this.deleteGeneration(activeGeneration, userId);
       await this.deleteLegacyUserScopedChunks(userId);
       return true;
     } catch {
+      // The inactive generation may be partially mutated; the active one is
+      // untouched, but invalidating is the conservative choice.
+      invalidateStashCache();
       return false;
     }
   },
@@ -296,6 +339,8 @@ export const stashStorage = {
       }
     } catch {
       // Best-effort
+    } finally {
+      invalidateStashCache();
     }
   },
 

@@ -3,30 +3,28 @@ import { View, Text, Pressable } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { X, type LucideIcon } from 'lucide-react-native';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useThemeColors } from '../../hooks/useThemeColors';
 
 export type BannerVariant = 'info' | 'warning' | 'error';
 
 const VARIANT_CLASSES: Record<
   BannerVariant,
-  { container: string; iconColor: string; text: string; ctaText: string }
+  { container: string; text: string; ctaText: string }
 > = {
   info: {
-    container: 'bg-info-100 border-info-200',
-    iconColor: '#1d4ed8',
-    text: 'text-info-700',
-    ctaText: 'text-info-700',
+    container: 'bg-status-info border-status-info',
+    text: 'text-status-info',
+    ctaText: 'text-status-info',
   },
   warning: {
-    container: 'bg-warning-100 border-warning-200',
-    iconColor: '#b45309',
-    text: 'text-warning-700',
-    ctaText: 'text-warning-700',
+    container: 'bg-status-warning border-status-warning',
+    text: 'text-status-warning',
+    ctaText: 'text-status-warning',
   },
   error: {
-    container: 'bg-danger-100 border-danger-200',
-    iconColor: '#b91c1c',
-    text: 'text-danger-700',
-    ctaText: 'text-danger-700',
+    container: 'bg-status-danger border-status-danger',
+    text: 'text-status-danger',
+    ctaText: 'text-status-danger',
   },
 };
 
@@ -55,10 +53,17 @@ export function Banner({
   dismissible = false,
 }: BannerProps) {
   const { iconSm } = useResponsive();
+  const colors = useThemeColors();
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
 
   const v = VARIANT_CLASSES[variant];
+  const iconColor =
+    variant === 'info'
+      ? colors.statusInfoFg
+      : variant === 'warning'
+        ? colors.statusWarningFg
+        : colors.statusDangerFg;
 
   return (
     <Animated.View
@@ -69,7 +74,7 @@ export function Banner({
     >
       {Icon ? (
         <View className="mr-2">
-          <Icon color={v.iconColor} size={iconSm} />
+          <Icon color={iconColor} size={iconSm} />
         </View>
       ) : null}
       <View className="flex-1">
@@ -94,7 +99,7 @@ export function Banner({
           hitSlop={8}
           className="ml-2"
         >
-          <X color={v.iconColor} size={iconSm} />
+          <X color={iconColor} size={iconSm} />
         </Pressable>
       ) : null}
     </Animated.View>

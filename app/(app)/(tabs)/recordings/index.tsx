@@ -22,11 +22,13 @@ import {
 } from '../../../../src/lib/recordingPermissions';
 import { useAuth } from '../../../../src/hooks/useAuth';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
+import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { RecordingCard } from '../../../../src/components/RecordingCard';
 import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { EmptyState } from '../../../../src/components/ui/EmptyState';
 import { Select } from '../../../../src/components/ui/Select';
+import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
@@ -36,12 +38,16 @@ const STATUS_FILTER_OPTIONS = [
   { value: 'failed', label: 'Failed' },
   { value: 'completed', label: 'Completed' },
 ] as const;
+const NEEDS_REVIEW_STATUS_FILTER_OPTION = { value: 'needs_review', label: 'Needs Review' } as const;
 
-type StatusFilterValue = typeof STATUS_FILTER_OPTIONS[number]['value'];
+type StatusFilterValue =
+  | typeof STATUS_FILTER_OPTIONS[number]['value']
+  | typeof NEEDS_REVIEW_STATUS_FILTER_OPTION['value'];
 
 export default function RecordingsListScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const colors = useThemeColors();
   const { iconSm, iconLg } = useResponsive();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -51,12 +57,13 @@ export default function RecordingsListScreen() {
   const isTabFocused = useIsFocused();
   const shouldLoadRecordings = !!user && selectedStatusFilter !== 'draft';
   const shouldLoadDrafts = !!user && (selectedStatusFilter === 'all' || selectedStatusFilter === 'draft');
-  const serverStatusFilter = selectedStatusFilter === 'failed' || selectedStatusFilter === 'completed'
-    ? selectedStatusFilter
-    : undefined;
-  const activeStatusFilterLabel = STATUS_FILTER_OPTIONS.find(
-    (option) => option.value === selectedStatusFilter
-  )?.label ?? 'All';
+  const serverStatusFilter =
+    selectedStatusFilter === 'failed' || selectedStatusFilter === 'completed'
+      ? selectedStatusFilter
+      : selectedStatusFilter === 'needs_review'
+        ? 'completed'
+        : undefined;
+  const reviewStatusFilter = selectedStatusFilter === 'needs_review' ? 'needs_review' : undefined;
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -76,7 +83,7 @@ export default function RecordingsListScreen() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', 'desc'],
+    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', reviewStatusFilter ?? 'any', 'desc'],
     queryFn: ({ pageParam = 1 }) =>
       recordingsApi.list({
         search: debouncedSearch || undefined,
@@ -85,6 +92,7 @@ export default function RecordingsListScreen() {
         sortBy: 'createdAt',
         sortOrder: 'desc',
         ...(serverStatusFilter ? { status: serverStatusFilter } : {}),
+        ...(reviewStatusFilter ? { reviewStatus: reviewStatusFilter } : {}),
       }),
     initialPageParam: 1,
     enabled: shouldLoadRecordings,
@@ -109,6 +117,27 @@ export default function RecordingsListScreen() {
     () => sortRecordingsByCreatedAt(data?.pages.flatMap((page) => page.data) ?? [], 'desc'),
     [data]
   );
+  const hasReviewStatusInLoadedRecordings = useMemo(
+    () => recordings.some((recording) => getRecordingReviewStatus(recording) !== null),
+    [recordings]
+  );
+  const statusFilterOptions = useMemo(
+    () => (
+      hasReviewStatusInLoadedRecordings || selectedStatusFilter === 'needs_review'
+        ? [
+            STATUS_FILTER_OPTIONS[0],
+            STATUS_FILTER_OPTIONS[1],
+            NEEDS_REVIEW_STATUS_FILTER_OPTION,
+            STATUS_FILTER_OPTIONS[2],
+            STATUS_FILTER_OPTIONS[3],
+          ]
+        : STATUS_FILTER_OPTIONS
+    ),
+    [hasReviewStatusInLoadedRecordings, selectedStatusFilter]
+  );
+  const activeStatusFilterLabel = statusFilterOptions.find(
+    (option) => option.value === selectedStatusFilter
+  )?.label ?? 'All';
 
   const {
     data: draftData,
@@ -176,6 +205,9 @@ export default function RecordingsListScreen() {
   }, [draftData?.data, filteredLocalDrafts, user]);
   const displayRecordings = useMemo(() => {
     if (selectedStatusFilter === 'draft') return mergedDrafts;
+    if (selectedStatusFilter === 'needs_review') {
+      return recordings.filter((recording) => getRecordingReviewStatus(recording) === 'needs_review');
+    }
     if (selectedStatusFilter === 'all') {
       const combined = new Map<string, (typeof recordings)[number]>();
 
@@ -246,6 +278,8 @@ export default function RecordingsListScreen() {
       : 'No recordings match your search and filter.'
     : selectedStatusFilter === 'all'
       ? 'No recordings yet.'
+      : selectedStatusFilter === 'needs_review'
+        ? 'No recordings need review.'
       : 'No recordings match this filter.';
 
   return (
@@ -253,7 +287,7 @@ export default function RecordingsListScreen() {
       <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
       <View className="px-5 pt-5 pb-0">
         <Text
-          className="text-display font-bold text-stone-900 mb-4"
+          className="text-display font-bold text-content-primary mb-4"
           accessibilityRole="header"
         >
           Recordings
@@ -262,32 +296,32 @@ export default function RecordingsListScreen() {
         <View className="flex-row items-center gap-2 mb-4">
           {/* Search */}
           <View
-            className={`flex-1 flex-row items-center bg-white border rounded-input px-3 ${
-              isFocused ? 'border-brand-500' : 'border-stone-300'
+            className={`flex-1 flex-row items-center bg-surface-raised border rounded-input px-3 ${
+              isFocused ? 'border-brand-500' : 'border-border-strong'
             }`}
           >
-            <Search color="#78716c" size={iconSm} />
+            <Search color={colors.contentTertiary} size={iconSm} />
             <TextInput
               value={search}
               onChangeText={setSearch}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
               placeholder="Search by patient name..."
-              placeholderTextColor="#78716c"
+              placeholderTextColor={colors.contentTertiary}
               accessibilityLabel="Search recordings by patient name"
-              className="flex-1 p-3 text-body text-stone-900"
+              className="flex-1 p-3 text-body text-content-primary"
             />
           </View>
 
           <Select
-            options={STATUS_FILTER_OPTIONS}
+            options={statusFilterOptions}
             value={selectedStatusFilter}
             onValueChange={(value) => setSelectedStatusFilter(value)}
             placeholder="Status"
             accessibilityLabel={`Filter recordings by status. Current filter ${activeStatusFilterLabel}`}
             sheetTitle="Filter by status"
             className="w-[150px]"
-            fieldClassName={selectedStatusFilter !== 'all' ? 'border-brand-500 bg-brand-50' : ''}
+            fieldClassName={selectedStatusFilter !== 'all' ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}
           />
         </View>
       </View>
@@ -316,7 +350,7 @@ export default function RecordingsListScreen() {
         ListFooterComponent={
           shouldLoadRecordings && isFetchingNextPage ? (
             <View className="py-4 items-center">
-              <ActivityIndicator size="small" color="#0d8775" />
+              <ActivityIndicator size="small" color={colors.brand500} />
             </View>
           ) : null
         }
@@ -332,12 +366,12 @@ export default function RecordingsListScreen() {
           ) : isListError ? (
             <EmptyState
               icon={Search}
-              iconColor="#dc2626"
+              iconColor={colors.danger600}
               iconSize={iconLg}
               description="Could not load recordings."
               details={
                 listError ? (
-                  <Text className="text-caption text-stone-500 text-center px-4" selectable>
+                  <Text className="text-caption text-content-tertiary text-center px-4" selectable>
                     [{listError.name ?? 'Error'}{(listError as { status?: number })?.status ? ` ${(listError as { status?: number }).status}` : ''}] {listError.message}
                   </Text>
                 ) : undefined

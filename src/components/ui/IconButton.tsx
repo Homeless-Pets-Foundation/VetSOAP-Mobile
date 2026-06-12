@@ -11,7 +11,8 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { cx, HIT_SLOP, runMaybeAsyncEvent, UI_COLORS } from './styles';
+import { useThemeColors } from '../../hooks/useThemeColors';
+import { cx, HIT_SLOP, runMaybeAsyncEvent } from './styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -31,16 +32,9 @@ interface IconButtonProps extends Omit<PressableProps, 'children' | 'style' | 'o
 
 const variantClasses: Record<IconButtonVariant, string> = {
   ghost: 'bg-transparent',
-  secondary: 'bg-white border border-stone-300',
-  danger: 'bg-danger-50 border border-danger-100',
+  secondary: 'bg-surface-raised border border-border-strong',
+  danger: 'bg-status-danger border border-status-danger',
   primary: 'bg-brand-500',
-};
-
-const spinnerColors: Record<IconButtonVariant, string> = {
-  ghost: UI_COLORS.stoneDark,
-  secondary: UI_COLORS.stoneDark,
-  danger: UI_COLORS.danger,
-  primary: UI_COLORS.white,
 };
 
 const sizeClasses: Record<IconButtonSize, string> = {
@@ -61,8 +55,15 @@ export function IconButton({
   onPress,
   ...rest
 }: IconButtonProps) {
+  const colors = useThemeColors();
   const scale = useSharedValue(1);
   const isDisabled = disabled || loading;
+  const spinnerColors: Record<IconButtonVariant, string> = {
+    ghost: colors.contentPrimary,
+    secondary: colors.contentPrimary,
+    danger: colors.statusDangerFg,
+    primary: colors.contentOnBrand,
+  };
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],

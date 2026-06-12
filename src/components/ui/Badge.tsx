@@ -10,12 +10,12 @@ interface BadgeProps {
 }
 
 const variantClasses: Record<BadgeVariant, { bg: string; text: string }> = {
-  brand: { bg: 'bg-brand-100', text: 'text-brand-700' },
-  success: { bg: 'bg-success-100', text: 'text-success-700' },
-  warning: { bg: 'bg-warning-100', text: 'text-warning-700' },
-  danger: { bg: 'bg-danger-100', text: 'text-danger-700' },
-  info: { bg: 'bg-info-100', text: 'text-info-700' },
-  neutral: { bg: 'bg-stone-100', text: 'text-stone-600' },
+  brand: { bg: 'bg-brand-100 dark:bg-surface-sunken', text: 'text-brand-700 dark:text-brand-500' },
+  success: { bg: 'bg-status-success', text: 'text-status-success' },
+  warning: { bg: 'bg-status-warning', text: 'text-status-warning' },
+  danger: { bg: 'bg-status-danger', text: 'text-status-danger' },
+  info: { bg: 'bg-status-info', text: 'text-status-info' },
+  neutral: { bg: 'bg-surface-sunken', text: 'text-content-secondary' },
 };
 
 export function Badge({ children, variant = 'neutral', accessibilityLabel }: BadgeProps) {

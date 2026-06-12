@@ -12,6 +12,7 @@ import {
 } from '../../src/lib/supportStaffRecoveryVault';
 import { useAuth } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
 import { Button } from '../../src/components/ui/Button';
 import { Card } from '../../src/components/ui/Card';
@@ -66,13 +67,14 @@ function requiresForm(slot: RecoverySlot): boolean {
 }
 
 function isFormComplete(form: CreateRecording | undefined): boolean {
-  return !!form?.patientName.trim() && !!form.clientName.trim() && !!form.species.trim();
+  return !!form?.patientName?.trim() && !!form.clientName?.trim() && !!form.species?.trim();
 }
 
 export default function RecordingRecoveryScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { iconMd, iconLg } = useResponsive();
+  const colors = useThemeColors();
   const [items, setItems] = useState<RecoveryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -236,11 +238,11 @@ export default function RecordingRecoveryScreen() {
     return (
       <SafeAreaView className="screen items-center">
         <View className="flex-1 justify-center items-center px-6" style={{ width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
-          <FileClock color="#78716c" size={iconLg} />
-          <Text className="text-heading font-bold text-stone-900 text-center mt-4 mb-2">
+          <FileClock color={colors.contentTertiary} size={iconLg} />
+          <Text className="text-heading font-bold text-content-primary text-center mt-4 mb-2">
             Recovery Not Available
           </Text>
-          <Text className="text-body text-stone-500 text-center mb-6">
+          <Text className="text-body text-content-tertiary text-center mb-6">
             Only an owner, administrator, or veterinarian can recover local recordings.
           </Text>
           <Button variant="secondary" onPress={() => router.back()}>
@@ -256,16 +258,16 @@ export default function RecordingRecoveryScreen() {
       <View className="px-5 pt-5 pb-3" style={{ width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
         <View className="flex-row items-center">
           <IconButton
-            icon={<ChevronLeft color="#1c1917" size={iconMd} />}
+            icon={<ChevronLeft color={colors.contentPrimary} size={iconMd} />}
             label="Go back"
             onPress={() => router.back()}
             className="mr-3"
           />
           <View className="flex-1">
-            <Text className="text-display font-bold text-stone-900" accessibilityRole="header">
+            <Text className="text-display font-bold text-content-primary" accessibilityRole="header">
               Local Recovery
             </Text>
-            <Text className="text-body-sm text-stone-500 mt-0.5">
+            <Text className="text-body-sm text-content-tertiary mt-0.5">
               Recover recordings protected during support staff sign-out.
             </Text>
           </View>
@@ -279,18 +281,18 @@ export default function RecordingRecoveryScreen() {
         <View style={{ width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
           {loading ? (
             <View className="py-16 items-center">
-              <ActivityIndicator size="large" color="#0d8775" />
-              <Text className="text-body-sm text-stone-500 mt-3">
+              <ActivityIndicator size="large" color={colors.brand500} />
+              <Text className="text-body-sm text-content-tertiary mt-3">
                 {scanning ? 'Scanning this tablet…' : 'Loading recovery items…'}
               </Text>
             </View>
           ) : sortedItems.length === 0 ? (
             <View className="py-16 items-center px-6">
-              <FileClock color="#78716c" size={iconLg} />
-              <Text className="text-heading font-bold text-stone-900 text-center mt-4 mb-2">
+              <FileClock color={colors.contentTertiary} size={iconLg} />
+              <Text className="text-heading font-bold text-content-primary text-center mt-4 mb-2">
                 {scanTimedOut ? 'Recovery Check Timed Out' : 'No Recoverable Recordings'}
               </Text>
-              <Text className="text-body text-stone-500 text-center mb-6">
+              <Text className="text-body text-content-tertiary text-center mb-6">
                 {scanTimedOut
                   ? 'This tablet did not finish checking local recovery storage. Try again while staying signed in.'
                   : 'Only recovery copies saved during support staff sign-out can be restored automatically. Older leftover files are hidden unless the app can verify they came from this organization.'}
@@ -304,18 +306,18 @@ export default function RecordingRecoveryScreen() {
               <Card key={item.id} className="p-5 mb-3">
                 <View className="flex-row items-start justify-between mb-3">
                   <View className="flex-1 mr-3">
-                    <Text className="text-body-lg font-semibold text-stone-900">
+                    <Text className="text-body-lg font-semibold text-content-primary">
                       {item.slots[0]?.formData?.patientName || 'Recovered Audio'}
                     </Text>
-                    <Text className="text-body-sm text-stone-500 mt-1">
+                    <Text className="text-body-sm text-content-tertiary mt-1">
                       {formatDate(item.savedAt)} • {formatDuration(itemDuration(item))}
                     </Text>
-                    <Text className="text-caption text-stone-400 mt-1">
+                    <Text className="text-caption text-content-tertiary mt-1">
                       From {sourceLabel(item)} • {item.kind.replace('_', ' ')}
                     </Text>
                   </View>
                   <IconButton
-                    icon={<Trash2 color="#ef4444" size={iconMd} />}
+                    icon={<Trash2 color={colors.statusDangerFg} size={iconMd} />}
                     label="Delete recovery copy"
                     disabled={deletingId === item.id}
                     onPress={() => handleDelete(item)}
@@ -327,40 +329,40 @@ export default function RecordingRecoveryScreen() {
                   const key = formKey(item.id, slot.id);
                   const form = forms[key] ?? EMPTY_FORM;
                   return (
-                    <View key={key} className="border-t border-stone-200 pt-3 mt-3">
-                      <Text className="text-body-sm font-semibold text-stone-700 mb-2">
+                    <View key={key} className="border-t border-border-default pt-3 mt-3">
+                      <Text className="text-body-sm font-semibold text-content-body mb-2">
                         Details for audio {index + 1}
                       </Text>
                       <TextInput
                         value={form.patientName}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'patientName', value)}
                         placeholder="Patient name"
-                        placeholderTextColor="#a8a29e"
-                        className="bg-white border border-stone-300 rounded-input px-3 py-3 text-body text-stone-900 mb-2"
+                        placeholderTextColor={colors.contentTertiary}
+                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary mb-2"
                         accessibilityLabel="Patient name"
                       />
                       <TextInput
-                        value={form.clientName}
+                        value={form.clientName ?? ''}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'clientName', value)}
                         placeholder="Client name"
-                        placeholderTextColor="#a8a29e"
-                        className="bg-white border border-stone-300 rounded-input px-3 py-3 text-body text-stone-900 mb-2"
+                        placeholderTextColor={colors.contentTertiary}
+                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary mb-2"
                         accessibilityLabel="Client name"
                       />
                       <TextInput
-                        value={form.species}
+                        value={form.species ?? ''}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'species', value)}
                         placeholder="Species"
-                        placeholderTextColor="#a8a29e"
-                        className="bg-white border border-stone-300 rounded-input px-3 py-3 text-body text-stone-900 mb-2"
+                        placeholderTextColor={colors.contentTertiary}
+                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary mb-2"
                         accessibilityLabel="Species"
                       />
                       <TextInput
-                        value={form.appointmentType}
+                        value={form.appointmentType ?? ''}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'appointmentType', value)}
                         placeholder="Appointment type"
-                        placeholderTextColor="#a8a29e"
-                        className="bg-white border border-stone-300 rounded-input px-3 py-3 text-body text-stone-900"
+                        placeholderTextColor={colors.contentTertiary}
+                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary"
                         accessibilityLabel="Appointment type"
                       />
                     </View>

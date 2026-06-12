@@ -11,6 +11,7 @@ import Animated, {
 import type { SharedValue } from 'react-native-reanimated';
 import { StaticWaveform } from './StaticWaveform';
 import { TrimOverlay } from './TrimOverlay';
+import { useThemeColors } from '../hooks/useThemeColors';
 
 interface WaveformEditorProps {
   peaks: number[];
@@ -59,6 +60,7 @@ export function WaveformEditor({
   onHandleActivate,
   isLoading = false,
 }: WaveformEditorProps) {
+  const colors = useThemeColors();
   const [containerWidth, setContainerWidth] = React.useState(0);
   const WAVEFORM_HEIGHT = 120;
 
@@ -276,7 +278,7 @@ export function WaveformEditor({
                   left: 0,
                   width: 2,
                   height: WAVEFORM_HEIGHT,
-                  backgroundColor: '#ef4444',
+                  backgroundColor: colors.statusDangerFg,
                 },
                 playheadStyle,
               ]}
@@ -317,7 +319,7 @@ export function WaveformEditor({
           <Text className="text-caption text-brand-600 font-medium">
             {formatTime(trimStart)}
           </Text>
-          <Text className="text-caption text-stone-500">
+          <Text className="text-caption text-content-tertiary">
             Keep {formatTime(keepDuration)}
             {removeDuration > 0 && ` · Remove ${formatTime(removeDuration)}`}
           </Text>

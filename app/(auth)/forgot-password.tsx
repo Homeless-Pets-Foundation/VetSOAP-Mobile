@@ -39,19 +39,19 @@ export default function ForgotPasswordScreen() {
 
   if (emailSent) {
     return (
-      <SafeAreaView className="flex-1 bg-white">
+      <SafeAreaView className="flex-1 bg-surface-raised">
         <View className="flex-1 justify-center px-6">
           <View className="items-center">
-            <Text className="text-heading-lg font-bold text-stone-900 mb-3">
+            <Text className="text-heading-lg font-bold text-content-primary mb-3">
               Check your email
             </Text>
-            <Text className="text-body text-stone-600 text-center mb-6">
+            <Text className="text-body text-content-secondary text-center mb-6">
               We&apos;ve sent a password reset link to:
             </Text>
             <Text className="text-body font-semibold text-brand-500 mb-8">
               {email}
             </Text>
-            <Text className="text-body-sm text-stone-500 text-center mb-8">
+            <Text className="text-body-sm text-content-tertiary text-center mb-8">
               Click the link in the email to reset your password. If you don&apos;t see the email, check your spam folder.
             </Text>
           </View>
@@ -72,13 +72,13 @@ export default function ForgotPasswordScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
+    <SafeAreaView className="flex-1 bg-surface-raised">
       <View className="flex-1 justify-center px-6">
         <View className="mb-8">
-          <Text className="text-heading-lg font-bold text-stone-900 mb-2">
+          <Text className="text-heading-lg font-bold text-content-primary mb-2">
             Reset password
           </Text>
-          <Text className="text-body text-stone-600">
+          <Text className="text-body text-content-secondary">
             Enter your email address and we&apos;ll send you a link to reset your password.
           </Text>
         </View>

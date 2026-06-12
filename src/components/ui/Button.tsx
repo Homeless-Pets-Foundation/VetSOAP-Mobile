@@ -7,6 +7,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { cx, HIT_SLOP, runMaybeAsyncEvent } from './styles';
+import { useThemeColors } from '../../hooks/useThemeColors';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -27,11 +28,11 @@ interface ButtonProps extends Omit<PressableProps, 'style' | 'children' | 'onPre
 const variantClasses: Record<ButtonVariant, { container: string; text: string }> = {
   primary: {
     container: 'bg-brand-500',
-    text: 'text-white',
+    text: 'text-content-on-brand',
   },
   secondary: {
-    container: 'bg-white border border-stone-300',
-    text: 'text-stone-700',
+    container: 'bg-surface-raised border border-border-strong',
+    text: 'text-content-body',
   },
   danger: {
     container: 'bg-danger-500',
@@ -39,11 +40,11 @@ const variantClasses: Record<ButtonVariant, { container: string; text: string }>
   },
   ghost: {
     container: 'bg-transparent',
-    text: 'text-stone-700',
+    text: 'text-content-body',
   },
   dangerGhost: {
     container: 'bg-transparent',
-    text: 'text-danger-600',
+    text: 'text-status-danger',
   },
 };
 
@@ -66,6 +67,7 @@ export function Button({
   className,
   ...rest
 }: ButtonProps) {
+  const colors = useThemeColors();
   const scale = useSharedValue(1);
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -89,6 +91,14 @@ export function Button({
 
   const v = variantClasses[variant];
   const s = sizeClasses[size];
+  const loadingColor =
+    variant === 'secondary' || variant === 'ghost'
+      ? colors.contentBody
+      : variant === 'dangerGhost'
+        ? colors.statusDangerFg
+        : variant === 'primary'
+          ? colors.contentOnBrand
+          : colors.white;
 
   return (
     <AnimatedPressable
@@ -113,10 +123,7 @@ export function Button({
       {...rest}
     >
       {loading ? (
-        <ActivityIndicator
-          color={variant === 'secondary' || variant === 'ghost' ? '#44403c' : variant === 'dangerGhost' ? '#dc2626' : '#fff'}
-          size="small"
-        />
+        <ActivityIndicator color={loadingColor} size="small" />
       ) : (
         <>
           {icon && <View className="mr-2">{icon}</View>}

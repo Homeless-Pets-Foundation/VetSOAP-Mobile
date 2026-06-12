@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, TextInput, type TextInputProps, type NativeSyntheticEvent, type TargetedEvent } from 'react-native';
+import { useThemeColors } from '../../hooks/useThemeColors';
 import { FormField } from './FormField';
 import { cx } from './styles';
 
@@ -25,6 +26,7 @@ export function TextInputField({
   containerClassName,
   ...rest
 }: TextInputFieldProps) {
+  const colors = useThemeColors();
   const [isFocused, setIsFocused] = useState(false);
 
   const handleFocus = (e: NativeSyntheticEvent<TargetedEvent>) => {
@@ -41,7 +43,7 @@ export function TextInputField({
     ? 'border-danger-500'
     : isFocused
       ? 'border-brand-500'
-      : 'border-stone-300';
+      : 'border-border-strong';
 
   return (
     <FormField
@@ -54,19 +56,19 @@ export function TextInputField({
       {rightAccessory ? (
         <View className={cx('input-base min-h-[44px] flex-row items-center', borderClass, className)}>
           <TextInput
-            placeholderTextColor="#78716c"
+            placeholderTextColor={colors.contentTertiary}
             accessibilityLabel={label}
             accessibilityHint={required ? 'Required field' : undefined}
             onFocus={handleFocus}
             onBlur={handleBlur}
-            className="flex-1 text-body text-stone-900 p-0"
+            className="flex-1 text-body text-content-primary p-0"
             {...rest}
           />
           {rightAccessory}
         </View>
       ) : (
         <TextInput
-          placeholderTextColor="#78716c"
+          placeholderTextColor={colors.contentTertiary}
           accessibilityLabel={label}
           accessibilityHint={required ? 'Required field' : undefined}
           onFocus={handleFocus}

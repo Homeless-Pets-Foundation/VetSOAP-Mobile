@@ -67,3 +67,14 @@ play-service-account.json
 # generated native folders
 /ios
 /android
+
+# Local working notes - internal infra details, not for the public repo
+docs/competitive-audit-2026-06.md
+docs/dark-mode-5d-completion-plan-2026-06.md
+docs/dark-mode-phase10-verification-2026-06-11.md
+docs/joy-initiative-audit-2026-06-11.md
+docs/joy-initiative-implementation-plan-2026-06.md
+docs/joy-polish-items-plan-2026-06.md
+docs/mac-mini-ssh.md
+docs/remaining-items-implementation-plan-2026-06.md
+docs/translate-email-draft-diagnosis-2026-06.md

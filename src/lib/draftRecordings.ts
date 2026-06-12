@@ -66,6 +66,8 @@ export function draftMetadataToRecording(
     exportedBy: null,
     costBreakdown: null,
     importSource: null,
+    aiExtractedMetadata: null,
+    needsMetadataReview: false,
     createdAt: draft.savedAt,
     updatedAt: draft.savedAt,
   };

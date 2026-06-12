@@ -4,9 +4,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertTriangle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../hooks/useAuth';
+import { useThemeColors } from '../hooks/useThemeColors';
 import { DEVICE_REGISTRATION_BANNER_COPY } from '../constants/strings';
 
 export function DeviceRegistrationBanner() {
+  const colors = useThemeColors();
   const { deviceRegistrationPending, deviceRegistrationBlock, retryDeviceRegistration } = useAuth();
   const [isRetrying, setIsRetrying] = useState(false);
   const insets = useSafeAreaInsets();
@@ -27,29 +29,29 @@ export function DeviceRegistrationBanner() {
 
   return (
     <View
-      className="bg-amber-100 border-b border-amber-300 px-4 pb-3 flex-row items-center"
+      className="bg-status-warning border-b border-status-warning px-4 pb-3 flex-row items-center"
       style={{ paddingTop: insets.top + 12 }}
     >
-      <AlertTriangle size={20} color="#b45309" />
+      <AlertTriangle size={20} color={colors.statusWarningFg} />
       <View className="flex-1 ml-3">
-        <Text className="text-amber-900 font-semibold text-sm" numberOfLines={1}>
+        <Text className="text-status-warning font-semibold text-sm" numberOfLines={1}>
           {DEVICE_REGISTRATION_BANNER_COPY.title}
         </Text>
-        <Text className="text-amber-800 text-xs mt-0.5" numberOfLines={2}>
+        <Text className="text-status-warning text-xs mt-0.5" numberOfLines={2}>
           {DEVICE_REGISTRATION_BANNER_COPY.body}
         </Text>
       </View>
       <Pressable
         onPress={handleRetry}
         disabled={isRetrying}
-        className="ml-3 bg-amber-600 rounded-md px-3 py-2"
+        className="ml-3 bg-surface border border-status-warning rounded-md px-3 py-2"
         style={{ opacity: isRetrying ? 0.6 : 1, flexShrink: 0 }}
       >
         {isRetrying ? (
-          <ActivityIndicator color="#ffffff" size="small" />
+          <ActivityIndicator color={colors.statusWarningFg} size="small" />
         ) : (
           <Text
-            className="text-white font-semibold text-xs"
+            className="text-status-warning font-semibold text-xs"
             style={{ flexShrink: 0, paddingRight: 2 }}
           >
             {`${DEVICE_REGISTRATION_BANNER_COPY.retry} `}

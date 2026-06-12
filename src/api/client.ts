@@ -191,6 +191,7 @@ export class ApiClient {
     }
     if (status === 403) return 'You do not have permission to perform this action.';
     if (status === 404) return 'The requested resource was not found.';
+    if (status === 400 && details.length) return details.map((d) => d.message).join(', ');
     if (status === 422 && details.length) return details.map((d) => d.message).join(', ');
     if (status === 429) return 'Too many requests. Please try again shortly.';
     if (status >= 500) return 'A server error occurred. Please try again later.';
@@ -263,9 +264,17 @@ export class ApiClient {
       params?: Record<string, string | number | undefined>;
       timeoutMs?: number;
       idempotencyKey?: string;
+      parseJson?: boolean;
     } = {}
   ): Promise<T> {
-    const { method = 'GET', body, params, timeoutMs = REQUEST_TIMEOUT_MS, idempotencyKey } = config;
+    const {
+      method = 'GET',
+      body,
+      params,
+      timeoutMs = REQUEST_TIMEOUT_MS,
+      idempotencyKey,
+      parseJson = true,
+    } = config;
 
     let url = `${API_URL}${path}`;
     if (params) {
@@ -344,7 +353,26 @@ export class ApiClient {
     const latencyMs = Date.now() - fetchStartedAt;
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({})) ?? {};
-      const details = Array.isArray(errorBody.details) ? errorBody.details : [];
+      const details = Array.isArray(errorBody.details)
+        ? errorBody.details
+            .map((detail: unknown): { field?: string; message: string } | null => {
+              if (!detail || typeof detail !== 'object') return null;
+              const raw = detail as Record<string, unknown>;
+              const message = typeof raw.message === 'string' ? raw.message : '';
+              if (!message) return null;
+              const field =
+                typeof raw.field === 'string'
+                  ? raw.field
+                  : Array.isArray(raw.path)
+                    ? raw.path.map(String).join('.')
+                    : undefined;
+              return field ? { field, message } : { message };
+            })
+            .filter(
+              (detail: { field?: string; message: string } | null): detail is { field?: string; message: string } =>
+                detail !== null
+            )
+        : [];
       const message = this.buildErrorMessage(response.status, errorBody, details);
       const code = typeof errorBody.code === 'string' ? errorBody.code : undefined;
 
@@ -388,7 +416,7 @@ export class ApiClient {
     // `maxBreadcrumbs: 50` setting in monitoring.ts.
     emitApiBreadcrumb(method, path, response.status, latencyMs, requestId);
 
-    if (response.status === 204) {
+    if (response.status === 204 || !parseJson) {
       return undefined as T;
     }
 

@@ -14,6 +14,7 @@ import Animated, {
 import { Plus } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import type { PatientSlot } from '../types/multiPatient';
+import { useThemeColors } from '../hooks/useThemeColors';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -63,7 +64,7 @@ function StatusDot({ audioState, uploadStatus }: Pick<PatientSlot, 'audioState' 
   }
   return (
     <View
-      className="w-2 h-2 rounded-full bg-stone-300 ml-1.5"
+      className="w-2 h-2 rounded-full bg-border-strong ml-1.5"
       accessibilityLabel="ready"
     />
   );
@@ -105,6 +106,7 @@ function getTabLabel(slot: PatientSlot, index: number): string {
 const TAB_LAYOUT_TRANSITION = LinearTransition.duration(200).easing(Easing.out(Easing.ease));
 
 export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatient }: PatientTabStripProps) {
+  const colors = useThemeColors();
   const scrollRef = useRef<ScrollView>(null);
   const tabPositions = useRef<Record<number, { x: number; width: number }>>({});
 
@@ -161,12 +163,12 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
             className={`px-3.5 min-h-[44px] flex-row items-center justify-center rounded-pill border ${
               isActive
                 ? 'border-brand-500 bg-brand-500'
-                : 'border-stone-300 bg-white'
+                : 'border-border-strong bg-surface-raised'
             }`}
           >
             <Text
               className={`text-body-sm font-medium shrink max-w-[180px] ${
-                isActive ? 'text-white' : 'text-stone-700'
+                isActive ? 'text-content-on-brand' : 'text-content-body'
               }`}
               numberOfLines={1}
               ellipsizeMode="tail"
@@ -186,9 +188,9 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
             accessibilityRole="button"
             accessibilityLabel="Add patient"
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            className="w-[44px] h-[44px] items-center justify-center rounded-full border border-dashed border-stone-400 bg-white"
+            className="w-[44px] h-[44px] items-center justify-center rounded-full border border-dashed border-border-strong bg-surface-raised"
           >
-            <Plus color="#78716c" size={18} />
+            <Plus color={colors.contentTertiary} size={18} />
           </Pressable>
         </Animated.View>
       )}

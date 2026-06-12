@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { Alert, AppState, Platform, PermissionsAndroid } from 'react-native';
 import {
   useAudioRecorder as useExpoAudioRecorder,
-  useAudioRecorderState,
   setAudioModeAsync,
   AudioQuality,
   IOSOutputFormat,
@@ -18,11 +17,17 @@ export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped' | 'inte
 export interface UseAudioRecorderReturn {
   state: RecordingState;
   isStarting: boolean;
+  /** Frozen-at-transition duration (updates on start/pause/resume/stop), NOT a live ticker. */
   duration: number;
-  metering: number;
   maxMetering?: number;
   audioUri: string | null;
   mimeType: string;
+  /**
+   * Live metering + duration read on demand from refs/native — no React state
+   * behind it, so consumers poll it from a leaf component without re-rendering
+   * the screen that owns the recorder (see RecorderLiveReadout).
+   */
+  getLiveStats: () => { meteringDb: number; durationSeconds: number };
   getPersistableSnapshot: () => {
     audioUri: string | null;
     duration: number;
@@ -83,12 +88,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // Capture duration before pause/stop — native pause can reset the polled durationMillis to 0
   const capturedDurationRef = useRef(0);
 
-  // Recorder + recorderState are referenced inside statusListener but declared
-  // below this hook. We forward them via refs so the listener identity stays
-  // stable (callback memoization doesn't break on every render) without
-  // introducing the use-before-define lint trap.
+  // Recorder is referenced inside statusListener but declared below this
+  // hook. We forward it via a ref so the listener identity stays stable
+  // (callback memoization doesn't break on every render) without introducing
+  // the use-before-define lint trap.
   const recorderRef = useRef<ReturnType<typeof useExpoAudioRecorder> | null>(null);
-  const recorderStateRef = useRef<{ durationMillis: number } | null>(null);
+  // Last native status sample written by the render-free polling effect below.
+  // Read fallback for getLiveStats/getNativeDurationSeconds when a direct
+  // getStatus() call throws (released/broken native handle).
+  const lastStatusRef = useRef<{ metering: number | undefined; durationMillis: number } | null>(null);
   const stateRef = useRef<RecordingState>('idle');
 
   const setElapsedSecondsValue = useCallback((seconds: number) => {
@@ -98,7 +106,16 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   }, []);
 
   const getNativeDurationSeconds = useCallback(() => {
-    return Math.floor((recorderStateRef.current?.durationMillis ?? 0) / 1000);
+    let durationMillis = lastStatusRef.current?.durationMillis ?? 0;
+    try {
+      const status = recorderRef.current?.getStatus();
+      if (status && typeof status.durationMillis === 'number') {
+        durationMillis = status.durationMillis;
+      }
+    } catch {
+      // Released/broken native handle — keep the last polled sample.
+    }
+    return Math.floor(durationMillis / 1000);
   }, []);
 
   const getElapsedDurationSeconds = useCallback(() => {
@@ -238,48 +255,73 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // Create the expo-audio recorder (auto-released on unmount)
   const recorder = useExpoAudioRecorder(RECORDING_OPTIONS, statusListener);
 
-  // Adaptive poll cadence: 500ms while actively recording in the foreground
-  // (responsive metering + native fallback duration), 2000ms when backgrounded,
-  // 5000ms when idle or stopped. The visible timer is driven by a JS clock
-  // below so iOS native status throttling cannot make the counter jump.
-  const [appActive, setAppActive] = useState(() => AppState.currentState === 'active');
+  // Forward to the refs the statusListener closes over — see its comment.
+  recorderRef.current = recorder;
+  stateRef.current = state;
+
+  // App-state as a ref, not state: the poll cadence below reads it at each
+  // tick, and nothing should re-render on foreground/background changes.
+  const appActiveRef = useRef(AppState.currentState === 'active');
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
-      setAppActive(next === 'active');
+      appActiveRef.current = next === 'active';
     });
     return () => sub.remove();
   }, []);
-  const pollIntervalMs =
-    state === 'recording' || state === 'paused'
-      ? appActive
-        ? 500
-        : 2000
-      : 5000;
-  const recorderState = useAudioRecorderState(recorder, pollIntervalMs);
 
-  // Forward to the refs the statusListener closes over — see its comment.
-  recorderRef.current = recorder;
-  recorderStateRef.current = recorderState;
-  stateRef.current = state;
-
+  // Render-free recorder sampling. This used to be useAudioRecorderState +
+  // a 250ms display interval — both setState-driven, so every metering tick
+  // re-rendered the entire record screen. Now the samples land in refs only:
+  // RecorderLiveReadout polls getLiveStats() from a leaf component for the
+  // visible waveform/timer, and the screen re-renders only on actual state
+  // transitions. Max-metering tracking must stay HERE (not the leaf): the
+  // FlatList can unmount the owner card mid-recording on swipe, and
+  // peakMetering feeds the silent-audio guard in record.tsx.
+  // Cadence: 500ms foreground / 2000ms background (rule 6: responsiveness
+  // vs CPU on weak hardware); no polling at all when idle/stopped.
   useEffect(() => {
     if (state !== 'recording' && state !== 'paused') return;
-    const currentMetering = recorderState.metering;
-    if (typeof currentMetering === 'number' && currentMetering > maxMeteringRef.current) {
-      hasMeteringSampleRef.current = true;
-      maxMeteringRef.current = currentMetering;
-    }
-  }, [recorderState.metering, state]);
-
-  useEffect(() => {
-    if (state !== 'recording') return;
-    const updateElapsed = () => {
-      setElapsedSecondsValue(Math.max(getElapsedDurationSeconds(), getNativeDurationSeconds()));
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const sample = () => {
+      if (cancelled) return;
+      try {
+        const status = recorderRef.current?.getStatus();
+        if (status) {
+          const metering = typeof status.metering === 'number' ? status.metering : undefined;
+          lastStatusRef.current = {
+            metering,
+            durationMillis: typeof status.durationMillis === 'number' ? status.durationMillis : 0,
+          };
+          if (metering !== undefined && metering > maxMeteringRef.current) {
+            hasMeteringSampleRef.current = true;
+            maxMeteringRef.current = metering;
+          }
+        }
+      } catch {
+        // Released/broken native handle — keep the last sample.
+      }
+      timer = setTimeout(sample, appActiveRef.current ? 500 : 2000);
     };
-    updateElapsed();
-    const interval = setInterval(updateElapsed, 250);
-    return () => clearInterval(interval);
-  }, [getElapsedDurationSeconds, getNativeDurationSeconds, setElapsedSecondsValue, state]);
+    sample();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [state]);
+
+  const getLiveStats = useCallback(() => ({
+    meteringDb: lastStatusRef.current?.metering ?? -160,
+    // Mirrors getPersistableSnapshot's live branch: the JS clock is the
+    // primary source (iOS native status throttling can't make it jump),
+    // native duration is the fallback when the JS clock loses (e.g. process
+    // was suspended), and the last transition value is the floor.
+    durationSeconds: Math.max(
+      elapsedSecondsRef.current,
+      getElapsedDurationSeconds(),
+      getNativeDurationSeconds()
+    ),
+  }), [getElapsedDurationSeconds, getNativeDurationSeconds]);
 
   const start = useCallback(async () => {
     if (isStartingRef.current || state !== 'idle') {
@@ -460,8 +502,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       state === 'stopped' || state === 'interrupted'
         ? finalDuration
         : elapsedSeconds,
-    metering: recorderState.metering ?? -160,
     maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
+    getLiveStats,
     audioUri,
     mimeType: 'audio/x-m4a',
     getPersistableSnapshot: () => ({

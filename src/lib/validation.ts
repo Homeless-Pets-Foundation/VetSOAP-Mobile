@@ -7,36 +7,38 @@ function sanitize(val: string): string {
 
 // UUID v4 pattern for recording IDs
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const APPOINTMENT_TYPES = ['Wellness Exam', 'Sick Visit', 'Urgent/Emergency', 'Follow-up'] as const;
+
+function optionalSanitizedString(max: number, message: string) {
+  return z.preprocess((value) => {
+    if (value === null || value === undefined) return undefined;
+    if (typeof value !== 'string') return value;
+    const sanitized = sanitize(value);
+    return sanitized.length > 0 ? sanitized : undefined;
+  }, z.string().max(max, message).optional());
+}
+
+const optionalAppointmentTypeSchema = z.preprocess((value) => {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string') return value;
+  const sanitized = sanitize(value);
+  return sanitized.length > 0 ? sanitized : undefined;
+}, z.enum(APPOINTMENT_TYPES).optional());
 
 export const recordingIdSchema = z
   .string()
   .regex(uuidPattern, 'Invalid recording ID format');
 
 export const createRecordingSchema = z.object({
-  pimsPatientId: z
-    .string()
-    .optional()
-    .transform((v) => (v ? sanitize(v) : v))
-    .pipe(z.string().max(100, 'PIMS ID too long').optional()),
-  patientName: z
-    .string()
-    .transform(sanitize)
-    .pipe(z.string().min(1, 'Patient name is required').max(100, 'Patient name too long')),
-  clientName: z
-    .string()
-    .transform(sanitize)
-    .pipe(z.string().min(1, 'Client name is required').max(100, 'Client name too long')),
-  species: z
-    .string()
-    .transform(sanitize)
-    .pipe(z.string().min(1, 'Species is required').max(50, 'Species name too long')),
-  breed: z
-    .string()
-    .optional()
-    .transform((v) => (v ? sanitize(v) : v))
-    .pipe(z.string().max(100, 'Breed name too long').optional()),
-  appointmentType: z
-    .enum(['Wellness Exam', 'Sick Visit', 'Urgent/Emergency', 'Follow-up']),
+  pimsPatientId: optionalSanitizedString(100, 'PIMS ID too long'),
+  patientName: z.preprocess(
+    (value) => (typeof value === 'string' ? sanitize(value) : value),
+    z.string().max(100, 'Patient name too long')
+  ),
+  clientName: optionalSanitizedString(100, 'Client name too long'),
+  species: optionalSanitizedString(50, 'Species name too long'),
+  breed: optionalSanitizedString(100, 'Breed name too long'),
+  appointmentType: optionalAppointmentTypeSchema,
   foreignLanguage: z.boolean().optional(),
   templateId: z.string().uuid().optional(),
 });

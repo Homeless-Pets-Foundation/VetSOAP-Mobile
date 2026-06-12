@@ -40,7 +40,7 @@ export function Skeleton({
 
   return (
     <Animated.View
-      className={`bg-stone-200 ${className}`}
+      className={`bg-border-default ${className}`}
       style={[
         {
           width: width as any,

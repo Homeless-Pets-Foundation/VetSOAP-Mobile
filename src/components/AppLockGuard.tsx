@@ -71,7 +71,7 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   // Hung-bridge defense (CLAUDE.md rule 29): if `biometrics.isAvailable()` /
   // `isEnabled()` / `authenticate()` hang silently (post-update Keystore
   // rebuild, OS biometric service stall) the user sees the blank
-  // `bg-stone-50` screen at line 174 forever. The 12s watchdog flips
+  // `bg-surface` screen at line 174 forever. The 12s watchdog flips
   // `isReady=true, isLocked=false` so the user lands on the app content
   // (or the explicit Lock UI with an Unlock button) instead of nothing.
   useEffect(() => {
@@ -197,13 +197,13 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   // While checking biometric state on cold start, show nothing (prevents flash)
   if (!isReady && isLocked) {
     return (
-      <View className="flex-1 bg-stone-50" />
+      <View className="flex-1 bg-surface" />
     );
   }
 
   if (isLocked) {
     return (
-      <View className="flex-1 justify-center items-center p-6 bg-stone-50">
+      <View className="flex-1 justify-center items-center p-6 bg-surface">
         <Image
           source={require('../../assets/logo-wordmark.png')}
           style={{ width: '60%', maxWidth: 280, aspectRatio: 600 / 139 }}
@@ -211,10 +211,10 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
           accessibilityLabel="Captivet"
           className="mb-4"
         />
-        <Text className="text-body-lg font-bold text-stone-900 mb-2">
+        <Text className="text-body-lg font-bold text-content-primary mb-2">
           Captivet Locked
         </Text>
-        <Text className="text-body-sm text-stone-500 text-center mb-6">
+        <Text className="text-body-sm text-content-tertiary text-center mb-6">
           Authenticate to continue using the app.
         </Text>
         <Button

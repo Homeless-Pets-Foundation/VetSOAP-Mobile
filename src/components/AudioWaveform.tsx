@@ -61,7 +61,7 @@ const WaveBar = React.memo(function WaveBar({ index, barCount, isActive, isPause
 
   return (
     <Animated.View
-      className={`rounded-full ${isActive ? 'bg-brand-500' : 'bg-stone-300'}`}
+      className={`rounded-full ${isActive ? 'bg-brand-500' : 'bg-border-strong'}`}
       style={[{ width: barWidth, marginHorizontal: barGap / 2 }, animatedStyle]}
     />
   );

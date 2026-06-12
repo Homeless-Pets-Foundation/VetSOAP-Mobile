@@ -26,6 +26,15 @@ function loadPostHog(): typeof PostHog | null {
 
 let _client: PostHog | null = null;
 
+// initAnalytics() is deferred off the cold-start critical path (called after
+// the first frame in RootLayout). Events fired before it runs — including
+// AuthProvider's startup events, whose effects run before RootLayout's — are
+// queued here and drained on init. Bounded drop-oldest so a pre-init error
+// storm can't grow memory; nulled once init resolves (success or failure) so
+// the steady state has no queue overhead.
+const PRE_INIT_QUEUE_CAP = 50;
+let _preInitQueue: AnalyticsEvent[] | null = [];
+
 // Lazy so old dev-client APKs without the expo-application native module
 // don't throw at module-load. See CLAUDE.md rule 23.
 function getAppVersion(): string {
@@ -70,6 +79,7 @@ export type AnalyticsEvent =
   | { name: 'device_registration_failed'; props: { error_code: string } }
   // Recording lifecycle
   | { name: 'recording_started'; props: { slot_index: number } }
+  | { name: 'recording_started_blank_fields'; props: { blank_field_count: number } }
   | { name: 'recording_paused'; props: { slot_index: number; duration_s: number } }
   | { name: 'recording_resumed'; props: { slot_index: number } }
   | { name: 'recording_finished'; props: { slot_index: number; duration_s: number; segment_count: number } }
@@ -98,10 +108,27 @@ export type AnalyticsEvent =
   | { name: 'draft_save_segment_copy_failed'; props: { expected: number; saved: number; ensure_dir_failed: boolean; reasons: string; prior_valid_save: boolean } }
   // API + network
   | { name: 'api_request_failed'; props: { endpoint_kind: EndpointKind; status: number; latency_ms: number; retried: boolean } }
+  // Startup resilience
+  | { name: 'profile_cache_used'; props: { age_s: number } }
+  // Recording detail (transcript + playback)
+  | { name: 'transcript_viewed'; props: { recording_id: string } }
+  | { name: 'audio_playback_started'; props: { recording_id: string } }
+  | { name: 'audio_playback_failed'; props: { recording_id: string; error_code: string } }
   // SOAP
   | { name: 'soap_visible'; props: { recording_id: string; ms_since_finish: number | null; ms_since_submit: number | null } }
+  | { name: 'soap_section_edited'; props: { recording_id: string; section: SoapSectionName } }
   | { name: 'soap_exported'; props: { target: SoapExportTarget; recording_id: string } }
   | { name: 'soap_regenerated'; props: { recording_id: string; template_changed: boolean } }
+  | { name: 'email_draft_generated'; props: { recording_id: string } }
+  | { name: 'soap_translated'; props: { recording_id: string; target_language: TranslationTargetLanguage } }
+  | { name: 'template_default_set'; props: { template_kind: string } }
+  | { name: 'ai_metadata_review_shown'; props: { applied_field_count: number } }
+  | { name: 'ai_metadata_review_resolved'; props: { action: 'confirmed' | 'corrected' | 'dismissed'; corrected_field_count: number } }
+  // Account surface
+  | { name: 'profile_updated'; props: { fields: string } }
+  | { name: 'subscription_viewed'; props: { status: string } }
+  | { name: 'support_link_opened'; props: { link: 'help_center' | 'contact' } }
+  | { name: 'account_deletion_requested'; props: Record<string, never> }
   // Billing
   | { name: 'trial_limit_hit'; props: Record<string, never> }
   | { name: 'byok_key_failed'; props: { model_provider: 'openai' | 'anthropic' | 'google' } }
@@ -129,7 +156,11 @@ export type SilenceCheckSilentReason = 'metering_all_below_threshold' | 'ffmpeg_
 
 export type EndpointKind = 'recordings' | 'auth' | 'telemetry' | 'devices' | 'soap' | 'other';
 
-export type SoapExportTarget = 'clipboard' | 'pims' | 'share_sheet' | 'email';
+export type SoapExportTarget = 'clipboard' | 'pims' | 'share_sheet' | 'email' | 'pdf';
+
+export type TranslationTargetLanguage = 'Spanish' | 'French' | 'Portuguese' | 'custom';
+
+export type SoapSectionName = 'subjective' | 'objective' | 'assessment' | 'plan';
 
 export type PermissionState = 'granted' | 'denied' | 'undetermined';
 
@@ -170,12 +201,14 @@ export type ErrorPhase =
 export function initAnalytics(): void {
   if (_client) return;
   if (!POSTHOG_KEY) {
+    _preInitQueue = null;
     if (__DEV__) console.log('[PostHog] Disabled — EXPO_PUBLIC_POSTHOG_KEY not set');
     return;
   }
 
   const PostHogCtor = loadPostHog();
   if (!PostHogCtor) {
+    _preInitQueue = null;
     if (__DEV__) console.log('[PostHog] Disabled — posthog-react-native native module unavailable');
     return;
   }
@@ -206,11 +239,20 @@ export function initAnalytics(): void {
     // signal that tells us when the rate limiter is masking a bug.
     startSuppressionSummaryTimer();
 
+    // Drain events that fired before init — through the normal gate so a
+    // pre-init retry storm still can't drain PostHog quota.
+    const queued = _preInitQueue;
+    _preInitQueue = null;
+    if (queued) {
+      for (const event of queued) emitEvent(event);
+    }
+
     if (__DEV__) console.log('[PostHog] Initialized');
   } catch (error) {
     // Never let analytics init crash the app — rule 1.
     if (__DEV__) console.error('[PostHog] Init failed', error);
     _client = null;
+    _preInitQueue = null;
   }
 }
 
@@ -289,6 +331,19 @@ function subKeyForEvent(event: AnalyticsEvent): string {
  * limiter wraps the emission so a retry loop can't drain PostHog quota.
  */
 export function trackEvent<E extends AnalyticsEvent>(event: E): void {
+  if (!_client) {
+    // Pre-init window: hold the event for the drain in initAnalytics().
+    // The rate-limit gate runs at drain time, not here.
+    if (_preInitQueue) {
+      if (_preInitQueue.length >= PRE_INIT_QUEUE_CAP) _preInitQueue.shift();
+      _preInitQueue.push(event);
+    }
+    return;
+  }
+  emitEvent(event);
+}
+
+function emitEvent(event: AnalyticsEvent): void {
   if (!_client) return;
   const gate = shouldEmit('track_event', subKeyForEvent(event));
   if (!gate.emit) return;

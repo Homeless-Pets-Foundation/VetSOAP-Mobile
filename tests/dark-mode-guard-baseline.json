@@ -1,0 +1,13 @@
+{
+  "roots": [
+    "app",
+    "src/components"
+  ],
+  "patterns": {
+    "text-stone-": 171,
+    "bg-white": 14,
+    "color=\"#": 98,
+    "placeholderTextColor=\"#": 8
+  },
+  "total": 291
+}

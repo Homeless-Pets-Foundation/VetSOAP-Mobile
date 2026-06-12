@@ -18,6 +18,7 @@ import { patientsApi } from '../../../../src/api/patients';
 import { Button } from '../../../../src/components/ui/Button';
 import { Card } from '../../../../src/components/ui/Card';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
+import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import type { UpdatePatient } from '../../../../src/types';
 
 type Tab = 'summary' | 'visits' | 'profile';
@@ -32,12 +33,50 @@ interface ProfileDraft {
   clinicalNotes?: string | null;
 }
 
+const SUMMARY_COLLAPSE_LINES = 3;
+// Below this length the text fits the collapsed window anyway — no toggle.
+const SUMMARY_READ_MORE_MIN_CHARS = 160;
+
+function AiSummaryText({ summary }: { summary: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const showToggle = summary.length > SUMMARY_READ_MORE_MIN_CHARS;
+  return (
+    <View>
+      <Text
+        className="text-body text-content-body leading-relaxed"
+        numberOfLines={expanded || !showToggle ? undefined : SUMMARY_COLLAPSE_LINES}
+      >
+        {summary}
+      </Text>
+      {showToggle && (
+        <Pressable
+          onPress={() => setExpanded((prev) => !prev)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? 'Show less of the summary' : 'Read the full summary'}
+          className="mt-1 self-start"
+          style={{ minHeight: 32, justifyContent: 'center' }}
+        >
+          {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+          <Text
+            className="text-body-sm font-medium text-brand-600"
+            allowFontScaling={false}
+            style={{ flexShrink: 0, paddingRight: 2 }}
+          >
+            {`${expanded ? 'Show less' : 'Read more'} `}
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 function ProfileField({ label, value }: { label: string; value: string | null | undefined }) {
   if (!value) return null;
   return (
     <View className="mb-3">
-      <Text className="text-caption text-stone-500 uppercase tracking-wide">{label}</Text>
-      <Text className="text-body text-stone-900 mt-0.5">{value}</Text>
+      <Text className="text-caption text-content-tertiary uppercase tracking-wide">{label}</Text>
+      <Text className="text-body text-content-primary mt-0.5">{value}</Text>
     </View>
   );
 }
@@ -55,17 +94,18 @@ function EditableField({
   placeholder?: string;
   multiline?: boolean;
 }) {
+  const colors = useThemeColors();
   return (
     <View className="mb-3.5">
-      <Text className="text-body-sm font-medium text-stone-700 mb-1.5">{label}</Text>
+      <Text className="text-body-sm font-medium text-content-body mb-1.5">{label}</Text>
       <TextInput
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor="#78716c"
+        placeholderTextColor={colors.contentTertiary}
         multiline={multiline}
         numberOfLines={multiline ? 3 : 1}
-        className={`input-base min-h-[44px] text-body text-stone-900 ${multiline ? 'py-2' : ''}`}
+        className={`input-base min-h-[44px] text-body text-content-primary ${multiline ? 'py-2' : ''}`}
         style={multiline ? { height: 80, textAlignVertical: 'top' } : undefined}
       />
     </View>
@@ -77,6 +117,7 @@ export default function PatientDetailScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { iconSm } = useResponsive();
+  const colors = useThemeColors();
 
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const [editMode, setEditMode] = useState(false);
@@ -150,10 +191,10 @@ export default function PatientDetailScreen() {
   ];
 
   return (
-    <SafeAreaView className="flex-1 bg-stone-50" edges={['top']}>
+    <SafeAreaView className="flex-1 bg-surface" edges={['top']}>
       {/* Header */}
       <View
-        className="flex-row items-center px-5 py-3 bg-white border-b border-stone-200"
+        className="flex-row items-center px-5 py-3 bg-surface-raised border-b border-border-default"
         style={{ maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
       >
         <Pressable
@@ -163,21 +204,21 @@ export default function PatientDetailScreen() {
           accessibilityLabel="Go back"
           className="mr-3"
         >
-          <ChevronLeft color="#0d8775" size={iconSm} />
+          <ChevronLeft color={colors.brand500} size={iconSm} />
         </Pressable>
         <View className="flex-1">
-          <Text className="text-body-lg font-semibold text-stone-900" numberOfLines={1}>
+          <Text className="text-body-lg font-semibold text-content-primary" numberOfLines={1}>
             {isLoading ? 'Loading...' : (patient?.name ?? 'Patient')}
           </Text>
           {patient?.pimsPatientId && (
-            <Text className="text-caption text-stone-500">{patient.pimsPatientId}</Text>
+            <Text className="text-caption text-content-tertiary">{patient.pimsPatientId}</Text>
           )}
         </View>
       </View>
 
       {/* Tab Bar */}
       <View
-        className="flex-row bg-white border-b border-stone-200"
+        className="flex-row bg-surface-raised border-b border-border-default"
         style={{ maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
       >
         {TABS.map((tab) => {
@@ -189,11 +230,11 @@ export default function PatientDetailScreen() {
               accessibilityRole="tab"
               accessibilityState={{ selected: isActive }}
               className="flex-1 py-3 items-center"
-              style={isActive ? { borderBottomWidth: 2, borderBottomColor: '#0d8775' } : undefined}
+              style={isActive ? { borderBottomWidth: 2, borderBottomColor: colors.brand500 } : undefined}
             >
               <Text
                 className={`text-body-sm font-medium ${
-                  isActive ? 'text-brand-600' : 'text-stone-500'
+                  isActive ? 'text-brand-600' : 'text-content-tertiary'
                 }`}
               >
                 {tab.label}
@@ -205,12 +246,12 @@ export default function PatientDetailScreen() {
 
       {isLoading ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator color="#0d8775" size="large" />
+          <ActivityIndicator color={colors.brand500} size="large" />
         </View>
       ) : error || !patient ? (
         <View className="flex-1 items-center justify-center px-8">
-          <User color="#a8a29e" size={48} />
-          <Text className="text-body font-medium text-stone-900 mt-4">Patient not found</Text>
+          <User color={colors.contentTertiary} size={48} />
+          <Text className="text-body font-medium text-content-primary mt-4">Patient not found</Text>
           <Button variant="secondary" onPress={() => router.back()} className="mt-4">
             Go Back
           </Button>
@@ -220,7 +261,7 @@ export default function PatientDetailScreen() {
           className="flex-1"
           contentContainerStyle={{ padding: 20, maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} tintColor="#0d8775" />
+            <RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} tintColor={colors.brand500} />
           }
         >
           {/* SUMMARY TAB */}
@@ -230,27 +271,31 @@ export default function PatientDetailScreen() {
               <Card className="mb-4">
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center">
-                    <View className="w-2 h-2 rounded-full bg-amber-400 mr-2" />
-                    <Text className="text-body-sm font-semibold text-stone-700">AI Patient Summary</Text>
+                    <View className="w-2 h-2 rounded-full bg-warning-500 mr-2" />
+                    <Text className="text-body-sm font-semibold text-content-body">AI Patient Summary</Text>
                   </View>
                   {patient.aiHistoryUpdatedAt && (() => { const d = new Date(patient.aiHistoryUpdatedAt); return !isNaN(d.getTime()) && Date.now() - d.getTime() > 30 * 24 * 60 * 60 * 1000; })() && (
-                    <View className="bg-amber-100 rounded px-2 py-0.5">
-                      <Text className="text-caption font-medium text-amber-700">Outdated</Text>
+                    <View className="bg-status-warning rounded px-2 py-0.5">
+                      <Text className="text-caption font-medium text-status-warning">Outdated</Text>
                     </View>
                   )}
                 </View>
                 {patient.aiHistorySummary ? (
                   <>
-                    <Text className="text-body text-stone-800 leading-relaxed">
-                      {patient.aiHistorySummary}
-                    </Text>
+                    <AiSummaryText summary={patient.aiHistorySummary} />
                     <View className="flex-row items-center justify-between mt-2">
                       {patient.aiHistoryUpdatedAt && (
-                        <Text className="text-caption text-stone-400">
+                        /* flex-1 + trailing space so the date claims row space
+                           and never clips its last glyph next to Regenerate. */
+                        <Text
+                          className="text-caption text-content-tertiary flex-1 mr-2"
+                          numberOfLines={1}
+                          style={{ paddingRight: 2 }}
+                        >
                           {(() => {
                             const d = new Date(patient.aiHistoryUpdatedAt);
                             if (isNaN(d.getTime())) return '';
-                            return `Updated ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+                            return `Updated ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} `;
                           })()}
                         </Text>
                       )}
@@ -272,7 +317,7 @@ export default function PatientDetailScreen() {
                   </>
                 ) : (
                   <>
-                    <Text className="text-body text-stone-500 italic mb-2">
+                    <Text className="text-body text-content-tertiary italic mb-2">
                       No summary yet. Summaries are generated automatically after completed visits.
                     </Text>
                     <Pressable
@@ -296,16 +341,16 @@ export default function PatientDetailScreen() {
               {/* Known Allergies */}
               {patient.knownAllergies && (
                 <Card className="mb-4">
-                  <Text className="text-body-sm font-semibold text-stone-700 mb-2">Known Allergies</Text>
-                  <Text className="text-body text-stone-800">{patient.knownAllergies}</Text>
+                  <Text className="text-body-sm font-semibold text-content-body mb-2">Known Allergies</Text>
+                  <Text className="text-body text-content-body">{patient.knownAllergies}</Text>
                 </Card>
               )}
 
               {/* Ongoing Medications */}
               {patient.ongoingMedications && (
                 <Card className="mb-4">
-                  <Text className="text-body-sm font-semibold text-stone-700 mb-2">Ongoing Medications</Text>
-                  <Text className="text-body text-stone-800">{patient.ongoingMedications}</Text>
+                  <Text className="text-body-sm font-semibold text-content-body mb-2">Ongoing Medications</Text>
+                  <Text className="text-body text-content-body">{patient.ongoingMedications}</Text>
                 </Card>
               )}
             </View>
@@ -315,10 +360,10 @@ export default function PatientDetailScreen() {
           {activeTab === 'visits' && (
             <View>
               {recordingsLoading ? (
-                <ActivityIndicator color="#0d8775" className="my-8" />
+                <ActivityIndicator color={colors.brand500} className="my-8" />
               ) : !recordingsData?.data.length ? (
                 <View className="items-center py-12">
-                  <Text className="text-body text-stone-500 text-center">No visit records found</Text>
+                  <Text className="text-body text-content-tertiary text-center">No visit records found</Text>
                 </View>
               ) : (
                 recordingsData.data.map((recording) => {
@@ -338,15 +383,15 @@ export default function PatientDetailScreen() {
                       <Card className="mb-3">
                         <View className="flex-row justify-between items-start">
                           <View className="flex-1 mr-3">
-                            <Text className="text-body-sm font-semibold text-stone-900">{dateStr}</Text>
+                            <Text className="text-body-sm font-semibold text-content-primary">{dateStr}</Text>
                             {recording.appointmentType && (
-                              <Text className="text-body-sm text-stone-600 mt-0.5">
+                              <Text className="text-body-sm text-content-secondary mt-0.5">
                                 {recording.appointmentType}
                               </Text>
                             )}
                           </View>
-                          <View className="px-2 py-0.5 rounded-full bg-stone-100">
-                            <Text className="text-caption text-stone-600 capitalize">
+                          <View className="px-2 py-0.5 rounded-full bg-surface-sunken">
+                            <Text className="text-caption text-content-secondary capitalize">
                               {recording.status}
                             </Text>
                           </View>
@@ -365,7 +410,7 @@ export default function PatientDetailScreen() {
               {!editMode ? (
                 <Card className="mb-4">
                   <View className="flex-row justify-between items-center mb-4">
-                    <Text className="text-body-sm font-semibold text-stone-700">Patient Details</Text>
+                    <Text className="text-body-sm font-semibold text-content-body">Patient Details</Text>
                     <Pressable
                       onPress={startEdit}
                       hitSlop={8}
@@ -373,7 +418,7 @@ export default function PatientDetailScreen() {
                       accessibilityLabel="Edit patient profile"
                       className="flex-row items-center"
                     >
-                      <Edit2 color="#0d8775" size={14} style={{ flexShrink: 0 }} />
+                      <Edit2 color={colors.brand500} size={14} style={{ flexShrink: 0 }} />
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-body-sm text-brand-600 ml-1"
@@ -406,7 +451,7 @@ export default function PatientDetailScreen() {
               ) : (
                 <Card className="mb-4">
                   <View className="flex-row justify-between items-center mb-4">
-                    <Text className="text-body-sm font-semibold text-stone-700">Edit Profile</Text>
+                    <Text className="text-body-sm font-semibold text-content-body">Edit Profile</Text>
                     <Pressable
                       onPress={() => setEditMode(false)}
                       hitSlop={8}
@@ -415,7 +460,7 @@ export default function PatientDetailScreen() {
                     >
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
-                        className="text-body-sm text-stone-500"
+                        className="text-body-sm text-content-tertiary"
                         allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
@@ -465,7 +510,7 @@ export default function PatientDetailScreen() {
                   />
 
                   {updateMutation.error && (
-                    <Text className="text-body-sm text-danger-600 mb-3">
+                    <Text className="text-body-sm text-status-danger mb-3">
                       {updateMutation.error instanceof Error
                         ? updateMutation.error.message
                         : 'Failed to save changes.'}

@@ -2,9 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { Check, ChevronDown } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { useThemeColors } from '../../hooks/useThemeColors';
 import { FormField } from './FormField';
 import { Sheet } from './Sheet';
-import { cx, HIT_SLOP, runMaybeAsync, TOUCH_TARGET, UI_COLORS } from './styles';
+import { cx, HIT_SLOP, runMaybeAsync, TOUCH_TARGET } from './styles';
 
 export interface SelectOption<Value extends string = string> {
   label: string;
@@ -42,6 +43,7 @@ export function Select<Value extends string = string>({
   className,
   fieldClassName,
 }: SelectProps<Value>) {
+  const colors = useThemeColors();
   const [isOpen, setIsOpen] = useState(false);
   const selected = useMemo(
     () => options.find((option) => option.value === value) ?? null,
@@ -64,18 +66,18 @@ export function Select<Value extends string = string>({
         className={cx(
           TOUCH_TARGET,
           'input-base flex-row items-center justify-between',
-          error ? 'border-danger-500' : isOpen ? 'border-brand-500' : 'border-stone-300',
+          error ? 'border-danger-500' : isOpen ? 'border-brand-500' : 'border-border-strong',
           disabled && 'opacity-50',
           fieldClassName
         )}
       >
         <Text
-          className={cx('text-body flex-1 mr-3', selected ? 'text-stone-900' : 'text-stone-500')}
+          className={cx('text-body flex-1 mr-3', selected ? 'text-content-primary' : 'text-content-tertiary')}
           numberOfLines={1}
         >
           {selected?.label ?? placeholder}
         </Text>
-        <ChevronDown color={isOpen ? UI_COLORS.brand : UI_COLORS.stone} size={18} />
+        <ChevronDown color={isOpen ? colors.brand500 : colors.stone500} size={18} />
       </Pressable>
       <Sheet
         visible={isOpen}
@@ -103,7 +105,7 @@ export function Select<Value extends string = string>({
                 hitSlop={HIT_SLOP}
                 className={cx(
                   'flex-row items-center min-h-[48px] rounded-input px-3 py-2',
-                  isSelected ? 'bg-brand-50' : 'bg-white',
+                  isSelected ? 'bg-surface-sunken' : 'bg-surface-raised',
                   option.disabled && 'opacity-50'
                 )}
               >
@@ -111,18 +113,18 @@ export function Select<Value extends string = string>({
                   <Text
                     className={cx(
                       'text-body font-medium',
-                      isSelected ? 'text-brand-700' : 'text-stone-900'
+                      isSelected ? 'text-brand-600' : 'text-content-primary'
                     )}
                   >
                     {option.label}
                   </Text>
                   {option.description ? (
-                    <Text className="text-caption text-stone-500 mt-0.5">
+                    <Text className="text-caption text-content-tertiary mt-0.5">
                       {option.description}
                     </Text>
                   ) : null}
                 </View>
-                {isSelected ? <Check color={UI_COLORS.brand} size={18} /> : null}
+                {isSelected ? <Check color={colors.brand500} size={18} /> : null}
               </Pressable>
             );
           })}

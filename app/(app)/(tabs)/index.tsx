@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Alert, View, Text, Pressable } from 'react-native';
 import Animated, {
   FadeInDown,
@@ -9,13 +9,15 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
-import { useQueries } from '@tanstack/react-query';
-import { Mic, ChevronRight, FileText, Settings, ShieldAlert } from 'lucide-react-native';
+import { useQueries, useQuery } from '@tanstack/react-query';
+import { Mic, ChevronRight, FileText, Settings, ShieldAlert, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
+import { useThemeColors } from '../../../src/hooks/useThemeColors';
 import { useDeviceCapacity } from '../../../src/hooks/useDeviceCapacity';
 import { recordingsApi } from '../../../src/api/recordings';
+import { patientsApi } from '../../../src/api/patients';
 import { ApiError } from '../../../src/api/client';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { buildDraftResumeMap, mergeDraftRecordings } from '../../../src/lib/draftRecordings';
@@ -36,6 +38,7 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 export default function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const colors = useThemeColors();
   const { iconMd, iconLg } = useResponsive();
   const ctaScale = useSharedValue(1);
   const isTabFocused = useIsFocused();
@@ -69,7 +72,8 @@ export default function HomeScreen() {
 
   const { data, error, isLoading, isError, refetch, isRefetching } = recordingsQuery;
   const { data: draftData, refetch: refetchDrafts } = draftsQuery;
-  const recordings = data?.data ?? [];
+  const recordings = useMemo(() => data?.data ?? [], [data?.data]);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   const [localDrafts, setLocalDrafts] = useState<Awaited<ReturnType<typeof draftStorage.listDrafts>>>([]);
   const refreshLocalDrafts = useCallback(() => {
@@ -100,11 +104,32 @@ export default function HomeScreen() {
     if (!user) return [];
     return mergeDraftRecordings(localDrafts, draftData?.data ?? [], user.id, user.organizationId);
   }, [draftData?.data, localDrafts, user]);
+  const recentPatientRecording = useMemo(
+    () => recordings.find((r) => r.patientId && r.status === 'completed') ?? recordings.find((r) => r.patientId),
+    [recordings]
+  );
+  const recentPatientId = recentPatientRecording?.patientId ?? null;
+  const { data: recentPatient } = useQuery({
+    queryKey: ['patient', recentPatientId],
+    queryFn: () => patientsApi.get(recentPatientId!),
+    enabled: !!user && !!recentPatientId,
+    staleTime: 5 * 60 * 1000,
+  });
+  const recentPatientSummary = recentPatient?.aiHistorySummary?.trim() ?? '';
+  const showRecentPatientSummary = recentPatientSummary.length > 0;
+
+  useEffect(() => {
+    setSummaryExpanded(false);
+  }, [recentPatientId]);
 
   const totalRecordings = data?.pagination?.total ?? 0;
   const processingCount = recordings.filter(
     (r) => !['completed', 'failed'].includes(r.status)
   ).length;
+  // "All Complete" must not show while un-submitted drafts exist (audit
+  // defect: ✓ next to a "Not Submitted" list reads as a contradiction).
+  // Server total can exceed the merged 5-item list; show the larger count.
+  const draftCount = Math.max(drafts.length, draftData?.pagination?.total ?? 0);
 
   const ctaAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: ctaScale.value }],
@@ -138,12 +163,12 @@ export default function HomeScreen() {
       <Animated.View entering={FadeInDown.duration(400)} className="mb-6 flex-row items-start justify-between">
         <View className="flex-1">
           <Text
-            className="text-display font-bold text-stone-900"
+            className="text-display font-bold text-content-primary"
             accessibilityRole="header"
           >
             Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
           </Text>
-          <Text className="text-body text-stone-500 mt-1">
+          <Text className="text-body text-content-tertiary mt-1">
             Record appointments and generate SOAP notes
           </Text>
         </View>
@@ -157,7 +182,7 @@ export default function HomeScreen() {
           className="p-2 -mr-2 mt-0.5"
           hitSlop={8}
         >
-          <Settings color="#78716c" size={iconMd} />
+          <Settings color={colors.contentTertiary} size={iconMd} />
         </Pressable>
       </Animated.View>
 
@@ -197,19 +222,61 @@ export default function HomeScreen() {
         className="bg-brand-500 rounded-card p-5 mb-6 flex-row items-center shadow-card-md"
         style={ctaAnimStyle}
       >
-        <View className="w-12 h-12 rounded-full bg-white/20 justify-center items-center mr-4">
-          <Mic color="#fff" size={iconMd} />
+        <View className="w-12 h-12 rounded-full bg-content-on-brand/20 justify-center items-center mr-4">
+          <Mic color={colors.contentOnBrand} size={iconMd} />
         </View>
         <View className="flex-1">
-          <Text className="text-white text-heading font-bold">
+          <Text className="text-content-on-brand text-heading font-bold">
             Record Appointment
           </Text>
-          <Text className="text-white/80 text-body-sm mt-0.5">
+          <Text className="text-content-on-brand/80 text-body-sm mt-0.5">
             Start recording a new appointment
           </Text>
         </View>
-        <ChevronRight color="rgba(255,255,255,0.6)" size={iconMd} />
+        <ChevronRight color={colors.contentOnBrand} size={iconMd} opacity={0.6} />
       </AnimatedPressable>
+
+      {showRecentPatientSummary ? (
+        <Animated.View entering={FadeInUp.duration(400).delay(75)} className="mb-6">
+          <Card className="border-brand-100 dark:border-border-default">
+            <View className="flex-row items-start">
+              <View className="w-10 h-10 rounded-full bg-brand-50 dark:bg-surface-sunken justify-center items-center mr-3">
+                <Sparkles color={colors.brand500} size={iconMd} />
+              </View>
+              <View className="flex-1">
+                <Text className="text-caption text-brand-600 font-semibold uppercase">
+                  Recent patient
+                </Text>
+                <Text className="text-body-lg font-semibold text-content-primary mt-0.5" numberOfLines={1}>
+                  {recentPatient?.name ?? recentPatientRecording?.patientName ?? 'Patient'}
+                </Text>
+                <Text
+                  className="text-body-sm text-content-secondary mt-2"
+                  numberOfLines={summaryExpanded ? undefined : 2}
+                >
+                  {recentPatientSummary}
+                </Text>
+                {recentPatientSummary.length > 120 ? (
+                  <Pressable
+                    onPress={() => {
+                      Haptics.selectionAsync().catch(() => {});
+                      setSummaryExpanded((expanded) => !expanded);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={summaryExpanded ? 'Collapse recent patient summary' : 'Read recent patient summary'}
+                    className="self-start mt-2"
+                    hitSlop={8}
+                  >
+                    <Text className="text-body-sm text-brand-600 font-semibold">
+                      {summaryExpanded ? 'Show less' : 'Read more'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          </Card>
+        </Animated.View>
+      ) : null}
 
       {/* Stats */}
       <Animated.View entering={FadeInUp.duration(400).delay(100)} className="flex-row gap-3 mb-6">
@@ -217,14 +284,31 @@ export default function HomeScreen() {
           <Text className="text-display font-bold text-brand-500">
             {totalRecordings}
           </Text>
-          <Text className="text-caption text-stone-500 mt-0.5">Total Recordings</Text>
+          <Text className="text-caption text-content-tertiary mt-0.5">Total Recordings</Text>
         </Card>
-        <Card className="flex-1" accessibilityLabel={`${processingCount > 0 ? processingCount + ' processing' : 'All complete'}`}>
-          <Text className={`text-display font-bold ${processingCount > 0 ? 'text-warning-500' : 'text-success-500'}`}>
-            {processingCount > 0 ? processingCount : '\u2713'}
+        <Card
+          className="flex-1"
+          accessibilityLabel={
+            processingCount > 0
+              ? `${processingCount} processing`
+              : draftCount > 0
+                ? `${draftCount} not submitted`
+                : 'All complete'
+          }
+        >
+          <Text
+            className={`text-display font-bold ${
+              processingCount > 0
+                ? 'text-warning-500'
+                : draftCount > 0
+                  ? 'text-warning-500'
+                  : 'text-success-500'
+            }`}
+          >
+            {processingCount > 0 ? processingCount : draftCount > 0 ? draftCount : '\u2713'}
           </Text>
-          <Text className="text-caption text-stone-500 mt-0.5">
-            {processingCount > 0 ? 'Processing' : 'All Complete'}
+          <Text className="text-caption text-content-tertiary mt-0.5">
+            {processingCount > 0 ? 'Processing' : draftCount > 0 ? 'Not Submitted' : 'All Complete'}
           </Text>
         </Card>
       </Animated.View>
@@ -263,12 +347,12 @@ export default function HomeScreen() {
           </View>
         ) : isError ? (
           <Card className="items-center py-6">
-            <FileText color="#dc2626" size={iconLg} />
-            <Text className="text-body text-stone-600 mt-3 text-center">
+            <FileText color={colors.danger600} size={iconLg} />
+            <Text className="text-body text-content-secondary mt-3 text-center">
               Could not load recordings.
             </Text>
             {error ? (
-              <Text className="text-caption text-stone-500 mt-2 text-center px-4" selectable>
+              <Text className="text-caption text-content-tertiary mt-2 text-center px-4" selectable>
                 [{error.name ?? 'Error'}{(error as { status?: number })?.status ? ` ${(error as { status?: number }).status}` : ''}] {error.message}
               </Text>
             ) : null}
@@ -280,8 +364,8 @@ export default function HomeScreen() {
           </Card>
         ) : recordings.length === 0 ? (
           <Card className="items-center py-6">
-            <FileText color="#a8a29e" size={iconLg} />
-            <Text className="text-body text-stone-500 mt-3 text-center">
+            <FileText color={colors.contentTertiary} size={iconLg} />
+            <Text className="text-body text-content-tertiary mt-3 text-center">
               No recordings yet. Tap &quot;Record Appointment&quot; to get started.
             </Text>
           </Card>

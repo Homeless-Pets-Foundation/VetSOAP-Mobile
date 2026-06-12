@@ -1,105 +1,42 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { View, Text, ScrollView, Pressable, Alert, RefreshControl, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Animated, { FadeIn, FadeInUp, ZoomIn } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { ChevronLeft, Check, AlertTriangle, FileText } from 'lucide-react-native';
+import { ChevronLeft, AlertTriangle, FileText, RotateCcw, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
+import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { recordingsApi } from '../../../../src/api/recordings';
 import { ApiError } from '../../../../src/api/client';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { SoapNoteView } from '../../../../src/components/SoapNoteView';
+import { RecordingAudioPlayer } from '../../../../src/components/RecordingAudioPlayer';
+import { TranscriptView } from '../../../../src/components/TranscriptView';
+import { ClientEmailCard } from '../../../../src/components/ClientEmailCard';
+import { ExportSheet } from '../../../../src/components/ExportSheet';
+import { TranslationCard } from '../../../../src/components/TranslationCard';
+import { MetadataReviewCard } from '../../../../src/components/MetadataReviewCard';
+import { ProcessingStepper } from '../../../../src/components/ProcessingStepper';
+import { ReviewStatusChip } from '../../../../src/components/ReviewStatusChip';
 import { Button } from '../../../../src/components/ui/Button';
 import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { fileExists } from '../../../../src/lib/fileOps';
-import { PROCESSING_STEP_LABELS } from '../../../../src/constants/strings';
+import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
-
-const PROCESSING_STEPS = [
-  { status: 'uploading', label: PROCESSING_STEP_LABELS.uploading },
-  { status: 'uploaded', label: PROCESSING_STEP_LABELS.uploaded },
-  { status: 'transcribing', label: PROCESSING_STEP_LABELS.transcribing },
-  { status: 'generating', label: PROCESSING_STEP_LABELS.generating },
-  { status: 'completed', label: PROCESSING_STEP_LABELS.completed },
-] as const;
-
-const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'transcribed', 'generating', 'completed'];
-
-function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
-  if (currentStatus === 'failed') return null;
-
-  const currentIndex = STATUS_ORDER.indexOf(currentStatus);
-
-  return (
-    <View className="my-4">
-      {PROCESSING_STEPS.map((step, i) => {
-        const stepIndex = STATUS_ORDER.indexOf(step.status);
-        const isComplete = currentIndex > stepIndex;
-        const isCurrent = currentIndex === stepIndex;
-        const isLast = i === PROCESSING_STEPS.length - 1;
-
-        return (
-          <View key={step.status}>
-            <View
-              className="flex-row items-center mb-1"
-              accessibilityLabel={`${step.label}: ${isComplete ? 'complete' : isCurrent ? 'in progress' : 'pending'}`}
-            >
-              <View
-                className={`w-6 h-6 rounded-full justify-center items-center mr-3 ${
-                  isComplete
-                    ? 'bg-brand-500'
-                    : isCurrent
-                      ? 'bg-warning-100 border-2 border-warning-500'
-                      : 'bg-stone-100'
-                }`}
-              >
-                {isComplete && (
-                  <Animated.View entering={ZoomIn.duration(300)}>
-                    <Check color="#fff" size={14} strokeWidth={3} />
-                  </Animated.View>
-                )}
-                {isCurrent && (
-                  <View className="w-2 h-2 rounded-full bg-warning-500" />
-                )}
-              </View>
-              <Text
-                numberOfLines={2}
-                className={`flex-1 text-body ${
-                  isComplete
-                    ? 'text-brand-500 font-medium'
-                    : isCurrent
-                      ? 'text-warning-700 font-semibold'
-                      : 'text-stone-400'
-                }`}
-              >
-                {step.label}
-              </Text>
-            </View>
-            {!isLast && (
-              <View className="ml-[11px] mb-1">
-                <View
-                  className={`w-0.5 h-4 ${
-                    isComplete ? 'bg-brand-500' : 'bg-stone-200'
-                  }`}
-                />
-              </View>
-            )}
-          </View>
-        );
-      })}
-    </View>
-  );
-}
+import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
+import { useAuth } from '../../../../src/hooks/useAuth';
+import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
+import type { RecordingMetadataField, UpdateRecordingMetadata } from '../../../../src/types';
 
 function DetailSkeleton() {
   return (
@@ -136,6 +73,9 @@ export default function RecordingDetailScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { iconMd } = useResponsive();
+  const colors = useThemeColors();
+  const { user } = useAuth();
+  const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
 
   const appStateRef = useRef(AppState.currentState);
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
@@ -222,6 +162,26 @@ export default function RecordingDetailScreen() {
     !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording?.status ?? '');
   const recordingPermissions = useRecordingPermissions(recording);
 
+  const reviewMutation = useMutation({
+    mutationFn: (reviewed: boolean) => recordingsApi.updateReview(id!, { reviewed }),
+    onSuccess: (updatedRecording) => {
+      if (id && updatedRecording?.id === id) {
+        queryClient.setQueryData(['recording', id], updatedRecording);
+      }
+      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+        return;
+      }
+      Alert.alert(
+        'Review Update Failed',
+        error instanceof ApiError ? error.message : 'Could not update the review status. Please try again.'
+      );
+    },
+  });
+
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
     onSuccess: (updatedRecording) => {
@@ -243,6 +203,95 @@ export default function RecordingDetailScreen() {
     },
   });
 
+  const regenerateMutation = useMutation({
+    mutationFn: () => recordingsApi.regenerateSoap(id!, { templateId: recording?.templateId }),
+    onSuccess: () => {
+      if (id) {
+        trackEvent({ name: 'soap_regenerated', props: { recording_id: id, template_changed: false } });
+        queryClient.removeQueries({ queryKey: ['soapNote', id] });
+        queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
+        queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        pollingStartedAtRef.current = null;
+        setActiveNoteTab('soap');
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+        return;
+      }
+      Alert.alert(
+        'Regenerate Failed',
+        error instanceof ApiError ? error.message : 'Could not regenerate this SOAP note. Please try again.'
+      );
+    },
+  });
+
+  const metadataMutation = useMutation({
+    mutationFn: (vars: {
+      payload: UpdateRecordingMetadata;
+      action: 'confirmed' | 'corrected' | 'dismissed';
+      correctedFieldCount: number;
+    }) => recordingsApi.updateMetadata(id!, vars.payload),
+    onSuccess: (updatedRecording, vars) => {
+      if (id && updatedRecording?.id === id) {
+        queryClient.setQueryData(['recording', id], updatedRecording);
+      }
+      queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      trackEvent({
+        name: 'ai_metadata_review_resolved',
+        props: {
+          action: vars.action,
+          corrected_field_count: vars.correctedFieldCount,
+        },
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+        return;
+      }
+      Alert.alert('Save Failed', METADATA_REVIEW_COPY.failed);
+    },
+  });
+
+  const handleConfirmMetadata = useCallback(() => {
+    metadataMutation.mutate({
+      payload: { review: 'confirmed' },
+      action: 'confirmed',
+      correctedFieldCount: 0,
+    });
+  }, [metadataMutation]);
+
+  const handleSaveMetadata = useCallback(
+    (payload: UpdateRecordingMetadata, correctedFieldCount: number) => {
+      metadataMutation.mutate({
+        payload,
+        action: 'corrected',
+        correctedFieldCount,
+      });
+    },
+    [metadataMutation]
+  );
+
+  const confirmRegenerate = useCallback(() => {
+    Alert.alert(
+      REGENERATE_SOAP_COPY.title,
+      REGENERATE_SOAP_COPY.body,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: REGENERATE_SOAP_COPY.confirm,
+          style: 'destructive',
+          onPress: () => {
+            regenerateMutation.mutate();
+          },
+        },
+      ]
+    );
+  }, [regenerateMutation]);
+
   // For draft recordings, figure out whether the audio is on THIS device.
   // If a matching local draft exists and all segments are present, the user
   // can resume in the Record screen. Otherwise the draft is orphaned (created
@@ -250,6 +299,23 @@ export default function RecordingDetailScreen() {
   // from here is to delete it.
   const [draftLocalSlotId, setDraftLocalSlotId] = useState<string | null>(null);
   const [draftResolved, setDraftResolved] = useState(false);
+
+  // SOAP Note | Transcript segmented toggle (1C). Transcript tab exists only
+  // when the recording is completed AND transcriptText is non-null (old/failed
+  // recordings have none).
+  const [activeNoteTab, setActiveNoteTab] = useState<'soap' | 'transcript'>('soap');
+  const transcriptViewedEmittedRef = useRef(false);
+  const metadataReviewShownIdsRef = useRef<Set<string>>(new Set());
+  const handleSelectNoteTab = useCallback(
+    (tab: 'soap' | 'transcript') => {
+      setActiveNoteTab(tab);
+      if (tab === 'transcript' && id && !transcriptViewedEmittedRef.current) {
+        transcriptViewedEmittedRef.current = true;
+        trackEvent({ name: 'transcript_viewed', props: { recording_id: id } });
+      }
+    },
+    [id]
+  );
 
   useEffect(() => {
     if (!recording || recording.status !== 'draft' || !id) {
@@ -282,6 +348,27 @@ export default function RecordingDetailScreen() {
       cancelled = true;
     };
   }, [recording, id]);
+
+  useEffect(() => {
+    if (!id || !recordFirstEnabled || recording?.status !== 'completed') return;
+    const reviewState = recording.aiExtractedMetadata?.review;
+    const shouldShow = Boolean(recording.needsMetadataReview) || reviewState === 'unconfirmed';
+    if (!shouldShow || metadataReviewShownIdsRef.current.has(id)) return;
+    metadataReviewShownIdsRef.current.add(id);
+    const appliedFieldCount = Array.isArray(recording.aiExtractedMetadata?.appliedFields)
+      ? recording.aiExtractedMetadata.appliedFields.length
+      : 0;
+    trackEvent({
+      name: 'ai_metadata_review_shown',
+      props: { applied_field_count: appliedFieldCount },
+    });
+  }, [
+    id,
+    recordFirstEnabled,
+    recording?.status,
+    recording?.needsMetadataReview,
+    recording?.aiExtractedMetadata,
+  ]);
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
@@ -354,10 +441,10 @@ export default function RecordingDetailScreen() {
     return (
       <SafeAreaView className="screen justify-center items-center p-5">
         <Animated.View entering={FadeIn.duration(300)} className="items-center">
-          <Text className="text-body-lg font-semibold text-danger-700 mb-2">
+          <Text className="text-body-lg font-semibold text-status-danger mb-2">
             Failed to load recording
           </Text>
-          <Text className="text-body text-stone-500 text-center mb-4">
+          <Text className="text-body text-content-tertiary text-center mb-4">
             {error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'}
           </Text>
           <View className="flex-row gap-3">
@@ -378,6 +465,11 @@ export default function RecordingDetailScreen() {
   }
 
   const isProcessing = !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording.status);
+  const hasTranscript =
+    recording.status === 'completed' &&
+    typeof recording.transcriptText === 'string' &&
+    recording.transcriptText.trim().length > 0;
+  const reviewStatus = getRecordingReviewStatus(recording);
   const deleteDraftBlockedReason =
     recordingPermissions.deleteBlockedReason ?? 'You do not have permission to delete this draft.';
   const parsedDate = new Date(recording.createdAt);
@@ -391,6 +483,50 @@ export default function RecordingDetailScreen() {
         hour: '2-digit',
         minute: '2-digit',
       });
+  const patientLabel = displayPatientName(recording);
+  const patientIsUntitled = isUntitledVisit(recording);
+  const appliedMetadataFields = new Set<RecordingMetadataField>(
+    Array.isArray(recording.aiExtractedMetadata?.appliedFields)
+      ? recording.aiExtractedMetadata.appliedFields
+      : []
+  );
+  const metadataReviewState = recording.aiExtractedMetadata?.review;
+  const showHeaderPatientMetadataGlyph =
+    (metadataReviewState === 'confirmed' || metadataReviewState === 'dismissed') &&
+    appliedMetadataFields.has('patientName') &&
+    !patientIsUntitled;
+  const showMetadataReview =
+    recordFirstEnabled &&
+    recording.status === 'completed' &&
+    (Boolean(recording.needsMetadataReview) || metadataReviewState === 'unconfirmed');
+  const showAddMetadata =
+    recordFirstEnabled &&
+    recording.status === 'completed' &&
+    !showMetadataReview &&
+    !(recording.patientName ?? '').trim();
+  const renderInfoField = (
+    field: RecordingMetadataField,
+    label: string,
+    value: string | null,
+    className = 'pr-2'
+  ) => value ? (
+    <View style={{ width: '50%' }} className={`mb-3 ${className}`}>
+      <View className="flex-row items-center">
+        <Text className="text-caption text-content-tertiary font-medium uppercase">
+          {label}
+        </Text>
+        {appliedMetadataFields.has(field) ? (
+          <Sparkles color={colors.brand500} size={11} style={{ marginLeft: 4 }} />
+        ) : null}
+      </View>
+      <Text
+        className="text-body text-content-primary mt-0.5"
+        numberOfLines={field === 'clientName' ? 1 : undefined}
+      >
+        {value}
+      </Text>
+    </View>
+  ) : null;
 
   return (
     <SafeAreaView className="screen">
@@ -412,54 +548,83 @@ export default function RecordingDetailScreen() {
             accessibilityLabel="Go back"
             className="mr-3 w-11 h-11 items-center justify-center"
           >
-            <ChevronLeft color="#1c1917" size={iconMd} />
+            <ChevronLeft color={colors.contentPrimary} size={iconMd} />
           </Pressable>
           <View className="flex-1">
-            <Text className="text-title font-bold text-stone-900" numberOfLines={1}>
-              {recording.patientName}
-            </Text>
+            <View className="flex-row items-center">
+              <Text
+                className={`text-title font-bold text-content-primary ${patientIsUntitled ? 'italic text-content-tertiary' : ''}`}
+                numberOfLines={1}
+                style={{ flexShrink: 1 }}
+              >
+                {patientLabel}
+              </Text>
+              {showHeaderPatientMetadataGlyph ? (
+                <Sparkles color={colors.brand500} size={13} style={{ marginLeft: 5 }} />
+              ) : null}
+            </View>
           </View>
           <StatusBadge status={recording.status} />
         </View>
 
+        {showMetadataReview && (
+          <MetadataReviewCard
+            recording={recording}
+            mode="review"
+            saving={metadataMutation.isPending}
+            onConfirm={handleConfirmMetadata}
+            onSave={handleSaveMetadata}
+          />
+        )}
+
+        {showAddMetadata && (
+          <MetadataReviewCard
+            recording={recording}
+            mode="add"
+            saving={metadataMutation.isPending}
+            onConfirm={handleConfirmMetadata}
+            onSave={handleSaveMetadata}
+          />
+        )}
+
         {/* Patient Info */}
         <Card className="m-5 mt-4">
+          {recording.status === 'completed' && reviewStatus ? (
+            <View className="flex-row items-center justify-between mb-3 pb-3 border-b border-border-default">
+              <Text className="text-caption text-content-tertiary font-medium uppercase">
+                Review
+              </Text>
+              <ReviewStatusChip
+                status={reviewStatus}
+                loading={reviewMutation.isPending}
+                onPress={() => {
+                  reviewMutation.mutate(reviewStatus !== 'reviewed');
+                }}
+              />
+            </View>
+          ) : null}
           <View className="flex-row flex-wrap">
-            {recording.species && (
-              <View style={{ width: '50%' }} className="mb-3 pr-2">
-                <Text className="text-caption text-stone-400 font-medium uppercase">Species</Text>
-                <Text className="text-body text-stone-900 mt-0.5">{recording.species}</Text>
-              </View>
-            )}
-            {recording.breed && (
-              <View style={{ width: '50%' }} className="mb-3 pl-2">
-                <Text className="text-caption text-stone-400 font-medium uppercase">Breed</Text>
-                <Text className="text-body text-stone-900 mt-0.5">{recording.breed}</Text>
-              </View>
-            )}
-            {recording.clientName && (
-              <View style={{ width: '50%' }} className="mb-3 pr-2">
-                <Text className="text-caption text-stone-400 font-medium uppercase">Client</Text>
-                <Text className="text-body text-stone-900 mt-0.5" numberOfLines={1}>{recording.clientName}</Text>
-              </View>
-            )}
-            {recording.appointmentType && (
-              <View style={{ width: '50%' }} className="mb-3 pl-2">
-                <Text className="text-caption text-stone-400 font-medium uppercase">Type</Text>
-                <Text className="text-body text-stone-900 mt-0.5">{recording.appointmentType}</Text>
-              </View>
-            )}
+            {renderInfoField('species', 'Species', recording.species)}
+            {renderInfoField('breed', 'Breed', recording.breed, 'pl-2')}
+            {renderInfoField('clientName', 'Client', recording.clientName)}
+            {renderInfoField('appointmentType', 'Type', recording.appointmentType, 'pl-2')}
           </View>
-          <Text className="text-caption text-stone-400">{formattedDate}</Text>
+          <Text className="text-caption text-content-tertiary">{formattedDate}</Text>
         </Card>
+
+        {/* Audio playback — audioFileUrl exists from confirm-upload onward.
+            Drafts are excluded (their audio is local; resume path owns it). */}
+        {recording.audioFileUrl && recording.status !== 'draft' && id && (
+          <RecordingAudioPlayer recordingId={id} />
+        )}
 
         {/* Processing Status */}
         {isProcessing && (
           <Card className="mx-5 mb-4">
-            <Text className="text-body-lg font-semibold text-stone-900 mb-1">
+            <Text className="text-body-lg font-semibold text-content-primary mb-1">
               Processing...
             </Text>
-            <Text className="text-body-sm text-stone-500 mb-2">
+            <Text className="text-body-sm text-content-tertiary mb-2">
               This usually takes 1-2 minutes.
             </Text>
             <ProcessingStepper currentStatus={recording.status} />
@@ -468,14 +633,14 @@ export default function RecordingDetailScreen() {
 
         {/* Stale processing warning — shown after 30 min of non-terminal status */}
         {isPollingStale && (
-          <Card className="mx-5 mb-4 border-warning-200">
+          <Card className="mx-5 mb-4 border-status-warning">
             <View className="flex-row items-start">
-              <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+              <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
               <View className="flex-1">
-                <Text className="text-body font-semibold text-warning-700 mb-1">
+                <Text className="text-body font-semibold text-status-warning mb-1">
                   Processing is taking longer than expected
                 </Text>
-                <Text className="text-body-sm text-stone-500 mb-2">
+                <Text className="text-body-sm text-content-tertiary mb-2">
                   This may indicate a server issue. You can wait or retry processing.
                 </Text>
                 <View className="self-start">
@@ -495,14 +660,14 @@ export default function RecordingDetailScreen() {
 
         {/* Pending Metadata (Google Drive import awaiting details) */}
         {recording.status === 'pending_metadata' && (
-          <Card className="mx-5 mb-4 border-warning-200">
+          <Card className="mx-5 mb-4 border-status-warning">
             <View className="flex-row items-start">
-              <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+              <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
               <View className="flex-1">
-                <Text className="text-body font-semibold text-warning-700 mb-1">
+                <Text className="text-body font-semibold text-status-warning mb-1">
                   Awaiting Patient Details
                 </Text>
-                <Text className="text-body-sm text-stone-500">
+                <Text className="text-body-sm text-content-tertiary">
                   This recording was imported and needs patient details before processing can begin. Complete the details on the web app.
                 </Text>
               </View>
@@ -518,12 +683,12 @@ export default function RecordingDetailScreen() {
           draftLocalSlotId ? (
             <Card className="mx-5 mb-4">
               <View className="flex-row items-start">
-                <View className="mr-2 mt-0.5"><FileText color="#0d8775" size={18} /></View>
+                <View className="mr-2 mt-0.5"><FileText color={colors.brand500} size={18} /></View>
                 <View className="flex-1">
-                  <Text className="text-body font-semibold text-stone-900 mb-1">
+                  <Text className="text-body font-semibold text-content-primary mb-1">
                     Finish Recording
                   </Text>
-                  <Text className="text-body-sm text-stone-500 mb-3">
+                  <Text className="text-body-sm text-content-tertiary mb-3">
                     This draft was saved on this device. Continue to review and
                     submit it for SOAP note generation.
                   </Text>
@@ -548,7 +713,7 @@ export default function RecordingDetailScreen() {
                         Delete Draft
                       </Button>
                     ) : (
-                      <Text className="text-caption text-stone-500 flex-1">
+                      <Text className="text-caption text-content-tertiary flex-1">
                         {deleteDraftBlockedReason}
                       </Text>
                     )}
@@ -557,14 +722,14 @@ export default function RecordingDetailScreen() {
               </View>
             </Card>
           ) : (
-            <Card className="mx-5 mb-4 border-warning-200">
+            <Card className="mx-5 mb-4 border-status-warning">
               <View className="flex-row items-start">
-                <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+                <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
                 <View className="flex-1">
-                  <Text className="text-body font-semibold text-warning-700 mb-1">
+                  <Text className="text-body font-semibold text-status-warning mb-1">
                     Audio Not on This Device
                   </Text>
-                  <Text className="text-body-sm text-stone-500 mb-3">
+                  <Text className="text-body-sm text-content-tertiary mb-3">
                     This draft was started on another device, or its local audio
                     was cleared from this one. Submit it from the device where
                     you recorded it, or delete it here to clean up.
@@ -581,7 +746,7 @@ export default function RecordingDetailScreen() {
                         Delete Draft
                       </Button>
                     ) : (
-                      <Text className="text-caption text-stone-500">
+                      <Text className="text-caption text-content-tertiary">
                         {deleteDraftBlockedReason}
                       </Text>
                     )}
@@ -595,12 +760,12 @@ export default function RecordingDetailScreen() {
         {/* Failed */}
         {recording.status === 'failed' && (
           <Animated.View entering={FadeInUp.duration(300)}>
-            <Card className="mx-5 mb-4 border-danger-100">
-              <Text className="text-body-lg font-semibold text-danger-700 mb-1">
+            <Card className="mx-5 mb-4 border-status-danger">
+              <Text className="text-body-lg font-semibold text-status-danger mb-1">
                 Processing Failed
               </Text>
               {recording.errorMessage && (
-                <Text className="text-body-sm text-danger-700 mb-3">
+                <Text className="text-body-sm text-status-danger mb-3">
                   {recording.errorMessage.slice(0, 200)}
                 </Text>
               )}
@@ -622,15 +787,15 @@ export default function RecordingDetailScreen() {
         {/* Transcript Quality Warnings */}
         {recording.status === 'completed' && Array.isArray(recording.qualityWarnings) && recording.qualityWarnings.length > 0 && (
           <Animated.View entering={FadeInUp.duration(300)}>
-            <Card className="mx-5 mb-4 border-warning-200">
+            <Card className="mx-5 mb-4 border-status-warning">
               <View className="flex-row items-start">
-                <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+                <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
                 <View className="flex-1">
-                  <Text className="text-body font-semibold text-warning-700 mb-1">
+                  <Text className="text-body font-semibold text-status-warning mb-1">
                     Transcript Quality Warning
                   </Text>
                   {recording.qualityWarnings.map((warning, i) => (
-                    <Text key={`warning-${i}-${warning}`} className="text-body-sm text-warning-600 mb-1">
+                    <Text key={`warning-${i}-${warning}`} className="text-body-sm text-status-warning mb-1">
                       {warning}
                     </Text>
                   ))}
@@ -640,27 +805,34 @@ export default function RecordingDetailScreen() {
           </Animated.View>
         )}
 
+        {recording.status === 'completed' && id && (
+          <>
+            {recordingPermissions.canExport && <ClientEmailCard recordingId={id} />}
+            {recordingPermissions.canCopy && <TranslationCard recordingId={id} />}
+          </>
+        )}
+
         {/* SOAP Note */}
         {recording.status === 'completed' && (
           <View className="px-5 pb-8">
             {recording.errorCode === 'PARTIAL_GENERATION' && (
               <Animated.View entering={FadeInUp.duration(300)} className="mb-4">
-                <Card className="border-warning-200">
+                <Card className="border-status-warning">
                   <View className="flex-row items-start">
-                    <View className="mr-2 mt-0.5"><AlertTriangle color="#d97706" size={18} /></View>
+                    <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
                     <View className="flex-1">
-                      <Text className="text-body font-semibold text-warning-700 mb-1">
+                      <Text className="text-body font-semibold text-status-warning mb-1">
                         Partial SOAP Note
                       </Text>
-                      <Text className="text-body-sm text-stone-500 mb-2">
+                      <Text className="text-body-sm text-content-tertiary mb-2">
                         One or more sections could not be generated. The note below may be incomplete.
                       </Text>
                       <View className="self-start">
                         <Button
                           variant="secondary"
                           size="sm"
-                          onPress={() => retryMutation.mutate()}
-                          loading={retryMutation.isPending}
+                          onPress={confirmRegenerate}
+                          loading={regenerateMutation.isPending}
                         >
                           Regenerate
                         </Button>
@@ -670,10 +842,44 @@ export default function RecordingDetailScreen() {
                 </Card>
               </Animated.View>
             )}
-            {isSoapNoteLoading ? (
+            {hasTranscript && (
+              <View className="flex-row bg-surface-sunken rounded-input p-1 mb-4">
+                {(
+                  [
+                    { key: 'soap', label: TRANSCRIPT_COPY.toggleSoap },
+                    { key: 'transcript', label: TRANSCRIPT_COPY.toggleTranscript },
+                  ] as const
+                ).map(({ key, label }) => (
+                  <Pressable
+                    key={key}
+                    onPress={() => handleSelectNoteTab(key)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: activeNoteTab === key }}
+                    accessibilityLabel={`Show ${label}`}
+                    className={`flex-1 items-center justify-center py-2 rounded-lg ${
+                      activeNoteTab === key ? 'bg-surface-raised shadow-btn' : ''
+                    }`}
+                    style={{ minHeight: 40 }}
+                  >
+                    <Text
+                      className={`text-body-sm ${
+                        activeNoteTab === key
+                          ? 'text-content-primary font-semibold'
+                          : 'text-content-secondary'
+                      }`}
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            {activeNoteTab === 'transcript' && hasTranscript ? (
+              <TranscriptView transcript={recording.transcriptText ?? ''} />
+            ) : isSoapNoteLoading ? (
               <View>
                 {[1, 2, 3, 4].map((i) => (
-                  <View key={i} className="border border-stone-200 rounded-input mb-2 p-3">
+                  <View key={i} className="border border-border-default rounded-input mb-2 p-3">
                     <Skeleton width="30%" height={16} className="mb-2" />
                     <SkeletonText lines={2} />
                   </View>
@@ -681,7 +887,7 @@ export default function RecordingDetailScreen() {
               </View>
             ) : isSoapNoteError ? (
               <View className="py-5 items-center">
-                <Text className="text-body text-danger-700 mb-3">
+                <Text className="text-body text-status-danger mb-3">
                   Failed to load SOAP note.
                 </Text>
                 <Button variant="secondary" size="sm" onPress={() => { refetchSoapNote().catch(() => {}); }}>
@@ -689,10 +895,32 @@ export default function RecordingDetailScreen() {
                 </Button>
               </View>
             ) : soapNote ? (
-              <SoapNoteView soapNote={soapNote} recordingId={id ?? undefined} />
+              <View>
+                {recordingPermissions.canEdit && (
+                  <View className="items-start mb-4">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onPress={confirmRegenerate}
+                      loading={regenerateMutation.isPending}
+                      icon={<RotateCcw color={colors.contentBody} size={14} />}
+                    >
+                      {REGENERATE_SOAP_COPY.button}
+                    </Button>
+                  </View>
+                )}
+                <SoapNoteView
+                  soapNote={soapNote}
+                  recordingId={id ?? undefined}
+                  canEdit={recordingPermissions.canEdit}
+                />
+                {recordingPermissions.canExport && (
+                  <ExportSheet soapNote={soapNote} recording={recording} />
+                )}
+              </View>
             ) : (
               <View className="py-5 items-center">
-                <Text className="text-body text-stone-500">
+                <Text className="text-body text-content-tertiary">
                   SOAP note not available.
                 </Text>
               </View>

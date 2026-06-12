@@ -16,6 +16,7 @@ import { detectSilenceBounds } from '../../src/lib/silenceDetect';
 import { audioTempFiles } from '../../src/lib/audioTempFiles';
 import { WaveformEditor } from '../../src/components/WaveformEditor';
 import { Button } from '../../src/components/ui/Button';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
 import type { AudioSegment } from '../../src/types/multiPatient';
 
 function formatTime(seconds: number): string {
@@ -48,7 +49,7 @@ function PlaybackTimeDisplay({
   );
 
   return (
-    <Text className="text-center text-body text-stone-500 mb-1">
+    <Text className="text-center text-body text-content-tertiary mb-1">
       {formatTime(displayTime)} / {formatTime(duration)}
     </Text>
   );
@@ -92,6 +93,7 @@ function SegmentTab({
   onLiveDragChange: (fromIndex: number, deltaX: number) => void;
   onDropEnd: (index: number, finalDeltaX: number) => void;
 }) {
+  const colors = useThemeColors();
   // Per-tab measured width — captured in onLayout, used to seed draggedTabWidthSV when
   // this tab becomes the dragged one so other tabs know how far to shift.
   const tabWidthRef = useRef(0);
@@ -165,7 +167,7 @@ function SegmentTab({
           { scale: withTiming(1.05, { duration: 150 }) },
         ],
         zIndex: 100,
-        shadowColor: '#000',
+        shadowColor: 'black',
         shadowOpacity: withTiming(0.3, { duration: 150 }),
         shadowRadius: 6,
         shadowOffset: { width: 0, height: 4 },
@@ -196,7 +198,7 @@ function SegmentTab({
         { scale: withTiming(1, { duration: 150 }) },
       ],
       zIndex: 0,
-      shadowColor: '#000',
+      shadowColor: 'black',
       shadowOpacity: withTiming(0, { duration: 150 }),
       shadowRadius: 0,
       shadowOffset: { width: 0, height: 0 },
@@ -219,12 +221,12 @@ function SegmentTab({
           accessibilityLabel={`Segment ${label}, ${formatTime(segment.duration)}`}
           accessibilityHint={!isOnly ? 'Long press and drag to reorder. Tap × to delete.' : undefined}
           className={`pl-3 ${!isOnly ? 'pr-1' : 'pr-3'} py-2 rounded-full flex-row items-center gap-2 ${
-            isSelected ? 'bg-brand-600' : 'bg-stone-200'
+            isSelected ? 'bg-brand-600' : 'bg-surface-sunken'
           }`}
         >
           <Text
             className={`text-body-sm font-medium ${
-              isSelected ? 'text-white' : 'text-stone-600'
+              isSelected ? 'text-content-on-brand' : 'text-content-secondary'
             }`}
           >
             Seg {label} ({formatTime(segment.duration)})
@@ -237,12 +239,12 @@ function SegmentTab({
               accessibilityLabel={`Delete segment ${label}`}
               hitSlop={6}
               className={`w-6 h-6 rounded-full items-center justify-center ${
-                isSelected ? 'bg-white/20' : 'bg-stone-300'
+                isSelected ? 'bg-content-on-brand/20' : 'bg-border-strong'
               }`}
             >
               <X
                 size={14}
-                color={isSelected ? '#ffffff' : '#57534e'}
+                color={isSelected ? colors.contentOnBrand : colors.contentSecondary}
                 strokeWidth={2.5}
               />
             </Pressable>
@@ -256,6 +258,7 @@ function SegmentTab({
 export default function AudioEditorScreen() {
   const navigation = useNavigation();
   const router = useRouter();
+  const colors = useThemeColors();
 
   // Bridge input — re-read each time the screen gains focus (Tab screens stay mounted)
   const [input, setInput] = useState(() => audioEditorBridge.getInput());
@@ -1382,23 +1385,23 @@ export default function AudioEditorScreen() {
 
   if (isConcatenating) {
     return (
-      <SafeAreaView className="flex-1 bg-stone-50 items-center justify-center">
-        <ActivityIndicator size="large" color="#0d8775" />
-        <Text className="text-body text-stone-500 mt-3">Merging segments...</Text>
+      <SafeAreaView className="flex-1 bg-surface items-center justify-center">
+        <ActivityIndicator size="large" color={colors.brand500} />
+        <Text className="text-body text-content-tertiary mt-3">Merging segments...</Text>
       </SafeAreaView>
     );
   }
 
   if (!input || segments.length === 0) {
     return (
-      <SafeAreaView className="flex-1 bg-stone-50 items-center justify-center">
-        <Text className="text-body text-stone-500">No recording to edit.</Text>
+      <SafeAreaView className="flex-1 bg-surface items-center justify-center">
+        <Text className="text-body text-content-tertiary">No recording to edit.</Text>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-stone-50">
+    <SafeAreaView className="flex-1 bg-surface">
       {/* Header */}
       <View className="flex-row items-center justify-between px-5 pt-3 pb-2">
         <Pressable
@@ -1408,9 +1411,9 @@ export default function AudioEditorScreen() {
           hitSlop={8}
           className="p-2 -ml-2"
         >
-          <ArrowLeft color="#44403c" size={24} />
+          <ArrowLeft color={colors.contentBody} size={24} />
         </Pressable>
-        <Text className="text-body-lg font-bold text-stone-900">Edit Recording</Text>
+        <Text className="text-body-lg font-bold text-content-primary">Edit Recording</Text>
         <View className="flex-row items-center gap-1">
           <Pressable
             onPress={handleUndo}
@@ -1420,7 +1423,7 @@ export default function AudioEditorScreen() {
             hitSlop={8}
             className="p-2"
           >
-            <Undo2 color={canUndo && !isTrimming ? '#44403c' : '#a8a29e'} size={20} />
+            <Undo2 color={canUndo && !isTrimming ? colors.contentBody : colors.contentTertiary} size={20} />
           </Pressable>
           <Pressable
             onPress={handleRedo}
@@ -1430,7 +1433,7 @@ export default function AudioEditorScreen() {
             hitSlop={8}
             className="p-2"
           >
-            <Redo2 color={canRedo && !isTrimming ? '#44403c' : '#a8a29e'} size={20} />
+            <Redo2 color={canRedo && !isTrimming ? colors.contentBody : colors.contentTertiary} size={20} />
           </Pressable>
           <Button
             variant="primary"
@@ -1446,7 +1449,7 @@ export default function AudioEditorScreen() {
       {/* Segment tabs — outside ScrollView so horizontal scroll doesn't conflict */}
       {segments.length > 1 && (
         <View className="mb-4 px-5" style={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}>
-          <Text className="text-body-sm font-semibold text-stone-600 mb-2">
+          <Text className="text-body-sm font-semibold text-content-secondary mb-2">
             Segments ({segments.length}) · Total {formatTime(totalDuration)}
           </Text>
           <ScrollView
@@ -1503,7 +1506,7 @@ export default function AudioEditorScreen() {
                       hitSlop={6}
                       className="w-7 h-7 items-center justify-center"
                     >
-                      <ArrowLeftRight size={16} color="#0d8775" strokeWidth={2.5} />
+                      <ArrowLeftRight size={16} color={colors.brand500} strokeWidth={2.5} />
                     </Pressable>
                   )}
                 </React.Fragment>
@@ -1525,8 +1528,8 @@ export default function AudioEditorScreen() {
             Previously this branch replaced the editor, leaving the user with no way
             to trim by time despite the copy promising they could. */}
         {hasPeakError && !isPeaksLoading && (
-          <View className="rounded-lg bg-stone-100 p-3 mb-2 flex-row items-center justify-between">
-            <Text className="text-body-sm text-stone-600 flex-1 pr-2">
+          <View className="rounded-lg bg-surface-sunken p-3 mb-2 flex-row items-center justify-between">
+            <Text className="text-body-sm text-content-secondary flex-1 pr-2">
               Could not load waveform. You can still trim by time.
             </Text>
             <Button variant="secondary" size="sm" onPress={handleRetryPeaks}>
@@ -1561,7 +1564,7 @@ export default function AudioEditorScreen() {
           className="mb-4 px-5 flex-row items-center justify-center gap-2"
           style={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}
         >
-          <Text className="text-caption text-stone-500 mr-2">
+          <Text className="text-caption text-content-tertiary mr-2">
             Nudge {nudgeTarget === 'start' ? 'start' : 'end'}:
           </Text>
           {[
@@ -1579,9 +1582,9 @@ export default function AudioEditorScreen() {
               accessibilityRole="button"
               accessibilityLabel={`Nudge ${nudgeTarget} ${label}`}
               hitSlop={6}
-              className="px-3 py-2 rounded-lg bg-stone-200"
+              className="px-3 py-2 rounded-lg bg-surface-sunken"
             >
-              <Text className="text-body-sm font-semibold text-stone-700 text-center" style={{ fontVariant: ['tabular-nums'] }}>
+              <Text className="text-body-sm font-semibold text-content-body text-center" style={{ fontVariant: ['tabular-nums'] }}>
                 {label}
               </Text>
             </Pressable>
@@ -1607,15 +1610,15 @@ export default function AudioEditorScreen() {
               accessibilityLabel={isPlayingAll ? 'Stop playing all segments' : 'Play all segments end to end'}
               hitSlop={6}
               className={`flex-row items-center gap-2 px-4 py-2 rounded-full ${
-                isPlayingAll ? 'bg-brand-600' : 'bg-stone-200'
+                isPlayingAll ? 'bg-brand-600' : 'bg-surface-sunken'
               }`}
             >
               {isPlayingAll
-                ? <StopCircle size={16} color="#ffffff" />
-                : <ListMusic size={16} color="#0d8775" />
+                ? <StopCircle size={16} color={colors.contentOnBrand} />
+                : <ListMusic size={16} color={colors.brand500} />
               }
               <Text className={`text-body-sm font-semibold ${
-                isPlayingAll ? 'text-white' : 'text-brand-700'
+                isPlayingAll ? 'text-content-on-brand' : 'text-content-body'
               }`}>
                 {isPlayingAll ? 'Stop' : 'Play All'}
               </Text>
@@ -1632,7 +1635,7 @@ export default function AudioEditorScreen() {
             hitSlop={8}
             className="p-3"
           >
-            <SkipBack color="#44403c" size={24} />
+            <SkipBack color={colors.contentBody} size={24} />
           </Pressable>
           <Pressable
             onPress={() => toggle()}
@@ -1640,11 +1643,11 @@ export default function AudioEditorScreen() {
             accessibilityRole="button"
             accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
             accessibilityHint="Double-tap to start or stop audio playback"
-            className={`w-14 h-14 rounded-full items-center justify-center shadow-btn ${isLoaded ? 'bg-brand-500' : 'bg-stone-300'}`}
+            className={`w-14 h-14 rounded-full items-center justify-center shadow-btn ${isLoaded ? 'bg-brand-500' : 'bg-border-strong'}`}
           >
             {isPlaying
-              ? <Pause color="#fff" size={24} fill="#fff" />
-              : <Play color="#fff" size={24} fill="#fff" />
+              ? <Pause color={isLoaded ? colors.contentOnBrand : colors.contentTertiary} size={24} fill={isLoaded ? colors.contentOnBrand : colors.contentTertiary} />
+              : <Play color={isLoaded ? colors.contentOnBrand : colors.contentTertiary} size={24} fill={isLoaded ? colors.contentOnBrand : colors.contentTertiary} />
             }
           </Pressable>
           <Pressable
@@ -1654,7 +1657,7 @@ export default function AudioEditorScreen() {
             hitSlop={8}
             className="p-3"
           >
-            <SkipForward color="#44403c" size={24} />
+            <SkipForward color={colors.contentBody} size={24} />
           </Pressable>
         </View>
 
@@ -1723,8 +1726,8 @@ export default function AudioEditorScreen() {
         {/* Trimming overlay */}
         {isTrimming && (
           <View className="items-center mt-4">
-            <ActivityIndicator size="small" color="#0d8775" />
-            <Text className="text-body-sm text-stone-500 mt-2">Trimming audio...</Text>
+            <ActivityIndicator size="small" color={colors.brand500} />
+            <Text className="text-body-sm text-content-tertiary mt-2">Trimming audio...</Text>
           </View>
         )}
       </ScrollView>

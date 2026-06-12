@@ -9,6 +9,7 @@ import Animated, {
   runOnJS,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { useThemeColors } from '../hooks/useThemeColors';
 
 const BADGE_WIDTH = 64;
 const BADGE_OFFSET_Y = -28;
@@ -76,6 +77,7 @@ export function TrimOverlay({
   panSV,
   onZoomToggle,
 }: TrimOverlayProps) {
+  const colors = useThemeColors();
   // Which handle is being dragged: 0 = none, 1 = start, 2 = end, 3 = scrub playhead
   const activeHandle = useSharedValue(0);
 
@@ -375,49 +377,89 @@ export function TrimOverlay({
     <GestureDetector gesture={gesture}>
       <Animated.View style={[styles.overlay, { height }]}>
         {/* Left dimmed region */}
-        <Animated.View style={[styles.dimRegion, styles.dimLeft, leftDimStyle]} />
+        <Animated.View
+          style={[
+            styles.dimRegion,
+            styles.dimLeft,
+            { backgroundColor: colors.surfaceSunken },
+            leftDimStyle,
+          ]}
+        />
 
         {/* Right dimmed region */}
-        <Animated.View style={[styles.dimRegion, styles.dimRight, rightDimStyle]} />
+        <Animated.View
+          style={[
+            styles.dimRegion,
+            styles.dimRight,
+            { backgroundColor: colors.surfaceSunken },
+            rightDimStyle,
+          ]}
+        />
 
         {/* Top connecting bar */}
-        <Animated.View style={[styles.connectingBar, styles.connectingBarTop, topBarStyle]} />
+        <Animated.View
+          style={[
+            styles.connectingBar,
+            styles.connectingBarTop,
+            { backgroundColor: colors.brand500 },
+            topBarStyle,
+          ]}
+        />
 
         {/* Bottom connecting bar */}
-        <Animated.View style={[styles.connectingBar, styles.connectingBarBottom, bottomBarStyle]} />
+        <Animated.View
+          style={[
+            styles.connectingBar,
+            styles.connectingBarBottom,
+            { backgroundColor: colors.brand500 },
+            bottomBarStyle,
+          ]}
+        />
 
         {/* Left handle — rounded on left, flat on right */}
         <Animated.View
-          style={[styles.handle, styles.handleLeft, { height }, leftHandleStyle]}
+          style={[
+            styles.handle,
+            styles.handleLeft,
+            { height, backgroundColor: colors.brand500 },
+            leftHandleStyle,
+          ]}
           accessibilityRole="adjustable"
           accessibilityLabel="Start trim handle"
           accessibilityHint="Drag or tap to adjust the start of the trim region"
         >
           <Animated.View style={styles.grip}>
-            <Animated.View style={styles.gripLine} />
-            <Animated.View style={styles.gripLine} />
+            <Animated.View style={[styles.gripLine, { backgroundColor: colors.contentOnBrand }]} />
+            <Animated.View style={[styles.gripLine, { backgroundColor: colors.contentOnBrand }]} />
           </Animated.View>
         </Animated.View>
 
         {/* Right handle — flat on left, rounded on right */}
         <Animated.View
-          style={[styles.handle, styles.handleRight, { height }, rightHandleStyle]}
+          style={[
+            styles.handle,
+            styles.handleRight,
+            { height, backgroundColor: colors.brand500 },
+            rightHandleStyle,
+          ]}
           accessibilityRole="adjustable"
           accessibilityLabel="End trim handle"
           accessibilityHint="Drag or tap to adjust the end of the trim region"
         >
           <Animated.View style={styles.grip}>
-            <Animated.View style={styles.gripLine} />
-            <Animated.View style={styles.gripLine} />
+            <Animated.View style={[styles.gripLine, { backgroundColor: colors.contentOnBrand }]} />
+            <Animated.View style={[styles.gripLine, { backgroundColor: colors.contentOnBrand }]} />
           </Animated.View>
         </Animated.View>
 
         {/* Floating MM:SS.mmm badge — only visible while a handle is being dragged */}
         <Animated.View
           pointerEvents="none"
-          style={[styles.badge, badgeStyle]}
+          style={[styles.badge, { backgroundColor: colors.brand500 }, badgeStyle]}
         >
-          <Animated.Text style={styles.badgeText}>{badgeText}</Animated.Text>
+          <Animated.Text style={[styles.badgeText, { color: colors.contentOnBrand }]}>
+            {badgeText}
+          </Animated.Text>
         </Animated.View>
       </Animated.View>
     </GestureDetector>
@@ -436,7 +478,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     bottom: 0,
-    backgroundColor: 'rgba(245, 245, 244, 0.65)',
+    opacity: 0.65,
   },
   dimLeft: {
     left: 0,
@@ -447,7 +489,6 @@ const styles = StyleSheet.create({
   connectingBar: {
     position: 'absolute',
     height: BORDER_THICKNESS,
-    backgroundColor: '#0d8775',
     zIndex: 11,
   },
   connectingBarTop: {
@@ -460,7 +501,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     width: HANDLE_WIDTH,
-    backgroundColor: '#0d8775',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 12,
@@ -484,7 +524,7 @@ const styles = StyleSheet.create({
   gripLine: {
     width: 12,
     height: 3,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    opacity: 0.9,
     borderRadius: 1.5,
   },
   badge: {
@@ -494,14 +534,12 @@ const styles = StyleSheet.create({
     width: BADGE_WIDTH,
     paddingVertical: 3,
     paddingHorizontal: 6,
-    backgroundColor: '#0d8775',
     borderRadius: 4,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 13,
   },
   badgeText: {
-    color: '#fff',
     fontSize: 11,
     fontWeight: '600',
     fontVariant: ['tabular-nums'],

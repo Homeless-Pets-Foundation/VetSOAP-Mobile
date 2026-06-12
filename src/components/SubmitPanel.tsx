@@ -26,25 +26,25 @@ export function SubmitPanel({ slots, isSubmitting, onSubmitAll, hasActiveRecordi
   return (
     <Animated.View
       entering={FadeInUp.duration(300)}
-      className="px-5 py-4 border-t border-stone-200 bg-white"
+      className="px-5 py-4 border-t border-border-default bg-surface-raised"
       accessibilityRole="summary"
       accessibilityLiveRegion="polite"
     >
       <View className="flex-row items-center justify-between mb-3">
-        <Text className="text-body-sm text-stone-600">
+        <Text className="text-body-sm text-content-secondary">
           {recorded} of {slots.length} patients recorded
           {uploaded > 0 ? ` (${uploaded} already uploaded)` : ''}
         </Text>
       </View>
 
       {skipped > 0 && (
-        <Text className="text-caption text-warning-600 mb-2">
+        <Text className="text-caption text-status-warning mb-2">
           {skipped} patient{skipped > 1 ? 's have' : ' has'} no recording — will be skipped
         </Text>
       )}
 
       {hasActiveRecording && (
-        <Text className="text-caption text-warning-600 mb-2">
+        <Text className="text-caption text-status-warning mb-2">
           Finish or discard all active recording segments before submitting all patients.
         </Text>
       )}

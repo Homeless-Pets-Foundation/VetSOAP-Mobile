@@ -10,10 +10,12 @@ import {
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
   RECORD_APPOINTMENT_PERMISSION_TITLE,
 } from '../../../src/lib/recordingPermissions';
+import { useThemeColors } from '../../../src/hooks/useThemeColors';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const colors = useThemeColors();
 
   const showRecordPermissionAlert = React.useCallback(() => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
@@ -24,11 +26,11 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: '#0d8775',
-        tabBarInactiveTintColor: '#a8a29e',
+        tabBarActiveTintColor: colors.brand500,
+        tabBarInactiveTintColor: colors.contentTertiary,
         tabBarStyle: {
-          backgroundColor: '#fafaf9',
-          borderTopColor: '#e7e5e4',
+          backgroundColor: colors.surface,
+          borderTopColor: colors.borderDefault,
           paddingBottom: 8 + insets.bottom,
           paddingTop: 8,
           height: 64 + insets.bottom,

@@ -13,6 +13,7 @@ import Animated, {
 import { Upload } from 'lucide-react-native';
 import type { PatientSlot } from '../types/multiPatient';
 import { UPLOAD_OVERLAY_COPY } from '../constants/strings';
+import { useThemeColors } from '../hooks/useThemeColors';
 
 interface UploadOverlayProps {
   visible: boolean;
@@ -29,6 +30,7 @@ export function UploadOverlay({
   totalSlotsToUpload,
   isMulti,
 }: UploadOverlayProps) {
+  const colors = useThemeColors();
   const progressWidth = useSharedValue(0);
 
   // Compute progress
@@ -62,10 +64,10 @@ export function UploadOverlay({
     progressForPhase >= 1 && progressForPhase < 5
       ? UPLOAD_OVERLAY_COPY.phasePreparing
       : progressForPhase < 10
-        ? 'Preparing...'
+        ? UPLOAD_OVERLAY_COPY.phaseStarting
         : progressForPhase >= 95
-          ? 'Processing...'
-          : 'Uploading...';
+          ? UPLOAD_OVERLAY_COPY.phaseProcessing
+          : UPLOAD_OVERLAY_COPY.phaseUploading;
 
   useEffect(() => {
     if (!visible) {
@@ -97,7 +99,7 @@ export function UploadOverlay({
     <Animated.View
       entering={FadeIn.duration(300)}
       exiting={FadeOut.duration(200)}
-      style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]}
+      style={[StyleSheet.absoluteFill, { backgroundColor: colors.scrim }]}
       className="justify-center items-center px-6"
       accessibilityRole="alert"
       accessibilityLiveRegion="assertive"
@@ -105,16 +107,16 @@ export function UploadOverlay({
     >
       <Animated.View
         entering={FadeInUp.duration(300)}
-        className="bg-white rounded-2xl p-6 w-full items-center shadow-card-md"
+        className="bg-surface-raised rounded-2xl p-6 w-full items-center shadow-card-md"
         style={{ maxWidth: 340 }}
       >
         {/* Icon */}
-        <View className="bg-brand-50 rounded-full w-16 h-16 justify-center items-center mb-4">
-          <Upload color="#0d8775" size={28} />
+        <View className="bg-brand-50 dark:bg-surface-sunken rounded-full w-16 h-16 justify-center items-center mb-4">
+          <Upload color={colors.brand500} size={28} />
         </View>
 
         {/* Title */}
-        <Text className="text-lg font-bold text-stone-900 mb-1 text-center">
+        <Text className="text-lg font-bold text-content-primary mb-1 text-center">
           {isMulti && totalSlotsToUpload > 1
             ? UPLOAD_OVERLAY_COPY.titleMulti
             : UPLOAD_OVERLAY_COPY.title}
@@ -122,7 +124,7 @@ export function UploadOverlay({
 
         {/* Phase + percentage row */}
         <View className="flex-row justify-between w-full mb-2 mt-3">
-          <Text className="text-sm text-stone-600">{phaseText}</Text>
+          <Text className="text-sm text-content-secondary">{phaseText}</Text>
           <Text className="text-sm font-semibold text-brand-500">
             {overallProgress}%
           </Text>
@@ -130,7 +132,7 @@ export function UploadOverlay({
 
         {/* Progress bar */}
         <View
-          className="h-3 rounded-full bg-stone-100 overflow-hidden w-full mb-3"
+          className="h-3 rounded-full bg-surface-sunken overflow-hidden w-full mb-3"
           accessibilityRole="progressbar"
           accessibilityValue={{ min: 0, max: 100, now: overallProgress }}
         >
@@ -142,14 +144,15 @@ export function UploadOverlay({
 
         {/* Multi-patient counter */}
         {isMulti && totalSlotsToUpload > 1 && (
-          <Text className="text-xs text-stone-500">
+          <Text className="text-xs text-content-tertiary">
             Recording {Math.min(currentUploadIndex, totalSlotsToUpload)} of{' '}
             {totalSlotsToUpload}
           </Text>
         )}
 
-        {/* Reassurance text */}
-        <Text className="text-xs text-stone-400 mt-3 text-center px-2">
+        {/* Reassurance text — no horizontal padding: centered captions in this
+            narrow card clipped on Android with the old longer copy. */}
+        <Text className="text-xs text-content-tertiary mt-3 text-center">
           {UPLOAD_OVERLAY_COPY.reassurance}
         </Text>
       </Animated.View>

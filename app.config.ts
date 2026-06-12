@@ -56,6 +56,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // with our self-hosted podspec (mirrors the Android Maven self-host).
     // Required post arthenica sunset — see plugins/with-ffmpeg-ios-pod-source.js.
     './plugins/with-ffmpeg-ios-pod-source.js',
+    // Native share sheet for generated PDF exports.
+    'expo-sharing',
     // Native Apple Sign-In (iOS only at runtime; plugin adds the capability).
     'expo-apple-authentication',
     // Android: disable cleartext (HTTP) traffic in production,
@@ -67,7 +69,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       {
         android: {
           usesCleartextTraffic: IS_DEV, // Only allow HTTP in dev
-          enableProguardInReleaseBuilds: true,
+          enableMinifyInReleaseBuilds: true, // R8 code shrinking (replaces deprecated enableProguardInReleaseBuilds)
+          enableShrinkResourcesInReleaseBuilds: true, // strip unreferenced res/ entries (requires minify)
           allowBackup: false, // Prevent unencrypted backup extraction
           minSdkVersion: 24, // Required by ffmpeg-kit-react-native
           extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
@@ -102,10 +105,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     name: 'Captivet',
     slug: 'vetsoap-mobile',
     scheme: 'captivet',
-    version: '1.12.8',
+    version: '1.13.0',
     orientation: 'default',
     icon: './assets/icon.png',
-    userInterfaceStyle: 'light',
+    userInterfaceStyle: 'automatic',
     splash: {
       image: './assets/splash-icon.png',
       resizeMode: 'contain',

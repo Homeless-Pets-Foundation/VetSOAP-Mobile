@@ -7,6 +7,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { ChevronRight } from 'lucide-react-native';
+import { useThemeColors } from '../../hooks/useThemeColors';
 import { cx, HIT_SLOP, runMaybeAsyncEvent } from './styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -59,6 +60,7 @@ export function ListItem({
   accessibilityLabel,
   ...rest
 }: ListItemProps) {
+  const colors = useThemeColors();
   const scale = useSharedValue(1);
   const canPress = !!onPress && !disabled;
 
@@ -79,23 +81,23 @@ export function ListItem({
       <View className={cx('flex-1 mr-3', contentClassName)}>
         <View className="flex-row items-center">
           <View className="shrink flex-1">
-            {renderText(title, cx('text-body font-semibold text-stone-900', titleClassName))}
+            {renderText(title, cx('text-body font-semibold text-content-primary', titleClassName))}
           </View>
           {badge ? <View className="ml-2">{badge}</View> : null}
         </View>
         {subtitle ? (
           <View className="mt-0.5">
-            {renderText(subtitle, cx('text-body-sm text-stone-500', subtitleClassName), 2)}
+            {renderText(subtitle, cx('text-body-sm text-content-tertiary', subtitleClassName), 2)}
           </View>
         ) : null}
         {meta ? (
           <View className="mt-1">
-            {renderText(meta, cx('text-caption text-stone-500', metaClassName))}
+            {renderText(meta, cx('text-caption text-content-tertiary', metaClassName))}
           </View>
         ) : null}
       </View>
       {trailing ? <View>{trailing}</View> : null}
-      {showChevron ? <ChevronRight color="#a8a29e" size={18} /> : null}
+      {showChevron ? <ChevronRight color={colors.contentTertiary} size={18} /> : null}
     </View>
   );
 

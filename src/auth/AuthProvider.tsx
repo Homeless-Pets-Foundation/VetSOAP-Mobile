@@ -36,6 +36,7 @@ import {
 } from '../lib/supportStaffRecoveryVault';
 import { setMonitoringUser, clearMonitoringUser, captureException, captureMessage, breadcrumb } from '../lib/monitoring';
 import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib/analytics';
+import { saveProfileCache, getCachedProfile } from '../lib/userProfileCache';
 import type { User } from '../types';
 import { MFA_REQUEST_TIMEOUT_MS, mfaErrorMessage } from './mfaPolicy';
 
@@ -148,6 +149,13 @@ interface AuthContextType {
   isLoading: boolean;
   userFetchState: UserFetchState;
   userFetchError: string | null;
+  /**
+   * 'cache' when the current `user` came from the on-device profile cache
+   * after /auth/me failed terminally (1B startup resilience). The app is
+   * usable on saved account info; OfflineBanner renders while this is set,
+   * and a NetInfo-reconnect/backoff loop re-fetches the live profile.
+   */
+  profileSource: 'live' | 'cache';
   localRecoveryState: LocalRecoveryState;
   pendingRecoveryDraftSlotId: string | null;
   consumePendingRecoveryDraftSlotId: () => string | null;
@@ -200,6 +208,7 @@ export const AuthContext = createContext<AuthContextType>({
   isLoading: true,
   userFetchState: 'idle',
   userFetchError: null,
+  profileSource: 'live',
   localRecoveryState: 'idle',
   pendingRecoveryDraftSlotId: null,
   consumePendingRecoveryDraftSlotId: () => null,
@@ -478,6 +487,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [userFetchState, setUserFetchState] = useState<UserFetchState>('idle');
   const [userFetchError, setUserFetchError] = useState<string | null>(null);
+  const [profileSource, setProfileSource] = useState<'live' | 'cache'>('live');
   const [localRecoveryState, setLocalRecoveryState] = useState<LocalRecoveryState>('idle');
   const [pendingRecoveryDraftSlotId, setPendingRecoveryDraftSlotId] = useState<string | null>(null);
   const [deviceRegistrationBlock, setDeviceRegistrationBlock] =
@@ -587,6 +597,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const applyFetchedUser = useCallback((fetchedUser: User | null) => {
+    // Every caller of this function applies a live /auth/me result; the one
+    // cache-fallback site in fetchUser overrides to 'cache' immediately after.
+    setProfileSource('live');
     if (!fetchedUser?.id) {
       localRecoveryScanIdRef.current += 1;
       recoveryScannedUserIdRef.current = null;
@@ -704,8 +717,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // default to 'android_tablet' on UNKNOWN/unavailable since clinic
         // hardware is tablet-first and over-classifying as phone is worse.
         let androidDeviceType = 'android_tablet';
+        let deviceName: string | undefined;
         try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const Device = require('expo-device') as typeof import('expo-device');
+          if (typeof Device.modelName === 'string' && Device.modelName.trim()) {
+            deviceName = Device.modelName.trim().slice(0, 64);
+          }
           if (Device.deviceType === Device.DeviceType.PHONE) {
             androidDeviceType = 'android_phone';
           }
@@ -721,6 +739,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await apiClient.post('/api/device-sessions/register', {
           deviceId,
           deviceType,
+          ...(deviceName ? { deviceName } : {}),
           appVersion: require('../../package.json').version,
         });
         // Successful register clears any prior limit-block state — a revoke
@@ -857,6 +876,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (result === 'loaded') {
           setUserFetchState('success');
           setUserFetchError(null);
+          // 1B: persist the minimal profile projection so the next cold start
+          // can survive a terminal /auth/me failure. Fire-and-forget (rule 4).
+          const liveUser = activeUserRef.current;
+          if (liveUser) {
+            saveProfileCache(liveUser).catch(() => {});
+          }
           return true;
         }
         setUserFetchState('idle');
@@ -872,6 +897,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (__DEV__) console.log('[Auth] fetchUser: all attempts failed', lastError);
+
+    // 1B startup resilience: before stranding the user on the error screen,
+    // fall back to the cached minimal profile. Only applies when the cached id
+    // matches the current session's user id (user-swap safety on shared
+    // tablets — keeps rule-13 storage scoping correct) AND the failure was
+    // retryable (network/timeout/5xx). A terminal 401/403 means the API
+    // refused this account (role/org revoked) — rendering the app from cache
+    // would bypass that refusal. Both reads are bounded (rule 24): a hung
+    // SecureStore/GoTrue bridge must not stall the error UI.
+    if (!isRetryableFetchUserError(lastError)) {
+      breadcrumb('auth', 'profile_cache_skipped_terminal_error', {});
+      setUserFetchState('error');
+      setUserFetchError(fetchUserErrorMessage(lastError));
+      return false;
+    }
+    try {
+      const sessionResult = await withTimeout(
+        supabase.auth.getSession(),
+        3000,
+        'profile_cache_get_session'
+      );
+      const sessionUserId = sessionResult?.data?.session?.user?.id;
+      if (sessionUserId) {
+        const cached = await withTimeout(
+          getCachedProfile(sessionUserId),
+          3000,
+          'profile_cache_read'
+        );
+        if (cached) {
+          const isFirstApply = activeUserRef.current === null;
+          applyFetchedUser({
+            id: cached.id,
+            email: cached.email,
+            fullName: cached.fullName,
+            role: cached.role,
+            organizationId: cached.organizationId,
+            avatarUrl: cached.avatarUrl,
+          });
+          setProfileSource('cache');
+          setUserFetchState('success');
+          setUserFetchError(null);
+          breadcrumb('auth', 'profile_cache_used', {
+            age_ms: Date.now() - cached.cachedAt,
+            first_apply: isFirstApply,
+          });
+          if (isFirstApply) {
+            trackEvent({
+              name: 'profile_cache_used',
+              props: { age_s: Math.max(0, Math.round((Date.now() - cached.cachedAt) / 1000)) },
+            });
+          }
+          return true;
+        }
+      }
+    } catch (cacheError) {
+      if (__DEV__) console.error('[Auth] profile cache fallback failed:', cacheError);
+    }
+
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
     return false;
@@ -1212,6 +1295,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
     setUserFetchState('idle');
     setUserFetchError(null);
+    setProfileSource('live');
     localRecoveryScanIdRef.current += 1;
     recoveryScannedUserIdRef.current = null;
     setLocalRecoveryState('idle');
@@ -1484,6 +1568,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             clearTelemetryIdentity();
             setUser(null);
             setSession(null);
+            setProfileSource('live');
             localRecoveryScanIdRef.current += 1;
             recoveryScannedUserIdRef.current = null;
             setLocalRecoveryState('idle');
@@ -1585,6 +1670,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // supabase is a module-level singleton; refreshPromiseRef is a ref — safe with empty deps.
   }, []);
 
+  // 1B: while running on the cached profile, re-fetch the live profile when
+  // connectivity returns. Two triggers: a NetInfo connected event, and an
+  // exponential-backoff timer (30s → 5min cap) for the cases NetInfo can't
+  // see — API-only outage behind "connected" clinic wifi, captive portal
+  // clearing. fetchUser's own terminal-failure branch re-applies the cache on
+  // failure, so profileSource stays 'cache' and this effect keeps running;
+  // on live success applyFetchedUser flips it to 'live' and this cleans up.
+  useEffect(() => {
+    if (profileSource !== 'cache') return;
+    let cancelled = false;
+    let inFlight = false;
+    const refetch = () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      fetchUser()
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      if (state.isConnected && state.isInternetReachable !== false) {
+        refetch();
+      }
+    });
+    let delay = 30_000;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        refetch();
+        delay = Math.min(delay * 2, 5 * 60_000);
+        if (!cancelled) schedule();
+      }, delay);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, [profileSource, fetchUser]);
+
   const signIn = useCallback(async (email: string, password: string) => {
     if (__DEV__) console.log('[Auth] signIn: attempting for', email);
     trackEvent({ name: 'sign_in_attempted', props: { auth_method: 'password' } });
@@ -1682,6 +1809,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         userFetchState,
         userFetchError,
+        profileSource,
         localRecoveryState,
         pendingRecoveryDraftSlotId,
         consumePendingRecoveryDraftSlotId,

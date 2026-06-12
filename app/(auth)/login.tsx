@@ -5,6 +5,7 @@ import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated'
 import { AlertCircle, Eye, EyeOff, Info } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
 import { GoogleGlyph } from '../../src/components/ui/GoogleGlyph';
@@ -17,6 +18,7 @@ const LOCKOUT_DURATION_MS = 60_000; // 1 minute
 export default function LoginScreen() {
   const { signIn, signInWithGoogle, signInWithApple } = useAuth();
   const { scale, iconSm } = useResponsive();
+  const colors = useThemeColors();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -142,7 +144,7 @@ export default function LoginScreen() {
             accessibilityLabel="Captivet"
           />
           <Text
-            className="text-body text-stone-500 mt-3"
+            className="text-body text-content-tertiary mt-3"
             style={{ textAlign: 'center' }}
             numberOfLines={1}
             adjustsFontSizeToFit
@@ -159,24 +161,24 @@ export default function LoginScreen() {
           {sessionExpired && !error && (
             <Animated.View
               entering={FadeIn.duration(200)}
-              className="bg-amber-50 p-3 rounded-input mb-4 flex-row items-center gap-2"
+              className="bg-status-warning p-3 rounded-input mb-4 flex-row items-center gap-2"
               accessibilityRole="alert"
               accessibilityLiveRegion="assertive"
             >
-              <Info color="#92400e" size={16} />
-              <Text className="text-body-sm text-amber-800 flex-1">Your session expired. Please sign in again.</Text>
+              <Info color={colors.statusWarningFg} size={16} />
+              <Text className="text-body-sm text-status-warning flex-1">Your session expired. Please sign in again.</Text>
             </Animated.View>
           )}
 
           {error && (
             <Animated.View
               entering={FadeIn.duration(200)}
-              className="bg-danger-50 p-3 rounded-input mb-4 flex-row items-center gap-2"
+              className="bg-status-danger p-3 rounded-input mb-4 flex-row items-center gap-2"
               accessibilityRole="alert"
               accessibilityLiveRegion="assertive"
             >
-              <AlertCircle color="#b91c1c" size={16} />
-              <Text className="text-body-sm text-danger-700 flex-1">{error}</Text>
+              <AlertCircle color={colors.statusDangerFg} size={16} />
+              <Text className="text-body-sm text-status-danger flex-1">{error}</Text>
             </Animated.View>
           )}
 
@@ -204,9 +206,9 @@ export default function LoginScreen() {
                 accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
               >
                 {showPassword ? (
-                  <Eye color="#78716c" size={iconSm} />
+                  <Eye color={colors.contentTertiary} size={iconSm} />
                 ) : (
-                  <EyeOff color="#78716c" size={iconSm} />
+                  <EyeOff color={colors.contentTertiary} size={iconSm} />
                 )}
               </Pressable>
             }
@@ -226,9 +228,9 @@ export default function LoginScreen() {
           </View>
 
           <View className="flex-row items-center my-5">
-            <View className="flex-1 h-px bg-stone-200" />
-            <Text className="px-3 text-body-sm text-stone-500">or continue with</Text>
-            <View className="flex-1 h-px bg-stone-200" />
+            <View className="flex-1 h-px bg-surface-sunken" />
+            <Text className="px-3 text-body-sm text-content-tertiary">or continue with</Text>
+            <View className="flex-1 h-px bg-surface-sunken" />
           </View>
 
           <View className="gap-3">

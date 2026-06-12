@@ -1,8 +1,24 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text, Alert, ScrollView, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { LogOut, User, ChevronLeft, Shield, Smartphone, ChevronRight, FileClock } from 'lucide-react-native';
+import {
+  ChevronLeft,
+  ChevronRight,
+  CreditCard,
+  FileClock,
+  FileText,
+  HelpCircle,
+  LifeBuoy,
+  LogOut,
+  Mail,
+  Monitor,
+  Shield,
+  Smartphone,
+  Trash2,
+  User,
+  UserRound,
+} from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../../src/hooks/useAuth';
 import type { SignOutRecoveryMode } from '../../../src/auth/AuthProvider';
@@ -18,50 +34,59 @@ import { Card } from '../../../src/components/ui/Card';
 import { IconButton } from '../../../src/components/ui/IconButton';
 import { ListItem } from '../../../src/components/ui/ListItem';
 import { Toggle } from '../../../src/components/ui/Toggle';
-import { draftStorage } from '../../../src/lib/draftStorage';
-import { stashStorage } from '../../../src/lib/stashStorage';
+import { SegmentedControl } from '../../../src/components/ui/SegmentedControl';
+import { countUnsentRecordings } from '../../../src/lib/localRecordings';
+import { trackEvent } from '../../../src/lib/analytics';
+import { THEME_COPY } from '../../../src/constants/strings';
+import {
+  HELP_CENTER_URL,
+  PRIVACY_POLICY_URL,
+  SUPPORT_CONTACT_URL,
+  TERMS_URL,
+} from '../../../src/config';
+import { useThemeColors } from '../../../src/hooks/useThemeColors';
+import { useThemePreference } from '../../../src/hooks/useThemePreference';
+import type { ThemePreference } from '../../../src/lib/themePreference';
 import Constants from 'expo-constants';
 
-/**
- * Count un-sent recordings on this device for the current user: local drafts
- * with audio segments, plus stashed (deliberately-parked) sessions. Used to
- * warn the vet before sign-out that work will stay on the device. Best-effort:
- * any failure returns the partial count and never blocks sign-out. Assumes
- * draftStorage/stashStorage user scoping is already set (AuthProvider.fetchUser),
- * which is guaranteed once Settings renders.
- */
-async function countUnsentRecordings(): Promise<number> {
-  let drafts = 0;
-  try {
-    const list = await draftStorage.listDrafts();
-    // Count only drafts whose audio still exists on disk — a draft with metadata
-    // but no segment files is a zombie (cleanupOrphaned sweeps it), not unsent
-    // work, so it must not inflate the pre-sign-out warning.
-    const hasAudio = await Promise.all(list.map((meta) => draftStorage.draftHasLocalAudio(meta)));
-    drafts = hasAudio.filter(Boolean).length;
-  } catch {
-    // best-effort
-  }
-  let stashes = 0;
-  try {
-    const sessions = await stashStorage.getStashedSessions();
-    stashes = sessions.filter((s) => !s.resumedAt).length;
-  } catch {
-    // best-effort
-  }
-  return drafts + stashes;
+function SectionHeading({ children, className = '' }: { children: string; className?: string }) {
+  return (
+    <Text className={`text-caption text-content-tertiary font-semibold mb-2 px-1 ${className}`}>
+      {children}
+    </Text>
+  );
 }
+
+const THEME_OPTIONS = [
+  { value: 'system', label: THEME_COPY.system },
+  { value: 'light', label: THEME_COPY.light },
+  { value: 'dark', label: THEME_COPY.dark },
+] as const;
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
   const { iconSm, iconMd } = useResponsive();
+  const colors = useThemeColors();
+  const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
 
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricType, setBiometricType] = useState('Biometric');
   const [recoveryCount, setRecoveryCount] = useState(0);
   const [isSigningOut, setIsSigningOut] = useState(false);
+
+  const openLink = useCallback((url: string, link: 'help_center' | 'contact' | 'terms' | 'privacy') => {
+    Linking.openURL(url)
+      .then(() => {
+        if (link === 'help_center' || link === 'contact') {
+          trackEvent({ name: 'support_link_opened', props: { link } });
+        }
+      })
+      .catch(() => {
+        Alert.alert('Could Not Open Link', 'Please try again in a moment.');
+      });
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -233,115 +258,212 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView className="screen items-center">
-      <View className="p-5" style={{ width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
-        {/* Header */}
-        <View className="flex-row items-center mb-6">
-          <IconButton
-            icon={<ChevronLeft color="#1c1917" size={iconMd} />}
-            label="Go back"
-            onPress={() => router.back()}
-            className="mr-3"
-          />
-          <Text
-            className="text-display font-bold text-stone-900"
-            accessibilityRole="header"
-          >
-            Settings
-          </Text>
+      <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
+        <View className="px-5 pt-5">
+          <View className="flex-row items-center mb-6">
+            <IconButton
+              icon={<ChevronLeft color={colors.contentPrimary} size={iconMd} />}
+              label="Go back"
+              onPress={() => router.back()}
+              className="mr-3"
+            />
+            <Text
+              className="text-display font-bold text-content-primary"
+              accessibilityRole="header"
+            >
+              Settings
+            </Text>
+          </View>
         </View>
 
-        {/* User Info */}
-        <Card className="p-5 mb-4">
-          <View className="flex-row items-center">
-            <View className="w-12 h-12 rounded-full bg-brand-500 justify-center items-center mr-3.5">
-              <User color="#fff" size={iconMd} />
-            </View>
-            <View className="flex-1">
-              <Text className="text-body-lg font-semibold text-stone-900" numberOfLines={1}>
-                {user?.fullName || 'User'}
-              </Text>
-              <Text className="text-body-sm text-stone-500 mt-0.5" numberOfLines={1}>
-                {user?.email || ''}
-              </Text>
-              {user?.role && (
-                <Text className="text-caption text-stone-400 mt-0.5 capitalize">
-                  {user.role}
+        <ScrollView
+          className="flex-1 px-5"
+          contentContainerStyle={{ paddingBottom: 28 }}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Card className="p-5 mb-5">
+            <View className="flex-row items-center">
+              <View className="w-12 h-12 rounded-full bg-brand-500 justify-center items-center mr-3.5">
+                <User color={colors.contentOnBrand} size={iconMd} />
+              </View>
+              <View className="flex-1">
+                <Text className="text-body-lg font-semibold text-content-primary" numberOfLines={1}>
+                  {user?.fullName || 'User'}
                 </Text>
-              )}
+                <Text className="text-body-sm text-content-tertiary mt-0.5" numberOfLines={1}>
+                  {user?.email || ''}
+                </Text>
+                {user?.role ? (
+                  <Text className="text-caption text-content-tertiary mt-0.5 capitalize">
+                    {user.role.replace(/_/g, ' ')}
+                  </Text>
+                ) : null}
+              </View>
             </View>
-          </View>
-        </Card>
+          </Card>
 
-        {/* Security Section */}
-        <Text className="text-caption text-stone-400 font-semibold mb-2 px-1">
-          SECURITY
-        </Text>
-
-        {biometricAvailable && (
+          <SectionHeading>ACCOUNT</SectionHeading>
           <ListItem
-            title={`${biometricType} Lock`}
-            subtitle={`Require ${biometricType.toLowerCase()} when returning to the app`}
-            leading={<Shield color="#0d8775" size={iconSm} />}
-            trailing={
-              <Toggle
-                value={biometricEnabled}
-                onValueChange={toggleBiometric}
-                accessibilityLabel={`Toggle ${biometricType} lock`}
-              />
-            }
-            className="mb-4"
+            onPress={() => {
+              router.push('/profile' as never);
+            }}
+            accessibilityLabel="Edit profile"
+            title="Edit Profile"
+            subtitle="Name and password"
+            leading={<UserRound color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
           />
-        )}
+          <ListItem
+            onPress={() => {
+              router.push('/subscription' as never);
+            }}
+            accessibilityLabel="View subscription"
+            title="Subscription"
+            subtitle="Plan, trial, renewal, and billing portal"
+            leading={<CreditCard color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+            className="mb-5"
+          />
 
-        <ListItem
-          onPress={() => {
-            router.push('/devices' as never);
-          }}
-          accessibilityLabel="Manage active devices"
-          title="Manage Devices"
-          subtitle="View and revoke devices signed in to your account"
-          leading={<Smartphone color="#0d8775" size={iconSm} />}
-          trailing={<ChevronRight color="#a8a29e" size={iconSm} />}
-          className="mb-4"
-        />
-
-        {canRecordAppointments(user?.role) ? (
-          <>
-            <Text className="text-caption text-stone-400 font-semibold mb-2 px-1 mt-2">
-              LOCAL RECOVERY
-            </Text>
-            <ListItem
-              onPress={() => {
-                router.push('/recording-recovery' as never);
+          <SectionHeading>APP</SectionHeading>
+          <Card className="mb-5">
+            <View className="flex-row items-start mb-3">
+              <View className="mr-3 mt-0.5">
+                <Monitor color={colors.brand500} size={iconSm} />
+              </View>
+              <View className="flex-1">
+                <Text className="text-body font-semibold text-content-primary">
+                  {THEME_COPY.title}
+                </Text>
+                <Text className="text-body-sm text-content-tertiary mt-0.5">
+                  {THEME_COPY.subtitle}
+                </Text>
+              </View>
+            </View>
+            <SegmentedControl<ThemePreference>
+              options={THEME_OPTIONS}
+              value={themePreference}
+              onValueChange={(value) => {
+                if (value) setThemePreference(value);
               }}
-              accessibilityLabel="Recover local recordings on this tablet"
-              title="Recover Local Recordings"
-              subtitle={
-                recoveryCount > 0
-                  ? `${recoveryCount} recovery item${recoveryCount === 1 ? '' : 's'} saved on this tablet`
-                  : 'Recover recordings protected during support staff sign-out'
-              }
-              leading={<FileClock color="#0d8775" size={iconSm} />}
-              trailing={<ChevronRight color="#a8a29e" size={iconSm} />}
-              className="mb-4"
+              columns={3}
+              accessibilityLabel="Choose app appearance"
             />
-          </>
-        ) : null}
+          </Card>
 
-        {/* Sign Out */}
-        <ListItem
-          onPress={handleSignOut}
-          accessibilityLabel="Sign out of your account"
-          title={<Text className="text-body font-medium text-danger-500">Sign Out</Text>}
-          leading={<LogOut color="#ef4444" size={iconSm} />}
-          disabled={isSigningOut}
-          haptic={false}
-        />
+          <SectionHeading>SECURITY</SectionHeading>
+          {biometricAvailable ? (
+            <ListItem
+              title={`${biometricType} Lock`}
+              subtitle={`Require ${biometricType.toLowerCase()} when returning to the app`}
+              leading={<Shield color={colors.brand500} size={iconSm} />}
+              trailing={
+                <Toggle
+                  value={biometricEnabled}
+                  onValueChange={toggleBiometric}
+                  accessibilityLabel={`Toggle ${biometricType} lock`}
+                />
+              }
+            />
+          ) : null}
 
-        {/* App Info */}
-        <Text className="text-caption text-stone-400 text-center mt-10">
-          Captivet v{Constants.expoConfig?.version || '1.0.0'}
-        </Text>
+          <ListItem
+            onPress={() => {
+              router.push('/devices' as never);
+            }}
+            accessibilityLabel="Manage active devices"
+            title="Manage Devices"
+            subtitle="View and revoke devices signed in to your account"
+            leading={<Smartphone color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+            className="mb-5"
+          />
+
+          <SectionHeading>SUPPORT</SectionHeading>
+          <ListItem
+            onPress={() => openLink(HELP_CENTER_URL, 'help_center')}
+            accessibilityLabel="Open help center"
+            title="Help Center"
+            subtitle="Guides and troubleshooting"
+            leading={<HelpCircle color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+          />
+          <ListItem
+            onPress={() => openLink(SUPPORT_CONTACT_URL, 'contact')}
+            accessibilityLabel="Contact support"
+            title="Contact"
+            subtitle="Email Captivet support"
+            leading={<Mail color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+            className="mb-5"
+          />
+
+          <SectionHeading>LEGAL</SectionHeading>
+          <ListItem
+            onPress={() => openLink(TERMS_URL, 'terms')}
+            accessibilityLabel="Open terms of service"
+            title="Terms"
+            subtitle="Captivet service terms"
+            leading={<FileText color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+          />
+          <ListItem
+            onPress={() => openLink(PRIVACY_POLICY_URL, 'privacy')}
+            accessibilityLabel="Open privacy policy"
+            title="Privacy"
+            subtitle="How Captivet handles data"
+            leading={<LifeBuoy color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+            className="mb-5"
+          />
+
+          {canRecordAppointments(user?.role) ? (
+            <>
+              <SectionHeading>LOCAL RECOVERY</SectionHeading>
+              <ListItem
+                onPress={() => {
+                  router.push('/recording-recovery' as never);
+                }}
+                accessibilityLabel="Recover local recordings on this tablet"
+                title="Recover Local Recordings"
+                subtitle={
+                  recoveryCount > 0
+                    ? `${recoveryCount} recovery item${recoveryCount === 1 ? '' : 's'} saved on this tablet`
+                    : 'Recover recordings protected during support staff sign-out'
+                }
+                leading={<FileClock color={colors.brand500} size={iconSm} />}
+                trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+                className="mb-5"
+              />
+            </>
+          ) : null}
+
+          <SectionHeading>DANGER ZONE</SectionHeading>
+          <ListItem
+            onPress={() => {
+              router.push('/delete-account' as never);
+            }}
+            accessibilityLabel="Delete account"
+            title={<Text className="text-body font-semibold text-status-danger">Delete Account</Text>}
+            subtitle="Request permanent account deletion"
+            leading={<Trash2 color={colors.danger600} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+            className="mb-5 border border-status-danger"
+          />
+
+          <ListItem
+            onPress={handleSignOut}
+            accessibilityLabel="Sign out of your account"
+            title={<Text className="text-body font-medium text-status-danger">Sign Out</Text>}
+            leading={<LogOut color={colors.danger500} size={iconSm} />}
+            disabled={isSigningOut}
+            haptic={false}
+          />
+
+          <Text className="text-caption text-content-tertiary text-center mt-8">
+            Captivet v{Constants.expoConfig?.version || '1.0.0'}
+          </Text>
+        </ScrollView>
       </View>
     </SafeAreaView>
   );

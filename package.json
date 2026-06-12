@@ -1,6 +1,6 @@
 {
   "name": "captivet-mobile",
-  "version": "1.12.8",
+  "version": "1.13.0",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -35,9 +35,11 @@
     "expo-haptics": "~55.0.14",
     "expo-linking": "~55.0.15",
     "expo-local-authentication": "~55.0.14",
+    "expo-print": "~55.0.15",
     "expo-router": "~55.0.16",
     "expo-screen-capture": "~55.0.14",
     "expo-secure-store": "~55.0.14",
+    "expo-sharing": "~55.0.20",
     "expo-splash-screen": "~55.0.21",
     "expo-status-bar": "~55.0.6",
     "ffmpeg-kit-react-native": "^6.0.2",

@@ -13,6 +13,7 @@ import QRCode from 'react-native-qrcode-svg';
 import { AlertCircle, LogOut, RefreshCw, ShieldCheck } from 'lucide-react-native';
 import { useAuth } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
 import { isSetupApprovalCodeError, mfaErrorMessage } from '../../src/auth/mfaPolicy';
@@ -28,6 +29,7 @@ interface PendingEnrollment {
 export default function MfaScreen() {
   const router = useRouter();
   const { scale, iconSm, iconMd } = useResponsive();
+  const colors = useThemeColors();
   const {
     isAuthenticated,
     mfaRequired,
@@ -265,29 +267,29 @@ export default function MfaScreen() {
         >
           <View style={{ width: '100%', maxWidth: scale(420), alignSelf: 'center' }}>
             <View className="card p-6">
-              <View className="w-12 h-12 rounded-full bg-brand-50 justify-center items-center mb-5">
-                <ShieldCheck color="#0d8775" size={iconMd} />
+              <View className="w-12 h-12 rounded-full bg-brand-50 dark:bg-surface-sunken justify-center items-center mb-5">
+                <ShieldCheck color={colors.brand500} size={iconMd} />
               </View>
 
-              <Text className="text-heading-lg font-bold text-stone-900 mb-2">
+              <Text className="text-heading-lg font-bold text-content-primary mb-2">
                 {title}
               </Text>
-              <Text className="text-body text-stone-600 mb-6">{subtitle}</Text>
+              <Text className="text-body text-content-secondary mb-6">{subtitle}</Text>
 
               {error ? (
                 <View
-                  className="bg-danger-50 p-3 rounded-input mb-4 flex-row items-center gap-2"
+                  className="bg-status-danger p-3 rounded-input mb-4 flex-row items-center gap-2"
                   accessibilityRole="alert"
                   accessibilityLiveRegion="assertive"
                 >
-                  <AlertCircle color="#b91c1c" size={16} />
-                  <Text className="text-body-sm text-danger-700 flex-1">{error}</Text>
+                  <AlertCircle color={colors.statusDangerFg} size={16} />
+                  <Text className="text-body-sm text-status-danger flex-1">{error}</Text>
                 </View>
               ) : null}
 
               {isBootstrapping || mode === 'loading' ? (
                 <View className="py-8 items-center">
-                  <ActivityIndicator size="large" color="#0d8775" />
+                  <ActivityIndicator size="large" color={colors.brand500} />
                 </View>
               ) : (
                 <View>
@@ -313,7 +315,7 @@ export default function MfaScreen() {
                         <Button
                           variant="primary"
                           size="lg"
-                          icon={<ShieldCheck color="#ffffff" size={iconSm} />}
+                          icon={<ShieldCheck color={colors.contentOnBrand} size={iconSm} />}
                           loading={isSubmitting}
                           disabled={isSubmitting}
                           onPress={() => {
@@ -324,7 +326,7 @@ export default function MfaScreen() {
                         </Button>
                         <Button
                           variant="secondary"
-                          icon={<RefreshCw color="#44403c" size={iconSm} />}
+                          icon={<RefreshCw color={colors.contentBody} size={iconSm} />}
                           disabled={isSubmitting || isBootstrapping}
                           onPress={() => {
                             bootstrapMfa().catch(() => {});
@@ -334,7 +336,7 @@ export default function MfaScreen() {
                         </Button>
                         <Button
                           variant="ghost"
-                          icon={<LogOut color="#44403c" size={iconSm} />}
+                          icon={<LogOut color={colors.contentBody} size={iconSm} />}
                           disabled={isSubmitting}
                           onPress={handleSignOut}
                         >
@@ -345,19 +347,19 @@ export default function MfaScreen() {
                   ) : (
                     <>
                       {mode === 'enroll' && enrollment ? (
-                        <View className="items-center bg-stone-50 rounded-lg p-4 mb-5">
+                        <View className="items-center bg-surface rounded-lg p-4 mb-5">
                           <QRCode
                             value={enrollment.uri}
                             size={Math.min(scale(220), 220)}
-                            backgroundColor="#fafaf9"
-                            color="#1c1917"
+                            backgroundColor={colors.surfaceRaised}
+                            color={colors.contentPrimary}
                           />
-                          <Text className="text-caption font-semibold text-stone-500 mt-4 mb-1">
+                          <Text className="text-caption font-semibold text-content-tertiary mt-4 mb-1">
                             Setup key
                           </Text>
                           <Text
                             selectable
-                            className="text-body-sm text-stone-700 text-center"
+                            className="text-body-sm text-content-body text-center"
                           >
                             {enrollment.secret}
                           </Text>
@@ -384,7 +386,7 @@ export default function MfaScreen() {
                         <Button
                           variant="primary"
                           size="lg"
-                          icon={<ShieldCheck color="#ffffff" size={iconSm} />}
+                          icon={<ShieldCheck color={colors.contentOnBrand} size={iconSm} />}
                           loading={isSubmitting}
                           disabled={isBootstrapping}
                           onPress={() => {
@@ -395,7 +397,7 @@ export default function MfaScreen() {
                         </Button>
                         <Button
                           variant="secondary"
-                          icon={<RefreshCw color="#44403c" size={iconSm} />}
+                          icon={<RefreshCw color={colors.contentBody} size={iconSm} />}
                           disabled={isSubmitting || isBootstrapping}
                           onPress={() => {
                             bootstrapMfa().catch(() => {});
@@ -405,7 +407,7 @@ export default function MfaScreen() {
                         </Button>
                         <Button
                           variant="ghost"
-                          icon={<LogOut color="#44403c" size={iconSm} />}
+                          icon={<LogOut color={colors.contentBody} size={iconSm} />}
                           disabled={isSubmitting}
                           onPress={handleSignOut}
                         >

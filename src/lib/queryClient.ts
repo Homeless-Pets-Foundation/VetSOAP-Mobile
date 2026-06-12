@@ -16,9 +16,12 @@ export const queryClient = new QueryClient({
         return failureCount < 2;
       },
       staleTime: 5 * 60 * 1000, // 5 minutes — prevents redundant refetches during normal use
-      // Minimize PHI retention in memory: garbage-collect cached data
-      // 60 seconds after the last observer unmounts
-      gcTime: 60000,
+      // Keep cache ≥ staleTime so returning to an unmounted tab renders
+      // instantly from cache instead of cold-fetching with a spinner.
+      // Cross-user PHI isolation does not depend on this: queryClient.clear()
+      // runs on every sign-out path in AuthProvider, so this only bounds
+      // same-user in-memory retention after the last observer unmounts.
+      gcTime: 10 * 60 * 1000,
     },
   },
 });

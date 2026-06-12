@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 
@@ -53,14 +54,19 @@ export const biometrics = {
     }
   },
 
+  /**
+   * Platform-correct biometric type label. "Face ID"/"Touch ID" are Apple
+   * trademarks — Android devices say "Face Unlock"/"Fingerprint" (audit
+   * defect: a Pixel showing "Face ID Lock" in settings reads as a bug).
+   */
   async getType(): Promise<string> {
     try {
       const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
       if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
-        return 'Face ID';
+        return Platform.OS === 'ios' ? 'Face ID' : 'Face Unlock';
       }
       if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
-        return 'Fingerprint';
+        return Platform.OS === 'ios' ? 'Touch ID' : 'Fingerprint';
       }
       if (types.includes(LocalAuthentication.AuthenticationType.IRIS)) {
         return 'Iris';

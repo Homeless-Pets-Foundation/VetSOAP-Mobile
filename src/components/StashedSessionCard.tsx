@@ -5,6 +5,7 @@ import type { StashedSession } from '../types/stash';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { IconButton } from './ui/IconButton';
+import { useThemeColors } from '../hooks/useThemeColors';
 
 interface StashedSessionCardProps {
   stash: StashedSession;
@@ -36,6 +37,7 @@ function formatRelativeTime(isoDate: string): string {
 }
 
 export function StashedSessionCard({ stash, onResume, onDelete }: StashedSessionCardProps) {
+  const colors = useThemeColors();
   const metaParts: string[] = [];
   const relTime = formatRelativeTime(stash.stashedAt);
   if (relTime) metaParts.push(relTime);
@@ -47,15 +49,15 @@ export function StashedSessionCard({ stash, onResume, onDelete }: StashedSession
       {/* Header row: title + delete */}
       <View className="flex-row items-start justify-between mb-2">
         <View className="flex-1 mr-3">
-          <Text className="text-body font-semibold text-stone-900" numberOfLines={1}>
+          <Text className="text-body font-semibold text-content-primary" numberOfLines={1}>
             {stash.patientSummary}
           </Text>
-          <Text className="text-body-sm text-stone-400 mt-0.5">
+          <Text className="text-body-sm text-content-tertiary mt-0.5">
             {metaParts.join('  \u00B7  ')}
           </Text>
         </View>
         <IconButton
-          icon={<Trash2 color="#a8a29e" size={16} />}
+          icon={<Trash2 color={colors.contentTertiary} size={16} />}
           label="Delete saved session"
           onPress={onDelete}
           accessibilityHint="Double-tap to permanently delete this saved session and its recordings"
@@ -69,7 +71,7 @@ export function StashedSessionCard({ stash, onResume, onDelete }: StashedSession
         variant="secondary"
         size="sm"
         onPress={onResume}
-        icon={<Play color="#0d8775" size={14} fill="#0d8775" />}
+        icon={<Play color={colors.brand500} size={14} fill={colors.brand500} />}
         accessibilityLabel={`Resume session for ${stash.clientName}, ${stash.patientSummary}`}
         accessibilityHint="Double-tap to resume this recording session"
       >

@@ -1,18 +1,5 @@
 import type { GestureResponderEvent } from 'react-native';
 
-export const UI_COLORS = {
-  brand: '#0d8775',
-  brandDark: '#095e53',
-  stone: '#78716c',
-  stoneDark: '#1c1917',
-  stoneMuted: '#a8a29e',
-  danger: '#dc2626',
-  warning: '#b45309',
-  success: '#15803d',
-  info: '#1d4ed8',
-  white: '#fff',
-} as const;
-
 export const HIT_SLOP = { top: 10, bottom: 10, left: 10, right: 10 } as const;
 
 export const TOUCH_TARGET = 'min-h-[44px]';

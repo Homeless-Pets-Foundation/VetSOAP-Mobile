@@ -61,13 +61,13 @@ export default function ResetPasswordScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
+    <SafeAreaView className="flex-1 bg-surface-raised">
       <View className="flex-1 justify-center px-6">
         <View className="mb-8">
-          <Text className="text-heading-lg font-bold text-stone-900 mb-2">
+          <Text className="text-heading-lg font-bold text-content-primary mb-2">
             Set new password
           </Text>
-          <Text className="text-body text-stone-600">
+          <Text className="text-body text-content-secondary">
             Enter your new password below.
           </Text>
         </View>

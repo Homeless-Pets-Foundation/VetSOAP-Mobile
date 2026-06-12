@@ -237,3 +237,15 @@ Finish → server `status='draft'` + local `draftStorage` entry → Home/Records
 **Storage layout:** local metadata in SecureStore `captivet_draft_{userId}_{slotId}_meta` + chunks (2KB workaround), index `captivet_drafts_index_{userId}`; local audio `documentDirectory/drafts/{userId}/{slotId}/seg_N.m4a`; server `Recording` row `status='draft'` (server `confirmUpload` allows `draft → uploading`).
 
 **Sign-out cleanup:** local drafts/stashes are **preserved** across logout (rule 8); `handleSignOut` clears only transient caches. Drafts removed only by post-upload cleanup or the warn-first 30-day eviction (rule 13).
+
+## Codex Review Guidelines
+
+Codex GitHub review should flag only serious, merge-relevant issues. Focus on correctness, security, data isolation, secret handling, auth/session flows, billing or payment logic, production deploy risk, migrations, and missing tests for changed behavior.
+
+- Prefer concrete findings with file/line references and the smallest safe fix.
+- Do not raise style-only comments, broad rewrites, or low-confidence guesses.
+- Check that user input, credentials, tokens, private data, and logs are handled safely.
+- Check that API/database changes preserve tenant or account boundaries where applicable.
+- Check that schema, migration, configuration, and environment changes are documented and backwards compatible.
+- Check that new behavior has tests or a clear reason tests are not practical.
+- Treat generated files, lockfiles, and vendored assets as low priority unless they affect runtime behavior or supply-chain risk.

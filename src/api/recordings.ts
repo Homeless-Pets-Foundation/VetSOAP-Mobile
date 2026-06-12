@@ -11,6 +11,8 @@ import type {
   UploadUrlResponse,
   RecordingStatus,
   SoapNote,
+  UpdateRecordingMetadata,
+  ReviewStatus,
 } from '../types';
 import {
   recordingIdSchema,
@@ -29,11 +31,13 @@ import {
   isTransientUploadError,
   isStalePresignError,
   uploadTimeoutMs,
+  runWithConcurrency,
   type TaggedError,
   type UploadPhase,
 } from './uploadRetry';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
+const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
 
 /**
  * Expected bitrate range for a healthy recording. Outside this window we
@@ -92,6 +96,15 @@ export {
 } from './uploadRetry';
 export type { UploadPhase, TaggedError } from './uploadRetry';
 
+export interface PlaybackUrlResult {
+  /** First (or only) segment's presigned GET URL. */
+  url: string;
+  /** ISO timestamp of the guaranteed-minimum URL validity. */
+  expiresAt: string;
+  /** One presigned GET URL per audio segment, in recording order. */
+  segmentUrls: string[];
+}
+
 function generateIdempotencyKey(): string {
   // expo-crypto → global crypto → Math.random (per CLAUDE.md rule 26: the
   // idempotency key is the only non-security random on iOS Hermes where
@@ -134,6 +147,11 @@ function withTimeout<T>(
 // 3 attempts total covers a typical WiFi handoff (~5–10s) plus a stale-AP
 // recovery, while keeping worst-case time-to-failure bounded (~35s).
 const MAX_R2_ATTEMPTS = 3;
+// Multi-segment recordings upload segments concurrently in a bounded pool.
+// 3 lanes roughly triples multi-segment submit throughput without saturating
+// clinic Wi-Fi; per-lane upload timeouts widen accordingly (uploadTimeoutMs
+// takes a parallelism factor).
+const SEGMENT_UPLOAD_CONCURRENCY = 3;
 // Sentry issue REACT-NATIVE-4 (2026-05-13) had a 1.6s gap between
 // NETWORK_LOST and submit_failed because the old retry used a flat 1.5s
 // setTimeout. 15s covers a typical WiFi flap with headroom.
@@ -199,6 +217,7 @@ export interface ListRecordingsParams {
   sortBy?: string;
   sortOrder?: string;
   status?: RecordingStatus;
+  reviewStatus?: ReviewStatus;
   search?: string;
 }
 
@@ -212,6 +231,66 @@ export interface TranslateResult {
 export interface EmailDraftResult {
   subject: string;
   body: string;
+}
+
+type RecordingPayload = Record<string, string | boolean | null>;
+
+const createRecordingPartialSchema = createRecordingSchema.partial();
+const DRAFT_NULLABLE_FIELDS = new Set<keyof CreateRecording>([
+  'pimsPatientId',
+  'clientName',
+  'species',
+  'breed',
+  'appointmentType',
+  // Deselecting a template (PatientForm allowDeselect → undefined) must reach
+  // the server as an explicit null — dropping the key leaves the old template
+  // on the draft and the SOAP note generates with a template the user removed.
+  'templateId',
+]);
+
+function normalizeValidatedRecordingPayload(
+  data: Partial<CreateRecording>,
+  opts: { includePatientName: boolean; nullClearedOptional?: boolean; source?: Partial<CreateRecording> }
+): RecordingPayload {
+  const payload: RecordingPayload = {};
+  if (opts.includePatientName) {
+    payload.patientName = typeof data.patientName === 'string' ? data.patientName : '';
+  } else if (typeof data.patientName === 'string') {
+    payload.patientName = data.patientName;
+  }
+
+  for (const key of ['pimsPatientId', 'clientName', 'species', 'breed', 'appointmentType', 'templateId'] as const) {
+    const value = data[key];
+    if (typeof value === 'string' && value.length > 0) {
+      payload[key] = value;
+    } else if (
+      opts.nullClearedOptional &&
+      opts.source &&
+      DRAFT_NULLABLE_FIELDS.has(key) &&
+      Object.prototype.hasOwnProperty.call(opts.source, key)
+    ) {
+      payload[key] = null;
+    }
+  }
+
+  if (typeof data.foreignLanguage === 'boolean') {
+    payload.foreignLanguage = data.foreignLanguage;
+  }
+  return payload;
+}
+
+export function normalizeCreateRecordingPayload(data: CreateRecording): RecordingPayload {
+  const validated = createRecordingSchema.parse(data);
+  return normalizeValidatedRecordingPayload(validated, { includePatientName: true });
+}
+
+export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): RecordingPayload {
+  const validated = createRecordingPartialSchema.parse(data);
+  return normalizeValidatedRecordingPayload(validated, {
+    includePatientName: Object.prototype.hasOwnProperty.call(data, 'patientName'),
+    nullClearedOptional: true,
+    source: data,
+  });
 }
 
 export const recordingsApi = {
@@ -232,9 +311,9 @@ export const recordingsApi = {
     data: CreateRecording,
     options?: { isDraft?: boolean }
   ): Promise<Recording> {
-    const validated = createRecordingSchema.parse(data);
+    const payload = normalizeCreateRecordingPayload(data);
     const idempotencyKey = generateIdempotencyKey();
-    return apiClient.post('/api/recordings', { ...validated, isDraft: options?.isDraft ?? false }, idempotencyKey);
+    return apiClient.post('/api/recordings', { ...payload, isDraft: options?.isDraft ?? false }, idempotencyKey);
   },
 
   async delete(id: string): Promise<void> {
@@ -264,7 +343,7 @@ export const recordingsApi = {
     data: Partial<CreateRecording>
   ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
-    return apiClient.patch(`/api/recordings/${recordingId}/draft-metadata`, data);
+    return apiClient.patch(`/api/recordings/${recordingId}/draft-metadata`, normalizeDraftMetadataPayload(data));
   },
 
   async getUploadUrl(
@@ -551,20 +630,18 @@ export const recordingsApi = {
     }
 
     let r2UploadComplete = false;
-    const segmentKeys: string[] = [];
     const totalSegments = segments.length;
     let completedSegments = 0;
     let totalSegmentBytes = 0;
     const totalSegmentDuration = segments.reduce((sum, s) => sum + (s.duration || 0), 0);
 
     try {
+      // Phase A — preflight every segment up front (cheap local stat calls):
+      // a doomed submit fails before any bytes move, and the byte totals feed
+      // the aggregate progress below.
+      const sizes: number[] = new Array(totalSegments).fill(0);
       for (let i = 0; i < totalSegments; i++) {
-        const segment = segments[i];
-        const ext = extensionFromUri(segment.uri);
-        const segmentFileName = `recording_segment_${i}.${ext}`;
-
-        // Read local file info
-        const fileInfo = await getInfoAsync(segment.uri);
+        const fileInfo = await getInfoAsync(segments[i].uri);
         if (!fileInfo.exists) {
           phaseError('preflight', `Failed to read audio segment ${i + 1}. Please try recording again.`);
         }
@@ -578,15 +655,46 @@ export const recordingsApi = {
             `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
           );
         }
+        sizes[i] = fileSizeBytes;
         totalSegmentBytes += fileSizeBytes;
+      }
+
+      // Aggregate bytes-weighted progress across concurrent segments. The
+      // monotone clamp keeps the bar from visibly regressing when a retry
+      // resets one segment's counter back to zero.
+      const sentBytes: number[] = new Array(totalSegments).fill(0);
+      let lastEmittedPercent = 0;
+      const emitProgress = () => {
+        if (!options?.onUploadProgress) return;
+        const loaded = sentBytes.reduce((sum, b) => sum + b, 0);
+        const percent = totalSegmentBytes > 0 ? Math.round((loaded / totalSegmentBytes) * 100) : 0;
+        lastEmittedPercent = Math.max(lastEmittedPercent, percent);
+        options.onUploadProgress({ loaded, total: totalSegmentBytes, percent: lastEmittedPercent });
+      };
+
+      // Phase B — bounded-parallel presign + PUT per segment. Keys land by
+      // index (NOT push): segment order is playback order, and the confirm
+      // payload must preserve it regardless of completion order.
+      const segmentKeys: (string | undefined)[] = new Array(totalSegments).fill(undefined);
+
+      const uploadSegment = async (i: number) => {
+        // Stagger the first wave so the pool's simultaneous presign POSTs
+        // don't land in the same instant (a presign 429 is not retried).
+        if (i > 0 && i < SEGMENT_UPLOAD_CONCURRENCY) {
+          await new Promise<void>((r) => setTimeout(r, i * 150));
+        }
+
+        const segment = segments[i];
+        const ext = extensionFromUri(segment.uri);
+        const segmentFileName = `recording_segment_${i}.${ext}`;
+        const fileSizeBytes = sizes[i];
 
         // Presign + PUT wrapped together — see note in createWithFile above.
         // Each retry attempt fetches a fresh presigned URL.
         let fileKey: string | undefined;
-        const segmentProgressBase = (i / totalSegments) * 100;
-        const segmentProgressRange = 100 / totalSegments;
 
         const buildAndRunSegmentUpload = async (_attempt: number) => {
+          sentBytes[i] = 0; // a retry restarts this segment's byte count
           let uploadUrl: string;
           let warnings: string[] | undefined;
           try {
@@ -613,21 +721,14 @@ export const recordingsApi = {
             },
             options?.onUploadProgress
               ? (progress) => {
-                  const total = progress.totalBytesExpectedToSend;
-                  const loaded = progress.totalBytesSent;
-                  const segmentPercent = total > 0 ? (loaded / total) * 100 : 0;
-                  const overallPercent = segmentProgressBase + (segmentPercent * segmentProgressRange) / 100;
-                  options.onUploadProgress!({
-                    loaded,
-                    total,
-                    percent: Math.round(overallPercent),
-                  });
+                  sentBytes[i] = Math.min(progress.totalBytesSent, fileSizeBytes);
+                  emitProgress();
                 }
               : undefined
           );
           const result = await withTimeout(
             uploadTask.uploadAsync(),
-            uploadTimeoutMs(fileSizeBytes),
+            uploadTimeoutMs(fileSizeBytes, SEGMENT_UPLOAD_CONCURRENCY),
             `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
             () => { uploadTask.cancelAsync().catch(() => {}); }
           );
@@ -651,8 +752,22 @@ export const recordingsApi = {
           phaseError('r2_put', `Segment ${i + 1} uploaded but no file key was returned. Please try again.`);
         }
 
-        segmentKeys.push(fileKey);
+        segmentKeys[i] = fileKey;
+        sentBytes[i] = fileSizeBytes;
+        emitProgress();
         completedSegments++;
+      };
+
+      await runWithConcurrency(totalSegments, SEGMENT_UPLOAD_CONCURRENCY, uploadSegment);
+
+      // Every lane reported success — assert no key is missing before confirm.
+      const confirmedKeys: string[] = [];
+      for (let i = 0; i < totalSegments; i++) {
+        const key = segmentKeys[i];
+        if (!key) {
+          phaseError('r2_put', `Segment ${i + 1} did not finish uploading. Please try again.`);
+        }
+        confirmedKeys.push(key);
       }
 
       r2UploadComplete = true;
@@ -675,9 +790,9 @@ export const recordingsApi = {
         try {
           options.onR2Complete({
             recordingId: recording.id,
-            fileKey: segmentKeys[0],
-            segmentKeys,
-            segmentCount: segmentKeys.length,
+            fileKey: confirmedKeys[0],
+            segmentKeys: confirmedKeys,
+            segmentCount: confirmedKeys.length,
           });
         } catch {
           // Best-effort — caller's persistence failure shouldn't block confirm.
@@ -687,9 +802,9 @@ export const recordingsApi = {
       // Confirm upload with all segment keys
       let confirmed: Recording;
       try {
-        confirmed = await this.confirmUpload(recording.id, segmentKeys[0], {
-          segmentKeys,
-          segmentCount: segmentKeys.length,
+        confirmed = await this.confirmUpload(recording.id, confirmedKeys[0], {
+          segmentKeys: confirmedKeys,
+          segmentCount: confirmedKeys.length,
         });
       } catch (e) { tagPhase(e, 'confirm'); }
       return confirmed;
@@ -720,9 +835,62 @@ export const recordingsApi = {
     return apiClient.post(`/api/recordings/${id}/retry`);
   },
 
+  async updateReview(recordingId: string, opts: { reviewed: boolean }): Promise<Recording> {
+    recordingIdSchema.parse(recordingId);
+    return apiClient.patch(`/api/recordings/${recordingId}/review`, {
+      reviewed: opts.reviewed,
+    });
+  },
+
+  async regenerateSoap(
+    recordingId: string,
+    opts: { templateId?: string | null } = {}
+  ): Promise<void> {
+    recordingIdSchema.parse(recordingId);
+    return apiClient.request<void>(`/api/recordings/${recordingId}/regenerate-soap`, {
+      method: 'POST',
+      body: {
+        ...(opts.templateId ? { templateId: opts.templateId } : {}),
+      },
+      parseJson: false,
+    });
+  },
+
+  async updateMetadata(
+    recordingId: string,
+    data: UpdateRecordingMetadata
+  ): Promise<Recording> {
+    recordingIdSchema.parse(recordingId);
+    return apiClient.patch(`/api/recordings/${recordingId}/metadata`, data);
+  },
+
   async getSoapNote(recordingId: string): Promise<SoapNote> {
     recordingIdSchema.parse(recordingId);
     return apiClient.get(`/api/recordings/${recordingId}/soap-note`);
+  },
+
+  /**
+   * Issue short-lived presigned GET URLs for a recording's audio (server S5).
+   * `Recording.audioFileUrl` is a raw R2 object key — never fetchable
+   * directly. Multi-segment recordings are not merged server-side, so each
+   * segment gets its own URL; `url` mirrors `segmentUrls[0]`.
+   */
+  async getPlaybackUrl(recordingId: string): Promise<PlaybackUrlResult> {
+    recordingIdSchema.parse(recordingId);
+    const result = await apiClient.post<PlaybackUrlResult>(
+      `/api/recordings/${recordingId}/playback-url`
+    );
+    // Rule-10 shape guard: tolerate a response missing segmentUrls.
+    const segmentUrls = Array.isArray(result?.segmentUrls)
+      ? result.segmentUrls.filter((u): u is string => typeof u === 'string' && u.length > 0)
+      : [];
+    if (segmentUrls.length === 0 && typeof result?.url === 'string' && result.url.length > 0) {
+      segmentUrls.push(result.url);
+    }
+    if (segmentUrls.length === 0) {
+      throw new ApiError('No playable audio URL was returned.', 0, false, undefined, 'NO_AUDIO');
+    }
+    return { url: segmentUrls[0], expiresAt: result?.expiresAt ?? '', segmentUrls };
   },
 
   async translate(
@@ -730,8 +898,10 @@ export const recordingsApi = {
     opts: { targetLanguage: string }
   ): Promise<TranslateResult> {
     recordingIdSchema.parse(recordingId);
-    return apiClient.post(`/api/recordings/${recordingId}/translate`, {
-      targetLanguage: opts.targetLanguage,
+    return apiClient.request<TranslateResult>(`/api/recordings/${recordingId}/translate`, {
+      method: 'POST',
+      body: { targetLanguage: opts.targetLanguage },
+      timeoutMs: GENERATIVE_REQUEST_TIMEOUT_MS,
     });
   },
 
@@ -740,8 +910,10 @@ export const recordingsApi = {
     opts: { mode: 'visit_summary' }
   ): Promise<EmailDraftResult> {
     recordingIdSchema.parse(recordingId);
-    return apiClient.post(`/api/recordings/${recordingId}/email-draft`, {
-      mode: opts.mode,
+    return apiClient.request<EmailDraftResult>(`/api/recordings/${recordingId}/email-draft`, {
+      method: 'POST',
+      body: { mode: opts.mode },
+      timeoutMs: GENERATIVE_REQUEST_TIMEOUT_MS,
     });
   },
 };

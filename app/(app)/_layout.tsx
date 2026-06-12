@@ -4,12 +4,16 @@ import { useAuth } from '../../src/hooks/useAuth';
 import { View, Text, ActivityIndicator, Pressable, Alert } from 'react-native';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
 import { DeviceRegistrationBanner } from '../../src/components/DeviceRegistrationBanner';
+import { OfflineBanner } from '../../src/components/OfflineBanner';
+import { ACCOUNT_LOAD_ERROR_COPY } from '../../src/constants/strings';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { breadcrumb } from '../../src/lib/monitoring';
 
 const HALF_AUTH_TIMEOUT_MS = 30_000;
 
 export default function AppLayout() {
   const router = useRouter();
+  const colors = useThemeColors();
   const {
     isAuthenticated,
     isLoading,
@@ -98,8 +102,8 @@ export default function AppLayout() {
 
   if (isLoading) {
     return (
-      <View className="flex-1 justify-center items-center bg-stone-50">
-        <ActivityIndicator size="large" color="#0d8775" />
+      <View className="flex-1 justify-center items-center bg-surface">
+        <ActivityIndicator size="large" color={colors.brand500} />
       </View>
     );
   }
@@ -120,30 +124,30 @@ export default function AppLayout() {
   // on a shared tablet. Also avoids gated queries firing with the wrong scope.
   if (isHalfAuth && halfAuthTimedOut) {
     return (
-      <View className="flex-1 justify-center items-center bg-stone-50 px-8">
-        <Text className="text-2xl font-semibold text-stone-900 text-center mb-3">
+      <View className="flex-1 justify-center items-center bg-surface px-8">
+        <Text className="text-2xl font-semibold text-content-primary text-center mb-3">
           Still Loading Account
         </Text>
-        <Text className="text-base text-stone-600 text-center mb-8">
+        <Text className="text-base text-content-secondary text-center mb-8">
           We could not finish loading your account profile. Stay signed in and retry if this tablet may have unsent local recordings.
         </Text>
         <Pressable
           onPress={handleRetry}
           disabled={isRetrying}
-          className="w-full bg-[#0d8775] rounded-lg py-4 mb-3 items-center"
+          className="w-full bg-brand-500 rounded-lg py-4 mb-3 items-center"
           style={{ opacity: isRetrying ? 0.6 : 1 }}
         >
           {isRetrying ? (
-            <ActivityIndicator color="#ffffff" />
+            <ActivityIndicator color={colors.contentOnBrand} />
           ) : (
-            <Text className="text-white font-semibold text-base">Retry</Text>
+            <Text className="text-content-on-brand font-semibold text-base">Retry</Text>
           )}
         </Pressable>
         <Pressable
           onPress={handleSignOut}
-          className="w-full border border-stone-300 rounded-lg py-4 items-center"
+          className="w-full border border-border-strong rounded-lg py-4 items-center"
         >
-          <Text className="text-stone-700 font-medium text-base">Sign out</Text>
+          <Text className="text-content-body font-medium text-base">Sign out</Text>
         </Pressable>
       </View>
     );
@@ -151,16 +155,16 @@ export default function AppLayout() {
 
   if (!user && userFetchState !== 'error') {
     return (
-      <View className="flex-1 justify-center items-center bg-stone-50">
-        <ActivityIndicator size="large" color="#0d8775" />
+      <View className="flex-1 justify-center items-center bg-surface">
+        <ActivityIndicator size="large" color={colors.brand500} />
       </View>
     );
   }
 
   if (user && localRecoveryState === 'scanning') {
     return (
-      <View className="flex-1 justify-center items-center bg-stone-50">
-        <ActivityIndicator size="large" color="#0d8775" />
+      <View className="flex-1 justify-center items-center bg-surface">
+        <ActivityIndicator size="large" color={colors.brand500} />
       </View>
     );
   }
@@ -171,31 +175,36 @@ export default function AppLayout() {
   // storage unconfigured. Block with a recovery screen until the user picks.
   if (!user && userFetchState === 'error') {
     return (
-      <View className="flex-1 justify-center items-center bg-stone-50 px-8">
-        <Text className="text-2xl font-semibold text-stone-900 text-center mb-3">
-          Can&apos;t load your account
+      <View className="flex-1 justify-center items-center bg-surface px-8">
+        <Text className="text-2xl font-semibold text-content-primary text-center mb-3">
+          {ACCOUNT_LOAD_ERROR_COPY.title}
         </Text>
-        <Text className="text-base text-stone-600 text-center mb-8">
-          {userFetchError ?? 'Something went wrong while loading your account.'}
+        <Text className="text-base text-content-secondary text-center mb-8">
+          {ACCOUNT_LOAD_ERROR_COPY.body}
         </Text>
         <Pressable
           onPress={handleRetry}
           disabled={isRetrying}
-          className="w-full bg-[#0d8775] rounded-lg py-4 mb-3 items-center"
+          className="w-full bg-brand-500 rounded-lg py-4 mb-4 items-center"
           style={{ opacity: isRetrying ? 0.6 : 1 }}
         >
           {isRetrying ? (
-            <ActivityIndicator color="#ffffff" />
+            <ActivityIndicator color={colors.contentOnBrand} />
           ) : (
-            <Text className="text-white font-semibold text-base">Retry</Text>
+            <Text className="text-content-on-brand font-semibold text-base">{ACCOUNT_LOAD_ERROR_COPY.retry}</Text>
           )}
         </Pressable>
-        <Pressable
-          onPress={handleSignOut}
-          className="w-full border border-stone-300 rounded-lg py-4 items-center"
-        >
-          <Text className="text-stone-700 font-medium text-base">Sign out</Text>
+        <Pressable onPress={handleSignOut} className="py-3 px-4" style={{ minHeight: 44 }}>
+          <Text className="text-content-tertiary text-body-sm underline text-center">
+            {ACCOUNT_LOAD_ERROR_COPY.signOut}
+          </Text>
         </Pressable>
+        {userFetchError ? (
+          <Text className="text-caption text-content-tertiary text-center mt-6" numberOfLines={3}>
+            {ACCOUNT_LOAD_ERROR_COPY.detailsPrefix}
+            {userFetchError}
+          </Text>
+        ) : null}
       </View>
     );
   }
@@ -204,6 +213,7 @@ export default function AppLayout() {
     <AppLockGuard>
       <View style={{ flex: 1 }}>
         <DeviceRegistrationBanner />
+        <OfflineBanner />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
           {/* iOS interactive-pop swipe-back from screen edge intercepts the left

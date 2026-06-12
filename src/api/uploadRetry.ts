@@ -109,10 +109,57 @@ export const UPLOAD_TIMEOUT_MAX_MS = 1_800_000; // 30 min ceiling
 const UPLOAD_TIMEOUT_BASE_MS = 60_000; // connection/setup overhead
 const UPLOAD_THROUGHPUT_FLOOR_BPS = 50 * 1024; // 50 KB/s worst-case sustained
 
-export function uploadTimeoutMs(fileSizeBytes: number): number {
+export function uploadTimeoutMs(fileSizeBytes: number, parallelism = 1): number {
   const size = Number.isFinite(fileSizeBytes) && fileSizeBytes > 0 ? fileSizeBytes : 0;
-  const budget = UPLOAD_TIMEOUT_BASE_MS + Math.ceil(size / UPLOAD_THROUGHPUT_FLOOR_BPS) * 1000;
+  // Concurrent PUTs share the link, so each lane's worst-case sustained
+  // throughput shrinks proportionally. Only createWithSegments passes > 1;
+  // single-file uploads keep the original budget.
+  const lanes = Number.isFinite(parallelism) && parallelism > 1 ? parallelism : 1;
+  const budget = UPLOAD_TIMEOUT_BASE_MS + Math.ceil(size / (UPLOAD_THROUGHPUT_FLOOR_BPS / lanes)) * 1000;
   return Math.min(UPLOAD_TIMEOUT_MAX_MS, Math.max(UPLOAD_TIMEOUT_MIN_MS, budget));
+}
+
+/**
+ * Run `total` indexed tasks with at most `concurrency` in flight.
+ * Abort-on-first-failure: no NEW tasks start after a failure; in-flight tasks
+ * settle on their own (each upload already bounds itself via timeout +
+ * cancelAsync), and the first error is rethrown with its identity — and
+ * phase tag — intact. Workers themselves never reject, so a mid-pool failure
+ * can't leave an unhandled rejection (CLAUDE.md rule 4).
+ */
+export async function runWithConcurrency(
+  total: number,
+  concurrency: number,
+  task: (index: number) => Promise<void>,
+): Promise<void> {
+  if (!Number.isInteger(total) || total <= 0) return;
+  let next = 0;
+  let aborted = false;
+  let hasError = false;
+  let firstError: unknown;
+
+  const worker = async (): Promise<void> => {
+    while (!aborted) {
+      const i = next++;
+      if (i >= total) return;
+      try {
+        await task(i);
+      } catch (err) {
+        if (!hasError) {
+          hasError = true;
+          firstError = err;
+        }
+        aborted = true;
+        return;
+      }
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(concurrency, total));
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < workerCount; w++) workers.push(worker());
+  await Promise.all(workers);
+  if (hasError) throw firstError;
 }
 
 /**

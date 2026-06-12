@@ -9,6 +9,8 @@ export type RecordingStatus =
   | 'failed'
   | 'pending_metadata';
 
+export type ReviewStatus = 'needs_review' | 'reviewed';
+
 export interface CostBreakdown {
   transcriptionCostCents: number;
   generationCostCents: number;
@@ -53,21 +55,58 @@ export interface Recording {
   exportedAt: string | null;
   exportedTo: string | null;
   exportedBy: { id: string; fullName: string } | null;
+  reviewStatus?: ReviewStatus | null;
+  reviewedAt?: string | null;
+  reviewedBy?: { id: string; fullName: string } | null;
   costBreakdown: CostBreakdown | null;
   importSource: 'google_drive' | null;
+  aiExtractedMetadata?: AiExtractedMetadata | null;
+  needsMetadataReview?: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+export type AppointmentType = 'Wellness Exam' | 'Sick Visit' | 'Urgent/Emergency' | 'Follow-up';
+
 export interface CreateRecording {
   pimsPatientId?: string;
   patientName: string;
-  clientName: string;
-  species: string;
-  breed?: string;
-  appointmentType?: string;
+  clientName?: string | null;
+  species?: string | null;
+  breed?: string | null;
+  appointmentType?: AppointmentType | '' | null;
   templateId?: string;
   foreignLanguage?: boolean;
+}
+
+export type RecordingMetadataField =
+  | 'patientName'
+  | 'clientName'
+  | 'species'
+  | 'breed'
+  | 'appointmentType';
+
+export type MetadataReviewState = 'none' | 'unconfirmed' | 'confirmed' | 'dismissed';
+
+export interface AiExtractedMetadataField {
+  value: string;
+  confidence?: number;
+}
+
+export interface AiExtractedMetadata {
+  extractedAt?: string;
+  model?: string;
+  fields?: Partial<Record<RecordingMetadataField, AiExtractedMetadataField>>;
+  appliedFields?: RecordingMetadataField[];
+  multiplePatientsDetected?: boolean;
+  review?: MetadataReviewState;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+}
+
+export interface UpdateRecordingMetadata {
+  fields?: Partial<Record<RecordingMetadataField, string | null>>;
+  review?: 'confirmed' | 'dismissed';
 }
 
 export interface Patient {
@@ -151,6 +190,7 @@ export interface User {
   role: string;
   organizationId: string;
   avatarUrl: string | null;
+  capabilities?: string[];
 }
 
 export interface TemplateSection {

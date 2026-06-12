@@ -12,9 +12,10 @@ import Animated, {
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
-import { Mic, X, Plus, Scissors, Trash2, Check } from 'lucide-react-native';
+import { Mic, X, Plus, Scissors, Trash2, Check, ChevronDown, ChevronUp } from 'lucide-react-native';
 import { PatientForm } from './PatientForm';
 import { AudioWaveform } from './AudioWaveform';
+import { RecorderLiveReadout } from './RecorderLiveReadout';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
@@ -22,6 +23,7 @@ import type { PatientSlot } from '../types/multiPatient';
 import type { CreateRecording, Template } from '../types';
 import type { UseAudioRecorderReturn } from '../hooks/useAudioRecorder';
 import { useResponsive } from '../hooks/useResponsive';
+import { useThemeColors } from '../hooks/useThemeColors';
 import { patientsApi } from '../api/patients';
 import {
   LONG_RECORDING_WARNING_COPY,
@@ -50,6 +52,9 @@ interface PatientSlotCardProps {
   isFinishSaving: boolean;
   templates: Template[];
   templatesLoading: boolean;
+  defaultTemplateId?: string | null;
+  onSetDefaultTemplate?: (templateId: string) => void | Promise<void>;
+  defaultTemplateSaving?: boolean;
   width: number;
   // Slot-id parameterized so the parent can pass stable useCallback refs once
   // and React.memo on this component actually short-circuits re-renders during
@@ -65,6 +70,7 @@ interface PatientSlotCardProps {
   onSubmitSingle: (slotId: string) => void;
   onEditRecording: (slotId: string) => void;
   submitBlockedByLiveRecording: boolean;
+  recordFirstEnabled?: boolean;
 }
 
 function PulsingDot() {
@@ -98,7 +104,9 @@ function formatDuration(seconds: number) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-// WARNING: update the comparator below when adding new props
+// Shallow-memoized: the parent passes slot-id-parameterized stable callbacks,
+// and recorder ticks no longer re-render the parent (live metering/timer is
+// polled inside RecorderLiveReadout), so default prop equality is sufficient.
 export const PatientSlotCard = React.memo(function PatientSlotCard({
   slot,
   slotIndex,
@@ -109,6 +117,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   isFinishSaving,
   templates,
   templatesLoading,
+  defaultTemplateId,
+  onSetDefaultTemplate,
+  defaultTemplateSaving,
   width,
   onUpdateForm,
   onStart,
@@ -121,8 +132,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   onSubmitSingle,
   onEditRecording,
   submitBlockedByLiveRecording,
+  recordFirstEnabled = false,
 }: PatientSlotCardProps) {
   const { scale } = useResponsive();
+  const colors = useThemeColors();
   const recordBtnScale = useSharedValue(1);
   const recordBtnAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: recordBtnScale.value }],
@@ -157,6 +170,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   );
 
   const [pimsLookupLoading, setPimsLookupLoading] = React.useState(false);
+  const [detailsExpanded, setDetailsExpanded] = React.useState(!recordFirstEnabled);
   const lookupIdRef = React.useRef(0);
 
   const handlePimsBlur = React.useCallback(() => {
@@ -181,8 +195,15 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
   const hasRequiredFields =
     slot.formData.patientName.trim().length > 0 &&
-    slot.formData.clientName.trim().length > 0 &&
-    !!slot.formData.species &&
+    (slot.formData.clientName?.trim().length ?? 0) > 0 &&
+    (slot.formData.species?.trim().length ?? 0) > 0 &&
+    !!slot.formData.appointmentType;
+  const hasAnyPatientDetails =
+    !!slot.formData.pimsPatientId?.trim() ||
+    !!slot.formData.patientName.trim() ||
+    !!slot.formData.clientName?.trim() ||
+    !!slot.formData.species?.trim() ||
+    !!slot.formData.breed?.trim() ||
     !!slot.formData.appointmentType;
 
   // The slot's audio state determines what we show
@@ -195,12 +216,76 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const duration = isRecorderOwner
     ? previousSegmentsDuration + recorder.duration
     : slot.audioDuration;
-  const metering = isRecorderOwner ? recorder.metering : -160;
+
+  React.useEffect(() => {
+    if (!recordFirstEnabled) {
+      setDetailsExpanded(true);
+    }
+  }, [recordFirstEnabled]);
+
+  React.useEffect(() => {
+    if (recordFirstEnabled && audioState !== 'idle') {
+      setDetailsExpanded(false);
+    }
+  }, [audioState, recordFirstEnabled]);
 
   // Allow recording when idle (even with existing segments — for continuation)
-  const canStartRecording = hasRequiredFields && audioState === 'idle' && !recorder.isStarting && !isFinishSaving;
-  const showSubmitCard = hasRequiredFields && slot.segments.length > 0 && slot.uploadStatus !== 'success';
+  const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !recorder.isStarting && !isFinishSaving;
+  const showSubmitCard = (recordFirstEnabled || hasRequiredFields) && slot.segments.length > 0 && slot.uploadStatus !== 'success';
   const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading' && !isFinishSaving;
+  const patientForm = (
+    <PatientForm
+      formData={slot.formData}
+      onUpdate={handleUpdateForm}
+      templates={templates}
+      templatesLoading={templatesLoading}
+      defaultTemplateId={defaultTemplateId}
+      onSetDefaultTemplate={onSetDefaultTemplate}
+      defaultTemplateSaving={defaultTemplateSaving}
+      onPimsIdBlur={handlePimsBlur}
+      pimsLookupLoading={pimsLookupLoading}
+      recordFirstEnabled={recordFirstEnabled}
+    />
+  );
+  const formCard = recordFirstEnabled ? (
+    <Card className="mb-4">
+      <Pressable
+        onPress={() => setDetailsExpanded((current) => !current)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: detailsExpanded }}
+        accessibilityLabel="Add patient details"
+        className="flex-row items-center justify-between py-1"
+        hitSlop={8}
+      >
+        <View className="flex-1 pr-3">
+          <Text className="text-body-lg font-semibold text-content-primary">
+            Add patient details
+          </Text>
+          <Text className="text-body-sm text-content-tertiary mt-0.5">
+            Optional — AI will fill blanks from audio.
+          </Text>
+        </View>
+        {detailsExpanded ? (
+          <ChevronUp color={colors.contentTertiary} size={20} />
+        ) : (
+          <ChevronDown color={colors.contentTertiary} size={20} />
+        )}
+      </Pressable>
+      {detailsExpanded ? (
+        <View className="mt-4 pt-4 border-t border-border-default">
+          {patientForm}
+        </View>
+      ) : hasAnyPatientDetails ? (
+        <Text className="text-caption text-brand-600 mt-2">
+          Details added
+        </Text>
+      ) : null}
+    </Card>
+  ) : (
+    <Card className="mb-4">
+      {patientForm}
+    </Card>
+  );
 
   return (
     <ScrollView
@@ -211,7 +296,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     >
       {/* Patient header */}
       <View className="flex-row items-center justify-between mt-4 mb-3">
-        <Text className="text-body text-stone-500 flex-1">
+        <Text className="text-body text-content-tertiary flex-1">
           Patient {slotIndex + 1} of {totalSlots}
         </Text>
         {totalSlots > 1 && (
@@ -222,10 +307,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             accessibilityLabel={`Remove patient ${slotIndex + 1}`}
             className="flex-row items-center px-3 py-2 min-h-[44px] flex-shrink-0"
           >
-            <X color="#dc2626" size={16} style={{ flexShrink: 0 }} />
+            <X color={colors.danger600} size={16} style={{ flexShrink: 0 }} />
             {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
             <Text
-              className="text-body-sm text-danger-600 ml-1"
+              className="text-body-sm text-status-danger ml-1"
               allowFontScaling={false}
               style={{ flexShrink: 0, paddingRight: 2 }}
             >
@@ -235,21 +320,11 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         )}
       </View>
 
-      {/* Patient Form */}
-      <Card className="mb-4">
-        <PatientForm
-          formData={slot.formData}
-          onUpdate={handleUpdateForm}
-          templates={templates}
-          templatesLoading={templatesLoading}
-          onPimsIdBlur={handlePimsBlur}
-          pimsLookupLoading={pimsLookupLoading}
-        />
-      </Card>
+      {!recordFirstEnabled && formCard}
 
       {/* Recording Controls */}
       <Card className="mb-4 items-center">
-        <Text className="text-body-lg font-semibold text-stone-900 mb-3">Record</Text>
+        <Text className="text-body-lg font-semibold text-content-primary mb-3">Record</Text>
 
         {/* Status badge */}
         <View className="mb-4" accessibilityLiveRegion="polite">
@@ -271,25 +346,20 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           )}
         </View>
 
-        {/* Waveform or completion message */}
+        {/* Waveform or completion message. The owner branch polls the
+            recorder inside RecorderLiveReadout so metering/timer ticks
+            re-render that leaf only — never this card or the record screen. */}
         {isRecorderOwner ? (
-          <>
-            <AudioWaveform
-              isActive={isRecording || isPaused}
-              isPaused={isPaused}
-              metering={metering}
-            />
-            <Text
-              className={`text-timer font-bold mb-5 ${
-                isRecording ? 'text-brand-500' : 'text-stone-900'
-              }`}
-              style={styles.timerText}
-            >
-              {formatDuration(duration)}
-            </Text>
-          </>
+          <RecorderLiveReadout
+            getLiveStats={recorder.getLiveStats}
+            isLive={isRecording || isPaused}
+            isRecording={isRecording}
+            isPaused={isPaused}
+            baseDurationSeconds={previousSegmentsDuration}
+            fallbackDurationSeconds={recorder.duration}
+          />
         ) : isStopped ? (
-          <Text className="text-body text-stone-600 mb-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
+          <Text className="text-body text-content-secondary mb-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             {slot.segments.length > 1
               ? `${slot.segments.length} segments · ${formatDuration(slot.audioDuration)}`
               : formatDuration(slot.audioDuration)}
@@ -297,21 +367,21 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         ) : (
           <>
             <AudioWaveform isActive={false} />
-            <Text className="text-timer font-bold mb-5 text-stone-900" style={styles.timerText}>
+            <Text className="text-timer font-bold mb-5 text-content-primary" style={styles.timerText}>
               {formatDuration(duration)}
             </Text>
           </>
         )}
 
-        {/* Non-blocking warning for multi-hour recordings. Peak extraction scales with
-            FFmpeg seek cost on the edit path, which is slow on low-end Android (A7 Lite,
-            MediaTek P22T). No cap — staff sometimes legitimately need long sessions. */}
-        {duration >= LONG_RECORDING_WARNING_THRESHOLD_SEC && (
+        {/* Non-blocking warning for multi-hour recordings (non-owner cards;
+            the owner card's warning lives inside RecorderLiveReadout so it
+            appears during a live recording, not only after a transition). */}
+        {!isRecorderOwner && duration >= LONG_RECORDING_WARNING_THRESHOLD_SEC && (
           <View
-            className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 mb-4 self-stretch"
+            className="rounded-lg bg-status-warning border border-status-warning px-3 py-2 mb-4 self-stretch"
             accessibilityRole="alert"
           >
-            <Text className="text-caption text-amber-800 text-center">
+            <Text className="text-caption text-status-warning text-center">
               {LONG_RECORDING_WARNING_COPY.body}
             </Text>
           </View>
@@ -333,18 +403,18 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 disabled={!canStartRecording}
                 accessibilityRole="button"
                 accessibilityLabel={
-                  !hasRequiredFields
+                  !recordFirstEnabled && !hasRequiredFields
                     ? 'Enter patient name, client name, species, and appointment type first'
                     : recorderBusy
                       ? 'Start recording — will stop current recording first'
                       : 'Start recording'
                 }
                 className={`rounded-full justify-center items-center ${
-                  canStartRecording ? 'bg-brand-500' : 'bg-stone-300'
+                  canStartRecording ? 'bg-brand-500' : 'bg-border-strong'
                 }`}
                 style={[{ width: scale(80), height: scale(80) }, recordBtnAnimStyle]}
               >
-                <Mic color="#fff" size={scale(32)} />
+                <Mic color={canStartRecording ? colors.contentOnBrand : colors.contentTertiary} size={scale(32)} />
               </AnimatedPressable>
             </Animated.View>
           )}
@@ -353,7 +423,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           {isRecorderOwner && isRecording && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
               <Button variant="secondary" onPress={handlePause}>Pause</Button>
-              <Button variant="primary" onPress={handleStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
+              <Button variant="primary" onPress={handleStop} icon={<Check color={colors.contentOnBrand} size={16} />}>Finish</Button>
             </Animated.View>
           )}
 
@@ -361,14 +431,14 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           {isRecorderOwner && isPaused && (
             <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
               <Button variant="secondary" onPress={handleResume}>Resume</Button>
-              <Button variant="primary" onPress={handleStop} icon={<Check color="#fff" size={16} />}>Finish</Button>
+              <Button variant="primary" onPress={handleStop} icon={<Check color={colors.contentOnBrand} size={16} />}>Finish</Button>
             </Animated.View>
           )}
 
           {/* Paused but not recorder owner: let user continue or start over */}
           {isPaused && !isRecorderOwner && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
-              <Button variant="primary" onPress={handleContinueRecording} icon={<Plus color="#fff" size={18} />}>Continue Recording</Button>
+              <Button variant="primary" onPress={handleContinueRecording} icon={<Plus color={colors.contentOnBrand} size={18} />}>Continue Recording</Button>
               {hasSegments && (
                 <Pressable
                   onPress={handleRecordAgain}
@@ -377,8 +447,15 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   className="min-h-[44px] justify-center items-center"
                 >
                   <View className="flex-row items-center gap-1.5">
-                    <Trash2 color="#a8a29e" size={14} />
-                    <Text className="text-body-sm text-stone-400">Delete & Start Over</Text>
+                    <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
+                    {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
+                    <Text
+                      className="text-body-sm text-content-tertiary"
+                      allowFontScaling={false}
+                      style={{ flexShrink: 0, paddingRight: 2 }}
+                    >
+                      {'Delete & Start Over '}
+                    </Text>
                   </View>
                 </Pressable>
               )}
@@ -387,17 +464,17 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
           {/* Stopped with segments: continue, edit, or discard */}
           {isStopped && hasSegments && isFinishSaving && (
-            <Text className="text-body-sm text-stone-500 text-center" accessibilityLiveRegion="polite">
+            <Text className="text-body-sm text-content-tertiary text-center" accessibilityLiveRegion="polite">
               Saving recording...
             </Text>
           )}
 
           {isStopped && hasSegments && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
-              <Button variant="primary" size="lg" onPress={handleContinueRecording} icon={<Plus color="#fff" size={18} />}>
+              <Button variant="primary" size="lg" onPress={handleContinueRecording} icon={<Plus color={colors.contentOnBrand} size={18} />}>
                 Continue Recording
               </Button>
-              <Button variant="secondary" onPress={handleEditRecording} icon={<Scissors color="#1c1917" size={16} />}>
+              <Button variant="secondary" onPress={handleEditRecording} icon={<Scissors color={colors.contentPrimary} size={16} />}>
                 Edit Recording
               </Button>
               <Pressable
@@ -407,8 +484,15 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 className="min-h-[44px] justify-center items-center"
               >
                 <View className="flex-row items-center gap-1.5">
-                  <Trash2 color="#a8a29e" size={14} />
-                  <Text className="text-body-sm text-stone-400">Delete & Start Over</Text>
+                  <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
+                  {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
+                  <Text
+                    className="text-body-sm text-content-tertiary"
+                    allowFontScaling={false}
+                    style={{ flexShrink: 0, paddingRight: 2 }}
+                  >
+                    {'Delete & Start Over '}
+                  </Text>
                 </View>
               </Pressable>
             </Animated.View>
@@ -423,7 +507,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         </View>
 
         {isStopped && hasSegments && !isRecorderOwner && !isFinishSaving && (
-          <Text className="text-caption text-stone-400 mt-2" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
+          <Text className="text-caption text-content-tertiary mt-2" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             Processing usually takes 1-2 minutes.
           </Text>
         )}
@@ -436,22 +520,24 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         )}
       </Card>
 
+      {recordFirstEnabled && formCard}
+
       {/* Per-patient Submit */}
       {showSubmitCard && (
         <Animated.View entering={FadeInUp.duration(300)}>
           <Card className="mb-4">
-            <Text className="text-body-lg font-semibold text-stone-900 mb-2">Submit</Text>
-            <Text className="text-body-sm text-stone-500 mb-4">
+            <Text className="text-body-lg font-semibold text-content-primary mb-2">Submit</Text>
+            <Text className="text-body-sm text-content-tertiary mb-4">
               Upload this patient&apos;s recording and generate a SOAP note.
             </Text>
 
             {submitBlockedByLiveRecording && (
               <View
-                className="mb-4 p-3 rounded-lg bg-warning-50"
+                className="mb-4 p-3 rounded-lg bg-status-warning"
                 accessibilityRole="alert"
                 accessibilityLiveRegion="polite"
               >
-                <Text className="text-body-sm text-warning-700">
+                <Text className="text-body-sm text-status-warning">
                   Finish or discard the active recording segment before submitting.
                 </Text>
               </View>
@@ -466,12 +552,12 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 accessibilityLiveRegion="polite"
               >
                 <View className="flex-row justify-between mb-1.5">
-                  <Text className="text-caption font-medium text-stone-700">
+                  <Text className="text-caption font-medium text-content-body">
                     {slot.uploadProgress < 10 ? 'Preparing...' : slot.uploadProgress >= 95 ? 'Processing...' : 'Uploading...'}
                   </Text>
-                  <Text className="text-caption text-stone-500">{slot.uploadProgress}%</Text>
+                  <Text className="text-caption text-content-tertiary">{slot.uploadProgress}%</Text>
                 </View>
-                <View className="h-2.5 rounded-full bg-stone-100 overflow-hidden">
+                <View className="h-2.5 rounded-full bg-surface-sunken overflow-hidden">
                   <View
                     className="h-full rounded-full bg-brand-500"
                     style={{ width: `${slot.uploadProgress}%` }}
@@ -482,11 +568,11 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
             {slot.uploadStatus === 'error' && slot.uploadError && (
               <View
-                className="mb-4 p-3 rounded-lg bg-danger-50"
+                className="mb-4 p-3 rounded-lg bg-status-danger"
                 accessibilityRole="alert"
                 accessibilityLiveRegion="assertive"
               >
-                <Text className="text-body-sm text-danger-700">{slot.uploadError}</Text>
+                <Text className="text-body-sm text-status-danger">{slot.uploadError}</Text>
               </View>
             )}
 
@@ -509,7 +595,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         <Animated.View entering={FadeIn.duration(300)} accessibilityLiveRegion="polite">
           <Card className="mb-4 items-center" accessibilityRole="alert">
             <Badge variant="success">Uploaded Successfully</Badge>
-            <Text className="text-body-sm text-stone-500 mt-2 text-center">
+            <Text className="text-body-sm text-content-tertiary mt-2 text-center">
               SOAP note is being generated. You can check the status in your recordings list.
             </Text>
           </Card>

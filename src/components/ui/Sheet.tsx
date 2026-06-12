@@ -2,8 +2,9 @@ import React from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
+import { useThemeColors } from '../../hooks/useThemeColors';
 import { IconButton } from './IconButton';
-import { cx, runMaybeAsync, UI_COLORS } from './styles';
+import { cx, runMaybeAsync } from './styles';
 
 interface SheetProps {
   visible: boolean;
@@ -31,6 +32,7 @@ export function Sheet({
   contentClassName,
 }: SheetProps) {
   const insets = useSafeAreaInsets();
+  const colors = useThemeColors();
 
   const close = () => {
     runMaybeAsync('Sheet onClose', onClose);
@@ -44,7 +46,7 @@ export function Sheet({
       onRequestClose={close}
       statusBarTranslucent
     >
-      <View className="flex-1 justify-end bg-black/40">
+      <View className="flex-1 justify-end bg-scrim">
         {closeOnBackdropPress ? (
           <Pressable
             className="absolute inset-0"
@@ -54,21 +56,21 @@ export function Sheet({
           />
         ) : null}
         <View
-          className={cx('bg-white rounded-t-2xl border border-stone-200 max-h-[86%]', className)}
+          className={cx('bg-surface-raised rounded-t-2xl border border-border-default max-h-[86%]', className)}
           style={{ paddingBottom: Math.max(insets.bottom, 12) }}
           accessibilityViewIsModal
         >
-          <View className="flex-row items-start px-5 pt-5 pb-3 border-b border-stone-200">
+          <View className="flex-row items-start px-5 pt-5 pb-3 border-b border-border-default">
             <View className="flex-1 mr-3">
               {title ? (
-                <Text className="text-heading font-bold text-stone-900">{title}</Text>
+                <Text className="text-heading font-bold text-content-primary">{title}</Text>
               ) : null}
               {description ? (
-                <Text className="text-body-sm text-stone-500 mt-1">{description}</Text>
+                <Text className="text-body-sm text-content-tertiary mt-1">{description}</Text>
               ) : null}
             </View>
             <IconButton
-              icon={<X color={UI_COLORS.stoneDark} size={20} />}
+              icon={<X color={colors.contentPrimary} size={20} />}
               label={closeLabel}
               onPress={close}
               size="sm"
@@ -76,7 +78,7 @@ export function Sheet({
             />
           </View>
           <ScrollView className={cx('px-5 py-3', contentClassName)}>{children}</ScrollView>
-          {footer ? <View className="px-5 pt-3 border-t border-stone-200">{footer}</View> : null}
+          {footer ? <View className="px-5 pt-3 border-t border-border-default">{footer}</View> : null}
         </View>
       </View>
     </Modal>

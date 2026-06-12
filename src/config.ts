@@ -133,6 +133,17 @@ export const POSTHOG_KEY = process.env.EXPO_PUBLIC_POSTHOG_KEY || '';
 export const POSTHOG_HOST =
   process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
 
+// Account/support links. Optional env overrides keep white-label/staging builds
+// flexible; missing values must never block app startup.
+export const HELP_CENTER_URL =
+  process.env.EXPO_PUBLIC_HELP_CENTER_URL || 'https://www.captivet.com/help';
+export const SUPPORT_CONTACT_URL =
+  process.env.EXPO_PUBLIC_SUPPORT_CONTACT_URL || 'mailto:support@captivet.com';
+export const TERMS_URL =
+  process.env.EXPO_PUBLIC_TERMS_URL || 'https://www.captivet.com/terms';
+export const PRIVACY_POLICY_URL =
+  process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL || 'https://www.captivet.com/privacy-policy';
+
 export const CONFIG_MISSING = configErrors.length > 0;
 
 if (CONFIG_MISSING) {

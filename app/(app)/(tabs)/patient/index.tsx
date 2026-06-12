@@ -6,6 +6,7 @@ import Animated, { FadeInRight } from 'react-native-reanimated';
 import { User } from 'lucide-react-native';
 import { patientsApi } from '../../../../src/api/patients';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
+import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { PatientRow } from '../../../../src/components/PatientRow';
 import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
@@ -15,6 +16,7 @@ const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
 
 export default function PatientListScreen() {
+  const colors = useThemeColors();
   const { iconSm, iconLg } = useResponsive();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -85,7 +87,7 @@ export default function PatientListScreen() {
       <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
         <View className="px-5 pt-5 pb-0">
           <Text
-            className="text-display font-bold text-stone-900 mb-4"
+            className="text-display font-bold text-content-primary mb-4"
             accessibilityRole="header"
           >
             Patients
@@ -93,20 +95,20 @@ export default function PatientListScreen() {
 
           {/* Search */}
           <View
-            className={`flex-row items-center bg-white border rounded-input px-3 mb-4 ${
-              isFocused ? 'border-brand-500' : 'border-stone-300'
+            className={`flex-row items-center bg-surface-raised border rounded-input px-3 mb-4 ${
+              isFocused ? 'border-brand-500' : 'border-border-strong'
             }`}
           >
-            <User color="#78716c" size={iconSm} />
+            <User color={colors.contentTertiary} size={iconSm} />
             <TextInput
               value={search}
               onChangeText={setSearch}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
               placeholder="Search by patient name..."
-              placeholderTextColor="#78716c"
+              placeholderTextColor={colors.contentTertiary}
               accessibilityLabel="Search patients by name"
-              className="flex-1 p-3 text-body text-stone-900"
+              className="flex-1 p-3 text-body text-content-primary"
             />
           </View>
         </View>
@@ -135,7 +137,7 @@ export default function PatientListScreen() {
           ListFooterComponent={
             isFetchingNextPage ? (
               <View className="py-4 items-center">
-                <ActivityIndicator size="small" color="#0d8775" />
+                <ActivityIndicator size="small" color={colors.brand500} />
               </View>
             ) : null
           }
@@ -149,7 +151,7 @@ export default function PatientListScreen() {
             ) : isError ? (
               <EmptyState
                 icon={User}
-                iconColor="#dc2626"
+                iconColor={colors.danger600}
                 iconSize={iconLg}
                 description="Could not load patients."
                 action={{

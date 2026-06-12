@@ -1,9 +1,10 @@
 import React from 'react';
 import { Text, View } from 'react-native';
 import { type LucideIcon } from 'lucide-react-native';
+import { useThemeColors } from '../../hooks/useThemeColors';
 import { Button } from './Button';
 import { Card } from './Card';
-import { cx, UI_COLORS } from './styles';
+import { cx } from './styles';
 
 interface EmptyStateAction {
   label: string;
@@ -32,25 +33,27 @@ export function EmptyState({
   action,
   secondaryAction,
   contained = false,
-  iconColor = UI_COLORS.stone,
+  iconColor,
   iconSize = 32,
   className,
 }: EmptyStateProps) {
+  const colors = useThemeColors();
+  const resolvedIconColor = iconColor ?? colors.stone500;
   const renderedIcon = icon
     ? React.isValidElement(icon)
       ? icon
-      : React.createElement(icon as LucideIcon, { color: iconColor, size: iconSize })
+      : React.createElement(icon as LucideIcon, { color: resolvedIconColor, size: iconSize })
     : null;
 
   const content = (
     <View className={cx('items-center py-6', className)}>
       {renderedIcon}
       {title ? (
-        <Text className="text-body font-semibold text-stone-900 mt-3 text-center">
+        <Text className="text-body font-semibold text-content-primary mt-3 text-center">
           {title}
         </Text>
       ) : null}
-      <Text className="text-body text-stone-500 mt-3 text-center">{description}</Text>
+      <Text className="text-body text-content-tertiary mt-3 text-center">{description}</Text>
       {details ? <View className="mt-2">{details}</View> : null}
       {action || secondaryAction ? (
         <View className="mt-4 flex-row gap-3">

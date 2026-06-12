@@ -6,6 +6,7 @@ import * as Haptics from 'expo-haptics';
 import { useAuth } from '../hooks/useAuth';
 import { useResponsive } from '../hooks/useResponsive';
 import { useDeviceCapacity } from '../hooks/useDeviceCapacity';
+import { useThemeColors } from '../hooks/useThemeColors';
 import { devicesApi, type DeviceSession } from '../api/devices';
 import { Button } from './ui/Button';
 
@@ -64,6 +65,7 @@ export function DeviceLimitModal() {
     retryDeviceRegistration,
   } = useAuth();
   const { iconMd, iconSm } = useResponsive();
+  const colors = useThemeColors();
   const queryClient = useQueryClient();
   const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity();
   const [revokingId, setRevokingId] = useState<string | null>(null);
@@ -178,23 +180,23 @@ export function DeviceLimitModal() {
       onRequestClose={handleDismiss}
     >
       <View
-        className="flex-1 bg-black/50 justify-center items-center p-5"
+        className="flex-1 bg-scrim justify-center items-center p-5"
         accessibilityViewIsModal
       >
-        <View className="w-full max-w-[420px] bg-white rounded-card overflow-hidden">
+        <View className="w-full max-w-[420px] bg-surface-raised rounded-card overflow-hidden">
           {/* Header */}
-          <View className="flex-row items-start p-5 border-b border-stone-200">
-            <View className="w-10 h-10 rounded-full bg-danger-100 justify-center items-center mr-3">
-              <ShieldAlert color="#b91c1c" size={iconMd} />
+          <View className="flex-row items-start p-5 border-b border-border-default">
+            <View className="w-10 h-10 rounded-full bg-status-danger justify-center items-center mr-3">
+              <ShieldAlert color={colors.statusDangerFg} size={iconMd} />
             </View>
             <View className="flex-1">
               <Text
-                className="text-heading font-bold text-stone-900"
+                className="text-heading font-bold text-content-primary"
                 accessibilityRole="header"
               >
                 Device limit reached
               </Text>
-              <Text className="text-body-sm text-stone-600 mt-1">
+              <Text className="text-body-sm text-content-secondary mt-1">
                 {capacity
                   ? `${capacity.count} of ${capacity.limit} devices in use. Remove one to register this device.`
                   : `Remove one device to register this one.`}
@@ -208,7 +210,7 @@ export function DeviceLimitModal() {
               hitSlop={8}
               className="ml-2"
             >
-              <X color={isBusy ? '#d6d3d1' : '#78716c'} size={iconSm} />
+              <X color={isBusy ? colors.borderStrong : colors.contentTertiary} size={iconSm} />
             </Pressable>
           </View>
 
@@ -219,7 +221,7 @@ export function DeviceLimitModal() {
           >
             {existingDevices.length === 0 ? (
               <View className="p-5 items-center">
-                <Text className="text-body text-stone-600 text-center mb-3">
+                <Text className="text-body text-content-secondary text-center mb-3">
                   No other devices are registered to this account. The slot
                   may have been freed elsewhere — try registering again.
                 </Text>
@@ -231,7 +233,7 @@ export function DeviceLimitModal() {
                 >
                   {retrying ? 'Retrying…' : 'Retry Registration'}
                 </Button>
-                <Text className="text-caption text-stone-400 text-center mt-3">
+                <Text className="text-caption text-content-tertiary text-center mt-3">
                   Still blocked? Ask an admin to raise the device limit for
                   your account.
                 </Text>
@@ -247,18 +249,18 @@ export function DeviceLimitModal() {
                     key={device.id}
                     className="flex-row items-center px-5 py-3"
                   >
-                    <View className="w-9 h-9 rounded-full bg-stone-100 justify-center items-center mr-3">
-                      <Icon color="#0d8775" size={iconSm} />
+                    <View className="w-9 h-9 rounded-full bg-surface-sunken justify-center items-center mr-3">
+                      <Icon color={colors.brand500} size={iconSm} />
                     </View>
                     <View className="flex-1">
-                      <Text className="text-body font-semibold text-stone-900">
+                      <Text className="text-body font-semibold text-content-primary">
                         {device.deviceName || typeLabel}
                       </Text>
-                      <Text className="text-caption text-stone-500 mt-0.5">
+                      <Text className="text-caption text-content-tertiary mt-0.5">
                         {typeLabel}
                         {device.appVersion ? ` · v${device.appVersion}` : ''}
                       </Text>
-                      <Text className="text-caption text-stone-400 mt-0.5">
+                      <Text className="text-caption text-content-tertiary mt-0.5">
                         Last active {formatRelativeTime(device.lastSeenAt)}
                       </Text>
                     </View>
@@ -274,10 +276,10 @@ export function DeviceLimitModal() {
                       <Text
                         className={`text-body-sm font-semibold ${
                           otherBusy
-                            ? 'text-stone-300'
+                            ? 'text-content-tertiary'
                             : isThisRowBusy
-                              ? 'text-stone-400'
-                              : 'text-danger-500'
+                              ? 'text-content-tertiary'
+                              : 'text-status-danger'
                         }`}
                         allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
@@ -292,8 +294,8 @@ export function DeviceLimitModal() {
           </ScrollView>
 
           {/* Footer */}
-          <View className="px-5 py-3 border-t border-stone-200">
-            <Text className="text-caption text-stone-500 text-center">
+          <View className="px-5 py-3 border-t border-border-default">
+            <Text className="text-caption text-content-tertiary text-center">
               {retrying
                 ? 'Reconnecting this device…'
                 : 'Revoking a device will sign it out everywhere.'}

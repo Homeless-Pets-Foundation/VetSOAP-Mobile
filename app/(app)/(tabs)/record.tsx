@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList, AppState } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
@@ -10,7 +10,7 @@ import { safeDeleteFile, safeDeleteDirectory, fileExists } from '../../../src/li
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
 import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
-import { OVERSIZED_CONFIRM_COPY, SILENT_CHECK_COPY } from '../../../src/constants/strings';
+import { OVERSIZED_CONFIRM_COPY, SILENT_CHECK_COPY, TEMPLATE_DEFAULT_COPY } from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { stashStorage } from '../../../src/lib/stashStorage';
@@ -26,6 +26,7 @@ import { useAuth } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
 import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
 import { useResponsive } from '../../../src/hooks/useResponsive';
+import { useThemeColors } from '../../../src/hooks/useThemeColors';
 import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { recordingsApi, getUploadPhase, isTransientUploadError } from '../../../src/api/recordings';
@@ -36,8 +37,10 @@ import { breadcrumb, captureException } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
+import { recordingActivity } from '../../../src/lib/recordingActivity';
 import { recordSubmitAttempt } from '../../../src/lib/submitTiming';
 import { setSessionActivity } from '../../../src/lib/sessionActivity';
+import { templatePreference } from '../../../src/lib/templatePreference';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -55,6 +58,7 @@ import type { CreateRecording } from '../../../src/types';
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
   const { scale } = useResponsive();
+  const colors = useThemeColors();
   const [requesting, setRequesting] = useState(false);
 
   const handleRequest = () => {
@@ -92,15 +96,15 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
     <ScreenContainer>
       <View className="flex-1 justify-center items-center px-6">
         <View
-          className="bg-brand-50 rounded-full justify-center items-center mb-6"
+          className="bg-brand-50 dark:bg-surface-sunken rounded-full justify-center items-center mb-6"
           style={{ width: scale(96), height: scale(96) }}
         >
-          <Mic color="#0d8775" size={scale(40)} />
+          <Mic color={colors.brand500} size={scale(40)} />
         </View>
-        <Text className="text-display font-bold text-stone-900 text-center mb-3">
+        <Text className="text-display font-bold text-content-primary text-center mb-3">
           Microphone Access
         </Text>
-        <Text className="text-body text-stone-500 text-center mb-8">
+        <Text className="text-body text-content-tertiary text-center mb-8">
           Captivet needs microphone permission to record veterinary appointments and generate SOAP notes.
         </Text>
         <Button
@@ -134,20 +138,21 @@ function isExpectedSubmitApiFailure(error: unknown): boolean {
 function RecordingRoleGate() {
   const router = useRouter();
   const { scale } = useResponsive();
+  const colors = useThemeColors();
 
   return (
     <ScreenContainer>
       <View className="flex-1 justify-center items-center px-6">
         <View
-          className="bg-stone-100 rounded-full justify-center items-center mb-6"
+          className="bg-surface-sunken rounded-full justify-center items-center mb-6"
           style={{ width: scale(96), height: scale(96) }}
         >
-          <Mic color="#78716c" size={scale(40)} />
+          <Mic color={colors.contentTertiary} size={scale(40)} />
         </View>
-        <Text className="text-display font-bold text-stone-900 text-center mb-3">
+        <Text className="text-display font-bold text-content-primary text-center mb-3">
           {RECORD_APPOINTMENT_PERMISSION_TITLE}
         </Text>
-        <Text className="text-body text-stone-500 text-center mb-8">
+        <Text className="text-body text-content-tertiary text-center mb-8">
           {RECORD_APPOINTMENT_PERMISSION_MESSAGE}
         </Text>
         <Button
@@ -199,6 +204,15 @@ type SilenceCheckReason =
   | 'missing_metering_long_recording'
   | 'ffmpeg_timeout'
   | 'ffmpeg_error';
+
+function countBlankRecordFirstFields(formData: CreateRecording): number {
+  return [
+    formData.patientName,
+    formData.clientName,
+    formData.species,
+    formData.appointmentType,
+  ].filter((value) => !String(value ?? '').trim()).length;
+}
 
 async function checkSilentAudio(slot: PatientSlot): Promise<{
   silent: boolean;
@@ -311,9 +325,19 @@ function RecordingSession() {
   const navigation = useNavigation();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
   const recorder = useAudioRecorder();
   const { width: screenWidth } = useWindowDimensions();
   const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
+  const [preferredTemplateId, setPreferredTemplateId] = useState<string | null | undefined>(undefined);
+  const [defaultTemplateSavingId, setDefaultTemplateSavingId] = useState<string | null>(null);
+  const effectiveDefaultTemplate = useMemo(() => {
+    if (preferredTemplateId === undefined) return null;
+    if (preferredTemplateId) {
+      return templates.find((template) => template.id === preferredTemplateId) ?? defaultTemplate;
+    }
+    return defaultTemplate;
+  }, [defaultTemplate, preferredTemplateId, templates]);
 
   const {
     state: session,
@@ -333,7 +357,7 @@ function RecordingSession() {
     restoreSession,
     replaceAllSegments,
     dispatch,
-  } = useMultiPatientSession(defaultTemplate?.id);
+  } = useMultiPatientSession(effectiveDefaultTemplate?.id);
 
   // Always-current mirror of `session`. Callbacks that need fresh state at
   // invocation time read from `sessionRef.current` and drop `session.*` from
@@ -588,13 +612,58 @@ function RecordingSession() {
     };
   }, []);
 
-  // Auto-select default template for first slot once templates load
   useEffect(() => {
-    if (defaultTemplate && session.slots.length === 1 && !session.slots[0].formData.templateId) {
-      updateForm(session.slots[0].id, 'templateId', defaultTemplate.id);
+    let cancelled = false;
+    if (!user?.id) {
+      setPreferredTemplateId(null);
+      return;
+    }
+    setPreferredTemplateId(undefined);
+    templatePreference
+      .getDefaultTemplateId(user.id)
+      .then((templateId) => {
+        if (!cancelled) setPreferredTemplateId(templateId);
+      })
+      .catch(() => {
+        if (!cancelled) setPreferredTemplateId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  const handleSetDefaultTemplate = useCallback(
+    async (templateId: string) => {
+      if (!user?.id) return;
+      setDefaultTemplateSavingId(templateId);
+      try {
+        const saved = await templatePreference.setDefaultTemplateId(user.id, templateId);
+        if (!saved) {
+          Alert.alert(TEMPLATE_DEFAULT_COPY.saveFailed.title, TEMPLATE_DEFAULT_COPY.saveFailed.body);
+          return;
+        }
+        setPreferredTemplateId(templateId);
+        const template = templates.find((item) => item.id === templateId);
+        trackEvent({
+          name: 'template_default_set',
+          props: { template_kind: template?.isDefault ? 'org_default' : 'custom' },
+        });
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      } finally {
+        setDefaultTemplateSavingId(null);
+      }
+    },
+    [templates, user?.id]
+  );
+
+  // Auto-select default template for first slot once templates + user pref load
+  useEffect(() => {
+    if (templatesLoading || preferredTemplateId === undefined) return;
+    if (effectiveDefaultTemplate && session.slots.length === 1 && !session.slots[0].formData.templateId) {
+      updateForm(session.slots[0].id, 'templateId', effectiveDefaultTemplate.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only run when defaultTemplate loads, not on every slot/form change
-  }, [defaultTemplate]);
+  }, [templatesLoading, preferredTemplateId, effectiveDefaultTemplate?.id]);
 
   // Effect: capture audio URI when recorder transitions to stopped while bound to a slot
   useEffect(() => {
@@ -713,6 +782,18 @@ function RecordingSession() {
       }
     });
   }, [session.recorderBoundToSlotId, session.slots, setAudioState]);
+
+  // Publish recorder ownership to the module-level recordingActivity flag so
+  // RecordingAudioPlayer (detail screen) won't reconfigure the audio session
+  // out of recording mode while a session is live (1C collision guard). The
+  // Record tab stays mounted across navigations, so this effect is the single
+  // authoritative writer; cleanup covers unmount mid-recording.
+  useEffect(() => {
+    recordingActivity.setActive(session.recorderBoundToSlotId !== null);
+    return () => {
+      recordingActivity.setActive(false);
+    };
+  }, [session.recorderBoundToSlotId]);
 
   // Effect: handle audio session interruptions (incoming call, Siri, headphones).
   //
@@ -1087,6 +1168,15 @@ function RecordingSession() {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
           bindRecorder(slotId);
           await recorder.start();
+          if (recordFirstEnabled) {
+            const slot = sessionRef.current.slots.find((s) => s.id === slotId);
+            if (slot && slot.segments.length === 0) {
+              trackEvent({
+                name: 'recording_started_blank_fields',
+                props: { blank_field_count: countBlankRecordFirstFields(slot.formData) },
+              });
+            }
+          }
           recordingSegmentStartedAtMsRef.current = Date.now();
           setAudioState(slotId, 'recording');
         } catch (error) {
@@ -1105,7 +1195,7 @@ function RecordingSession() {
         startInFlightRef.current = false;
       });
     },
-    [recorder, bindRecorder, unbindRecorder, setAudioState]
+    [recorder, bindRecorder, unbindRecorder, setAudioState, recordFirstEnabled]
   );
 
   // Keep the ref in sync for the effect
@@ -2861,6 +2951,9 @@ function RecordingSession() {
           isFinishSaving={finishingDraftSlotId === item.id}
           templates={templates}
           templatesLoading={templatesLoading}
+          defaultTemplateId={effectiveDefaultTemplate?.id ?? null}
+          onSetDefaultTemplate={handleSetDefaultTemplate}
+          defaultTemplateSaving={defaultTemplateSavingId === item.formData.templateId}
           width={screenWidth}
           onUpdateForm={handleUpdateForm}
           onStart={handleStart}
@@ -2873,6 +2966,7 @@ function RecordingSession() {
           onSubmitSingle={handleSubmitSingle}
           onEditRecording={handleEditRecording}
           submitBlockedByLiveRecording={slotHasLiveRecorder(item)}
+          recordFirstEnabled={recordFirstEnabled}
         />
       );
     },
@@ -2883,6 +2977,9 @@ function RecordingSession() {
       recorderBusy,
       templates,
       templatesLoading,
+      effectiveDefaultTemplate?.id,
+      handleSetDefaultTemplate,
+      defaultTemplateSavingId,
       screenWidth,
       handleUpdateForm,
       handleStart,
@@ -2896,6 +2993,7 @@ function RecordingSession() {
       handleEditRecording,
       slotHasLiveRecorder,
       finishingDraftSlotId,
+      recordFirstEnabled,
     ]
   );
 
@@ -2919,18 +3017,18 @@ function RecordingSession() {
   );
 
   return (
-    <SafeAreaView className="flex-1 bg-stone-50">
+    <SafeAreaView className="screen">
       {/* Header */}
-      <View className="px-5 pt-3 pb-2 bg-stone-50">
+      <View className="px-5 pt-3 pb-2 bg-surface">
         <View className="flex-row justify-between items-start">
           <View className="flex-1">
             <Text
-              className="text-display font-bold text-stone-900"
+              className="text-display font-bold text-content-primary"
               accessibilityRole="header"
             >
               Record Appointment
             </Text>
-            <Text className="text-body text-stone-500 mt-1">
+            <Text className="text-body text-content-tertiary mt-1">
               Record a live appointment and generate a SOAP note
             </Text>
           </View>
@@ -2954,7 +3052,7 @@ function RecordingSession() {
       {/* Stashed Sessions */}
       {showStashList && (
         <View className="px-5 pb-2">
-          <Text className="text-body-sm font-semibold text-stone-600 mb-2">
+          <Text className="text-body-sm font-semibold text-content-secondary mb-2">
             Saved Sessions ({stashCount})
           </Text>
           {stashes.map((stash) => (
@@ -2970,8 +3068,8 @@ function RecordingSession() {
 
       {/* Pending Drafts Banner */}
       {hasPendingDrafts && (
-        <View className="mx-5 mb-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg flex-row items-center">
-          <Text className="text-body-sm text-amber-700 flex-1">
+        <View className="mx-5 mb-2 px-3 py-2 bg-status-warning border border-status-warning rounded-lg flex-row items-center">
+          <Text className="text-body-sm text-status-warning flex-1">
             Draft recording pending upload — connect to Wi-Fi to sync
           </Text>
         </View>
@@ -2982,12 +3080,12 @@ function RecordingSession() {
           AppState returns to 'active' and recording auto-resumes. */}
       {interruptionPendingResume && (
         <View
-          className="mx-5 mb-2 px-3 py-3 bg-orange-100 border-2 border-orange-400 rounded-lg flex-row items-center"
+          className="mx-5 mb-2 px-3 py-3 bg-status-warning border-2 border-status-warning rounded-lg flex-row items-center"
           accessibilityLiveRegion="assertive"
           accessibilityRole="alert"
         >
-          <View className="w-2 h-2 rounded-full bg-orange-500 mr-3" />
-          <Text className="text-body-sm font-semibold text-orange-800 flex-1">
+          <View className="w-2 h-2 rounded-full bg-warning-500 mr-3" />
+          <Text className="text-body-sm font-semibold text-status-warning flex-1">
             Recording paused for call — auto-resuming when you return.
           </Text>
         </View>
@@ -3029,20 +3127,20 @@ function RecordingSession() {
       {/* Pagination dots or text */}
       {session.slots.length > 1 && (
         <View
-          className="items-center py-2 bg-stone-50"
+          className="items-center py-2 bg-surface"
           accessibilityRole="adjustable"
           accessibilityLabel={`Patient ${session.activeIndex + 1} of ${session.slots.length}`}
           accessibilityLiveRegion="polite"
         >
           {paginationText ? (
-            <Text className="text-caption text-stone-400">{paginationText}</Text>
+            <Text className="text-caption text-content-tertiary">{paginationText}</Text>
           ) : (
             <View className="flex-row gap-1.5">
               {session.slots.map((slot, i) => (
                 <View
                   key={slot.id}
                   className={`w-2 h-2 rounded-full ${
-                    i === session.activeIndex ? 'bg-brand-500' : 'bg-stone-300'
+                    i === session.activeIndex ? 'bg-brand-500' : 'bg-border-strong'
                   }`}
                   accessibilityLabel={`Patient ${i + 1}${i === session.activeIndex ? ', current' : ''}`}
                 />
@@ -3074,6 +3172,7 @@ function RecordingSession() {
 
 export default function RecordScreen() {
   const { user } = useAuth();
+  const colors = useThemeColors();
   const [permissionStatus, setPermissionStatus] = useState<'checking' | 'granted' | 'denied'>('checking');
   const roleBlocked = !!user && !canRecordAppointments(user.role);
 
@@ -3097,7 +3196,7 @@ export default function RecordScreen() {
     return (
       <ScreenContainer>
         <View className="flex-1 justify-center items-center">
-          <ActivityIndicator size="large" color="#0d8775" />
+          <ActivityIndicator size="large" color={colors.brand500} />
         </View>
       </ScreenContainer>
     );

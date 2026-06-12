@@ -67,7 +67,7 @@ export function SegmentedControl<Value extends string = string>({
             className={cx(
               TOUCH_TARGET,
               'items-center justify-center rounded-btn border px-3.5',
-              isSelected ? 'border-brand-500 bg-brand-500' : 'border-stone-300 bg-white',
+              isSelected ? 'border-brand-500 bg-brand-500' : 'border-border-strong bg-surface-raised',
               option.disabled && 'opacity-50',
               optionClassName
             )}
@@ -75,7 +75,7 @@ export function SegmentedControl<Value extends string = string>({
             <Text
               className={cx(
                 'text-body-sm font-medium text-center',
-                isSelected ? 'text-white' : 'text-stone-700'
+                isSelected ? 'text-content-on-brand' : 'text-content-body'
               )}
               numberOfLines={2}
             >

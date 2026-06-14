@@ -40,7 +40,7 @@ function trimOrNull(value: string): string | null {
   return trimmed ? trimmed : null;
 }
 
-function buildPayload(form: MetadataForm): UpdateRecordingMetadata {
+function buildPayload(form: MetadataForm, pimsPatientId: string): UpdateRecordingMetadata {
   return {
     fields: {
       patientName: form.patientName.trim(),
@@ -48,6 +48,9 @@ function buildPayload(form: MetadataForm): UpdateRecordingMetadata {
       species: trimOrNull(form.species),
       breed: trimOrNull(form.breed),
       appointmentType: trimOrNull(form.appointmentType),
+      // PIMS Patient ID is vet-entered (never AI-filled) and is deliberately kept
+      // out of `correctedCount` so AI-review analytics stay AI-only.
+      pimsPatientId: trimOrNull(pimsPatientId),
     },
     review: 'confirmed',
   };
@@ -90,6 +93,15 @@ export function MetadataReviewCard({
     setForm(formSeed);
   }, [formSeed]);
 
+  // PIMS Patient ID is tracked separately from `form` so it never enters
+  // `correctedCount` (AI-only). Re-seed after the save round-trip refetches.
+  const pimsSeed = recording.pimsPatientId ?? '';
+  const [pimsPatientId, setPimsPatientId] = React.useState(pimsSeed);
+
+  React.useEffect(() => {
+    setPimsPatientId(pimsSeed);
+  }, [pimsSeed]);
+
   const before = formSeed;
   const appliedFields = Array.isArray(recording.aiExtractedMetadata?.appliedFields)
     ? recording.aiExtractedMetadata.appliedFields
@@ -108,7 +120,7 @@ export function MetadataReviewCard({
 
   const handleSave = () => {
     try {
-      onSave(buildPayload(form), correctedCount(before, form));
+      onSave(buildPayload(form, pimsPatientId), correctedCount(before, form));
       setSheetOpen(false);
     } catch {
       Alert.alert('Save Failed', METADATA_REVIEW_COPY.failed);
@@ -204,6 +216,18 @@ export function MetadataReviewCard({
           </View>
         }
       >
+        {/* PIMS Patient ID — vet-entered, never AI-filled; shown in both modes.
+            Label/placeholder mirror PatientForm.tsx for consistency. */}
+        <TextInputField
+          label="Patient ID (optional)"
+          value={pimsPatientId}
+          onChangeText={setPimsPatientId}
+          placeholder="e.g., P-10042"
+          maxLength={100}
+          autoCorrect={false}
+          autoComplete="off"
+          autoCapitalize="none"
+        />
         <TextInputField
           label="Patient's Name"
           value={form.patientName}

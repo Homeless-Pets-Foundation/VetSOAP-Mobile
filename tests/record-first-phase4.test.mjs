@@ -124,6 +124,35 @@ test('metadata review flow is capability-gated and PHI-free in analytics', async
   assert.match(reviewCard, /SegmentedControl/);
 });
 
+test('MetadataReviewCard surfaces PIMS Patient ID without polluting AI correctedCount', async () => {
+  const reviewCard = await read('src/components/MetadataReviewCard.tsx');
+
+  // Reuses the exact PatientForm label + placeholder.
+  assert.match(reviewCard, /label="Patient ID \(optional\)"/);
+  assert.match(reviewCard, /e\.g\., P-10042/);
+
+  // Seeds from the flattened recording field and re-seeds after the save round-trip.
+  assert.match(reviewCard, /recording\.pimsPatientId \?\? ''/);
+  assert.match(reviewCard, /setPimsPatientId\(pimsSeed\)/);
+
+  // pimsPatientId rides inside the payload fields map...
+  const buildPayload = reviewCard.match(/function buildPayload\([\s\S]*?\n\}/);
+  assert.ok(buildPayload, 'buildPayload should exist');
+  assert.match(buildPayload[0], /pimsPatientId: trimOrNull\(pimsPatientId\)/);
+
+  // ...but is excluded from the AI-only correctedCount.
+  const correctedCount = reviewCard.match(/function correctedCount\([\s\S]*?\n\}/);
+  assert.ok(correctedCount, 'correctedCount should exist');
+  assert.doesNotMatch(correctedCount[0], /pimsPatientId/);
+
+  // The payload type is widened to carry pimsPatientId outside the AI field union.
+  const types = await read('src/types/index.ts');
+  assert.match(
+    types,
+    /fields\?: Partial<Record<RecordingMetadataField, string \| null>> & \{ pimsPatientId\?: string \| null \}/
+  );
+});
+
 test('record-first details disclosure ignores default template alone', async () => {
   const card = await read('src/components/PatientSlotCard.tsx');
   const hasAnyPatientDetails = card.match(/const hasAnyPatientDetails =([\s\S]*?);/);

@@ -105,6 +105,28 @@ test('translation and email draft hide timeout text but preserve ApiError messag
   assert.doesNotMatch(clientEmail, /error instanceof Error \? error\.message/);
 });
 
+test('export sheet shows the Chrome-extension PIMS hint inside the PIMS disclosure', async () => {
+  const strings = await read('src/constants/strings.ts');
+  assert.match(
+    strings,
+    /chromeExtensionHint:\s*\n?\s*'The Captivet Chrome extension sends SOAP notes straight into your PIMS from your browser\.'/
+  );
+
+  const exportSheet = await read('src/components/ExportSheet.tsx');
+  assert.match(exportSheet, /EXPORT_COPY\.chromeExtensionHint/);
+  assert.match(exportSheet, /numberOfLines=\{2\}/);
+
+  // The hint must live inside the showPims disclosure, after the PIMS target buttons.
+  const showPimsIdx = exportSheet.indexOf('{showPims && (');
+  const targetsIdx = exportSheet.indexOf('PIMS_TARGETS.map');
+  const hintIdx = exportSheet.indexOf('EXPORT_COPY.chromeExtensionHint');
+  assert.ok(showPimsIdx !== -1, 'showPims disclosure should exist');
+  assert.ok(
+    showPimsIdx < targetsIdx && targetsIdx < hintIdx,
+    'hint should render inside the PIMS disclosure, after the PIMS target buttons'
+  );
+});
+
 test('playback permission denial does not render retry action', async () => {
   const player = await read('src/components/RecordingAudioPlayer.tsx');
 

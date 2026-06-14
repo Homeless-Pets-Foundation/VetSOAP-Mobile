@@ -138,19 +138,25 @@ export function ExportSheet({
           {EXPORT_COPY.markPims}
         </Button>
         {showPims && (
-          <View className="flex-row flex-wrap gap-2 mt-2">
-            {PIMS_TARGETS.map((target) => (
-              <Button
-                key={target.value}
-                variant="secondary"
-                size="sm"
-                loading={busyAction === target.value}
-                onPress={() => { markExported(target.value).catch((error) => setStatus(error instanceof Error ? error.message : EXPORT_COPY.markFailed)); }}
-              >
-                {target.label}
-              </Button>
-            ))}
-          </View>
+          <>
+            <View className="flex-row flex-wrap gap-2 mt-2">
+              {PIMS_TARGETS.map((target) => (
+                <Button
+                  key={target.value}
+                  variant="secondary"
+                  size="sm"
+                  loading={busyAction === target.value}
+                  onPress={() => { markExported(target.value).catch((error) => setStatus(error instanceof Error ? error.message : EXPORT_COPY.markFailed)); }}
+                >
+                  {target.label}
+                </Button>
+              ))}
+            </View>
+            {/* numberOfLines={2} so the hint wraps instead of clipping in narrow cards (Android). */}
+            <Text className="text-caption text-content-tertiary mt-2" numberOfLines={2}>
+              {EXPORT_COPY.chromeExtensionHint}
+            </Text>
+          </>
         )}
       </View>
 

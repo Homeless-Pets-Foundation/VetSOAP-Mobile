@@ -105,7 +105,10 @@ export interface AiExtractedMetadata {
 }
 
 export interface UpdateRecordingMetadata {
-  fields?: Partial<Record<RecordingMetadataField, string | null>>;
+  // `pimsPatientId` is widened onto the payload map only — it is intentionally NOT
+  // part of the RecordingMetadataField union (which drives AI FIELD_LABELS /
+  // correctedCount), since the PIMS Patient ID is never AI-filled.
+  fields?: Partial<Record<RecordingMetadataField, string | null>> & { pimsPatientId?: string | null };
   review?: 'confirmed' | 'dismissed';
 }
 

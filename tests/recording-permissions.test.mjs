@@ -111,3 +111,29 @@ test('draft detail screen gates delete and reports delete_draft telemetry', asyn
   assert.match(detail, /phase: 'delete_draft'/);
   assert.match(detail, /errorCode: error instanceof ApiError/);
 });
+
+test('metadata review/add/edit cards are gated on edit permission (no 403 "Save Failed")', async () => {
+  const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
+  // All three metadata-edit affordances require recordingPermissions.canEdit,
+  // mirroring the server PATCH /:id/metadata author/owner/admin guard so a vet
+  // never sees Edit/Review/Add on a colleague's recording then hits a 403.
+  assert.match(detail, /const showMetadataReview =\s*recordingPermissions\.canEdit/);
+  assert.match(detail, /const showAddMetadata =\s*recordingPermissions\.canEdit/);
+  assert.match(detail, /const showEditMetadata =\s*recordingPermissions\.canEdit/);
+});
+
+test('ApiClient routes an unrecoverable 401 to sign-out instead of a zombie session', async () => {
+  const client = await read('src/api/client.ts');
+  assert.match(client, /private onSessionExpired\?/);
+  assert.match(client, /setOnSessionExpired\(callback/);
+  // After onUnauthorized()'s refresh+retry, a still-401 response fires onSessionExpired.
+  assert.match(client, /if \(response\.status === 401\) \{\s*try \{ await this\.onSessionExpired\?\.\(\);/);
+
+  const auth = await read('src/auth/AuthProvider.tsx');
+  // Wired with fresh-session + in-progress-sign-out guards, then signs out to re-auth.
+  assert.match(auth, /apiClient\.setOnSessionExpired\(async \(\) => \{/);
+  assert.match(
+    auth,
+    /setOnSessionExpired[\s\S]*sessionAge < 10_000[\s\S]*userInitiatedSignOutRef\.current[\s\S]*setLogoutReason\('session_expired'\)[\s\S]*handleSignOut/
+  );
+});

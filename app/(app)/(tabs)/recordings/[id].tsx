@@ -503,16 +503,24 @@ export default function RecordingDetailScreen() {
     (metadataReviewState === 'confirmed' || metadataReviewState === 'dismissed') &&
     appliedMetadataFields.has('patientName') &&
     !patientIsUntitled;
+  // Gate the metadata-edit affordances on the same author/owner/admin permission
+  // the server enforces for PATCH /:id/metadata (reuse recordingPermissions.canEdit,
+  // which mirrors the delete/edit guard). Without this the review/add/edit cards
+  // render for every viewer, so a vet opening a colleague's recording can tap
+  // "Edit Details" and hit a 403 "Save Failed".
   const showMetadataReview =
+    recordingPermissions.canEdit &&
     recordFirstEnabled &&
     recording.status === 'completed' &&
     (Boolean(recording.needsMetadataReview) || metadataReviewState === 'unconfirmed');
   const showAddMetadata =
+    recordingPermissions.canEdit &&
     recordFirstEnabled &&
     recording.status === 'completed' &&
     !showMetadataReview &&
     !(recording.patientName ?? '').trim();
   const showEditMetadata =
+    recordingPermissions.canEdit &&
     recordFirstEnabled &&
     recording.status === 'completed' &&
     !showMetadataReview &&

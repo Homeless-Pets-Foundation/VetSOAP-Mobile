@@ -1390,6 +1390,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       refreshPromiseRef.current = doRefresh();
       await refreshPromiseRef.current;
     });
+    apiClient.setOnSessionExpired(async () => {
+      // A request stayed 401 even after onUnauthorized() ran its refresh+retry —
+      // the session is unrecoverable. Route to sign-in instead of leaving a zombie
+      // session (cached UI silently 401-ing every write). Guards: don't nuke a
+      // just-established session on a transient 401, and don't fight an in-progress
+      // sign-out (the refresh-failed path in onUnauthorized already signs out).
+      const sessionAge = Date.now() - sessionTimestampRef.current;
+      if (sessionAge < 10_000) return;
+      if (userInitiatedSignOutRef.current) return;
+      if (__DEV__) console.log('[Auth] onSessionExpired: 401 persisted after refresh — signing out to re-auth');
+      setLogoutReason('session_expired');
+      await handleSignOut({ recoveryMode: 'best_effort' });
+    });
   }, [handleMfaRequiredResponse, handleSignOut, registerDevice]);
 
   useEffect(() => {

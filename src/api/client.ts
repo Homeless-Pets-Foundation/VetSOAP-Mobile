@@ -91,6 +91,14 @@ export class ApiClient {
   private onDeviceRevoked?: () => void | Promise<void>;
   private onDeviceRegistrationRequired?: () => Promise<boolean>;
   private onMfaRequired?: (request: MfaRequiredRequest) => void | Promise<void>;
+  /**
+   * Fired when a request stays 401 *after* onUnauthorized() already ran its
+   * refresh+retry — i.e. the session is unrecoverable. Lets the auth layer route
+   * to sign-in instead of leaving a "zombie session" (cached UI that silently
+   * fails every write). The handler applies its own fresh-session / in-progress-
+   * sign-out guards before clearing.
+   */
+  private onSessionExpired?: () => void | Promise<void>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
   /**
@@ -110,6 +118,10 @@ export class ApiClient {
 
   setOnUnauthorized(callback: () => void | Promise<void>) {
     this.onUnauthorized = callback;
+  }
+
+  setOnSessionExpired(callback: () => void | Promise<void>) {
+    this.onSessionExpired = callback;
   }
 
   setOnDeviceRevoked(callback: () => void | Promise<void>) {
@@ -347,6 +359,15 @@ export class ApiClient {
         if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
         retried = true;
         response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
+      }
+
+      // Still 401 after the refresh attempt → the session can't authenticate
+      // (refresh failed, or produced a token the server still rejects). Tell the
+      // auth layer to route to sign-in rather than stranding the user in a zombie
+      // session. Fires only after a refresh already ran; transient network blips
+      // surface as throws (not clean 401s) so they don't trip it.
+      if (response.status === 401) {
+        try { await this.onSessionExpired?.(); } catch { /* ignore */ }
       }
     }
 

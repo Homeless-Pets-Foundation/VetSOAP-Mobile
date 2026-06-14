@@ -78,12 +78,20 @@ test('theme preference has dark vars, root hydration, and active settings select
 
 test('audio playback watchdog arms before loading native source', async () => {
   const player = await read('src/components/RecordingAudioPlayer.tsx');
+  const hook = await read('src/hooks/useAudioPlayback.ts');
   const watchdogIndex = player.indexOf('watchdogRef.current = setTimeout');
   const loadSourceIndex = player.indexOf('playback.loadSource(uri)');
+  const resetIndex = hook.indexOf('resetPlaybackStateForNewSource();');
+  const ensureModeIndex = hook.indexOf('await ensurePlaybackMode();');
 
   assert.notEqual(watchdogIndex, -1, 'watchdog should be armed');
   assert.notEqual(loadSourceIndex, -1, 'native loadSource call should exist');
   assert.ok(watchdogIndex < loadSourceIndex, 'watchdog must arm before loadSource can hang');
+  assert.notEqual(resetIndex, -1, 'source loads must reset stale isLoaded state');
+  assert.notEqual(ensureModeIndex, -1, 'playback mode setup should still run');
+  assert.ok(resetIndex < ensureModeIndex, 'reset must happen before any native call can hang');
+  assert.doesNotMatch(player, /lastLoadedUriRef/);
+  assert.doesNotMatch(player, /isLoadedRef\.current &&/);
 });
 
 test('Phase 5 copy is centralized for profile subscription account deletion and review chip', async () => {

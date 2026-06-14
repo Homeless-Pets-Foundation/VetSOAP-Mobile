@@ -87,18 +87,6 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
   const startedEmittedRef = useRef(false);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
-  // The isLoaded effect below only fires when the React state CHANGES; a
-  // segment switch can keep isLoaded true across renders (expo-audio may not
-  // emit a false transition on replace()), so the watchdog must read the
-  // current value through a ref instead of declaring a false timeout.
-  const isLoadedRef = useRef(isLoaded);
-  isLoadedRef.current = isLoaded;
-  // Which URI the player actually accepted (set only after loadSource resolves,
-  // i.e. replace() did not throw). The watchdog's "already loaded" branch must
-  // verify the loaded source is THIS segment — a stale isLoaded from the prior
-  // segment would otherwise report ready and play the wrong part.
-  const lastLoadedUriRef = useRef<string | null>(null);
-
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -137,14 +125,6 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
       watchdogRef.current = setTimeout(() => {
         if (!mountedRef.current) return;
-        if (isLoadedRef.current && lastLoadedUriRef.current === uri) {
-          // Source actually loaded but the state value never changed (no
-          // false→true transition for the effect to catch) — not a failure.
-          // The URI check rejects a stale isLoaded left over from the prior
-          // segment when a switch silently failed.
-          setPhase('ready');
-          return;
-        }
         if (!urlRefetchUsedRef.current) {
           urlRefetchUsedRef.current = true;
           recordingsApi
@@ -161,7 +141,6 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
       }, LOAD_WATCHDOG_MS);
       try {
         await playback.loadSource(uri);
-        lastLoadedUriRef.current = uri;
       } catch (error) {
         if (watchdogRef.current) {
           clearTimeout(watchdogRef.current);
@@ -342,9 +321,19 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
                 <Animated.View className="h-full rounded-pill bg-brand-500" style={progressStyle} />
               </View>
               <View className="flex-row justify-between mt-1">
-                <Text className="text-caption text-content-tertiary">{formatTime(displayTime)}</Text>
-                <Text className="text-caption text-content-tertiary">
-                  {duration > 0 ? formatTime(duration) : '--:--'}
+                {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
+                <Text
+                  className="text-caption text-content-tertiary"
+                  style={{ flexShrink: 0, paddingRight: 2 }}
+                >
+                  {`${formatTime(displayTime)} `}
+                </Text>
+                {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
+                <Text
+                  className="text-caption text-content-tertiary"
+                  style={{ flexShrink: 0, paddingRight: 2 }}
+                >
+                  {`${duration > 0 ? formatTime(duration) : '--:--'} `}
                 </Text>
               </View>
             </View>

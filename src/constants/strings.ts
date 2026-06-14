@@ -68,6 +68,11 @@ export const AUDIO_PLAYER_COPY = {
   part: (n: number): string => `Part ${n}`,
 } as const;
 
+export const RECORD_BANNERS = {
+  pendingDraftOffline: 'Draft recording pending upload — connect to Wi-Fi to sync',
+  pendingDraftOnline: 'Draft saved locally — syncing to server…',
+} as const;
+
 export const TRANSCRIPT_COPY = {
   toggleSoap: 'SOAP Note',
   toggleTranscript: 'Transcript',

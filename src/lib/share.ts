@@ -4,6 +4,14 @@ import { safeDeleteFile } from './fileOps';
 type PrintModule = typeof import('expo-print');
 type SharingModule = typeof import('expo-sharing');
 
+const PDF_SHARE_CLEANUP_DELAY_MS = 60_000;
+
+function schedulePdfCleanup(uri: string): void {
+  setTimeout(() => {
+    safeDeleteFile(uri);
+  }, PDF_SHARE_CLEANUP_DELAY_MS);
+}
+
 function loadPrint(): PrintModule | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -48,6 +56,8 @@ export async function sharePdfHtml(html: string, title = 'SOAP Note'): Promise<v
       UTI: 'com.adobe.pdf',
     });
   } finally {
-    if (uri) safeDeleteFile(uri);
+    // Android share targets may read the content URI after shareAsync resolves.
+    // Defer cleanup long enough for late readers; safeDeleteFile is best-effort.
+    if (uri) schedulePdfCleanup(uri);
   }
 }

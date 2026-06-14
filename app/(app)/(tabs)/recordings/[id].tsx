@@ -861,14 +861,16 @@ export default function RecordingDetailScreen() {
                     }`}
                     style={{ minHeight: 40 }}
                   >
+                    {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                     <Text
                       className={`text-body-sm ${
                         activeNoteTab === key
                           ? 'text-content-primary font-semibold'
                           : 'text-content-secondary'
                       }`}
+                      style={{ flexShrink: 0, paddingRight: 2 }}
                     >
-                      {label}
+                      {`${label} `}
                     </Text>
                   </Pressable>
                 ))}

@@ -102,6 +102,8 @@ export const EXPORT_COPY = {
   shareText: 'Share Text',
   sharePdf: 'Share PDF',
   markPims: 'Mark exported to PIMS',
+  chromeExtensionHint:
+    'The Captivet Chrome extension sends SOAP notes straight into your PIMS from your browser.',
   copied: 'Copied SOAP note.',
   shared: 'Shared SOAP note.',
   marked: 'Marked exported.',
@@ -230,6 +232,8 @@ export const METADATA_REVIEW_COPY = {
   addTitle: 'Add patient details',
   addBody: 'This visit has no patient details yet.',
   addDetails: 'Add Details',
+  editTitle: 'Patient details',
+  editBody: 'Edit patient details or add a PIMS Patient ID.',
   sheetTitle: 'Patient Details',
   save: 'Save Details',
   cancel: 'Cancel',

@@ -10,7 +10,7 @@ import { safeDeleteFile, safeDeleteDirectory, fileExists } from '../../../src/li
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
 import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
-import { OVERSIZED_CONFIRM_COPY, SILENT_CHECK_COPY, TEMPLATE_DEFAULT_COPY } from '../../../src/constants/strings';
+import { OVERSIZED_CONFIRM_COPY, RECORD_BANNERS, SILENT_CHECK_COPY, TEMPLATE_DEFAULT_COPY } from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { stashStorage } from '../../../src/lib/stashStorage';
@@ -3070,7 +3070,7 @@ function RecordingSession() {
       {hasPendingDrafts && (
         <View className="mx-5 mb-2 px-3 py-2 bg-status-warning border border-status-warning rounded-lg flex-row items-center">
           <Text className="text-body-sm text-status-warning flex-1">
-            Draft recording pending upload — connect to Wi-Fi to sync
+            {isConnected === false ? RECORD_BANNERS.pendingDraftOffline : RECORD_BANNERS.pendingDraftOnline}
           </Text>
         </View>
       )}

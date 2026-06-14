@@ -114,6 +114,34 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
   const isBufferingRef = useRef(false);
   const durationStateRef = useRef(0);
 
+  const resetPlaybackStateForNewSource = useCallback(() => {
+    isLoadedRef.current = false;
+    isPlayingRef.current = false;
+    isBufferingRef.current = false;
+    durationStateRef.current = 0;
+    durationRef.current = 0;
+    currentTimeRef.current = 0;
+
+    setIsLoaded(false);
+    setIsPlaying(false);
+    setIsBuffering(false);
+    setDuration(0);
+
+    currentTimeSV.value = 0;
+    lastStatusTimeSV.value = 0;
+    prevAnchorTimeSV.value = -1;
+    anchorFrameTimestampSV.value = 0;
+    isPlayingSV.value = false;
+    durationSV.value = 0;
+  }, [
+    anchorFrameTimestampSV,
+    currentTimeSV,
+    durationSV,
+    isPlayingSV,
+    lastStatusTimeSV,
+    prevAnchorTimeSV,
+  ]);
+
   const ensurePlaybackMode = useCallback(async () => {
     if (audioModeSetRef.current) return;
     try {
@@ -129,6 +157,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
 
   const loadSource = useCallback(
     async (uri: string) => {
+      resetPlaybackStateForNewSource();
       await ensurePlaybackMode();
       try {
         player.replace({ uri });
@@ -141,7 +170,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
         throw error;
       }
     },
-    [player, ensurePlaybackMode]
+    [player, ensurePlaybackMode, resetPlaybackStateForNewSource]
   );
 
   const play = useCallback(() => {

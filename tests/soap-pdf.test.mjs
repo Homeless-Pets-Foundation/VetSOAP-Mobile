@@ -108,4 +108,7 @@ test('native PDF share wrapper lazy-loads native modules', async () => {
   assert.match(source, /require\('expo-sharing'\)/);
   assert.doesNotMatch(source, /import .*expo-print/);
   assert.doesNotMatch(source, /import .*expo-sharing/);
+  assert.match(source, /PDF_SHARE_CLEANUP_DELAY_MS/);
+  assert.match(source, /schedulePdfCleanup\(uri\)/);
+  assert.doesNotMatch(source, /finally\s*\{\s*if \(uri\) safeDeleteFile\(uri\);/);
 });

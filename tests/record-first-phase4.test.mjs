@@ -122,6 +122,28 @@ test('metadata review flow is capability-gated and PHI-free in analytics', async
   assert.match(reviewCard, /review: 'confirmed'/);
   assert.match(reviewCard, /correctedFieldCount/);
   assert.match(reviewCard, /SegmentedControl/);
+  assert.match(reviewCard, /mode: 'review' \| 'add' \| 'edit'/);
+});
+
+test('completed recordings keep an Edit Details affordance after metadata review', async () => {
+  const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
+  assert.match(detail, /const showEditMetadata =/);
+  assert.match(detail, /!showMetadataReview[\s\S]*!showAddMetadata[\s\S]*recording\.patientName/);
+  assert.match(detail, /showEditMetadata && \([\s\S]*<MetadataReviewCard[\s\S]*mode="edit"/);
+
+  const strings = await read('src/constants/strings.ts');
+  assert.match(strings, /editTitle: 'Patient details'/);
+  assert.match(strings, /editBody: 'Edit patient details or add a PIMS Patient ID\.'/);
+});
+
+test('PIMS Patient ID linking invalidates patient query families', async () => {
+  const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
+  const metadataMutation = detail.match(/const metadataMutation = useMutation\(\{[\s\S]*?\n  \}\);/);
+  assert.ok(metadataMutation, 'metadata mutation should exist');
+  assert.match(metadataMutation[0], /hasOwnProperty\.call\(\s*\n\s*vars\.payload\.fields \?\? \{\},\s*\n\s*'pimsPatientId'/);
+  assert.match(metadataMutation[0], /updatedRecording\?\.patientId !== recording\?\.patientId/);
+  assert.match(metadataMutation[0], /queryKey: \['patients'\]/);
+  assert.match(metadataMutation[0], /queryKey: \['patient'\]/);
 });
 
 test('MetadataReviewCard surfaces PIMS Patient ID without polluting AI correctedCount', async () => {

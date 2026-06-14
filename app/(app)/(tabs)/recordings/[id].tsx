@@ -237,6 +237,14 @@ export default function RecordingDetailScreen() {
       if (id && updatedRecording?.id === id) {
         queryClient.setQueryData(['recording', id], updatedRecording);
       }
+      const pimsPatientIdSubmitted = Object.prototype.hasOwnProperty.call(
+        vars.payload.fields ?? {},
+        'pimsPatientId'
+      );
+      if (pimsPatientIdSubmitted || updatedRecording?.patientId !== recording?.patientId) {
+        queryClient.invalidateQueries({ queryKey: ['patients'] }).catch(() => {});
+        queryClient.invalidateQueries({ queryKey: ['patient'] }).catch(() => {});
+      }
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       trackEvent({
@@ -504,6 +512,12 @@ export default function RecordingDetailScreen() {
     recording.status === 'completed' &&
     !showMetadataReview &&
     !(recording.patientName ?? '').trim();
+  const showEditMetadata =
+    recordFirstEnabled &&
+    recording.status === 'completed' &&
+    !showMetadataReview &&
+    !showAddMetadata &&
+    Boolean((recording.patientName ?? '').trim());
   const renderInfoField = (
     field: RecordingMetadataField,
     label: string,
@@ -583,6 +597,15 @@ export default function RecordingDetailScreen() {
             mode="add"
             saving={metadataMutation.isPending}
             onConfirm={handleConfirmMetadata}
+            onSave={handleSaveMetadata}
+          />
+        )}
+
+        {showEditMetadata && (
+          <MetadataReviewCard
+            recording={recording}
+            mode="edit"
+            saving={metadataMutation.isPending}
             onSave={handleSaveMetadata}
           />
         )}

@@ -29,9 +29,9 @@ type MetadataForm = Record<RecordingMetadataField, string>;
 
 interface MetadataReviewCardProps {
   recording: Recording;
-  mode: 'review' | 'add';
+  mode: 'review' | 'add' | 'edit';
   saving?: boolean;
-  onConfirm: () => void;
+  onConfirm?: () => void;
   onSave: (payload: UpdateRecordingMetadata, correctedFieldCount: number) => void;
 }
 
@@ -127,8 +127,18 @@ export function MetadataReviewCard({
     }
   };
 
-  const title = mode === 'review' ? METADATA_REVIEW_COPY.title : METADATA_REVIEW_COPY.addTitle;
-  const body = mode === 'review' ? METADATA_REVIEW_COPY.body : METADATA_REVIEW_COPY.addBody;
+  const title =
+    mode === 'review'
+      ? METADATA_REVIEW_COPY.title
+      : mode === 'edit'
+        ? METADATA_REVIEW_COPY.editTitle
+        : METADATA_REVIEW_COPY.addTitle;
+  const body =
+    mode === 'review'
+      ? METADATA_REVIEW_COPY.body
+      : mode === 'edit'
+        ? METADATA_REVIEW_COPY.editBody
+        : METADATA_REVIEW_COPY.addBody;
 
   return (
     <>
@@ -164,7 +174,7 @@ export function MetadataReviewCard({
             ) : null}
 
             <View className="flex-row flex-wrap gap-2">
-              {mode === 'review' ? (
+              {mode === 'review' && onConfirm ? (
                 <Button
                   variant="primary"
                   size="sm"
@@ -184,6 +194,8 @@ export function MetadataReviewCard({
               >
                 {mode === 'review'
                   ? METADATA_REVIEW_COPY.editDetails
+                  : mode === 'edit'
+                    ? METADATA_REVIEW_COPY.editDetails
                   : METADATA_REVIEW_COPY.addDetails}
               </Button>
             </View>

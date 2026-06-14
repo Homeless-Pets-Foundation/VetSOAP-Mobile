@@ -232,6 +232,8 @@ export const METADATA_REVIEW_COPY = {
   addTitle: 'Add patient details',
   addBody: 'This visit has no patient details yet.',
   addDetails: 'Add Details',
+  editTitle: 'Patient details',
+  editBody: 'Edit patient details or add a PIMS Patient ID.',
   sheetTitle: 'Patient Details',
   save: 'Save Details',
   cancel: 'Cancel',

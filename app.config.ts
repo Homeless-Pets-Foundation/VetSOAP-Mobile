@@ -93,6 +93,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       '@react-native-google-signin/google-signin',
       { iosUrlScheme: process.env.EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME },
     ]);
+    // GoogleSignIn 9.x → AppCheckCore (Swift) requires modular headers on its
+    // non-modular transitive deps (GoogleUtilities, RecaptchaInterop) to
+    // integrate under the static-library framework build. Scoped here so
+    // non-Google builds don't pull those pods in. See the plugin for details.
+    plugins.push('./plugins/with-ios-modular-headers.js');
   }
 
   // Only include dev-client in development builds

@@ -1431,41 +1431,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const existingSession = result?.data?.session ?? null;
       if (existingSession) {
         if (existingSession.access_token) {
-          const validateResult = await withTimeout(
-            supabase.auth.getUser(existingSession.access_token),
-            8000,
-            'auth_init_get_user'
-          );
-          const validatedUser = validateResult?.data?.user ?? null;
-          const validateError = validateResult?.error ?? null;
-          if (!validateResult || validateError || !validatedUser) {
-            if (__DEV__) console.log('[Auth] session restore: server rejected token, attempting refresh');
-            trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'recovery' } });
-            const refreshResult = await withTimeout(
-              supabase.auth.refreshSession(),
-              8000,
-              'auth_init_refresh_session'
-            );
-            const refreshData = refreshResult?.data ?? null;
-            const refreshError = refreshResult?.error ?? null;
-            if (!refreshResult || refreshError || !refreshData?.session) {
-              if (__DEV__) console.log('[Auth] session restore: refresh also failed, clearing');
-              trackEvent({
-                name: 'session_refresh_failed',
-                props: { trigger: 'recovery', error_code: refreshError ? classifyAuthError(refreshError) : 'no_session' },
-              });
-              apiClient.setToken(null);
-              await secureStorage.clearAll().catch(() => {});
-              return;
-            }
-            if (__DEV__) console.log('[Auth] session restore: refresh succeeded');
-            setSession(refreshData.session);
-            sessionTimestampRef.current = Date.now();
-            apiClient.setToken(refreshData.session.access_token);
-            fetchUser().catch(() => {});
-            return;
-          }
-
+          // Trust the persisted session at cold start instead of blocking on a
+          // server-side getUser() validation. That round-trip was the dominant
+          // auth-init watchdog stall (Sentry RN-D, op:auth_init_get_user, >8s
+          // even on a reachable network) and, worse, on an OFFLINE cold start
+          // it timed out and fell through to refreshSession()+clearAll() —
+          // signing the user out for merely being offline. The token is now
+          // validated lazily by the first authed request: apiClient
+          // .onUnauthorized refreshes+retries a 401, and onSessionExpired signs
+          // out if the session is genuinely dead (both wired in the effect
+          // above, which runs first). A network failure is not a 401, so the
+          // cached session survives until connectivity returns.
           setSession(existingSession);
           sessionTimestampRef.current = Date.now();
           apiClient.setToken(existingSession.access_token);

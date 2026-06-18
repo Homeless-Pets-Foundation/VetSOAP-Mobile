@@ -42,17 +42,31 @@ test('production API URL ignores missing or Railway fallback env values', async 
   assert.match(src, /: normalizeProductionApiUrl\(process\.env\.EXPO_PUBLIC_API_URL\)/);
 });
 
-test('auth init bounds getUser and refreshSession with watchdog operation labels', async () => {
+test('auth init defers token validation to the first authed request (no blocking cold-start getUser)', async () => {
   const src = await read('src/auth/AuthProvider.tsx');
 
+  // getSession stays bounded (local read can still hang on a poisoned bridge).
   assert.match(
     src,
-    /withTimeout\(\s*supabase\.auth\.getUser\(existingSession\.access_token\),\s*\d+,\s*'auth_init_get_user'\s*\)/
+    /withTimeout\(supabase\.auth\.getSession\(\), [\d_]+, 'auth_init_get_session'\)/
   );
-  assert.match(
-    src,
-    /withTimeout\(\s*supabase\.auth\.refreshSession\(\),\s*\d+,\s*'auth_init_refresh_session'\s*\)/
-  );
+
+  // The blocking cold-start getUser/refreshSession preflight is gone — it was
+  // the dominant watchdog stall (RN-D) and logged offline users out via
+  // clearAll(). Lazy validation via apiClient.onUnauthorized/onSessionExpired
+  // replaces it.
+  assert.doesNotMatch(src, /'auth_init_get_user'/);
+  assert.doesNotMatch(src, /'auth_init_refresh_session'/);
+
+  // Restore path now just trusts the persisted session and fetches the user;
+  // a stale token surfaces as a 401 on that request, not a startup stall.
+  const restoreIdx = src.indexOf('if (existingSession.access_token) {');
+  assert.ok(restoreIdx > -1, 'session-restore branch must be findable');
+  const restoreBody = src.slice(restoreIdx, restoreIdx + 1600);
+  assert.match(restoreBody, /setSession\(existingSession\);/);
+  assert.match(restoreBody, /apiClient\.setToken\(existingSession\.access_token\);/);
+  assert.match(restoreBody, /fetchUser\(\)\.catch\(\(\) => \{\}\);/);
+  assert.doesNotMatch(restoreBody, /secureStorage\.clearAll\(\)/);
 });
 
 test('sync_server_draft network failures are breadcrumbed, not captured as Sentry errors', async () => {
@@ -74,21 +88,67 @@ test('sync_server_draft network failures are breadcrumbed, not captured as Sentr
   );
 });
 
-test('expected submit API failures are telemetry warnings, not Sentry exceptions', async () => {
+test('recoverable submit failures (expected + server 5xx + transient + abort) are telemetry warnings, not Sentry exceptions', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
 
+  // Existing expected-failure predicate stays intact.
   assert.match(src, /function isExpectedSubmitApiFailure\(error: unknown\): boolean/);
-  assert.match(src, /error instanceof ApiError/);
   assert.match(src, /error\.code === 'ROLE_FORBIDDEN'/);
   assert.match(src, /error\.code === 'CREDENTIALS_REQUIRED'/);
-  assert.match(src, /const telemetrySeverity = isExpectedSubmitApiFailure\(error\) \? 'warning' : 'error';/);
+
+  // New broader predicate covers the failure classes that paged as hard errors
+  // despite being recovered or server-side: 51 HTTP_500 (server fault), the
+  // auto-stashed transient network deaths, and AbortError (Sentry RN-W).
+  assert.match(src, /function isRecoverableSubmitFailure\(error: unknown\): boolean/);
+  assert.match(src, /if \(isExpectedSubmitApiFailure\(error\)\) return true;/);
+  assert.match(src, /if \(isTransientUploadError\(error\)\) return true;/);
+  assert.match(src, /e\?\.status === 'number' && e\.status >= 500/);
+  assert.match(src, /e\?\.name === 'AbortError' \|\| \/\\bAborted\\b\/i\.test/);
+
+  // Severity + captureException guard both route through the broadened predicate.
+  assert.match(src, /const isRecoverable = isRecoverableSubmitFailure\(error\);/);
+  assert.match(src, /const telemetrySeverity = isRecoverable \? 'warning' : 'error';/);
   assert.match(src, /severity: telemetrySeverity,/);
 
-  const severityIndex = src.indexOf("const telemetrySeverity = isExpectedSubmitApiFailure(error) ? 'warning' : 'error';");
+  const severityIndex = src.indexOf('const isRecoverable = isRecoverableSubmitFailure(error);');
   assert.ok(severityIndex > -1, 'uploadSlot telemetry severity branch must be findable');
-  const telemetryBody = src.slice(severityIndex, severityIndex + 2000);
-  assert.match(
-    telemetryBody,
-    /if \(!isExpectedSubmitApiFailure\(error\)\) \{\s*captureException\(error,/
+  const telemetryBody = src.slice(severityIndex, severityIndex + 2200);
+  // reportClientError telemetry must still fire for every failure (server-500
+  // visibility), only captureException is gated on isRecoverable.
+  assert.match(telemetryBody, /reportClientError\(\{/);
+  assert.match(telemetryBody, /if \(!isRecoverable\) \{\s*captureException\(error,/);
+});
+
+test('default-template SecureStore key uses an expo-secure-store-legal separator', async () => {
+  const src = await read('src/lib/templatePreference.ts');
+
+  // The ':' separator made every read/write/delete throw (Sentry RN-T,
+  // op:getDefaultTemplateId) — expo-secure-store keys must match [A-Za-z0-9._-].
+  assert.match(src, /return `\$\{KEY_PREFIX\}_\$\{userId\}`;/);
+  assert.doesNotMatch(src, /\$\{KEY_PREFIX\}:\$\{userId\}/);
+
+  // A concrete key built from a real UUID must satisfy the allowed charset.
+  const sampleKey = `captivet_template_default_${'657f4d7c-bc17-4f79-a321-1653c9ac5feb'}`;
+  assert.match(sampleKey, /^[A-Za-z0-9._-]+$/);
+});
+
+test('audio-session interruption on pause/resume is a warning breadcrumb, not a captureException', async () => {
+  const src = await read('src/hooks/useAudioRecorder.ts');
+
+  // Both catch blocks: a real error code (kills the no_code telemetry), warning
+  // severity, and a breadcrumb instead of captureException so Sentry RN-X stops
+  // surfacing an expected, fully-recovered native interruption as an error.
+  for (const phase of ['recorder_resume', 'recorder_pause']) {
+    const idx = src.indexOf(`errorCode: 'AUDIO_SESSION_INTERRUPTED',`, src.indexOf(`'${phase}'`));
+    assert.ok(idx > -1, `${phase} interruption report must be findable`);
+    const block = src.slice(idx - 600, idx + 120);
+    assert.match(block, new RegExp(`breadcrumb\\('record', 'audio_session_interrupted', \\{\\s*phase: '${phase}'`));
+    assert.match(block, /severity: 'warning',/);
+    assert.match(block, /errorCode: 'AUDIO_SESSION_INTERRUPTED',/);
+  }
+  // Neither interruption path may captureException.
+  assert.doesNotMatch(
+    src,
+    /captureException\(error, \{ tags: \{ component: 'useAudioRecorder', phase: 'recorder_(resume|pause)' \} \}\)/
   );
 });

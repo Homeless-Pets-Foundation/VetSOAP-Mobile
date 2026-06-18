@@ -135,6 +135,26 @@ function isExpectedSubmitApiFailure(error: unknown): boolean {
   );
 }
 
+// A submit failure is "recoverable" when it is not a genuine mobile-side bug:
+// the user (or a retry) can succeed without a code change. These are reported
+// as telemetry warnings and must NOT fire captureException, which would page a
+// recovered or server-side fault as a hard error. Covers:
+//   - isExpectedSubmitApiFailure: ROLE_FORBIDDEN / CREDENTIALS_REQUIRED / 404
+//   - server faults: any HTTP 5xx (server bug, not a mobile bug — still tracked
+//     via reportClientError so the server team keeps visibility)
+//   - transient network death: matched by isTransientUploadError (also drives
+//     auto-stash for retry below)
+//   - aborts: request timeout / cancel (AbortError), which the transient regex
+//     does not match (Sentry REACT-NATIVE-W)
+function isRecoverableSubmitFailure(error: unknown): boolean {
+  if (isExpectedSubmitApiFailure(error)) return true;
+  if (isTransientUploadError(error)) return true;
+  const e = error as { status?: number; name?: string; message?: string } | null;
+  if (typeof e?.status === 'number' && e.status >= 500) return true;
+  if (e?.name === 'AbortError' || /\bAborted\b/i.test(e?.message ?? '')) return true;
+  return false;
+}
+
 function RecordingRoleGate() {
   const router = useRouter();
   const { scale } = useResponsive();
@@ -1801,7 +1821,8 @@ function RecordingSession() {
         const errorCode =
           (looksLikeRealCode && rawCode) ||
           (errorObj?.status ? `HTTP_${errorObj.status}` : phase.toUpperCase());
-        const telemetrySeverity = isExpectedSubmitApiFailure(error) ? 'warning' : 'error';
+        const isRecoverable = isRecoverableSubmitFailure(error);
+        const telemetrySeverity = isRecoverable ? 'warning' : 'error';
 
         trackEvent({
           name: 'submit_failed',
@@ -1830,7 +1851,7 @@ function RecordingSession() {
           networkState: netState,
           attemptNumber,
         });
-        if (!isExpectedSubmitApiFailure(error)) {
+        if (!isRecoverable) {
           captureException(error, {
             tags: {
               phase,

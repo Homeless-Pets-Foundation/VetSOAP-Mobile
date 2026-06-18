@@ -391,10 +391,17 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       setState('paused');
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] pause failed:', error);
-      captureException(error, { tags: { component: 'useAudioRecorder', phase: 'recorder_pause' } });
+      // Same expected native interruption as resume() (audio session grabbed
+      // mid-record). Recovered below + surfaced via the Alert in record.tsx,
+      // so report as a warning with a real code rather than a captureException.
+      breadcrumb('record', 'audio_session_interrupted', {
+        phase: 'recorder_pause',
+        error: String(error),
+      });
       reportClientError({
         phase: 'recorder_pause',
-        severity: 'error',
+        severity: 'warning',
+        errorCode: 'AUDIO_SESSION_INTERRUPTED',
         message: String(error),
         durationSeconds: capturedDurationRef.current,
       });
@@ -417,11 +424,22 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       setState('recording');
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] resume failed:', error);
-      captureException(error, { tags: { component: 'useAudioRecorder', phase: 'recorder_resume' } });
+      // Expected native interruption: the OS audio session was grabbed by an
+      // incoming call / Siri / another app while paused, so record() is
+      // rejected (java.lang.IllegalStateException). Fully recovered below
+      // (audio up to the pause is preserved) and surfaced to the user via the
+      // Alert in record.tsx — so this is a warning, not a captureException
+      // (which paged Sentry REACT-NATIVE-X as an unresolved error).
+      breadcrumb('record', 'audio_session_interrupted', {
+        phase: 'recorder_resume',
+        error: String(error),
+      });
       reportClientError({
         phase: 'recorder_resume',
-        severity: 'error',
+        severity: 'warning',
+        errorCode: 'AUDIO_SESSION_INTERRUPTED',
         message: String(error),
+        durationSeconds: capturedDurationRef.current,
       });
       // Native handle is broken — clean up so user can start fresh
       finalizeDuration();

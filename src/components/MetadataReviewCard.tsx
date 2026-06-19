@@ -1,8 +1,12 @@
 import React from 'react';
-import { View, Text, Alert } from 'react-native';
-import { Check, Edit2, Sparkles } from 'lucide-react-native';
+import { View, Text, Alert, Pressable } from 'react-native';
+import { Check, Edit2, Plus, Sparkles } from 'lucide-react-native';
 import type { Recording, RecordingMetadataField, UpdateRecordingMetadata } from '../types';
 import { METADATA_REVIEW_COPY } from '../constants/strings';
+import {
+  computeSuggestionFields,
+  shouldShowNoExtractionEmptyState,
+} from '../lib/recordFirstObservability';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
@@ -106,16 +110,28 @@ export function MetadataReviewCard({
   const appliedFields = Array.isArray(recording.aiExtractedMetadata?.appliedFields)
     ? recording.aiExtractedMetadata.appliedFields
     : [];
-  const fieldsFromMetadata = recording.aiExtractedMetadata?.fields
-    ? (Object.keys(recording.aiExtractedMetadata.fields) as RecordingMetadataField[])
-    : [];
-  const rowFields = (appliedFields.length > 0 ? appliedFields : fieldsFromMetadata).filter(
+  // Applied (auto-filled) fields render as confirmed rows.
+  const appliedRowFields = appliedFields.filter(
     (field, index, arr) => arr.indexOf(field) === index && FIELD_LABELS[field]
   );
+  // B6 — fields the AI extracted but did NOT auto-apply (low confidence /
+  // multi-patient), still blank on the recording. Rendered as tappable
+  // suggestions so staff fill them in one tap instead of retyping.
+  const suggestions = computeSuggestionFields(recording);
+  // B5 — null-extraction empty state ("AI couldn't read these").
+  const showNoExtraction = shouldShowNoExtractionEmptyState(recording);
   const hasAnyFormValue = Object.values(form).some((value) => value.trim().length > 0);
 
   const updateField = (field: RecordingMetadataField, value: string | null) => {
     setForm((current) => ({ ...current, [field]: value ?? '' }));
+  };
+
+  // Tapping a suggestion fills the form and opens the sheet so staff can
+  // confirm/edit before saving. Never auto-applies (multi-patient risk — a
+  // suggestion can belong to a different patient; see plan B6 / Risks).
+  const applySuggestion = (field: RecordingMetadataField, value: string) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setSheetOpen(true);
   };
 
   const handleSave = () => {
@@ -138,7 +154,9 @@ export function MetadataReviewCard({
       ? METADATA_REVIEW_COPY.body
       : mode === 'edit'
         ? METADATA_REVIEW_COPY.editBody
-        : METADATA_REVIEW_COPY.addBody;
+        : showNoExtraction
+          ? METADATA_REVIEW_COPY.addBodyNoExtraction
+          : METADATA_REVIEW_COPY.addBody;
 
   return (
     <>
@@ -155,9 +173,9 @@ export function MetadataReviewCard({
               {body}
             </Text>
 
-            {mode === 'review' && rowFields.length > 0 ? (
+            {(mode === 'review' || mode === 'add') && appliedRowFields.length > 0 ? (
               <View className="mb-3">
-                {rowFields.map((field) => {
+                {appliedRowFields.map((field) => {
                   const value = before[field].trim();
                   if (!value) return null;
                   return (
@@ -170,6 +188,30 @@ export function MetadataReviewCard({
                     </View>
                   );
                 })}
+              </View>
+            ) : null}
+
+            {/* B6 — tappable below-confidence / multi-patient suggestions. */}
+            {(mode === 'review' || mode === 'add') && suggestions.length > 0 ? (
+              <View className="mb-3">
+                <Text className="text-caption text-content-tertiary font-medium uppercase mb-1.5">
+                  {METADATA_REVIEW_COPY.suggestionsTitle}
+                </Text>
+                {suggestions.map(({ field, value }) => (
+                  <Pressable
+                    key={field}
+                    onPress={() => applySuggestion(field, value)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Add ${FIELD_LABELS[field]}: ${value}`}
+                    className="flex-row items-center mb-1.5 py-1"
+                  >
+                    <Plus color={colors.brand500} size={12} style={{ marginRight: 6 }} />
+                    <Text className="text-body-sm text-content-secondary flex-1" numberOfLines={2}>
+                      <Text className="font-semibold">{FIELD_LABELS[field]}: </Text>
+                      {value}
+                    </Text>
+                  </Pressable>
+                ))}
               </View>
             ) : null}
 

@@ -30,6 +30,12 @@ import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { fileExists } from '../../../../src/lib/fileOps';
 import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
+import {
+  shouldEmitExtractionObserved,
+  buildExtractionObservedProps,
+  shouldReportZeroFill,
+  zeroFillErrorCode,
+} from '../../../../src/lib/recordFirstObservability';
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
@@ -314,6 +320,7 @@ export default function RecordingDetailScreen() {
   const [activeNoteTab, setActiveNoteTab] = useState<'soap' | 'transcript'>('soap');
   const transcriptViewedEmittedRef = useRef(false);
   const metadataReviewShownIdsRef = useRef<Set<string>>(new Set());
+  const extractionObservedIdsRef = useRef<Set<string>>(new Set());
   const handleSelectNoteTab = useCallback(
     (tab: 'soap' | 'transcript') => {
       setActiveNoteTab(tab);
@@ -356,6 +363,40 @@ export default function RecordingDetailScreen() {
       cancelled = true;
     };
   }, [recording, id]);
+
+  // Record-first observability (A1 + A2). Fires once per completed record-first
+  // recording, BEFORE the review-card `shouldShow` gate below — so it captures
+  // the null-extraction (`had_metadata=false`) cohort that never shows a card,
+  // the exact "looks broken" population the old card-based query was blind to.
+  // Has its own dedupe Set; do NOT fold into the review-shown effect.
+  useEffect(() => {
+    if (!id || !recording) return;
+    if (!shouldEmitExtractionObserved(recording, recordFirstEnabled)) return;
+    if (extractionObservedIdsRef.current.has(id)) return;
+    extractionObservedIdsRef.current.add(id);
+
+    trackEvent({
+      name: 'ai_metadata_extraction_observed',
+      props: buildExtractionObservedProps(recording),
+    });
+
+    // A2 — zero-fill warning, keyed by recording into client_telemetry. Gated on
+    // a blank patient name (manual recordings self-exclude), NOT on
+    // needsMetadataReview (server clears it on null extraction — the case we
+    // must catch). Mirrors the delete_draft reportClientError call below.
+    if (shouldReportZeroFill(recording, recordFirstEnabled)) {
+      const meta = recording.aiExtractedMetadata ?? null;
+      const appliedCount = Array.isArray(meta?.appliedFields) ? meta.appliedFields.length : 0;
+      const extractedCount = meta?.fields ? Object.keys(meta.fields).length : 0;
+      reportClientError({
+        phase: 'ai_extract',
+        severity: 'warning',
+        errorCode: zeroFillErrorCode(recording),
+        message: `record-first zero-fill: had_metadata=${meta != null} applied=${appliedCount} extracted=${extractedCount}`,
+        recordingId: id,
+      });
+    }
+  }, [id, recordFirstEnabled, recording]);
 
   useEffect(() => {
     if (!id || !recordFirstEnabled || recording?.status !== 'completed') return;

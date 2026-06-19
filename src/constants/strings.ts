@@ -231,7 +231,10 @@ export const METADATA_REVIEW_COPY = {
   editDetails: 'Edit Details',
   addTitle: 'Add patient details',
   addBody: 'This visit has no patient details yet.',
+  addBodyNoExtraction:
+    "Captivet couldn't read the patient details from this recording. Add them here.",
   addDetails: 'Add Details',
+  suggestionsTitle: 'Captivet found these — tap to add',
   editTitle: 'Patient details',
   editBody: 'Edit patient details or add a PIMS Patient ID.',
   sheetTitle: 'Patient Details',

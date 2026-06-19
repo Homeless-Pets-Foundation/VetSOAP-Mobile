@@ -123,6 +123,19 @@ export type AnalyticsEvent =
   | { name: 'soap_translated'; props: { recording_id: string; target_language: TranslationTargetLanguage } }
   | { name: 'template_default_set'; props: { template_kind: string } }
   | { name: 'ai_metadata_review_shown'; props: { applied_field_count: number } }
+  | {
+      name: 'ai_metadata_extraction_observed';
+      props: {
+        applied_field_count: number;
+        suggested_field_count: number;
+        extracted_field_count: number;
+        multiple_patients_detected: boolean;
+        had_metadata: boolean;
+        needs_metadata_review: boolean;
+        blank_field_count_at_submit: number;
+        drop_reasons_count?: number;
+      };
+    }
   | { name: 'ai_metadata_review_resolved'; props: { action: 'confirmed' | 'corrected' | 'dismissed'; corrected_field_count: number } }
   // Account surface
   | { name: 'profile_updated'; props: { fields: string } }
@@ -170,6 +183,7 @@ export type ErrorPhase =
   | 'unknown'
   | 'preflight'
   | 'silent_check'
+  | 'ai_extract'
   | 'presign'
   | 'r2_put'
   | 'confirm'

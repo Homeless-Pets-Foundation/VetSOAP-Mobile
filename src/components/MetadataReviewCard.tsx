@@ -7,6 +7,7 @@ import {
   computeSuggestionFields,
   shouldShowNoExtractionEmptyState,
 } from '../lib/recordFirstObservability';
+import { buildMetadataFormSeed } from '../lib/recordingMetadataSync';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
@@ -76,19 +77,15 @@ export function MetadataReviewCard({
   const colors = useThemeColors();
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const formSeed = React.useMemo(
-    () => ({
-      patientName: recording.patientName ?? '',
-      clientName: recording.clientName ?? '',
-      species: recording.species ?? '',
-      breed: recording.breed ?? '',
-      appointmentType: recording.appointmentType ?? '',
-    }),
+    () => buildMetadataFormSeed(recording, mode),
     [
+      mode,
       recording.patientName,
       recording.clientName,
       recording.species,
       recording.breed,
       recording.appointmentType,
+      recording.aiExtractedMetadata,
     ]
   );
   const [form, setForm] = React.useState<MetadataForm>(formSeed);
@@ -121,6 +118,8 @@ export function MetadataReviewCard({
   // B5 — null-extraction empty state ("AI couldn't read these").
   const showNoExtraction = shouldShowNoExtractionEmptyState(recording);
   const hasAnyFormValue = Object.values(form).some((value) => value.trim().length > 0);
+  const suggestionOnlyReview = mode === 'review' && appliedRowFields.length === 0;
+  const primaryDetailsAction = mode !== 'review' || suggestionOnlyReview;
 
   const updateField = (field: RecordingMetadataField, value: string | null) => {
     setForm((current) => ({ ...current, [field]: value ?? '' }));
@@ -144,13 +143,13 @@ export function MetadataReviewCard({
   };
 
   const title =
-    mode === 'review'
+    mode === 'review' && !suggestionOnlyReview
       ? METADATA_REVIEW_COPY.title
       : mode === 'edit'
         ? METADATA_REVIEW_COPY.editTitle
         : METADATA_REVIEW_COPY.addTitle;
   const body =
-    mode === 'review'
+    mode === 'review' && !suggestionOnlyReview
       ? METADATA_REVIEW_COPY.body
       : mode === 'edit'
         ? METADATA_REVIEW_COPY.editBody
@@ -216,7 +215,7 @@ export function MetadataReviewCard({
             ) : null}
 
             <View className="flex-row flex-wrap gap-2">
-              {mode === 'review' && onConfirm ? (
+              {mode === 'review' && onConfirm && appliedRowFields.length > 0 ? (
                 <Button
                   variant="primary"
                   size="sm"
@@ -228,14 +227,21 @@ export function MetadataReviewCard({
                 </Button>
               ) : null}
               <Button
-                variant={mode === 'review' ? 'secondary' : 'primary'}
+                variant={primaryDetailsAction ? 'primary' : 'secondary'}
                 size="sm"
                 onPress={() => setSheetOpen(true)}
                 disabled={saving}
-                icon={<Edit2 color={mode === 'review' ? colors.contentBody : colors.contentOnBrand} size={14} />}
+                icon={
+                  <Edit2
+                    color={primaryDetailsAction ? colors.contentOnBrand : colors.contentBody}
+                    size={14}
+                  />
+                }
               >
                 {mode === 'review'
-                  ? METADATA_REVIEW_COPY.editDetails
+                  ? suggestionOnlyReview
+                    ? METADATA_REVIEW_COPY.addDetails
+                    : METADATA_REVIEW_COPY.editDetails
                   : mode === 'edit'
                     ? METADATA_REVIEW_COPY.editDetails
                   : METADATA_REVIEW_COPY.addDetails}

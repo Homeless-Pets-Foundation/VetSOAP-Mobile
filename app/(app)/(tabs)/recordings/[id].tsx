@@ -30,6 +30,7 @@ import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { fileExists } from '../../../../src/lib/fileOps';
 import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
+import { mergeUpdatedRecordingIntoRecordingsCache } from '../../../../src/lib/recordingMetadataSync';
 import {
   shouldEmitExtractionObserved,
   buildExtractionObservedProps,
@@ -242,6 +243,10 @@ export default function RecordingDetailScreen() {
     onSuccess: (updatedRecording, vars) => {
       if (id && updatedRecording?.id === id) {
         queryClient.setQueryData(['recording', id], updatedRecording);
+        queryClient.setQueriesData(
+          { queryKey: ['recordings'] },
+          (cached) => mergeUpdatedRecordingIntoRecordingsCache(cached, updatedRecording)
+        );
       }
       const pimsPatientIdSubmitted = Object.prototype.hasOwnProperty.call(
         vars.payload.fields ?? {},

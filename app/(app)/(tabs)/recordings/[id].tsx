@@ -19,6 +19,7 @@ import { TranscriptView } from '../../../../src/components/TranscriptView';
 import { ClientEmailCard } from '../../../../src/components/ClientEmailCard';
 import { ExportSheet } from '../../../../src/components/ExportSheet';
 import { TranslationCard } from '../../../../src/components/TranslationCard';
+import { SuggestedTasksCard } from '../../../../src/components/SuggestedTasksCard';
 import { MetadataReviewCard } from '../../../../src/components/MetadataReviewCard';
 import { ProcessingStepper } from '../../../../src/components/ProcessingStepper';
 import { ReviewStatusChip } from '../../../../src/components/ReviewStatusChip';
@@ -40,6 +41,7 @@ import {
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
+import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuth } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
@@ -134,6 +136,12 @@ export default function RecordingDetailScreen() {
     enabled: !!id && recording?.status === 'completed',
     retry: 3,
     retryDelay: 2000,
+  });
+
+  const { data: recordingTasks } = useQuery({
+    queryKey: ['recordingTasks', id],
+    queryFn: () => recordingsApi.getRecordingTasks(id!),
+    enabled: !!id && recording?.status === 'completed',
   });
 
   const handleRefresh = useCallback(() => {
@@ -573,7 +581,7 @@ export default function RecordingDetailScreen() {
     !showAddMetadata &&
     Boolean((recording.patientName ?? '').trim());
   const renderInfoField = (
-    field: RecordingMetadataField,
+    field: RecordingMetadataField | null,
     label: string,
     value: string | null,
     className = 'pr-2'
@@ -583,7 +591,7 @@ export default function RecordingDetailScreen() {
         <Text className="text-caption text-content-tertiary font-medium uppercase">
           {label}
         </Text>
-        {appliedMetadataFields.has(field) ? (
+        {field && appliedMetadataFields.has(field) ? (
           <Sparkles color={colors.brand500} size={11} style={{ marginLeft: 4 }} />
         ) : null}
       </View>
@@ -681,6 +689,9 @@ export default function RecordingDetailScreen() {
             </View>
           ) : null}
           <View className="flex-row flex-wrap">
+            {renderInfoField('patientName', 'Patient', recording.patientName)}
+            {/* pimsPatientId is vet-entered, never AI-filled → no sparkle (field null). */}
+            {renderInfoField(null, 'Patient ID', recording.pimsPatientId, 'pl-2')}
             {renderInfoField('species', 'Species', recording.species)}
             {renderInfoField('breed', 'Breed', recording.breed, 'pl-2')}
             {renderInfoField('clientName', 'Client', recording.clientName)}
@@ -880,6 +891,14 @@ export default function RecordingDetailScreen() {
               </View>
             </Card>
           </Animated.View>
+        )}
+
+        {recording.status === 'completed' && id && recordingTasks && recordingTasks.length > 0 && (
+          <SuggestedTasksCard
+            recordingId={id}
+            tasks={recordingTasks}
+            canManage={canRecordAppointments(user?.role)}
+          />
         )}
 
         {recording.status === 'completed' && id && (

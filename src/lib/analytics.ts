@@ -121,6 +121,7 @@ export type AnalyticsEvent =
   | { name: 'soap_regenerated'; props: { recording_id: string; template_changed: boolean } }
   | { name: 'email_draft_generated'; props: { recording_id: string } }
   | { name: 'soap_translated'; props: { recording_id: string; target_language: TranslationTargetLanguage } }
+  | { name: 'suggested_task_resolved'; props: { action: 'accepted' | 'dismissed'; type: 'todo' | 'billing' } }
   | { name: 'template_default_set'; props: { template_kind: string } }
   | { name: 'ai_metadata_review_shown'; props: { applied_field_count: number } }
   | {

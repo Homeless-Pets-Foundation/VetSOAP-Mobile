@@ -13,13 +13,16 @@ import type {
   SoapNote,
   UpdateRecordingMetadata,
   ReviewStatus,
+  RecordingTask,
 } from '../types';
 import {
   recordingIdSchema,
+  recordingTaskIdSchema,
   createRecordingSchema,
   searchQuerySchema,
 } from '../lib/validation';
 import { validateUploadUrl } from '../lib/sslPinning';
+import { unwrapTaskList } from '../lib/recordingTasks';
 import { getIdempotencyUuid } from '../lib/random';
 import type { PendingConfirm } from '../types/multiPatient';
 import { trackEvent } from '../lib/analytics';
@@ -867,6 +870,27 @@ export const recordingsApi = {
   async getSoapNote(recordingId: string): Promise<SoapNote> {
     recordingIdSchema.parse(recordingId);
     return apiClient.get(`/api/recordings/${recordingId}/soap-note`);
+  },
+
+  async getRecordingTasks(recordingId: string): Promise<RecordingTask[]> {
+    recordingIdSchema.parse(recordingId);
+    const res = await apiClient.get<{ data: RecordingTask[] }>(
+      `/api/recordings/${recordingId}/tasks`
+    );
+    return unwrapTaskList(res); // rule-10 shape guard (wrapped response)
+  },
+
+  async updateRecordingTaskStatus(
+    recordingId: string,
+    taskId: string,
+    status: 'accepted' | 'dismissed'
+  ): Promise<RecordingTask> {
+    recordingIdSchema.parse(recordingId);
+    // taskId is server-supplied — validate it's a UUID before interpolating so a
+    // stray '/', '?', or dot segment ('.'/'..') can't redirect the PATCH to
+    // another route (e.g. /tasks/.. resolving to the recording route).
+    recordingTaskIdSchema.parse(taskId);
+    return apiClient.patch(`/api/recordings/${recordingId}/tasks/${taskId}`, { status });
   },
 
   /**

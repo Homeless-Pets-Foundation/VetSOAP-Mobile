@@ -124,6 +124,20 @@ export const TRANSLATION_COPY = {
   copyFailed: 'Copy failed.',
 } as const;
 
+export const SUGGESTED_TASKS_COPY = {
+  title: 'Suggested Tasks',
+  subtitle: 'AI-inferred charges and follow-ups from this visit.',
+  chargesHeading: 'Clinical Record Charges',
+  followUpHeading: 'Follow Up',
+  accept: 'Accept',
+  dismiss: 'Dismiss',
+  accepted: 'Accepted',
+  dismissed: 'Dismissed',
+  done: 'Done',
+  acceptFailed: 'Could not accept this task. Please try again.',
+  dismissFailed: 'Could not dismiss this task. Please try again.',
+} as const;
+
 export const TEMPLATE_DEFAULT_COPY = {
   makeDefault: 'Set default',
   defaultLabel: 'Default template',

@@ -170,6 +170,17 @@ export interface SoapNote {
   updatedAt: string;
 }
 
+export type RecordingTaskType = 'todo' | 'billing';
+export type RecordingTaskStatus = 'suggested' | 'accepted' | 'dismissed' | 'done';
+
+export interface RecordingTask {
+  id: string;
+  type: RecordingTaskType;
+  title: string;
+  detail: string | null;
+  status: RecordingTaskStatus;
+}
+
 export interface PaginatedResponse<T> {
   data: T[];
   pagination: {

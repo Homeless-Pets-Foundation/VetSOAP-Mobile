@@ -97,3 +97,26 @@ test('unwrapTaskList guards against null, missing, and non-array data', async ()
   assert.equal(unwrapTaskList({ data: null }).length, 0);
   assert.equal(unwrapTaskList({ data: 'nope' }).length, 0);
 });
+
+test('unwrapTaskList drops malformed items and normalizes detail', async () => {
+  const { unwrapTaskList } = await loadTsModule('src/lib/recordingTasks.ts');
+
+  const good = task('a', 'billing');
+  const out = unwrapTaskList({
+    data: [
+      good,
+      null, // not an object
+      { id: 'b', type: 'billing', title: 't', status: 'suggested' }, // detail missing -> null
+      { id: 'c', type: 'bogus', title: 't', detail: null, status: 'suggested' }, // bad type
+      { id: 'd', type: 'todo', title: 't', detail: null, status: 'invented' }, // bad status
+      { type: 'todo', title: 't', detail: null, status: 'suggested' }, // missing id
+      { id: 'e', type: 'todo', title: 42, detail: null, status: 'suggested' }, // non-string title
+    ],
+  });
+
+  // Only 'a' and 'b' are well-formed.
+  assert.equal(out.length, 2);
+  assert.equal(out[0].id, 'a');
+  assert.equal(out[1].id, 'b');
+  assert.equal(out[1].detail, null); // missing detail normalized to null
+});

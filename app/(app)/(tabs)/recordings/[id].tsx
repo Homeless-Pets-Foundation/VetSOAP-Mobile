@@ -41,7 +41,6 @@ import {
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
-import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuth } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
@@ -897,7 +896,7 @@ export default function RecordingDetailScreen() {
           <SuggestedTasksCard
             recordingId={id}
             tasks={recordingTasks}
-            canManage={canRecordAppointments(user?.role)}
+            canManage={recordingPermissions.canEdit}
           />
         )}
 

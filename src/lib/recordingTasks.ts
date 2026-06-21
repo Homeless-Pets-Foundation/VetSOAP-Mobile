@@ -11,8 +11,38 @@ export function groupRecordingTasks(tasks: RecordingTask[]) {
     .filter((g) => g.tasks.length > 0);
 }
 
+const TASK_TYPES = new Set<RecordingTask['type']>(['todo', 'billing']);
+const TASK_STATUSES = new Set<RecordingTask['status']>([
+  'suggested',
+  'accepted',
+  'dismissed',
+  'done',
+]);
+
+// Validate + normalize a single item from the /tasks response. A malformed
+// entry (null, missing/non-string fields, unknown type/status) is dropped
+// rather than rendered — the card derefs t.type/t.title/t.detail, so a bad
+// item could otherwise crash or blank the recording detail screen.
+function normalizeTask(raw: unknown): RecordingTask | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const t = raw as Record<string, unknown>;
+  if (typeof t.id !== 'string' || typeof t.title !== 'string') return null;
+  if (!TASK_TYPES.has(t.type as RecordingTask['type'])) return null;
+  if (!TASK_STATUSES.has(t.status as RecordingTask['status'])) return null;
+  const detail = typeof t.detail === 'string' ? t.detail : null;
+  return {
+    id: t.id,
+    type: t.type as RecordingTask['type'],
+    title: t.title,
+    detail,
+    status: t.status as RecordingTask['status'],
+  };
+}
+
 // Shape guard for GET /api/recordings/:id/tasks, which responds { data: [...] }.
-// Server can send unexpected shapes / null body (rule 10) — always return an array.
+// Server can send unexpected shapes / null body (rule 10) — always return an
+// array of well-formed tasks (malformed items filtered out).
 export function unwrapTaskList(res: { data?: unknown } | null | undefined): RecordingTask[] {
-  return res && Array.isArray(res.data) ? (res.data as RecordingTask[]) : [];
+  const arr = res && Array.isArray(res.data) ? res.data : [];
+  return arr.map(normalizeTask).filter((t): t is RecordingTask => t !== null);
 }

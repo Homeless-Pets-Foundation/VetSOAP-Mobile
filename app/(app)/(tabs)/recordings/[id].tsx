@@ -41,6 +41,7 @@ import {
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
+import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuth } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
@@ -137,7 +138,11 @@ export default function RecordingDetailScreen() {
     retryDelay: 2000,
   });
 
-  const { data: recordingTasks } = useQuery({
+  const {
+    data: recordingTasks,
+    refetch: refetchTasks,
+    isRefetching: isRefetchingTasks,
+  } = useQuery({
     queryKey: ['recordingTasks', id],
     queryFn: () => recordingsApi.getRecordingTasks(id!),
     enabled: !!id && recording?.status === 'completed',
@@ -146,7 +151,8 @@ export default function RecordingDetailScreen() {
   const handleRefresh = useCallback(() => {
     refetchRecording().catch(() => {});
     refetchSoapNote().catch(() => {});
-  }, [refetchRecording, refetchSoapNote]);
+    refetchTasks().catch(() => {});
+  }, [refetchRecording, refetchSoapNote, refetchTasks]);
 
   // time-to-SOAP — fires once per recording the first time a non-null SOAP
   // renders on this device. Uses timestamps seeded by record.tsx (Finish
@@ -609,7 +615,7 @@ export default function RecordingDetailScreen() {
         className="flex-1"
         refreshControl={
           <RefreshControl
-            refreshing={isRefetchingRecording || isRefetchingSoapNote}
+            refreshing={isRefetchingRecording || isRefetchingSoapNote || isRefetchingTasks}
             onRefresh={handleRefresh}
           />
         }
@@ -896,7 +902,7 @@ export default function RecordingDetailScreen() {
           <SuggestedTasksCard
             recordingId={id}
             tasks={recordingTasks}
-            canManage={recordingPermissions.canEdit}
+            canManage={canRecordAppointments(user?.role)}
           />
         )}
 

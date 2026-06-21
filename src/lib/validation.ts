@@ -29,6 +29,10 @@ export const recordingIdSchema = z
   .string()
   .regex(uuidPattern, 'Invalid recording ID format');
 
+export const recordingTaskIdSchema = z
+  .string()
+  .regex(uuidPattern, 'Invalid task ID format');
+
 export const createRecordingSchema = z.object({
   pimsPatientId: optionalSanitizedString(100, 'PIMS ID too long'),
   patientName: z.preprocess(

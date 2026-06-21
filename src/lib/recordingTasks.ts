@@ -11,6 +11,10 @@ export function groupRecordingTasks(tasks: RecordingTask[]) {
     .filter((g) => g.tasks.length > 0);
 }
 
+// Task IDs are server UUIDs. Rejecting anything else here also blocks
+// path-traversal ids ('.', '..', 'a/b') from ever reaching the PATCH URL.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const TASK_TYPES = new Set<RecordingTask['type']>(['todo', 'billing']);
 const TASK_STATUSES = new Set<RecordingTask['status']>([
   'suggested',
@@ -26,7 +30,8 @@ const TASK_STATUSES = new Set<RecordingTask['status']>([
 function normalizeTask(raw: unknown): RecordingTask | null {
   if (!raw || typeof raw !== 'object') return null;
   const t = raw as Record<string, unknown>;
-  if (typeof t.id !== 'string' || typeof t.title !== 'string') return null;
+  if (typeof t.id !== 'string' || !UUID_RE.test(t.id)) return null;
+  if (typeof t.title !== 'string') return null;
   if (!TASK_TYPES.has(t.type as RecordingTask['type'])) return null;
   if (!TASK_STATUSES.has(t.status as RecordingTask['status'])) return null;
   const detail = typeof t.detail === 'string' ? t.detail : null;

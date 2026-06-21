@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import {
   recordingIdSchema,
+  recordingTaskIdSchema,
   createRecordingSchema,
   searchQuerySchema,
 } from '../lib/validation';
@@ -885,12 +886,11 @@ export const recordingsApi = {
     status: 'accepted' | 'dismissed'
   ): Promise<RecordingTask> {
     recordingIdSchema.parse(recordingId);
-    // recordingId is schema-validated; taskId is server-supplied — encode it so a
-    // stray '/', '?', or dot segment can't redirect the PATCH to another path.
-    return apiClient.patch(
-      `/api/recordings/${recordingId}/tasks/${encodeURIComponent(taskId)}`,
-      { status }
-    );
+    // taskId is server-supplied — validate it's a UUID before interpolating so a
+    // stray '/', '?', or dot segment ('.'/'..') can't redirect the PATCH to
+    // another route (e.g. /tasks/.. resolving to the recording route).
+    recordingTaskIdSchema.parse(taskId);
+    return apiClient.patch(`/api/recordings/${recordingId}/tasks/${taskId}`, { status });
   },
 
   /**

@@ -86,9 +86,10 @@ test('groupRecordingTasks retains tasks of every status (resolved not filtered)'
 test('unwrapTaskList guards against null, missing, and non-array data', async () => {
   const { unwrapTaskList } = await loadTsModule('src/lib/recordingTasks.ts');
 
-  const unwrapped = unwrapTaskList({ data: [task('a', 'billing')] });
+  const UUID_A = '11111111-1111-4111-8111-111111111111';
+  const unwrapped = unwrapTaskList({ data: [task(UUID_A, 'billing')] });
   assert.equal(unwrapped.length, 1);
-  assert.equal(unwrapped[0].id, 'a');
+  assert.equal(unwrapped[0].id, UUID_A);
 
   assert.equal(unwrapTaskList({ data: [] }).length, 0);
   assert.equal(unwrapTaskList(null).length, 0);
@@ -98,25 +99,30 @@ test('unwrapTaskList guards against null, missing, and non-array data', async ()
   assert.equal(unwrapTaskList({ data: 'nope' }).length, 0);
 });
 
-test('unwrapTaskList drops malformed items and normalizes detail', async () => {
+test('unwrapTaskList drops malformed items, rejects non-UUID ids, normalizes detail', async () => {
   const { unwrapTaskList } = await loadTsModule('src/lib/recordingTasks.ts');
 
-  const good = task('a', 'billing');
+  const UUID_A = '11111111-1111-4111-8111-111111111111';
+  const UUID_B = '22222222-2222-4222-8222-222222222222';
+  const UUID_C = '33333333-3333-4333-8333-333333333333';
+
   const out = unwrapTaskList({
     data: [
-      good,
+      task(UUID_A, 'billing'),
       null, // not an object
-      { id: 'b', type: 'billing', title: 't', status: 'suggested' }, // detail missing -> null
-      { id: 'c', type: 'bogus', title: 't', detail: null, status: 'suggested' }, // bad type
-      { id: 'd', type: 'todo', title: 't', detail: null, status: 'invented' }, // bad status
+      { id: UUID_B, type: 'billing', title: 't', status: 'suggested' }, // detail missing -> null
+      { id: UUID_C, type: 'bogus', title: 't', detail: null, status: 'suggested' }, // bad type
+      { id: UUID_C, type: 'todo', title: 't', detail: null, status: 'invented' }, // bad status
       { type: 'todo', title: 't', detail: null, status: 'suggested' }, // missing id
-      { id: 'e', type: 'todo', title: 42, detail: null, status: 'suggested' }, // non-string title
+      { id: UUID_C, type: 'todo', title: 42, detail: null, status: 'suggested' }, // non-string title
+      { id: 'not-a-uuid', type: 'todo', title: 't', detail: null, status: 'suggested' }, // bad id
+      { id: '..', type: 'todo', title: 't', detail: null, status: 'suggested' }, // path-traversal id
     ],
   });
 
-  // Only 'a' and 'b' are well-formed.
+  // Only UUID_A and UUID_B are well-formed.
   assert.equal(out.length, 2);
-  assert.equal(out[0].id, 'a');
-  assert.equal(out[1].id, 'b');
+  assert.equal(out[0].id, UUID_A);
+  assert.equal(out[1].id, UUID_B);
   assert.equal(out[1].detail, null); // missing detail normalized to null
 });

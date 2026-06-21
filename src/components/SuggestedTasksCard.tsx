@@ -40,9 +40,15 @@ export function SuggestedTasksCard({ recordingId, tasks, canManage }: SuggestedT
     mutationFn: (vars: { taskId: string; status: 'accepted' | 'dismissed'; type: RecordingTaskType }) =>
       recordingsApi.updateRecordingTaskStatus(recordingId, vars.taskId, vars.status),
     onSuccess: (_updated, vars) => {
-      queryClient.invalidateQueries({ queryKey: ['recordingTasks', recordingId] }).catch(() => {});
       trackEvent({ name: 'suggested_task_resolved', props: { action: vars.status, type: vars.type } });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      // Return the invalidation promise so the mutation stays pending (buttons
+      // stay disabled) until the refetched list replaces the stale 'suggested'
+      // row — otherwise a slow refetch would re-enable the buttons and allow a
+      // second conflicting PATCH (e.g. Accept then Dismiss) before the UI updates.
+      return queryClient
+        .invalidateQueries({ queryKey: ['recordingTasks', recordingId] })
+        .catch(() => {});
     },
     onError: (error: unknown, vars) => {
       if (error instanceof ApiError && error.code === 'MFA_REQUIRED') return;

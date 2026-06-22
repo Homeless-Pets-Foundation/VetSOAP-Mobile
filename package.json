@@ -1,6 +1,6 @@
 {
   "name": "captivet-mobile",
-  "version": "1.13.3",
+  "version": "1.13.6",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",

@@ -126,3 +126,54 @@ test('unwrapTaskList drops malformed items, rejects non-UUID ids, normalizes det
   assert.equal(out[1].id, UUID_B);
   assert.equal(out[1].detail, null); // missing detail normalized to null
 });
+
+test('getTasksRefetchInterval polls only while empty + recently completed + active', async () => {
+  const { getTasksRefetchInterval } = await loadTsModule('src/lib/recordingTasks.ts');
+  const now = 1_000_000_000_000;
+
+  // Have tasks -> stop polling.
+  assert.equal(
+    getTasksRefetchInterval({ tasksCount: 3, appActive: true, completedAtMs: now, nowMs: now, attempts: 0 }),
+    false
+  );
+
+  // Backgrounded -> stop polling (even if empty + recent).
+  assert.equal(
+    getTasksRefetchInterval({ tasksCount: 0, appActive: false, completedAtMs: now, nowMs: now, attempts: 0 }),
+    false
+  );
+
+  // Empty + just completed + active -> poll at the base interval.
+  assert.equal(
+    getTasksRefetchInterval({ tasksCount: 0, appActive: true, completedAtMs: now, nowMs: now, attempts: 0 }),
+    5_000
+  );
+
+  // Backoff grows with attempts and caps at 30s.
+  assert.equal(
+    getTasksRefetchInterval({ tasksCount: 0, appActive: true, completedAtMs: now, nowMs: now, attempts: 1 }),
+    7_500
+  );
+  assert.equal(
+    getTasksRefetchInterval({ tasksCount: 0, appActive: true, completedAtMs: now, nowMs: now, attempts: 20 }),
+    30_000
+  );
+
+  // Empty but completed long ago (> 10 min) -> genuinely empty, stop polling.
+  assert.equal(
+    getTasksRefetchInterval({
+      tasksCount: 0,
+      appActive: true,
+      completedAtMs: now - 11 * 60 * 1000,
+      nowMs: now,
+      attempts: 0,
+    }),
+    false
+  );
+
+  // Unknown completion time + empty + active -> still polls (best effort).
+  assert.equal(
+    getTasksRefetchInterval({ tasksCount: 0, appActive: true, completedAtMs: null, nowMs: now, attempts: 0 }),
+    5_000
+  );
+});

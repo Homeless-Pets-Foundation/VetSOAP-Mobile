@@ -51,3 +51,27 @@ export function unwrapTaskList(res: { data?: unknown } | null | undefined): Reco
   const arr = res && Array.isArray(res.data) ? res.data : [];
   return arr.map(normalizeTask).filter((t): t is RecordingTask => t !== null);
 }
+
+// AI tasks are created by the post-SOAP enrichment job a few seconds AFTER a
+// recording reaches 'completed'. A recording viewed in that window fetches an
+// empty list and (without this) caches it forever, hiding the card even after
+// the tasks exist server-side. Poll briefly while the list is empty so it
+// self-heals; stop once tasks arrive, when backgrounded, or once we're well
+// past completion (then an empty list is genuinely empty — many recordings
+// legitimately have zero suggested tasks, so we must not poll them forever).
+const TASKS_POLL_WINDOW_MS = 10 * 60 * 1000; // 10 min after completion
+
+export function getTasksRefetchInterval(opts: {
+  tasksCount: number;
+  appActive: boolean;
+  completedAtMs: number | null; // Date.parse(recording.processingCompletedAt)
+  nowMs: number;
+  attempts: number; // query.state.dataUpdateCount
+}): number | false {
+  const { tasksCount, appActive, completedAtMs, nowMs, attempts } = opts;
+  if (!appActive) return false;
+  if (tasksCount > 0) return false;
+  if (completedAtMs != null && nowMs - completedAtMs > TASKS_POLL_WINDOW_MS) return false;
+  // Backoff 5s → 7.5s → … capped at 30s (same shape as the recording query).
+  return Math.min(5_000 * Math.pow(1.5, attempts), 30_000);
+}

@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator } from 'react-native';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  runOnJS,
+} from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import { Play, Pause, RotateCcw, RotateCw, Mic } from 'lucide-react-native';
 import { Card } from './ui/Card';
 import { useAudioPlayback } from '../hooks/useAudioPlayback';
@@ -21,6 +27,175 @@ function formatTime(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.floor(totalSeconds % 60);
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+const SEEK_BAR_TOUCH_HEIGHT = 44;
+const SEEK_BAR_TRACK_HEIGHT = 6;
+const SEEK_BAR_THUMB_SIZE = 16;
+
+interface SeekBarProps {
+  currentTimeSV: SharedValue<number>;
+  duration: number;
+  displayTime: number;
+  enabled: boolean;
+  onScrubStart: () => void;
+  onScrub: (seconds: number) => void;
+  onScrubEnd: (seconds: number) => void;
+}
+
+/**
+ * Interactive timeline: tap anywhere or drag the thumb to scrub. Fill + thumb
+ * are driven entirely on the UI thread (worklets) so the playhead slides at
+ * 60 Hz with zero JS cost; only the mm:ss label hops to JS, gated to ~1/sec.
+ *
+ * While scrubbing, fill/thumb follow the finger (scrubProgressSV) instead of
+ * currentTimeSV so live playback can't fight the drag. The parent pauses on
+ * scrub start and resumes on end (onScrubStart/onScrubEnd), and the actual
+ * seek lands once, on release — not on every drag sample.
+ */
+function SeekBar({
+  currentTimeSV,
+  duration,
+  displayTime,
+  enabled,
+  onScrubStart,
+  onScrub,
+  onScrubEnd,
+}: SeekBarProps) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [scrubLabel, setScrubLabel] = useState<number | null>(null);
+
+  const trackWidthSV = useSharedValue(0);
+  const durationSV = useSharedValue(duration);
+  const scrubbingSV = useSharedValue(false);
+  const scrubProgressSV = useSharedValue(0);
+  const lastLabelSecSV = useSharedValue(-1);
+
+  useEffect(() => {
+    trackWidthSV.value = trackWidth;
+  }, [trackWidth, trackWidthSV]);
+  useEffect(() => {
+    durationSV.value = duration;
+  }, [duration, durationSV]);
+
+  // 0..1 progress: scrub position while dragging, else live playback position.
+  // Inlined (not a shared helper) in each animated style: Reanimated only tracks
+  // shared-value reads in the *direct* worklet body, so reading currentTimeSV via
+  // a nested function would freeze the style at its first value (the playhead
+  // wouldn't move during playback).
+  const fillStyle = useAnimatedStyle(() => {
+    const dur = durationSV.value > 0 ? durationSV.value : 1;
+    const ratio = scrubbingSV.value
+      ? scrubProgressSV.value
+      : Math.min(1, Math.max(0, currentTimeSV.value / dur));
+    return { width: `${ratio * 100}%` };
+  });
+
+  const thumbStyle = useAnimatedStyle(() => {
+    const dur = durationSV.value > 0 ? durationSV.value : 1;
+    const ratio = scrubbingSV.value
+      ? scrubProgressSV.value
+      : Math.min(1, Math.max(0, currentTimeSV.value / dur));
+    return { left: ratio * trackWidthSV.value - SEEK_BAR_THUMB_SIZE / 2 };
+  });
+
+  const pan = Gesture.Pan()
+    .enabled(enabled)
+    .minDistance(0) // 0 so a plain tap also scrubs (onBegin → onEnd with no move)
+    .onBegin((e) => {
+      'worklet';
+      const cw = trackWidthSV.value;
+      if (cw <= 0) return;
+      scrubbingSV.value = true;
+      const ratio = Math.min(1, Math.max(0, e.x / cw));
+      scrubProgressSV.value = ratio;
+      lastLabelSecSV.value = -1;
+      runOnJS(onScrubStart)();
+    })
+    .onUpdate((e) => {
+      'worklet';
+      const cw = trackWidthSV.value;
+      if (cw <= 0) return;
+      const ratio = Math.min(1, Math.max(0, e.x / cw));
+      scrubProgressSV.value = ratio;
+      const seconds = ratio * durationSV.value;
+      const sec = Math.floor(seconds);
+      if (sec !== lastLabelSecSV.value) {
+        lastLabelSecSV.value = sec;
+        runOnJS(setScrubLabel)(seconds);
+      }
+    })
+    .onEnd(() => {
+      'worklet';
+      const seconds = scrubProgressSV.value * durationSV.value;
+      // Pin the live playhead to the target now (UI thread) so when scrubbingSV
+      // flips false in onFinalize the fill stays put — the async seekTo below
+      // writes the same value a few ms later, but this kills the 1-frame snap-back.
+      currentTimeSV.value = seconds;
+      runOnJS(onScrub)(seconds);
+      runOnJS(onScrubEnd)(seconds);
+    })
+    .onFinalize(() => {
+      'worklet';
+      // Always clears, even on a cancelled gesture, so the bar reverts to
+      // following live playback and never sticks at the abandoned position.
+      scrubbingSV.value = false;
+      runOnJS(setScrubLabel)(null);
+    });
+
+  const leftLabel = scrubLabel ?? displayTime;
+
+  return (
+    <View className="flex-1 ml-3">
+      <GestureDetector gesture={pan}>
+        {/* Tall transparent hit area (44pt) wraps the thin visible track so the
+            timeline is easy to grab; the track is vertically centered in it. */}
+        <View
+          onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}
+          accessibilityRole="adjustable"
+          accessibilityLabel="Playback position"
+          style={{ height: SEEK_BAR_TOUCH_HEIGHT, justifyContent: 'center' }}
+        >
+          <View
+            className="rounded-pill bg-surface-sunken overflow-hidden"
+            style={{ height: SEEK_BAR_TRACK_HEIGHT }}
+          >
+            <Animated.View className="h-full rounded-pill bg-brand-500" style={fillStyle} />
+          </View>
+          {enabled && trackWidth > 0 && (
+            <Animated.View
+              pointerEvents="none"
+              className="rounded-full bg-brand-500"
+              style={[
+                {
+                  position: 'absolute',
+                  width: SEEK_BAR_THUMB_SIZE,
+                  height: SEEK_BAR_THUMB_SIZE,
+                },
+                thumbStyle,
+              ]}
+            />
+          )}
+        </View>
+      </GestureDetector>
+      <View className="flex-row justify-between mt-1">
+        {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
+        <Text
+          className="text-caption text-content-tertiary"
+          style={{ flexShrink: 0, paddingRight: 2 }}
+        >
+          {`${formatTime(leftLabel)} `}
+        </Text>
+        {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
+        <Text
+          className="text-caption text-content-tertiary"
+          style={{ flexShrink: 0, paddingRight: 2 }}
+        >
+          {`${duration > 0 ? formatTime(duration) : '--:--'} `}
+        </Text>
+      </View>
+    </View>
+  );
 }
 
 interface RecordingAudioPlayerProps {
@@ -185,11 +360,28 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
     return () => clearInterval(interval);
   }, [isPlaying, currentTimeRef]);
 
-  const progressStyle = useAnimatedStyle(() => {
-    const dur = duration > 0 ? duration : 1;
-    const ratio = Math.min(1, Math.max(0, currentTimeSV.value / dur));
-    return { width: `${ratio * 100}%` };
-  }, [duration]);
+  // Scrub: pause while the finger is down so live playback doesn't race the
+  // drag, seek to the released position, then resume only if it was playing.
+  const wasPlayingBeforeScrubRef = useRef(false);
+  const handleScrubStart = useCallback(() => {
+    wasPlayingBeforeScrubRef.current = isPlaying;
+    if (isPlaying) playback.pause();
+  }, [isPlaying, playback]);
+
+  const handleScrub = useCallback(
+    (seconds: number) => {
+      // Update the label immediately: when the recording is paused, isPlaying
+      // never changes across a scrub, so the displayTime effect won't re-run —
+      // without this the label would snap back to the pre-scrub time.
+      setDisplayTime(seconds);
+      playback.seekTo(seconds).catch(() => {});
+    },
+    [playback]
+  );
+
+  const handleScrubEnd = useCallback(() => {
+    if (wasPlayingBeforeScrubRef.current) playback.play();
+  }, [playback]);
 
   const handlePlayPause = useCallback(() => {
     if (phase === 'idle' || phase === 'error') {
@@ -316,27 +508,15 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
               <RotateCw size={20} color={colors.contentSecondary} />
             </Pressable>
 
-            <View className="flex-1 ml-3">
-              <View className="h-1.5 rounded-pill bg-surface-sunken overflow-hidden">
-                <Animated.View className="h-full rounded-pill bg-brand-500" style={progressStyle} />
-              </View>
-              <View className="flex-row justify-between mt-1">
-                {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
-                <Text
-                  className="text-caption text-content-tertiary"
-                  style={{ flexShrink: 0, paddingRight: 2 }}
-                >
-                  {`${formatTime(displayTime)} `}
-                </Text>
-                {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
-                <Text
-                  className="text-caption text-content-tertiary"
-                  style={{ flexShrink: 0, paddingRight: 2 }}
-                >
-                  {`${duration > 0 ? formatTime(duration) : '--:--'} `}
-                </Text>
-              </View>
-            </View>
+            <SeekBar
+              currentTimeSV={currentTimeSV}
+              duration={duration}
+              displayTime={displayTime}
+              enabled={phase === 'ready'}
+              onScrubStart={handleScrubStart}
+              onScrub={handleScrub}
+              onScrubEnd={handleScrubEnd}
+            />
           </View>
 
           {segmentUrls.length > 1 && (

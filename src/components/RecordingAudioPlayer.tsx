@@ -172,6 +172,10 @@ function SeekBar({
   const tap = Gesture.Tap()
     .enabled(enabled)
     .maxDuration(300)
+    // Cancel the tap on any finger travel so a short vertical scroll that starts
+    // on the 44pt target (and trips the pan's failOffsetY) isn't reported as a
+    // tap-to-seek and jump playback while the user meant to scroll the page.
+    .maxDistance(10)
     .onEnd((e, success) => {
       'worklet';
       if (!success) return;

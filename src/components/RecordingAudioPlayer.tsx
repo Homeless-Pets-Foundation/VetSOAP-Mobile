@@ -78,6 +78,7 @@ function SeekBar({
   const durationSV = useSharedValue(duration);
   const scrubbingSV = useSharedValue(false);
   const scrubProgressSV = useSharedValue(0);
+  const scrubStartedSV = useSharedValue(false);
   const committedSV = useSharedValue(false);
   const lastLabelMsSV = useSharedValue(0);
 
@@ -122,6 +123,7 @@ function SeekBar({
       const cw = trackWidthSV.value;
       if (cw <= 0) return;
       scrubbingSV.value = true;
+      scrubStartedSV.value = true;
       committedSV.value = false;
       scrubProgressSV.value = Math.min(1, Math.max(0, e.x / cw));
       lastLabelMsSV.value = 0;
@@ -153,12 +155,16 @@ function SeekBar({
     })
     .onFinalize(() => {
       'worklet';
-      // Reverts the bar to following live playback. If the gesture was cancelled
-      // (system interruption, backgrounding) onEnd never ran, so resume playback
-      // the parent paused on start — otherwise audio stays stuck paused.
+      // onFinalize also fires for pans that fail before onStart (e.g. a vertical
+      // scroll beginning over the bar). Only resume on cancel when THIS gesture
+      // actually started — i.e. onStart ran and paused playback — and never
+      // committed; otherwise merely scrolling over the bar could resume audio the
+      // user had paused. Reset both flags so stale state can't leak to the next.
       scrubbingSV.value = false;
       runOnJS(setScrubLabel)(null);
-      if (!committedSV.value) runOnJS(onScrubCancel)();
+      if (scrubStartedSV.value && !committedSV.value) runOnJS(onScrubCancel)();
+      scrubStartedSV.value = false;
+      committedSV.value = false;
     });
 
   // Tap = tap-to-seek. Separate from pan so the pan can require horizontal travel

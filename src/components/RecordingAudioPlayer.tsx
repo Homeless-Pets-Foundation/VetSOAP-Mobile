@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator } from 'react-native';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  runOnJS,
+} from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import { Play, Pause, RotateCcw, RotateCw, Mic } from 'lucide-react-native';
 import { Card } from './ui/Card';
 import { useAudioPlayback } from '../hooks/useAudioPlayback';
@@ -21,6 +27,238 @@ function formatTime(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.floor(totalSeconds % 60);
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+const SEEK_BAR_TOUCH_HEIGHT = 44;
+const SEEK_BAR_TRACK_HEIGHT = 6;
+const SEEK_BAR_THUMB_SIZE = 16;
+const SCRUB_LABEL_THROTTLE_MS = 100;
+
+interface SeekBarProps {
+  currentTimeSV: SharedValue<number>;
+  duration: number;
+  displayTime: number;
+  enabled: boolean;
+  // Pan-scrub lifecycle: start pauses live playback, end commits the seek and
+  // resumes after it settles, cancel resumes without seeking (gesture aborted).
+  onScrubStart: () => void;
+  onScrubEnd: (seconds: number) => void;
+  onScrubCancel: () => void;
+  // Direct seek with no pause/resume dance — used by tap and the a11y
+  // increment/decrement actions (playback, if any, just continues).
+  onSeekTo: (seconds: number) => void;
+}
+
+/**
+ * Interactive timeline: tap anywhere or drag the thumb to scrub. Fill + thumb
+ * are driven entirely on the UI thread (worklets) so the playhead slides at
+ * 60 Hz with zero JS cost; only the mm:ss label hops to JS, throttled by
+ * wall-clock so a fast drag can't spam React re-renders.
+ *
+ * While dragging, fill/thumb follow the finger (scrubProgressSV) instead of
+ * currentTimeSV so live playback can't fight the drag. The pan pauses playback
+ * on start and the parent resumes once the seek lands (or on cancel). The pan
+ * uses an activeOffsetX so a vertical drag falls through to the surrounding
+ * ScrollView; a separate Tap handles tap-to-seek.
+ */
+function SeekBar({
+  currentTimeSV,
+  duration,
+  displayTime,
+  enabled,
+  onScrubStart,
+  onScrubEnd,
+  onScrubCancel,
+  onSeekTo,
+}: SeekBarProps) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [scrubLabel, setScrubLabel] = useState<number | null>(null);
+
+  const trackWidthSV = useSharedValue(0);
+  const durationSV = useSharedValue(duration);
+  const scrubbingSV = useSharedValue(false);
+  const scrubProgressSV = useSharedValue(0);
+  const scrubStartedSV = useSharedValue(false);
+  const committedSV = useSharedValue(false);
+  const lastLabelMsSV = useSharedValue(0);
+
+  useEffect(() => {
+    trackWidthSV.value = trackWidth;
+  }, [trackWidth, trackWidthSV]);
+  useEffect(() => {
+    durationSV.value = duration;
+  }, [duration, durationSV]);
+
+  // 0..1 progress: scrub position while dragging, else live playback position.
+  // Inlined (not a shared helper) in each animated style: Reanimated only tracks
+  // shared-value reads in the *direct* worklet body, so reading currentTimeSV via
+  // a nested function would freeze the style at its first value (the playhead
+  // wouldn't move during playback).
+  const fillStyle = useAnimatedStyle(() => {
+    const dur = durationSV.value > 0 ? durationSV.value : 1;
+    const ratio = scrubbingSV.value
+      ? scrubProgressSV.value
+      : Math.min(1, Math.max(0, currentTimeSV.value / dur));
+    return { width: `${ratio * 100}%` };
+  });
+
+  const thumbStyle = useAnimatedStyle(() => {
+    const dur = durationSV.value > 0 ? durationSV.value : 1;
+    const ratio = scrubbingSV.value
+      ? scrubProgressSV.value
+      : Math.min(1, Math.max(0, currentTimeSV.value / dur));
+    return { left: ratio * trackWidthSV.value - SEEK_BAR_THUMB_SIZE / 2 };
+  });
+
+  // Pan = drag-to-scrub. activeOffsetX gates activation on horizontal travel so a
+  // vertical drag that starts on the bar fails the pan and scrolls the page
+  // instead. Pause/scrub-state begins in onStart (post-activation), never onBegin,
+  // so a vertical scroll-through never pauses playback.
+  const pan = Gesture.Pan()
+    .enabled(enabled)
+    .activeOffsetX([-10, 10])
+    .failOffsetY([-12, 12])
+    .onStart((e) => {
+      'worklet';
+      const cw = trackWidthSV.value;
+      if (cw <= 0) return;
+      scrubbingSV.value = true;
+      scrubStartedSV.value = true;
+      committedSV.value = false;
+      scrubProgressSV.value = Math.min(1, Math.max(0, e.x / cw));
+      lastLabelMsSV.value = 0;
+      runOnJS(onScrubStart)();
+    })
+    .onUpdate((e) => {
+      'worklet';
+      const cw = trackWidthSV.value;
+      if (cw <= 0) return;
+      const ratio = Math.min(1, Math.max(0, e.x / cw));
+      scrubProgressSV.value = ratio;
+      // Throttle the JS label hop by wall-clock (not by whole-second, which a fast
+      // drag crosses every frame) so the scrub stays UI-thread-only.
+      const now = Date.now();
+      if (now - lastLabelMsSV.value >= SCRUB_LABEL_THROTTLE_MS) {
+        lastLabelMsSV.value = now;
+        runOnJS(setScrubLabel)(ratio * durationSV.value);
+      }
+    })
+    .onEnd(() => {
+      'worklet';
+      const seconds = scrubProgressSV.value * durationSV.value;
+      committedSV.value = true;
+      // Pin the live playhead to the target now (UI thread) so when scrubbingSV
+      // flips false in onFinalize the fill stays put — the async seekTo (parent)
+      // writes the same value a few ms later, but this kills the 1-frame snap-back.
+      currentTimeSV.value = seconds;
+      runOnJS(onScrubEnd)(seconds);
+    })
+    .onFinalize(() => {
+      'worklet';
+      // onFinalize also fires for pans that fail before onStart (e.g. a vertical
+      // scroll beginning over the bar). Only resume on cancel when THIS gesture
+      // actually started — i.e. onStart ran and paused playback — and never
+      // committed; otherwise merely scrolling over the bar could resume audio the
+      // user had paused. Reset both flags so stale state can't leak to the next.
+      scrubbingSV.value = false;
+      runOnJS(setScrubLabel)(null);
+      if (scrubStartedSV.value && !committedSV.value) runOnJS(onScrubCancel)();
+      scrubStartedSV.value = false;
+      committedSV.value = false;
+    });
+
+  // Tap = tap-to-seek. Separate from pan so the pan can require horizontal travel
+  // (above) without losing the tap affordance.
+  const tap = Gesture.Tap()
+    .enabled(enabled)
+    .maxDuration(300)
+    // Cancel the tap on any finger travel so a short vertical scroll that starts
+    // on the 44pt target (and trips the pan's failOffsetY) isn't reported as a
+    // tap-to-seek and jump playback while the user meant to scroll the page.
+    .maxDistance(10)
+    .onEnd((e, success) => {
+      'worklet';
+      if (!success) return;
+      const cw = trackWidthSV.value;
+      if (cw <= 0) return;
+      const seconds = Math.min(1, Math.max(0, e.x / cw)) * durationSV.value;
+      currentTimeSV.value = seconds;
+      runOnJS(onSeekTo)(seconds);
+    });
+
+  const gesture = Gesture.Exclusive(pan, tap);
+
+  const leftLabel = scrubLabel ?? displayTime;
+
+  // A11y: expose increment/decrement so screen-reader users get a working
+  // adjustable control (swipe up/down seeks by the same 15s step as the buttons).
+  const handleAccessibilityAction = useCallback(
+    (event: { nativeEvent: { actionName: string } }) => {
+      const delta = event.nativeEvent.actionName === 'increment' ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS;
+      const target = Math.min(duration, Math.max(0, displayTime + delta));
+      onSeekTo(target);
+    },
+    [duration, displayTime, onSeekTo]
+  );
+
+  return (
+    <View className="flex-1 ml-3">
+      <GestureDetector gesture={gesture}>
+        {/* Tall transparent hit area (44pt) wraps the thin visible track so the
+            timeline is easy to grab; the track is vertically centered in it. */}
+        <View
+          onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}
+          accessibilityRole="adjustable"
+          accessibilityLabel="Playback position"
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={handleAccessibilityAction}
+          accessibilityValue={{
+            min: 0,
+            max: duration > 0 ? Math.floor(duration) : 0,
+            now: Math.floor(Math.min(leftLabel, duration > 0 ? duration : leftLabel)),
+          }}
+          style={{ height: SEEK_BAR_TOUCH_HEIGHT, justifyContent: 'center' }}
+        >
+          <View
+            className="rounded-pill bg-surface-sunken overflow-hidden"
+            style={{ height: SEEK_BAR_TRACK_HEIGHT }}
+          >
+            <Animated.View className="h-full rounded-pill bg-brand-500" style={fillStyle} />
+          </View>
+          {enabled && trackWidth > 0 && (
+            <Animated.View
+              pointerEvents="none"
+              className="rounded-full bg-brand-500"
+              style={[
+                {
+                  position: 'absolute',
+                  width: SEEK_BAR_THUMB_SIZE,
+                  height: SEEK_BAR_THUMB_SIZE,
+                },
+                thumbStyle,
+              ]}
+            />
+          )}
+        </View>
+      </GestureDetector>
+      <View className="flex-row justify-between mt-1">
+        {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
+        <Text
+          className="text-caption text-content-tertiary"
+          style={{ flexShrink: 0, paddingRight: 2 }}
+        >
+          {`${formatTime(leftLabel)} `}
+        </Text>
+        {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
+        <Text
+          className="text-caption text-content-tertiary"
+          style={{ flexShrink: 0, paddingRight: 2 }}
+        >
+          {`${duration > 0 ? formatTime(duration) : '--:--'} `}
+        </Text>
+      </View>
+    </View>
+  );
 }
 
 interface RecordingAudioPlayerProps {
@@ -185,11 +423,51 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
     return () => clearInterval(interval);
   }, [isPlaying, currentTimeRef]);
 
-  const progressStyle = useAnimatedStyle(() => {
-    const dur = duration > 0 ? duration : 1;
-    const ratio = Math.min(1, Math.max(0, currentTimeSV.value / dur));
-    return { width: `${ratio * 100}%` };
-  }, [duration]);
+  // Scrub: pause while the finger is down so live playback doesn't race the
+  // drag, seek to the released position, then resume only if it was playing.
+  const wasPlayingBeforeScrubRef = useRef(false);
+  const handleScrubStart = useCallback(() => {
+    wasPlayingBeforeScrubRef.current = isPlaying;
+    if (isPlaying) playback.pause();
+  }, [isPlaying, playback]);
+
+  const handleScrubEnd = useCallback(
+    (seconds: number) => {
+      // Update the label immediately: when the recording is paused, isPlaying
+      // never changes across a scrub, so the displayTime effect won't re-run —
+      // without this the label would snap back to the pre-scrub time.
+      setDisplayTime(seconds);
+      // Resume ONLY after the seek lands. Resuming before seekTo settles can
+      // replay from the pre-scrub position / emit stale status ticks (P2).
+      playback
+        .seekTo(seconds)
+        .catch(() => {})
+        .finally(() => {
+          if (!wasPlayingBeforeScrubRef.current) return;
+          // Don't resume when scrubbed to (or within 50ms of) the end: play()
+          // treats currentTime >= dur - 0.05 as EOF and rewinds to 0, which would
+          // restart the recording instead of leaving it parked at the end (P2).
+          if (duration > 0 && seconds >= duration - 0.05) return;
+          playback.play();
+        });
+    },
+    [playback, duration]
+  );
+
+  // Pan cancelled before release (system interruption, backgrounding): no seek
+  // happened, but onScrubStart already paused — resume so audio isn't stuck.
+  const handleScrubCancel = useCallback(() => {
+    if (wasPlayingBeforeScrubRef.current) playback.play();
+  }, [playback]);
+
+  // Tap / a11y seek: no pause happened, so just seek; playback (if any) continues.
+  const handleSeekTo = useCallback(
+    (seconds: number) => {
+      setDisplayTime(seconds);
+      playback.seekTo(seconds).catch(() => {});
+    },
+    [playback]
+  );
 
   const handlePlayPause = useCallback(() => {
     if (phase === 'idle' || phase === 'error') {
@@ -316,27 +594,16 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
               <RotateCw size={20} color={colors.contentSecondary} />
             </Pressable>
 
-            <View className="flex-1 ml-3">
-              <View className="h-1.5 rounded-pill bg-surface-sunken overflow-hidden">
-                <Animated.View className="h-full rounded-pill bg-brand-500" style={progressStyle} />
-              </View>
-              <View className="flex-row justify-between mt-1">
-                {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
-                <Text
-                  className="text-caption text-content-tertiary"
-                  style={{ flexShrink: 0, paddingRight: 2 }}
-                >
-                  {`${formatTime(displayTime)} `}
-                </Text>
-                {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
-                <Text
-                  className="text-caption text-content-tertiary"
-                  style={{ flexShrink: 0, paddingRight: 2 }}
-                >
-                  {`${duration > 0 ? formatTime(duration) : '--:--'} `}
-                </Text>
-              </View>
-            </View>
+            <SeekBar
+              currentTimeSV={currentTimeSV}
+              duration={duration}
+              displayTime={displayTime}
+              enabled={phase === 'ready'}
+              onScrubStart={handleScrubStart}
+              onScrubEnd={handleScrubEnd}
+              onScrubCancel={handleScrubCancel}
+              onSeekTo={handleSeekTo}
+            />
           </View>
 
           {segmentUrls.length > 1 && (

@@ -58,6 +58,10 @@ export function UploadOverlay({
   useEffect(() => {
     if (!visible) {
       confirmedIdsRef.current = new Set();
+      // Clear any pending toast too — else a slow 2s timer that never fired
+      // leaves a stale "<old patient> uploaded" that remounts on the next
+      // submit in the same Record screen (wrong/confusing patient context).
+      setSlotToast(null);
       return;
     }
     for (const s of slots) {

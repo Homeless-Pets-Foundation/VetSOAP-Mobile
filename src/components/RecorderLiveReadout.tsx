@@ -1,6 +1,5 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import * as Haptics from 'expo-haptics';
 import { AudioWaveform } from './AudioWaveform';
 import {
   LONG_RECORDING_WARNING_COPY,
@@ -78,17 +77,10 @@ export function RecorderLiveReadout({
     };
   }, [isLive, getLiveStats]);
 
-  // Haptic "heartbeat" — a light tap every ~10s while actively capturing, so
-  // the clinician feels the recording is alive without watching the screen.
-  // Cleared on pause/stop. Wrapped .catch (rule 4: tablets/emulators lacking a
-  // haptic motor reject and would otherwise crash a release build).
-  React.useEffect(() => {
-    if (!isRecording || isPaused) return;
-    const id = setInterval(() => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    }, 10_000);
-    return () => clearInterval(id);
-  }, [isRecording, isPaused]);
+  // No haptic "heartbeat" during capture: a periodic motor buzz on a device
+  // using the built-in mic (or resting on the same surface) bleeds into the
+  // appointment audio and degrades transcription/SOAP. Not worth the
+  // "feels alive" cue — the live waveform + timer already convey that.
 
   const liveSeconds = isLive ? stats.durationSeconds : fallbackDurationSeconds;
   const totalSeconds = baseDurationSeconds + liveSeconds;

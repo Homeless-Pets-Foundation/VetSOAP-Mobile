@@ -98,7 +98,13 @@ export function ExportSheet({
         {soapNote.isExported && (
           <View className="flex-row items-center rounded-full bg-brand-50 dark:bg-surface-sunken px-2 py-1">
             <CheckCircle color={colors.brand500} size={13} />
-            <Text className="text-caption text-brand-700 dark:text-brand-500 ml-1">Exported</Text>
+            <Text
+              className="text-caption text-brand-700 dark:text-brand-500 ml-1"
+              // flexShrink:0 + paddingRight stops Android clipping the last glyph of the single-word "Exported" badge label
+              style={{ flexShrink: 0, paddingRight: 2 }}
+            >
+              Exported
+            </Text>
           </View>
         )}
       </View>

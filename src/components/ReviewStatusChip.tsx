@@ -51,7 +51,12 @@ export function ReviewStatusChip({
       ) : (
         <Icon color={iconColor} size={13} strokeWidth={2.4} />
       )}
-      <Text className={`text-caption font-semibold ml-1 ${textClass}`} numberOfLines={1}>
+      <Text
+        className={`text-caption font-semibold ml-1 ${textClass}`}
+        numberOfLines={1}
+        // flexShrink:0 + paddingRight stops Android clipping the single-word "Reviewed" label in this self-end flex-row chip
+        style={{ flexShrink: 0, paddingRight: 2 }}
+      >
         {label}
       </Text>
     </Pressable>

@@ -128,7 +128,13 @@ export function SuggestedTasksCard({ recordingId, tasks, canManage }: SuggestedT
                         </Button>
                       </View>
                     ) : resolved ? (
-                      <Text className="text-caption text-content-tertiary ml-2">{resolved}</Text>
+                      <Text
+                        className="text-caption text-content-tertiary ml-2"
+                        // flexShrink:0 + paddingRight stops Android clipping the last glyph of single-word status labels ("Accepted"/"Dismissed") next to the flex-1 title
+                        style={{ flexShrink: 0, paddingRight: 2 }}
+                      >
+                        {resolved}
+                      </Text>
                     ) : null}
                   </View>
                   {task.detail ? (

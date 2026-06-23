@@ -27,6 +27,14 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const plugins: ExpoConfig['plugins'] = [
     'expo-router',
     'expo-asset',
+    // Build-time font embed (variable Inter). Synchronous availability, no
+    // runtime useFonts/splash-gate (rules 1/24). The plugin needs explicit
+    // .ttf paths — it does not expand globs. Family registers as "Inter";
+    // font-medium/semibold/bold keep working via fontWeight on the wght axis.
+    [
+      'expo-font',
+      { fonts: ['./assets/fonts/Inter-Variable.ttf'] },
+    ],
     [
       'expo-audio',
       {

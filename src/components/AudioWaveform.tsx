@@ -4,6 +4,7 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
+  withRepeat,
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
@@ -67,12 +68,57 @@ const WaveBar = React.memo(function WaveBar({ index, barCount, isActive, isPause
   );
 });
 
+/**
+ * Slow breathing ring behind the bars — telegraphs "alive / capturing". Only
+ * animates while the recorder is live (isActive && !isPaused); otherwise it
+ * stays invisible. brand-tinted via bg-brand-500 at low opacity so it reads in
+ * both light + dark and respects the dark-mode color guard.
+ */
+function BreathingRing({ active }: { active: boolean }) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (active) {
+      progress.value = withRepeat(
+        withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.ease) }),
+        -1,
+        true
+      );
+    } else {
+      cancelAnimation(progress);
+      progress.value = withTiming(0, { duration: 300 });
+    }
+    return () => { cancelAnimation(progress); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- progress is a stable SharedValue ref
+  }, [active]);
+
+  const style = useAnimatedStyle(() => ({
+    // Opacity floors at 0 (progress=0 when idle) so the ring is fully invisible
+    // until recording — no stray ghost behind the resting bars.
+    opacity: progress.value * 0.18,
+    // Fills the box (left:0/right:0 → symmetric, so it stays centered) and
+    // breathes via scale. scaleX<1 keeps it a centered pill behind the bars.
+    transform: [{ scaleX: 0.5 + progress.value * 0.08 }, { scaleY: 0.85 + progress.value * 0.15 }],
+  }));
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      className="absolute rounded-full bg-brand-500"
+      style={[{ left: 0, right: 0, top: 0, bottom: 0 }, style]}
+    />
+  );
+}
+
 export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWaveformProps) {
   const { isTablet: isWide } = useResponsive();
   const barCount = isWide ? 36 : 24;
   const barWidth = isWide ? 4 : 3;
   const barGap = isWide ? 3 : 2;
-  const maxHeight = isWide ? 48 : 32;
+  // Hero sizing: bars fill a much taller stage (≈120px tablet / 80px phone)
+  // so the recording state reads as the app's energetic peak, not a footnote.
+  const maxHeight = isWide ? 104 : 68;
+  const containerHeight = isWide ? 120 : 80;
 
   // Pre-calculate per-bar jitter once (deterministic across renders)
   const jitterValues = useMemo(
@@ -85,13 +131,16 @@ export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWave
   const normalized = (clamped - METERING_MIN) / (METERING_MAX - METERING_MIN);
   const targetHeight = MIN_HEIGHT + normalized * (maxHeight - MIN_HEIGHT);
 
+  const live = isActive && !isPaused;
+
   return (
     <View
-      className="flex-row items-center justify-center my-3"
-      style={{ height: isWide ? 56 : 40 }}
+      className={`flex-row items-center justify-center my-3 rounded-card ${live ? 'shadow-glow' : ''}`}
+      style={{ height: containerHeight }}
       accessibilityLabel="Audio recording waveform"
       accessibilityRole="image"
     >
+      <BreathingRing active={live} />
       {Array.from({ length: barCount }).map((_, i) => (
         <WaveBar
           key={`wave-bar-${i}`}

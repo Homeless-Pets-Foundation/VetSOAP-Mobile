@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import Animated, {
   FadeIn,
@@ -7,6 +7,7 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
+  withRepeat,
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
@@ -14,6 +15,7 @@ import { Upload } from 'lucide-react-native';
 import type { PatientSlot } from '../types/multiPatient';
 import { UPLOAD_OVERLAY_COPY } from '../constants/strings';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { Toast } from './Toast';
 
 interface UploadOverlayProps {
   visible: boolean;
@@ -32,6 +34,44 @@ export function UploadOverlay({
 }: UploadOverlayProps) {
   const colors = useThemeColors();
   const progressWidth = useSharedValue(0);
+
+  // Gentle pulse on the upload icon so the overlay feels alive mid-transfer.
+  const iconPulse = useSharedValue(1);
+  useEffect(() => {
+    if (!visible) {
+      cancelAnimation(iconPulse);
+      iconPulse.value = 1;
+      return;
+    }
+    iconPulse.value = withRepeat(
+      withTiming(1.08, { duration: 700, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true
+    );
+    return () => { cancelAnimation(iconPulse); };
+  }, [visible, iconPulse]);
+  const iconStyle = useAnimatedStyle(() => ({ transform: [{ scale: iconPulse.value }] }));
+
+  // Per-slot "<Patient> uploaded" toast — fires as each slot confirms.
+  const [slotToast, setSlotToast] = useState<string | null>(null);
+  const confirmedIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!visible) {
+      confirmedIdsRef.current = new Set();
+      // Clear any pending toast too — else a slow 2s timer that never fired
+      // leaves a stale "<old patient> uploaded" that remounts on the next
+      // submit in the same Record screen (wrong/confusing patient context).
+      setSlotToast(null);
+      return;
+    }
+    for (const s of slots) {
+      if (s.uploadStatus === 'success' && !confirmedIdsRef.current.has(s.id)) {
+        confirmedIdsRef.current.add(s.id);
+        const name = s.formData.patientName?.trim() || 'Recording';
+        setSlotToast(`${name} uploaded`);
+      }
+    }
+  }, [slots, visible]);
 
   // Compute progress
   const currentSlot = slots.find((s) => s.id === currentSlotId);
@@ -112,7 +152,9 @@ export function UploadOverlay({
       >
         {/* Icon */}
         <View className="bg-brand-50 dark:bg-surface-sunken rounded-full w-16 h-16 justify-center items-center mb-4">
-          <Upload color={colors.brand500} size={28} />
+          <Animated.View style={iconStyle}>
+            <Upload color={colors.brand500} size={28} />
+          </Animated.View>
         </View>
 
         {/* Title */}
@@ -156,6 +198,11 @@ export function UploadOverlay({
           {UPLOAD_OVERLAY_COPY.reassurance}
         </Text>
       </Animated.View>
+      <Toast
+        message={slotToast ?? ''}
+        visible={!!slotToast}
+        onHide={() => setSlotToast(null)}
+      />
     </Animated.View>
   );
 }

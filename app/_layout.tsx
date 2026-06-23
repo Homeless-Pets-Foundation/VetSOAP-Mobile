@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { View, Text, Pressable, Alert, AppState, Platform } from 'react-native';
+import { View, Text, TextInput, Pressable, Alert, AppState, Platform } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import * as SplashScreen from 'expo-splash-screen';
@@ -20,6 +20,36 @@ import { getThemePreference } from '../src/lib/themePreference';
 import { useThemeColors } from '../src/hooks/useThemeColors';
 import { useAuth } from '../src/hooks/useAuth';
 import '../global.css';
+
+// App-wide default font (Inter, embedded at build time — app.config.ts).
+// RN <Text> does NOT inherit fontFamily from a parent View, and the app
+// renders raw <Text>/<TextInput> everywhere with their own style props, so
+// defaultProps.style only reaches style-less elements. Overriding `render`
+// injects Inter UNDER each element's own styles (later array entry wins, so
+// any explicit fontFamily still overrides). Wrapped in try/catch so a render
+// shape change can never throw at module load (rule 1) — worst case is the
+// system-font fallback. Verify weights on a physical device (UI Gotchas).
+try {
+  for (const Comp of [Text, TextInput] as const) {
+    const target = Comp as unknown as {
+      render?: (...args: unknown[]) => React.ReactElement<{ style?: unknown }> | null;
+      __interApplied?: boolean;
+    };
+    const baseRender = target.render;
+    if (typeof baseRender === 'function' && !target.__interApplied) {
+      target.render = function patchedRender(...args: unknown[]) {
+        const element = baseRender.apply(this, args);
+        if (!element) return element;
+        return React.cloneElement(element, {
+          style: [{ fontFamily: 'Inter' }, element.props.style],
+        });
+      };
+      target.__interApplied = true;
+    }
+  }
+} catch {
+  // noop — fall back to system font rather than crash at module load (rule 1)
+}
 
 // Cold-start marker — sampled at module-load time and attached to the first
 // `session_start` event so we can measure boot latency.
@@ -320,7 +350,7 @@ export default function RootLayout() {
             <SplashGate />
             <ThemePreferenceHydrator />
             <ThemedStatusBar />
-            <Stack screenOptions={{ headerShown: false }}>
+            <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
               <Stack.Screen name="(auth)" />
               <Stack.Screen name="(app)" />
             </Stack>

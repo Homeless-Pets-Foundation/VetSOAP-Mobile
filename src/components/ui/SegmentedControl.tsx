@@ -64,6 +64,10 @@ export function SegmentedControl<Value extends string = string>({
             accessibilityLabel={option.label}
             accessibilityHint={option.description}
             hitSlop={HIT_SLOP}
+            // press-scale (0.98) matching ListItem. Pressable's pressed style
+            // avoids a per-option hook inside this map. ponytail: instant scale,
+            // not spring — swap to reanimated only if the spring feel matters.
+            style={({ pressed }) => (pressed && !option.disabled ? { transform: [{ scale: 0.98 }] } : null)}
             className={cx(
               TOUCH_TARGET,
               'items-center justify-center rounded-btn border px-3.5',

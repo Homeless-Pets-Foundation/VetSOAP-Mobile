@@ -2,7 +2,12 @@ import React from 'react';
 import { Alert } from 'react-native';
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Home, Mic, FileText, Users } from 'lucide-react-native';
+import { Home, Mic, FileText, Users, type LucideIcon } from 'lucide-react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../../../src/hooks/useAuth';
 import {
@@ -11,6 +16,22 @@ import {
   RECORD_APPOINTMENT_PERMISSION_TITLE,
 } from '../../../src/lib/recordingPermissions';
 import { useThemeColors } from '../../../src/hooks/useThemeColors';
+
+// Active-tab indicator (plan option a): scale + lift the focused icon on the
+// brand color. No custom tabBar — just an animated tabBarIcon.
+function TabBarIcon({ Icon, color, focused, size }: { Icon: LucideIcon; color: string; focused: boolean; size: number }) {
+  const scale = useSharedValue(focused ? 1.15 : 1);
+  React.useEffect(() => {
+    scale.value = withSpring(focused ? 1.15 : 1, { damping: 15, stiffness: 300 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scale is a stable SharedValue ref
+  }, [focused]);
+  const style = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }, { translateY: focused ? -1 : 0 }] }));
+  return (
+    <Animated.View style={style}>
+      <Icon color={color} size={size} strokeWidth={focused ? 2.6 : 2} />
+    </Animated.View>
+  );
+}
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
@@ -55,7 +76,7 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: 'Home',
-          tabBarIcon: ({ color, size }) => <Home color={color} size={size} />,
+          tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Home} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Home dashboard',
         }}
       />
@@ -70,7 +91,7 @@ export default function TabsLayout() {
         }}
         options={{
           title: 'Record',
-          tabBarIcon: ({ color, size }) => <Mic color={color} size={size} />,
+          tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Mic} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Record new appointment',
         }}
       />
@@ -78,7 +99,7 @@ export default function TabsLayout() {
         name="recordings"
         options={{
           title: 'Records',
-          tabBarIcon: ({ color, size }) => <FileText color={color} size={size} />,
+          tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={FileText} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'View all recordings',
         }}
       />
@@ -86,7 +107,7 @@ export default function TabsLayout() {
         name="patient"
         options={{
           title: 'Patients',
-          tabBarIcon: ({ color, size }) => <Users color={color} size={size} />,
+          tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Users} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Browse patients',
         }}
       />

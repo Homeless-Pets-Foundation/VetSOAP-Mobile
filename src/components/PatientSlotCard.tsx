@@ -141,6 +141,12 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const recordBtnAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: recordBtnScale.value }],
   }));
+  // Active-slot emphasis: gently scale the Record card up while this slot owns
+  // a live recorder, so the hot slot reads as the focal point of the session.
+  const recordCardScale = useSharedValue(1);
+  const recordCardAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: recordCardScale.value }],
+  }));
 
   // Bind slot.id once per render so child components (PatientForm, Button)
   // get callbacks with the legacy no-id signature without forcing the parent
@@ -229,6 +235,17 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       setDetailsExpanded(false);
     }
   }, [audioState, recordFirstEnabled]);
+
+  // This slot is the "hot" one when it owns the recorder and is live.
+  const recorderLive = isRecorderOwner && (isRecording || isPaused);
+  React.useEffect(() => {
+    recordCardScale.value = withSpring(recorderLive ? 1.02 : 1, { damping: 15, stiffness: 300 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- recordCardScale is a stable SharedValue ref
+  }, [recorderLive]);
+  // red = capturing, amber = paused (CLAUDE.md: distinguish from slot.audioState).
+  const activeEmphasisClass = recorderLive
+    ? `shadow-glow border-l-4 ${isRecording ? 'border-l-danger-500' : 'border-l-warning-500'}`
+    : '';
 
   // Allow recording when idle (even with existing segments — for continuation)
   const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !recorder.isStarting && !isFinishSaving;
@@ -339,7 +356,8 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       {!recordFirstEnabled && foreignLanguageCard}
 
       {/* Recording Controls */}
-      <Card className="mb-4 items-center">
+      <Animated.View style={recordCardAnimStyle}>
+      <Card className={`mb-4 items-center ${activeEmphasisClass}`}>
         <Text className="text-body-lg font-semibold text-content-primary mb-3">Record</Text>
 
         {/* Status badge */}
@@ -535,6 +553,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           </Text>
         )}
       </Card>
+      </Animated.View>
 
       {recordFirstEnabled && formCard}
       {recordFirstEnabled && foreignLanguageCard}

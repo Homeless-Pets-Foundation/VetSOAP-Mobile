@@ -51,7 +51,23 @@ function PulsingDot({ color }: { color: string }) {
 
   return (
     <Animated.View
-      style={[{ width: 6, height: 6, borderRadius: 3, backgroundColor: color, marginRight: 5 }, style]}
+      style={[
+        {
+          width: 7,
+          height: 7,
+          borderRadius: 3.5,
+          backgroundColor: color,
+          marginRight: 5,
+          // Soft glow so the live state reads at a glance. shadowColor is a
+          // raw value (not class-driven); dark-mode guard doesn't scan it.
+          shadowColor: color,
+          shadowOpacity: 0.9,
+          shadowRadius: 4,
+          shadowOffset: { width: 0, height: 0 },
+          elevation: 3,
+        },
+        style,
+      ]}
     />
   );
 }
@@ -71,15 +87,20 @@ export function StatusBadge({ status }: StatusBadgeProps) {
     danger: colors.statusDangerFg,
   }[config.variant];
 
+  // In-progress states (recording/uploading/transcribing/generating) get a
+  // larger badge + glow so the live state reads at a glance vs the resting
+  // caption-sized badge.
   return (
     <View
-      className={`px-2 py-0.5 rounded-badge flex-row items-center ${v.bg}`}
+      className={`rounded-badge flex-row items-center ${v.bg} ${
+        config.inProgress ? 'px-2.5 py-1 shadow-glow' : 'px-2 py-0.5'
+      }`}
       accessibilityLabel={`Status: ${config.label}`}
     >
       {config.inProgress && <PulsingDot color={dotColor} />}
       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph (e.g. "Uploadin"); do NOT remove. */}
       <Text
-        className={`text-caption font-semibold ${v.text}`}
+        className={`font-semibold ${config.inProgress ? 'text-body-sm' : 'text-caption'} ${v.text}`}
         allowFontScaling={false}
         style={{ flexShrink: 0, paddingRight: 2 }}
       >

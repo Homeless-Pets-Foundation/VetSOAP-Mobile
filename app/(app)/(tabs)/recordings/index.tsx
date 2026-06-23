@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import Animated, { FadeInRight } from 'react-native-reanimated';
-import { Search } from 'lucide-react-native';
+import { Search, Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
 import { ApiError } from '../../../../src/api/client';
@@ -383,15 +383,24 @@ export default function RecordingsListScreen() {
               }}
             />
           ) : (
-            <EmptyState
-              icon={Search}
-              iconSize={iconLg}
-              description={emptyMessage}
-              action={!debouncedSearch && selectedStatusFilter === 'all' ? {
-                label: 'Record Appointment',
-                onPress: handleRecordPress,
-              } : undefined}
-            />
+            (() => {
+              // True empty (no search/filter) gets warm brand-toned copy; a
+              // filtered/search miss keeps the neutral Search affordance.
+              const isTrueEmpty = !debouncedSearch && selectedStatusFilter === 'all';
+              return (
+                <EmptyState
+                  icon={isTrueEmpty ? Mic : Search}
+                  iconColor={isTrueEmpty ? colors.brand500 : undefined}
+                  iconSize={iconLg}
+                  title={isTrueEmpty ? 'Your patients are waiting' : undefined}
+                  description={isTrueEmpty ? 'Tap Record to start your first SOAP note.' : emptyMessage}
+                  action={isTrueEmpty ? {
+                    label: 'Record Appointment',
+                    onPress: handleRecordPress,
+                  } : undefined}
+                />
+              );
+            })()
           )
         }
       />

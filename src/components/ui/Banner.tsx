@@ -1,9 +1,17 @@
 import React, { useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
-import Animated, { FadeIn } from 'react-native-reanimated';
+import Animated, {
+  FadeIn,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
 import { X, type LucideIcon } from 'lucide-react-native';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors } from '../../hooks/useThemeColors';
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export type BannerVariant = 'info' | 'warning' | 'error';
 
@@ -55,6 +63,8 @@ export function Banner({
   const { iconSm } = useResponsive();
   const colors = useThemeColors();
   const [dismissed, setDismissed] = useState(false);
+  const ctaScale = useSharedValue(1);
+  const ctaAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: ctaScale.value }] }));
   if (dismissed) return null;
 
   const v = VARIANT_CLASSES[variant];
@@ -81,15 +91,25 @@ export function Banner({
         <Text className={`text-body-sm ${v.text}`}>{message}</Text>
       </View>
       {cta ? (
-        <Pressable
-          onPress={cta.onPress}
+        <AnimatedPressable
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            cta.onPress();
+          }}
+          onPressIn={() => {
+            ctaScale.value = withSpring(0.96, { damping: 15, stiffness: 300 });
+          }}
+          onPressOut={() => {
+            ctaScale.value = withSpring(1, { damping: 15, stiffness: 300 });
+          }}
           accessibilityRole="button"
           accessibilityLabel={cta.label}
           hitSlop={8}
           className="ml-2"
+          style={ctaAnimStyle}
         >
           <Text className={`text-body-sm font-semibold ${v.ctaText}`}>{cta.label}</Text>
-        </Pressable>
+        </AnimatedPressable>
       ) : null}
       {dismissible ? (
         <Pressable

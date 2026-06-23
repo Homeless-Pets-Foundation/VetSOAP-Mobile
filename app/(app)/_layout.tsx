@@ -214,7 +214,7 @@ export default function AppLayout() {
       <View style={{ flex: 1 }}>
         <DeviceRegistrationBanner />
         <OfflineBanner />
-        <Stack screenOptions={{ headerShown: false }}>
+        <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
           <Stack.Screen name="(tabs)" />
           {/* iOS interactive-pop swipe-back from screen edge intercepts the left
               trim handle's pan when the user starts the drag near the edge.

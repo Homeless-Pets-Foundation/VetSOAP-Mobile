@@ -77,6 +77,11 @@ export function RecorderLiveReadout({
     };
   }, [isLive, getLiveStats]);
 
+  // No haptic "heartbeat" during capture: a periodic motor buzz on a device
+  // using the built-in mic (or resting on the same surface) bleeds into the
+  // appointment audio and degrades transcription/SOAP. Not worth the
+  // "feels alive" cue — the live waveform + timer already convey that.
+
   const liveSeconds = isLive ? stats.durationSeconds : fallbackDurationSeconds;
   const totalSeconds = baseDurationSeconds + liveSeconds;
 
@@ -89,7 +94,7 @@ export function RecorderLiveReadout({
       />
       <Text
         className={`text-timer font-bold mb-5 ${
-          isRecording ? 'text-brand-500' : 'text-content-primary'
+          isRecording ? 'text-brand-500 shadow-glow' : 'text-content-primary'
         }`}
         style={styles.timerText}
       >

@@ -22,6 +22,8 @@ import { TranslationCard } from '../../../../src/components/TranslationCard';
 import { SuggestedTasksCard } from '../../../../src/components/SuggestedTasksCard';
 import { MetadataReviewCard } from '../../../../src/components/MetadataReviewCard';
 import { ProcessingStepper } from '../../../../src/components/ProcessingStepper';
+import { CelebrationBurst } from '../../../../src/components/CelebrationBurst';
+import { Toast } from '../../../../src/components/Toast';
 import { ReviewStatusChip } from '../../../../src/components/ReviewStatusChip';
 import { Button } from '../../../../src/components/ui/Button';
 import { Card } from '../../../../src/components/ui/Card';
@@ -91,6 +93,13 @@ export default function RecordingDetailScreen() {
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
   const pollingStartedAtRef = useRef<number | null>(null);
 
+  // Completion celebration — fired ONCE on the prev !== 'completed' →
+  // 'completed' transition (the query polls/refetches, so guard against the
+  // status settling re-firing every render).
+  const [celebrate, setCelebrate] = useState(false);
+  const [showCompletionToast, setShowCompletionToast] = useState(false);
+  const prevStatusRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       appStateRef.current = nextState;
@@ -124,6 +133,18 @@ export default function RecordingDetailScreen() {
       return Math.min(5_000 * Math.pow(1.5, attempts), 60_000);
     },
   });
+
+  // Fire the celebration exactly on the transition into 'completed'.
+  useEffect(() => {
+    const next = recording?.status;
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = next;
+    if (next === 'completed' && prev !== undefined && prev !== 'completed') {
+      setCelebrate(true);
+      setShowCompletionToast(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+  }, [recording?.status]);
 
   const {
     data: soapNote,
@@ -1048,6 +1069,12 @@ export default function RecordingDetailScreen() {
         )}
         </View>
       </ScrollView>
+      {celebrate && <CelebrationBurst onComplete={() => setCelebrate(false)} />}
+      <Toast
+        message="SOAP note ready!"
+        visible={showCompletionToast}
+        onHide={() => setShowCompletionToast(false)}
+      />
     </SafeAreaView>
   );
 }

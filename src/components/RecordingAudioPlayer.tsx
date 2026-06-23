@@ -439,10 +439,15 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
         .seekTo(seconds)
         .catch(() => {})
         .finally(() => {
-          if (wasPlayingBeforeScrubRef.current) playback.play();
+          if (!wasPlayingBeforeScrubRef.current) return;
+          // Don't resume when scrubbed to (or within 50ms of) the end: play()
+          // treats currentTime >= dur - 0.05 as EOF and rewinds to 0, which would
+          // restart the recording instead of leaving it parked at the end (P2).
+          if (duration > 0 && seconds >= duration - 0.05) return;
+          playback.play();
         });
     },
-    [playback]
+    [playback, duration]
   );
 
   // Pan cancelled before release (system interruption, backgrounding): no seek

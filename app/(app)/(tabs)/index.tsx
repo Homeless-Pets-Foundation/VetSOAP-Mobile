@@ -3,10 +3,12 @@ import { Alert, View, Text, Pressable } from 'react-native';
 import Animated, {
   FadeInDown,
   FadeInUp,
+  FadeInRight,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
 } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useQueries, useQuery } from '@tanstack/react-query';
@@ -208,7 +210,9 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      {/* Quick Action */}
+      {/* Quick Action — hero CTA. Gradient + glow for premium depth; the
+          gradient takes raw color values (not Tailwind classes) so stops pull
+          from useThemeColors (dark-mode aware, dodges the color guard). */}
       <AnimatedPressable
         onPress={handleRecordPress}
         onPressIn={() => {
@@ -219,21 +223,28 @@ export default function HomeScreen() {
         }}
         accessibilityRole="button"
         accessibilityLabel="Record a new appointment"
-        className="bg-brand-500 rounded-card p-5 mb-6 flex-row items-center shadow-card-md"
+        className="rounded-card mb-6 shadow-glow"
         style={ctaAnimStyle}
       >
-        <View className="w-12 h-12 rounded-full bg-content-on-brand/20 justify-center items-center mr-4">
-          <Mic color={colors.contentOnBrand} size={iconMd} />
-        </View>
-        <View className="flex-1">
-          <Text className="text-content-on-brand text-heading font-bold">
-            Record Appointment
-          </Text>
-          <Text className="text-content-on-brand/80 text-body-sm mt-0.5">
-            Start recording a new appointment
-          </Text>
-        </View>
-        <ChevronRight color={colors.contentOnBrand} size={iconMd} opacity={0.6} />
+        <LinearGradient
+          colors={[colors.brand500, colors.brand600]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{ borderRadius: 14, padding: 20, flexDirection: 'row', alignItems: 'center' }}
+        >
+          <View className="w-12 h-12 rounded-full bg-content-on-brand/20 justify-center items-center mr-4">
+            <Mic color={colors.contentOnBrand} size={iconMd} />
+          </View>
+          <View className="flex-1">
+            <Text className="text-content-on-brand text-heading font-bold">
+              Record Appointment
+            </Text>
+            <Text className="text-content-on-brand/80 text-body-sm mt-0.5">
+              Start recording a new appointment
+            </Text>
+          </View>
+          <ChevronRight color={colors.contentOnBrand} size={iconMd} opacity={0.6} />
+        </LinearGradient>
       </AnimatedPressable>
 
       {showRecentPatientSummary ? (
@@ -319,8 +330,10 @@ export default function HomeScreen() {
           <View className="flex-row justify-between items-center mb-3">
             <Text className="section-title">Not Submitted</Text>
           </View>
-          {drafts.map((recording) => (
-            <RecordingCard key={recording.id} recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+          {drafts.map((recording, index) => (
+            <Animated.View key={recording.id} entering={FadeInRight.delay(index * 50).duration(300)}>
+              <RecordingCard recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+            </Animated.View>
           ))}
         </View>
       ) : null}
@@ -363,15 +376,22 @@ export default function HomeScreen() {
             </View>
           </Card>
         ) : recordings.length === 0 ? (
-          <Card className="items-center py-6">
-            <FileText color={colors.contentTertiary} size={iconLg} />
-            <Text className="text-body text-content-tertiary mt-3 text-center">
-              No recordings yet. Tap &quot;Record Appointment&quot; to get started.
+          <Card className="items-center py-8">
+            <View className="w-16 h-16 rounded-full bg-brand-50 dark:bg-surface-sunken justify-center items-center mb-4">
+              <Mic color={colors.brand500} size={iconLg} />
+            </View>
+            <Text className="text-body-lg font-semibold text-content-primary text-center">
+              Your patients are waiting
+            </Text>
+            <Text className="text-body-sm text-content-tertiary mt-1.5 text-center">
+              Tap &quot;Record Appointment&quot; to start your first SOAP note.
             </Text>
           </Card>
         ) : (
-          recordings.map((recording) => (
-            <RecordingCard key={recording.id} recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+          recordings.map((recording, index) => (
+            <Animated.View key={recording.id} entering={FadeInRight.delay(index * 50).duration(300)}>
+              <RecordingCard recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+            </Animated.View>
           ))
         )}
       </View>

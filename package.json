@@ -35,6 +35,7 @@
     "expo-file-system": "~55.0.19",
     "expo-font": "~55.0.7",
     "expo-haptics": "~55.0.14",
+    "expo-linear-gradient": "~55.0.14",
     "expo-linking": "~55.0.15",
     "expo-local-authentication": "~55.0.14",
     "expo-print": "~55.0.15",

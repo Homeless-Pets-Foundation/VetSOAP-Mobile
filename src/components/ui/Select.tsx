@@ -63,6 +63,8 @@ export function Select<Value extends string = string>({
         accessibilityLabel={accessibilityLabel ?? label ?? placeholder}
         accessibilityState={{ disabled, expanded: isOpen }}
         hitSlop={HIT_SLOP}
+        // press-scale (0.98) matching ListItem / SegmentedControl.
+        style={({ pressed }) => (pressed && !disabled ? { transform: [{ scale: 0.98 }] } : null)}
         className={cx(
           TOUCH_TARGET,
           'input-base flex-row items-center justify-between',

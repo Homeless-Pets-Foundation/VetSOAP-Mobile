@@ -56,7 +56,7 @@ export function Sheet({
           />
         ) : null}
         <View
-          className={cx('bg-surface-raised rounded-t-2xl border border-border-default max-h-[86%]', className)}
+          className={cx('bg-surface-raised rounded-card rounded-b-none border border-border-default max-h-[86%]', className)}
           style={{ paddingBottom: Math.max(insets.bottom, 12) }}
           accessibilityViewIsModal
         >

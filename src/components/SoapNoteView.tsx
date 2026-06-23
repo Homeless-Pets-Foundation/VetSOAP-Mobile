@@ -10,7 +10,7 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 import { useQueryClient } from '@tanstack/react-query';
 import { copyWithAutoClear } from '../lib/secureClipboard';
-import { Copy, Pencil, Save, X } from 'lucide-react-native';
+import { Copy, Pencil, Save, X, MessageCircle, Stethoscope, ClipboardList, ListChecks, type LucideIcon } from 'lucide-react-native';
 import { MarkdownText, toPlainText } from './MarkdownText';
 import type { SoapNote } from '../types';
 import { SOAP_SECTION_ACTIONS } from '../constants/strings';
@@ -19,12 +19,29 @@ import { soapNotesApi, type SoapNoteSection } from '../api/soapNotes';
 import { Button } from './ui/Button';
 import { useThemeColors } from '../hooks/useThemeColors';
 
-const SECTIONS = [
-  { key: 'subjective' as const, label: 'Subjective', colorClass: 'bg-soap-subjective' },
-  { key: 'objective' as const, label: 'Objective', colorClass: 'bg-soap-objective' },
-  { key: 'assessment' as const, label: 'Assessment', colorClass: 'bg-soap-assessment' },
-  { key: 'plan' as const, label: 'Plan', colorClass: 'bg-soap-plan' },
+type SoapAccent = 'subjective' | 'objective' | 'assessment' | 'plan';
+
+const SECTIONS: { key: SoapAccent; label: string; accent: SoapAccent; Icon: LucideIcon }[] = [
+  { key: 'subjective', label: 'Subjective', accent: 'subjective', Icon: MessageCircle },
+  { key: 'objective', label: 'Objective', accent: 'objective', Icon: Stethoscope },
+  { key: 'assessment', label: 'Assessment', accent: 'assessment', Icon: ClipboardList },
+  { key: 'plan', label: 'Plan', accent: 'plan', Icon: ListChecks },
 ];
+
+// Per-section accent styling. Left border + faint bg tint reuse the soap-*
+// tokens (alpha via NativeWind), so dark mode + the color guard stay happy.
+const ACCENT_BORDER: Record<SoapAccent, string> = {
+  subjective: 'border-l-soap-subjective',
+  objective: 'border-l-soap-objective',
+  assessment: 'border-l-soap-assessment',
+  plan: 'border-l-soap-plan',
+};
+const ACCENT_TINT: Record<SoapAccent, string> = {
+  subjective: 'bg-soap-subjective/5',
+  objective: 'bg-soap-objective/5',
+  assessment: 'bg-soap-assessment/5',
+  plan: 'bg-soap-plan/5',
+};
 
 interface SoapNoteViewProps {
   soapNote: SoapNote;
@@ -57,7 +74,8 @@ function CopiedToast() {
 function AccordionSection({
   sectionKey,
   label,
-  colorClass,
+  accent,
+  Icon,
   content,
   isEdited,
   editedAt,
@@ -69,7 +87,8 @@ function AccordionSection({
 }: {
   sectionKey: SoapNoteSection;
   label: string;
-  colorClass: string;
+  accent: SoapAccent;
+  Icon: LucideIcon;
   content: string;
   isEdited: boolean;
   editedAt: string | null;
@@ -139,18 +158,24 @@ function AccordionSection({
   };
 
   const editedLabel = formatEditedAt(editedAt);
+  const accentColor = {
+    subjective: colors.soapSubjective,
+    objective: colors.soapObjective,
+    assessment: colors.soapAssessment,
+    plan: colors.soapPlan,
+  }[accent];
 
   return (
-    <View className="border border-border-default rounded-input mb-3 overflow-hidden">
+    <View className={`border border-border-default border-l-4 ${ACCENT_BORDER[accent]} rounded-input mb-3 overflow-hidden`}>
       <Pressable
         onPress={onToggle}
         accessibilityRole="button"
         accessibilityState={{ expanded: isExpanded }}
         accessibilityLabel={`${label} section`}
-        className="flex-row justify-between items-center p-3 bg-surface"
+        className={`flex-row justify-between items-center p-3 ${ACCENT_TINT[accent]}`}
       >
         <View className="flex-row items-center flex-1 pr-2">
-          <View className={`w-1 h-5 rounded-sm mr-2.5 ${colorClass}`} />
+          <Icon color={accentColor} size={16} style={{ marginRight: 8 }} />
           <Text className="text-body font-semibold text-content-primary">{label}</Text>
           {isEdited && editedLabel && (
             <View className="ml-2 rounded-full bg-surface-sunken px-2 py-0.5">
@@ -320,7 +345,7 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNot
         </Pressable>
       </View>
 
-      {SECTIONS.map(({ key, label, colorClass }) => {
+      {SECTIONS.map(({ key, label, accent, Icon }) => {
         const section = soapNote[key];
         if (!section) return null;
 
@@ -329,7 +354,8 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNot
             key={key}
             sectionKey={key}
             label={label}
-            colorClass={colorClass}
+            accent={accent}
+            Icon={Icon}
             content={section.content}
             isEdited={section.isEdited}
             editedAt={section.editedAt}

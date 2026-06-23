@@ -32,9 +32,10 @@ interface IconButtonProps extends Omit<PressableProps, 'children' | 'style' | 'o
 
 const variantClasses: Record<IconButtonVariant, string> = {
   ghost: 'bg-transparent',
-  secondary: 'bg-surface-raised border border-border-strong',
-  danger: 'bg-status-danger border border-status-danger',
-  primary: 'bg-brand-500',
+  // shadow-btn on non-ghost variants so raised affordances read as tappable.
+  secondary: 'bg-surface-raised border border-border-strong shadow-btn',
+  danger: 'bg-status-danger border border-status-danger shadow-btn',
+  primary: 'bg-brand-500 shadow-btn',
 };
 
 const sizeClasses: Record<IconButtonSize, string> = {

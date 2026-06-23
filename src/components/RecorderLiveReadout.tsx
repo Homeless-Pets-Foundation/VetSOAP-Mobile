@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { AudioWaveform } from './AudioWaveform';
 import {
   LONG_RECORDING_WARNING_COPY,
@@ -77,6 +78,18 @@ export function RecorderLiveReadout({
     };
   }, [isLive, getLiveStats]);
 
+  // Haptic "heartbeat" — a light tap every ~10s while actively capturing, so
+  // the clinician feels the recording is alive without watching the screen.
+  // Cleared on pause/stop. Wrapped .catch (rule 4: tablets/emulators lacking a
+  // haptic motor reject and would otherwise crash a release build).
+  React.useEffect(() => {
+    if (!isRecording || isPaused) return;
+    const id = setInterval(() => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }, 10_000);
+    return () => clearInterval(id);
+  }, [isRecording, isPaused]);
+
   const liveSeconds = isLive ? stats.durationSeconds : fallbackDurationSeconds;
   const totalSeconds = baseDurationSeconds + liveSeconds;
 
@@ -89,7 +102,7 @@ export function RecorderLiveReadout({
       />
       <Text
         className={`text-timer font-bold mb-5 ${
-          isRecording ? 'text-brand-500' : 'text-content-primary'
+          isRecording ? 'text-brand-500 shadow-glow' : 'text-content-primary'
         }`}
         style={styles.timerText}
       >

@@ -110,6 +110,12 @@ module.exports = {
           plan: 'rgb(var(--soap-plan) / <alpha-value>)',
         },
       },
+      fontFamily: {
+        // Variable Inter, embedded at build time (app.config.ts expo-font plugin).
+        // Weights come from font-medium/font-semibold/font-bold via fontWeight.
+        // system-ui fallback keeps an old dev-client (pre-embed) rendering.
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+      },
       fontSize: {
         caption: ['12px', { lineHeight: '16px' }],
         'body-sm': ['13px', { lineHeight: '18px' }],
@@ -135,6 +141,9 @@ module.exports = {
         card: '0 1px 3px rgba(0,0,0,0.08)',
         'card-md': '0 4px 12px rgba(0,0,0,0.10)',
         btn: '0 1px 2px rgba(0,0,0,0.05)',
+        // Brand-teal glow — powers the hero waveform / active slot / CTA.
+        // boxShadow style supported on both platforms in RN 0.83.
+        glow: '0 0 16px rgba(13,135,117,0.35)',
       },
     },
   },

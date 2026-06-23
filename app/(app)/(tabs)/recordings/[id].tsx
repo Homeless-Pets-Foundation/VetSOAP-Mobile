@@ -42,6 +42,7 @@ import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
+import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuth } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
@@ -146,6 +147,20 @@ export default function RecordingDetailScreen() {
     queryKey: ['recordingTasks', id],
     queryFn: () => recordingsApi.getRecordingTasks(id!),
     enabled: !!id && recording?.status === 'completed',
+    // Tasks are generated asynchronously a few seconds after completion. Refetch
+    // on remount + poll briefly while empty so the card self-heals instead of
+    // caching an empty list during that window. See getTasksRefetchInterval.
+    refetchOnMount: 'always',
+    refetchInterval: (query) =>
+      getTasksRefetchInterval({
+        tasksCount: Array.isArray(query.state.data) ? query.state.data.length : 0,
+        appActive: isAppActive,
+        completedAtMs: recording?.processingCompletedAt
+          ? Date.parse(recording.processingCompletedAt)
+          : null,
+        nowMs: Date.now(),
+        attempts: query.state.dataUpdateCount,
+      }),
   });
 
   const handleRefresh = useCallback(() => {

@@ -3,7 +3,6 @@ import { View, Text, ActivityIndicator } from 'react-native';
 import { Star } from 'lucide-react-native';
 import { SegmentedControl } from './ui/SegmentedControl';
 import { TextInputField } from './ui/TextInputField';
-import { Toggle } from './ui/Toggle';
 import { Button } from './ui/Button';
 import { RECORD_FIRST_FORM_HINT, SPECIES_OTHER_COPY, TEMPLATE_DEFAULT_COPY } from '../constants/strings';
 import { useThemeColors } from '../hooks/useThemeColors';
@@ -255,17 +254,6 @@ export function PatientForm({
         allowDeselect={recordFirstEnabled}
         columns={2}
         accessibilityLabel="Appointment type selection"
-      />
-
-      {/* Foreign Language Toggle */}
-      <Toggle
-        value={!!formData.foreignLanguage}
-        onValueChange={(value) => onUpdate('foreignLanguage', value)}
-        label="Foreign Language"
-        description="Enable if a non-English language was spoken during this exam"
-        accessibilityLabel="Foreign Language"
-        accessibilityHint="Enable if a non-English language was spoken during this exam"
-        className="py-3 mb-3.5"
       />
     </View>
   );

@@ -19,6 +19,7 @@ import { RecorderLiveReadout } from './RecorderLiveReadout';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
+import { Toggle } from './ui/Toggle';
 import type { PatientSlot } from '../types/multiPatient';
 import type { CreateRecording, Template } from '../types';
 import type { UseAudioRecorderReturn } from '../hooks/useAudioRecorder';
@@ -286,6 +287,20 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       {patientForm}
     </Card>
   );
+  // Recording-level flag — lives directly below the patient-details section,
+  // not inside it, so it stays visible when details are collapsed.
+  const foreignLanguageCard = (
+    <Card className="mb-4">
+      <Toggle
+        value={!!slot.formData.foreignLanguage}
+        onValueChange={(value) => handleUpdateForm('foreignLanguage', value)}
+        label="Foreign Language"
+        description="Enable if a non-English language was spoken during this exam"
+        accessibilityLabel="Foreign Language"
+        accessibilityHint="Enable if a non-English language was spoken during this exam"
+      />
+    </Card>
+  );
 
   return (
     <ScrollView
@@ -321,6 +336,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       </View>
 
       {!recordFirstEnabled && formCard}
+      {!recordFirstEnabled && foreignLanguageCard}
 
       {/* Recording Controls */}
       <Card className="mb-4 items-center">
@@ -521,6 +537,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       </Card>
 
       {recordFirstEnabled && formCard}
+      {recordFirstEnabled && foreignLanguageCard}
 
       {/* Per-patient Submit */}
       {showSubmitCard && (

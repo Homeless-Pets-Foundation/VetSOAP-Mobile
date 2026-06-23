@@ -36,9 +36,9 @@ The actually-implemented feature on this branch (Suggested Tasks card + async re
 - Built a fresh standalone release APK via gradle:
   `SENTRY_DISABLE_AUTO_UPLOAD=true ./gradlew assembleRelease` (first attempt failed on the Sentry
   source-map upload — no local creds — so auto-upload was disabled). Prior APK was stale
-  (predated the refetch fix). Installed on emulator-5554, logged in `empoweredpets@gmail.com`,
-  cleared the 20/20 device limit by revoking the emulator's stale entry.
-- Verified on a completed recording (Shea · Villari):
+  (predated the refetch fix). Installed on emulator-5554, logged in with the provided test
+  account, cleared the 20/20 device limit by revoking the emulator's stale entry.
+- Verified on a sample completed recording:
   - Suggested Tasks card renders (header, subtitle, Clinical Record Charges group, Accept/Dismiss).
   - **Accept** → PATCH ok, item resolved/removed, no crash.
   - **Dismiss** → PATCH ok, item resolved/removed, no crash.

@@ -177,21 +177,34 @@ the org has a BYOK key for**, **narrowed by the per-org allow-list** (Backend it
 Body `.strict()`: `{ "transcriptionModelId": "nova-3", "soapProvider": "anthropic" }` (both
 optional → org default; mobile always sends both). The handler MUST, in order:
 
-1. Load the recording **org-scoped** (`where: { id, organizationId: req.user.organizationId }`) →
+1. **Authorize first, before any resource-specific work:** `requireVeterinarian +
+   requireActiveBilling` (same as `regenerate-soap`). Running auth ahead of the load/status/audio
+   and model/provider-key checks means an unauthorized same-org user gets a uniform authorization
+   failure and **cannot probe recording state or AI-provider config** from differing
+   404/409/400 responses.
+2. Load the recording **org-scoped** (`where: { id, organizationId: req.user.organizationId }`) →
    404 if not found (copy `regenerate-soap` `recordings.ts:3206-3224`; no IDOR).
-2. Gate `recording.status ∈ {'completed','failed'}` → **`409`** otherwise (rejects mid-pipeline
-   AND the concurrent-second-tap race). Require `recording.audioFileUrl` present → `409` if missing
-   (re-transcription needs source audio — NOT a transcript; differs from `regenerate-soap`).
 3. Validate `transcriptionModelId` ∈ `DeepgramModelSchema` and `soapProvider` ∈ `SoapProviderSchema`
    **and** against the org allow-list → **`400 INVALID_MODEL`**. Fail-closed; never trust the client.
 4. Verify the chosen provider has a BYOK key, and that `readSoapModelForProvider(soapProvider,
    settings)` (or Gemini's `soapModels`) resolves a model → **`409 MISSING_PROVIDER_KEY`** if not.
    No silent fallback.
-5. Role/billing guard: `requireVeterinarian + requireActiveBilling` (same as `regenerate-soap`).
-6. **Synchronously persist `status='uploaded'`** (in the job's allowed-transition set; polled
-   non-terminal on mobile), then trigger `process-recording` with `{ transcriptionModelId,
-   soapProvider }` overrides.
-7. **Respond `202` with the updated `Recording`** (so mobile seeds its cache and polling starts
+5. Require `recording.audioFileUrl` present → `409` if missing (re-transcription needs source
+   audio — NOT a transcript; differs from `regenerate-soap`).
+6. **Atomically claim the recording — this is the gate, not a prior read.** Issue a single
+   conditional update: `UPDATE recordings SET status='uploaded' WHERE id=:id AND organizationId=:org
+   AND status IN ('completed','failed')` and require **exactly one affected row**. If zero rows, the
+   recording is already mid-pipeline (a concurrent reprocess won the claim, or it's processing) →
+   **`409`**. This makes the status check and the write a single atomic step, so two concurrent
+   `POST /reprocess` calls cannot both pass and enqueue duplicate jobs (a read-then-write gate
+   would race). `'uploaded'` is in the job's allowed-transition set and is polled non-terminal on
+   mobile.
+7. **Trigger `process-recording`** with `{ transcriptionModelId, soapProvider }` overrides **inside
+   a try/catch**. If the Trigger.dev enqueue throws/times out **after** the status write, **roll
+   back**: restore `status` to its prior terminal value (or set `'failed'` with an error code) so
+   the recording is never stranded in a non-terminal `'uploaded'` state with no job running (which
+   mobile would poll as active until the 30-min stale timeout). Then surface a `5xx` to the client.
+8. **Respond `202` with the updated `Recording`** (so mobile seeds its cache and polling starts
    without a refetch race). The job then runs `uploaded → transcribing → generating → completed`,
    uses the chosen models (NOT the language hardcode), and writes them into
    `costBreakdown`/`SoapNote.transcriptionModel` + `modelUsed`.
@@ -247,8 +260,16 @@ export function normalizeOrgAiModels(raw: unknown): OrgAiModels {
   return { transcription: normalizeCategory(r.transcription), soap: normalizeCategory(r.soap) };
 }
 
+// Both categories must be usable AND at least one must offer a real choice. Requiring a usable
+// default in BOTH prevents the combined reprocess flow from rendering for an org that has, e.g.,
+// multiple transcription models but zero usable SOAP providers (after BYOK/allow-list filtering) —
+// which would initialize the missing selection to null and submit an unusable request the backend
+// would reject.
 export function hasSelectableModels(m: OrgAiModels): boolean {
-  return m.transcription.options.length > 1 || m.soap.options.length > 1;
+  const transcriptionUsable = m.transcription.options.length >= 1 && m.transcription.default != null;
+  const soapUsable = m.soap.options.length >= 1 && m.soap.default != null;
+  const anyChoice = m.transcription.options.length > 1 || m.soap.options.length > 1;
+  return transcriptionUsable && soapUsable && anyChoice;
 }
 
 // "Currently: …" label. costBreakdown values may be a raw id or a model string not in options —
@@ -267,9 +288,15 @@ const { data: aiModels } = useQuery({
   queryFn: () => recordingsApi.getOrgAiModels(),
   staleTime: 1000 * 60 * 30,
   refetchOnMount: 'always',   // pick up org config changes when reopening a recording
-  enabled: !!user,
+  enabled: !!user && canRecordAppointments(user?.role),   // only roles that can reprocess
 });
 ```
+
+**Gate the fetch by reprocess permission, not just `!!user`.** The models response is filtered by
+configured provider keys + allow-list, so it leaks the org's AI-provider configuration; without the
+role gate, any signed-in user who opens a recording detail (including roles for which the action is
+hidden) would still fetch that metadata. The server's `GET /api/organizations/ai-models` MUST
+enforce the **same role** server-side — the client gate is convenience, not the trust boundary.
 
 Flat org-level key, deliberately **not** under `['recording', id]`, so the reprocess
 `invalidate`/`setQueryData` on `['recording', id]` (Step 4) leaves the model list cached. If the
@@ -313,9 +340,18 @@ const mutation = useMutation({
   mutationFn: () => recordingsApi.reprocessRecording(recordingId, { transcriptionModelId, soapProvider }),
   onSuccess: (updated) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    queryClient.removeQueries({ queryKey: ['soapNote', recordingId] });   // drop stale SOAP
-    queryClient.setQueryData(['recording', recordingId], updated);         // seed non-terminal status → poller starts, no race
-    queryClient.invalidateQueries({ queryKey: ['recording', recordingId] }); // backstop refetch
+    // Drop caches tied to the OLD run: the stale SOAP note AND the suggested-tasks list (those
+    // tasks belong to the previous SOAP note; leaving them cached lets a fast reprocess re-enable
+    // the disabled tasks query with obsolete Accept/Dismiss rows for the new note).
+    queryClient.removeQueries({ queryKey: ['soapNote', recordingId] });
+    queryClient.removeQueries({ queryKey: ['recordingTasks', recordingId] });
+    queryClient.setQueryData(['recording', recordingId], updated);   // seed non-terminal status → poller starts, no race
+    // Invalidate the detail AND the list, mirroring regenerateMutation — without the list
+    // invalidation, navigating back shows the recording as "completed" until the list's normal
+    // stale/refetch cycle. invalidateQueries returns a Promise: .catch() it (rule 4, no
+    // fire-and-forget) since onSuccess is not awaited.
+    queryClient.invalidateQueries({ queryKey: ['recording', recordingId] }).catch(() => {});
+    queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
     setExpanded(false);
     trackEvent({ name: 'recording_reprocessed', props: { /* Step 7 */ } });
   },
@@ -334,17 +370,18 @@ const mutation = useMutation({
 
 ## Step 5 — Wire into detail screen (`app/(app)/(tabs)/recordings/[id].tsx`)
 
-- Render `ReprocessSheet` next to the existing Regenerate-SOAP button, **role-gated on
-  `canRecordAppointments(user?.role)`** and only when
+- Render `ReprocessSheet` **role-gated on `canRecordAppointments(user?.role)`** and only when
   `(recording.status === 'completed' || recording.status === 'failed') && !!recording.audioFileUrl
   && aiModels && hasSelectableModels(aiModels)`. (`ReprocessSheet` self-hides via `canManage`; the
   status/audio/`hasSelectableModels` checks live at the call site.) Once status goes non-terminal
   after submit, this gate hides the action — closing the double-tap window.
-- The existing Regenerate-SOAP button sits in `<View className="items-start mb-4">`
-  (`:1017-1028`). To place the new trigger beside it, change that parent to
-  **`<View className="flex-row flex-wrap gap-2 items-start mb-4">`** so the two `size="sm"`
-  secondary buttons sit in a row and wrap on narrow screens (instead of an unintended vertical
-  stack).
+- **Placement — do NOT nest it in the completed-only SOAP branch.** The existing Regenerate-SOAP
+  button lives inside the `status === 'completed'` SOAP-note block (`:1017-1028`); a `failed`
+  recording renders only the failed card, so a reprocess entry there would be **unreachable for the
+  explicitly-supported `failed`-with-audio case**. Instead, render the entry in a container shown
+  for **both** `completed` and `failed` (e.g. its own card directly under the patient-info/audio
+  section, gated by the condition above), so both statuses can reach it. It does not need to sit
+  beside Regenerate-SOAP.
 - **No new polling code** — the `202` body seeds `status='uploaded'`, the existing poller
   (`recordings.ts:104-126`) + `ProcessingStepper` take over (`uploaded → transcribing → generating
   → completed`; `PROCESSING_STEP_LABELS` `strings.ts:1-14` cover these).
@@ -416,12 +453,15 @@ model/provider ids only:
    186-187`), **filtered to providers with a BYOK key** (query the `apiKey` table) and the per-org
    allow-list (item 5). Map `name`→`label`. If the org default is filtered out, set `default` to the
    first remaining option.
-2. **`POST /api/recordings/{id}/reprocess`** (NEW) — implement the 7 ordered steps in §0b:
-   org-scoped load; `status ∈ {completed,failed}` + `audioFileUrl` gates (`409`); validate
-   `DeepgramModelSchema`/`SoapProviderSchema` + allow-list (`400`); **provider-key + model
-   resolution check (`409 MISSING_PROVIDER_KEY`)**; `requireVeterinarian + requireActiveBilling`;
-   **synchronously set `status='uploaded'`**; trigger `process-recording` with overrides; respond
-   **`202` + updated `Recording`**.
+2. **`POST /api/recordings/{id}/reprocess`** (NEW) — implement the 8 ordered steps in §0b, in this
+   order: **`requireVeterinarian + requireActiveBilling` FIRST** (uniform auth failure, no state
+   probing); org-scoped load; validate `DeepgramModelSchema`/`SoapProviderSchema` + allow-list
+   (`400`); **provider-key + model resolution check (`409 MISSING_PROVIDER_KEY`)**; `audioFileUrl`
+   gate (`409`); **atomic conditional claim** — single `UPDATE … SET status='uploaded' WHERE id=:id
+   AND organizationId=:org AND status IN ('completed','failed')` requiring exactly one affected row
+   (`409` if zero — prevents the duplicate-job race); trigger `process-recording` with overrides
+   **in a try/catch that rolls the status back on enqueue failure**; respond **`202` + updated
+   `Recording`**.
 3. **Extend the `process-recording` job** (`apps/jobs/src/jobs/process-recording.ts`) to accept
    optional `{ transcriptionModelId, soapProvider }` in its input schema and **use them** in place
    of the language hardcode (`~:348-350`) and the org-default provider. Its existing Step-1 guard
@@ -434,15 +474,18 @@ model/provider ids only:
    `OrganizationSettings` (`null` = all). Narrow item 1's `options` and item 2's validation to them.
    Without this, every org sees the full global set and the goal's "only the models the org has
    enabled" is **not** met. Mobile needs **zero change** when this ships.
-6. **(Recommended) Cost-history audit trail.** Re-running overwrites `SoapNote` cost fields, erasing
-   the prior run's cost. Add an append-only `RecordingCostHistory` row per run
-   (`recordingId, transcriptionModel, soapModel, transcriptionCostCents, generationCostCents,
-   createdAt`); reports read the ledger, not just the latest `SoapNote`.
+6. **(REQUIRED) Cost-history audit trail.** This feature intentionally creates additional *paid* AI
+   runs, and each reprocess **overwrites** the `SoapNote`/model cost fields — so without a ledger,
+   usage/billing reports silently lose the prior run's cost attribution. Add an append-only
+   `RecordingCostHistory` row per run (`recordingId, transcriptionModel, soapModel,
+   transcriptionCostCents, generationCostCents, createdAt`); reports read the ledger, not just the
+   latest `SoapNote`. Ship this **before** enabling repeated reprocessing, not as a follow-up.
 7. **Document audio retention.** Reprocess requires the source audio in R2; if lifecycle GC removed
    it, the job 404s → recording `failed`. The `audioFileUrl` gate is necessary but not sufficient —
    state the retention window so "reprocess old recording" failures are expected, not a bug.
 
-Until items 1–3 (and 5, to meet the goal) exist, mobile work is blocked.
+Until items 1–3, 5, and 6 exist, mobile work is blocked (1–3 = function, 5 = meets the goal,
+6 = billing integrity for a paid action).
 
 ## Skipped (YAGNI — add when asked)
 

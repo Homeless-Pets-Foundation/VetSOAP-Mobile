@@ -32,6 +32,7 @@ import { SkeletonCard } from '../../../src/components/ui/Skeleton';
 import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
 import { Banner } from '../../../src/components/ui/Banner';
+import { ProviderIssueBanner } from '../../../src/components/ProviderIssueBanner';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -245,6 +246,8 @@ export default function HomeScreen() {
           />
         </View>
       ) : null}
+
+      <ProviderIssueBanner location="home" />
 
       {/* Quick Action — hero CTA. Gradient + glow for premium depth; the
           gradient takes raw color values (not Tailwind classes) so stops pull

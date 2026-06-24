@@ -195,8 +195,14 @@ export default function AppLayout() {
           )}
         </Pressable>
         <Pressable onPress={handleSignOut} className="py-3 px-4" style={{ minHeight: 44 }}>
-          <Text className="text-content-tertiary text-body-sm underline text-center">
-            {ACCOUNT_LOAD_ERROR_COPY.signOut}
+          {/* Trailing space + flexShrink:0/paddingRight stop Android from
+              under-measuring this short underlined label and clipping it to
+              "Sign" (see UI Gotchas — single-word/short-label clip). */}
+          <Text
+            className="text-content-tertiary text-body-sm underline text-center"
+            style={{ flexShrink: 0, paddingRight: 2 }}
+          >
+            {`${ACCOUNT_LOAD_ERROR_COPY.signOut} `}
           </Text>
         </Pressable>
         {userFetchError ? (

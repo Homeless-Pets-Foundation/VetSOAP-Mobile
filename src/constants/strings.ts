@@ -265,6 +265,21 @@ export const REGENERATE_SOAP_COPY = {
   button: 'Regenerate SOAP',
 } as const;
 
+export const REPROCESS_MODELS_COPY = {
+  entryButton: 'Reprocess with different models',
+  sheetTitle: 'Reprocess Recording',
+  sheetBody:
+    'Choose the transcription and SOAP models, then reprocess. This replaces the current ' +
+    'transcript and SOAP note and runs new processing.',
+  transcriptionLabel: 'Transcription model',
+  soapLabel: 'SOAP note model',
+  currentPrefix: 'Last used: ',
+  confirm: 'Reprocess ', // trailing space: prevents Android single-word clipping in flex-row (CLAUDE.md UI gotcha)
+  cancel: 'Cancel',
+  failure: 'Could not start reprocessing. Please try again.',
+  invalidModel: 'That model is not available for your organization.',
+} as const;
+
 export const OFFLINE_BANNER_COPY = {
   body: 'Showing saved account info — reconnecting…',
 } as const;

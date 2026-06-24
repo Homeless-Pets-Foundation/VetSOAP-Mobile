@@ -14,6 +14,7 @@ import type {
   UpdateRecordingMetadata,
   ReviewStatus,
   RecordingTask,
+  OrgAiModels,
 } from '../types';
 import {
   recordingIdSchema,
@@ -21,6 +22,7 @@ import {
   createRecordingSchema,
   searchQuerySchema,
 } from '../lib/validation';
+import { normalizeOrgAiModels } from '../lib/aiModels';
 import { validateUploadUrl } from '../lib/sslPinning';
 import { unwrapTaskList } from '../lib/recordingTasks';
 import { getIdempotencyUuid } from '../lib/random';
@@ -836,6 +838,24 @@ export const recordingsApi = {
   async retry(id: string): Promise<Recording> {
     recordingIdSchema.parse(id);
     return apiClient.post(`/api/recordings/${id}/retry`);
+  },
+
+  // Org-scoped model options + defaults for the reprocess pickers. Server filters
+  // by configured BYOK keys + per-org allow-list and enforces the same role gate.
+  async getOrgAiModels(): Promise<OrgAiModels> {
+    const res = await apiClient.get<OrgAiModels>('/api/organization/ai-models');
+    return normalizeOrgAiModels(res); // shape guard (rule 10), src/lib/aiModels.ts
+  },
+
+  // Re-transcribe + regenerate SOAP with chosen models. 202 returns the updated
+  // Recording (status flipped to a non-terminal value) so the caller seeds its
+  // cache and polling starts without a refetch race.
+  async reprocessRecording(
+    recordingId: string,
+    models: { transcriptionModelId?: string; soapModel?: string }
+  ): Promise<Recording> {
+    recordingIdSchema.parse(recordingId);
+    return apiClient.post<Recording>(`/api/recordings/${recordingId}/reprocess`, models);
   },
 
   async updateReview(recordingId: string, opts: { reviewed: boolean }): Promise<Recording> {

@@ -18,6 +18,7 @@ import { RecordingAudioPlayer } from '../../../../src/components/RecordingAudioP
 import { TranscriptView } from '../../../../src/components/TranscriptView';
 import { ClientEmailCard } from '../../../../src/components/ClientEmailCard';
 import { ExportSheet } from '../../../../src/components/ExportSheet';
+import { ReprocessSheet } from '../../../../src/components/ReprocessSheet';
 import { TranslationCard } from '../../../../src/components/TranslationCard';
 import { SuggestedTasksCard } from '../../../../src/components/SuggestedTasksCard';
 import { MetadataReviewCard } from '../../../../src/components/MetadataReviewCard';
@@ -44,6 +45,7 @@ import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
+import { hasSelectableModels } from '../../../../src/lib/aiModels';
 import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
@@ -145,6 +147,18 @@ export default function RecordingDetailScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     }
   }, [recording?.status]);
+
+  // Org-level model options for the reprocess pickers. Flat org key (NOT under
+  // ['recording', id]) so reprocess's invalidate/setQueryData leaves it cached.
+  // Gated by reprocess role: the response leaks the org's AI-provider config, so a
+  // viewer who can't reprocess shouldn't fetch it (server enforces the same role).
+  const { data: aiModels } = useQuery({
+    queryKey: ['orgAiModels'],
+    queryFn: () => recordingsApi.getOrgAiModels(),
+    staleTime: 1000 * 60 * 30,
+    refetchOnMount: 'always',
+    enabled: !!user && canRecordAppointments(user?.role),
+  });
 
   const {
     data: soapNote,
@@ -745,6 +759,28 @@ export default function RecordingDetailScreen() {
         {recording.audioFileUrl && recording.status !== 'draft' && id && (
           <RecordingAudioPlayer recordingId={id} />
         )}
+
+        {/* Reprocess — re-transcribe + regenerate SOAP with chosen models. Own card at top level so
+            BOTH completed and failed (with audio) reach it; hidden until the backend returns a real,
+            key/allow-list-filtered model list with an actual choice (hasSelectableModels). The 202
+            body seeds status='uploaded' → the existing poller + ProcessingStepper take over. */}
+        {id &&
+          (recording.status === 'completed' || recording.status === 'failed') &&
+          !!recording.audioFileUrl &&
+          aiModels &&
+          hasSelectableModels(aiModels) && (
+            <ReprocessSheet
+              recordingId={id}
+              models={aiModels}
+              canManage={canRecordAppointments(user?.role)}
+              currentTranscriptionModel={recording.costBreakdown?.transcriptionModel}
+              currentSoapModel={recording.costBreakdown?.modelUsed}
+              recordingForeignLanguage={recording.foreignLanguage}
+              onReprocessStarted={() => {
+                pollingStartedAtRef.current = Date.now();
+              }}
+            />
+          )}
 
         {/* Processing Status */}
         {isProcessing && (

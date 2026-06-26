@@ -38,6 +38,7 @@ import { SegmentedControl } from '../../../src/components/ui/SegmentedControl';
 import { countUnsentRecordings } from '../../../src/lib/localRecordings';
 import { trackEvent } from '../../../src/lib/analytics';
 import { THEME_COPY } from '../../../src/constants/strings';
+import { ProviderIssueBanner } from '../../../src/components/ProviderIssueBanner';
 import {
   HELP_CENTER_URL,
   PRIVACY_POLICY_URL,
@@ -283,6 +284,8 @@ export default function SettingsScreen() {
           contentContainerStyle={{ paddingBottom: 28 }}
           keyboardShouldPersistTaps="handled"
         >
+          <ProviderIssueBanner location="settings" />
+
           <Card className="p-5 mb-5">
             <View className="flex-row items-center">
               <View className="w-12 h-12 rounded-full bg-brand-500 justify-center items-center mr-3.5">

@@ -46,7 +46,8 @@ function formatStatus(status?: string | null): string {
 function formatCents(cents?: number | null, cycle?: 'monthly' | 'annual'): string | null {
   if (typeof cents !== 'number' || !Number.isFinite(cents)) return null;
   const suffix = cycle === 'annual' ? '/yr' : '/mo';
-  return `$${(cents / 100).toFixed(0)}${suffix}`;
+  const hasCents = Math.abs(cents % 100) > Number.EPSILON;
+  return `$${(cents / 100).toFixed(hasCents ? 2 : 0)}${suffix}`;
 }
 
 function isAllowedBillingUrl(url: string): boolean {
@@ -120,11 +121,12 @@ export default function SubscriptionScreen() {
   }, [data?.status]);
 
   const handleRefresh = useCallback(() => {
+    if (!canViewBilling) return;
     setIsRefreshing(true);
     refetch()
       .finally(() => setIsRefreshing(false))
       .catch(() => {});
-  }, [refetch]);
+  }, [canViewBilling, refetch]);
 
   const trialDate = formatDate(data?.trialEndsAt);
   const seats = typeof data?.seatCount === 'number' ? SUBSCRIPTION_COPY.seats(data.seatCount) : null;
@@ -151,7 +153,11 @@ export default function SubscriptionScreen() {
         <ScrollView
           className="flex-1 px-5"
           contentContainerStyle={{ paddingBottom: 28 }}
-          refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
+          refreshControl={
+            canViewBilling
+              ? <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
+              : undefined
+          }
         >
           {!canViewBilling ? (
             <EmptyState

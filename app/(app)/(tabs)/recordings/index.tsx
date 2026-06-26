@@ -244,16 +244,17 @@ export default function RecordingsListScreen() {
   const handleFocusRefresh = useCallback(() => {
     const shouldRefetchRecordings = shouldLoadRecordings && isStale;
     const shouldRefetchDrafts = shouldLoadDrafts && isDraftStale;
-    const shouldRefetchLocalDrafts = shouldLoadDrafts && areLocalDraftsStale;
+    const shouldRefreshLocalDrafts = shouldLoadDrafts;
     const staleSourceCount =
       Number(shouldRefetchRecordings) +
       Number(shouldRefetchDrafts) +
-      Number(shouldRefetchLocalDrafts);
+      Number(shouldRefreshLocalDrafts);
     measurePhase('records_focus_refresh', {
       recordings_stale: shouldRefetchRecordings,
       server_drafts_stale: shouldRefetchDrafts,
-      local_drafts_stale: shouldRefetchLocalDrafts,
-      skipped: staleSourceCount === 0,
+      local_drafts_stale: areLocalDraftsStale,
+      local_drafts_refreshed: shouldRefreshLocalDrafts,
+      skipped: !shouldRefetchRecordings && !shouldRefetchDrafts && !shouldRefreshLocalDrafts,
       count: staleSourceCount,
     }, () => {
       if (shouldRefetchRecordings) {
@@ -262,7 +263,7 @@ export default function RecordingsListScreen() {
       if (shouldRefetchDrafts) {
         refetchDrafts().catch(() => {});
       }
-      if (shouldRefetchLocalDrafts) {
+      if (shouldRefreshLocalDrafts) {
         refreshLocalDrafts();
       }
     });

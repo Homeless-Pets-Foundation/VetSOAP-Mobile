@@ -10,7 +10,8 @@ test('recording cache helper narrows invalidation keys by mutation type', async 
   const source = await read('src/lib/recordingQueryCache.ts');
 
   assert.match(source, /case 'review_update':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\]\]/);
-  assert.match(source, /case 'draft_changed':\s*case 'draft_deleted':\s*return \[\['recordings', 'drafts'\], \['local-drafts'\]\]/);
+  assert.match(source, /case 'draft_changed':\s*case 'draft_deleted':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
+  assert.match(source, /case 'device_registration_recovered':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
   assert.match(source, /case 'submit_success':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
   assert.match(source, /refetchType: 'active'/);
   assert.doesNotMatch(source, /queryKey: \['recordings'\]/);
@@ -24,6 +25,7 @@ test('hot recording mutations use central cache helper instead of broad invalida
   assert.match(card, /invalidateRecordingCaches\(queryClient, 'review_update'\)/);
   assert.match(detail, /invalidateRecordingCaches\(\s*queryClient,\s*recording\?\.status === 'draft' \? 'draft_deleted' : 'detail_deleted'/);
   assert.match(record, /invalidateRecordingCaches\(queryClient, 'submit_success'\)/);
+  assert.match(await read('src/components/DeviceLimitModal.tsx'), /invalidateRecordingCaches\(queryClient, 'device_registration_recovered'\)/);
 
   assert.doesNotMatch(card, /invalidateQueries\(\{ queryKey: \['recordings'\]/);
   assert.doesNotMatch(detail, /invalidateQueries\(\{ queryKey: \['recordings'\]/);

@@ -9,6 +9,7 @@ import { useDeviceCapacity } from '../hooks/useDeviceCapacity';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { devicesApi, type DeviceSession } from '../api/devices';
 import { Button } from './ui/Button';
+import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 
 function getDeviceIcon(deviceType: string | null) {
   if (!deviceType) return Smartphone;
@@ -104,6 +105,7 @@ export function DeviceLimitModal() {
           queryClient
             .invalidateQueries({ queryKey: ['device-sessions'] })
             .catch(() => {});
+          invalidateRecordingCaches(queryClient, 'device_registration_recovered');
         }
       } finally {
         setRetrying(false);
@@ -144,6 +146,7 @@ export function DeviceLimitModal() {
                   queryClient
                     .invalidateQueries({ queryKey: ['device-sessions'] })
                     .catch(() => {});
+                  invalidateRecordingCaches(queryClient, 'device_registration_recovered');
                 }
               } catch (error) {
                 const message =

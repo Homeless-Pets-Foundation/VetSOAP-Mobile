@@ -159,16 +159,16 @@ export default function HomeScreen() {
   }, [router, user?.role]);
 
   const handleFocusRefresh = useCallback(() => {
-    const staleSourceCount =
+    const staleServerSourceCount =
       Number(recordingsQuery.isStale) +
-      Number(draftsQuery.isStale) +
-      Number(areLocalDraftsStale);
+      Number(draftsQuery.isStale);
     measurePhase('home_focus_refresh', {
       recordings_stale: recordingsQuery.isStale,
       server_drafts_stale: draftsQuery.isStale,
       local_drafts_stale: areLocalDraftsStale,
-      skipped: staleSourceCount === 0,
-      count: staleSourceCount,
+      local_drafts_refreshed: true,
+      skipped: false,
+      count: staleServerSourceCount + 1,
     }, () => {
       if (recordingsQuery.isStale) {
         refetch().catch(() => {});
@@ -176,9 +176,7 @@ export default function HomeScreen() {
       if (draftsQuery.isStale) {
         refetchDrafts().catch(() => {});
       }
-      if (areLocalDraftsStale) {
-        refreshLocalDrafts();
-      }
+      refreshLocalDrafts();
     });
   }, [
     areLocalDraftsStale,

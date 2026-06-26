@@ -54,6 +54,11 @@ test('Pixel performance plan keeps root diagnostics and named phase timing wired
   assert.match(monitoring, /duration_bucket: bucketDuration\(durationMs\)/);
 
   assert.match(rootLayout, /rootBoundaryDiagnostics/);
+  assert.ok(
+    rootLayout.indexOf("pathname.includes('/recordings')") <
+      rootLayout.indexOf("pathname.includes('/record')"),
+    'recordings list route should be classified before the broader record route'
+  );
   assert.match(rootLayout, /function RootDiagnosticsReporter\(\)/);
   assert.match(rootLayout, /tags: \{ boundary: 'root' \}/);
   assert.match(rootLayout, /extra: \{[\s\S]*rootBoundaryDiagnostics/);
@@ -74,8 +79,6 @@ test('Pixel performance plan keeps root diagnostics and named phase timing wired
 
   assert.match(phaseSources, /'orphan_cleanup'/);
   assert.match(phaseSources, /'thirty_day_eviction'/);
-  assert.match(phaseSources, /skipped: staleSourceCount === 0/);
-  assert.match(phaseSources, /count: staleSourceCount/);
   assert.match(phaseSources, /count: linkedDrafts\.length/);
 });
 
@@ -118,8 +121,12 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
 
   assert.match(home, /recordingsQuery\.isStale/);
   assert.match(home, /refreshLocalDrafts/);
+  assert.match(home, /local_drafts_refreshed: true/);
+  assert.match(home, /refreshLocalDrafts\(\);/);
   assert.match(records, /shouldRefetchRecordings = shouldLoadRecordings && isStale/);
   assert.match(records, /refreshLocalDrafts/);
+  assert.match(records, /local_drafts_refreshed: shouldRefreshLocalDrafts/);
+  assert.match(records, /if \(shouldRefreshLocalDrafts\) \{\s*refreshLocalDrafts\(\);/);
 
   assert.match(localDrafts, /queryKey: \['local-drafts', userId\]/);
   assert.match(localDrafts, /const RECONCILE_INTERVAL_MS = 5 \* 60_000/);
@@ -143,7 +150,8 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(cache, /export type RecordingCacheMutation/);
   assert.match(cache, /refetchType: 'active'/);
   assert.match(cache, /case 'review_update':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\]\]/);
-  assert.match(cache, /case 'draft_changed':\s*case 'draft_deleted':\s*return \[\['recordings', 'drafts'\], \['local-drafts'\]\]/);
+  assert.match(cache, /case 'draft_changed':\s*case 'draft_deleted':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
+  assert.match(cache, /case 'device_registration_recovered':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
 });
 
 test('Pixel performance plan keeps startup, device-capacity, orientation, audio, and smoke-script changes', async () => {

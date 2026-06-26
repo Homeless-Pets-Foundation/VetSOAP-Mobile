@@ -93,6 +93,10 @@ test('profile and subscription screens emit PHI-safe analytics only', async () =
   assert.match(subscription, /Linking\.openURL\(response\.url\)/);
   assert.match(subscription, /portalMutation\.mutate\(\)/);
   assert.match(subscription, /enabled: canViewBilling/);
+  assert.match(subscription, /const hasCents = Math\.abs\(cents % 100\) > Number\.EPSILON/);
+  assert.match(subscription, /toFixed\(hasCents \? 2 : 0\)/);
+  assert.match(subscription, /if \(!canViewBilling\) return/);
+  assert.match(subscription, /canViewBilling\s*\?\s*<RefreshControl/);
   assert.doesNotMatch(subscription, /manageUrl/);
   assert.doesNotMatch(subscription, /canOpenURL/);
 });

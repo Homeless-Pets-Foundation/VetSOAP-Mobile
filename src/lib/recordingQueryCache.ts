@@ -5,6 +5,7 @@ export type RecordingCacheMutation =
   | 'review_update'
   | 'draft_changed'
   | 'draft_deleted'
+  | 'device_registration_recovered'
   | 'submit_success'
   | 'detail_deleted'
   | 'processing_retry'
@@ -17,7 +18,9 @@ export function recordingInvalidationKeysFor(mutation: RecordingCacheMutation): 
       return [['recordings', 'recent'], ['recordings', 'list']];
     case 'draft_changed':
     case 'draft_deleted':
-      return [['recordings', 'drafts'], ['local-drafts']];
+      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts']];
+    case 'device_registration_recovered':
+      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts']];
     case 'submit_success':
       return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts']];
     case 'detail_deleted':

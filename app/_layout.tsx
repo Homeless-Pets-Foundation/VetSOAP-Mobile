@@ -65,8 +65,8 @@ function coarseRoute(pathname: string | null): string {
   if (!pathname) return 'unknown';
   if (pathname.includes('/recordings/')) return '/recordings/[id]';
   if (pathname.includes('/patient/')) return '/patient/[id]';
-  if (pathname.includes('/record')) return '/record';
   if (pathname.includes('/recordings')) return '/recordings';
+  if (pathname.includes('/record')) return '/record';
   if (pathname.includes('/settings')) return '/settings';
   if (pathname.includes('/devices')) return '/devices';
   if (pathname.includes('/subscription')) return '/subscription';

@@ -180,6 +180,7 @@ test('Pixel performance plan keeps startup, device-capacity, orientation, audio,
   assert.ok((smokeMode & 0o111) !== 0, 'android perf smoke script should be executable');
   assert.match(smokeScript, /OUT_ROOT="\$\{OUT_ROOT:-\/tmp\/captivet-perf-smoke\}"/);
   assert.match(smokeScript, /ADB_SERIAL/);
+  assert.match(smokeScript, /devices \| tr -d '\\r'/);
   assert.match(smokeScript, /am force-stop \$\{PACKAGE_NAME\}/);
   assert.match(smokeScript, /am start -W -n \$\{PACKAGE_NAME\}\/\$\{ACTIVITY_NAME\}/);
   assert.match(smokeScript, /dumpsys gfxinfo \$\{PACKAGE_NAME\} reset/);

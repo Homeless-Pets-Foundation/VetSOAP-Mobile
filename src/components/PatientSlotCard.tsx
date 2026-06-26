@@ -29,6 +29,7 @@ import { patientsApi } from '../api/patients';
 import {
   LONG_RECORDING_WARNING_COPY,
   LONG_RECORDING_WARNING_THRESHOLD_SEC,
+  MULTI_PATIENT_RECORD_FIRST_COPY,
 } from '../constants/strings';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -175,9 +176,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     () => onEditRecording(slotId),
     [onEditRecording, slotId]
   );
+  const preferPatientDetailsFirst = recordFirstEnabled && totalSlots > 1;
 
   const [pimsLookupLoading, setPimsLookupLoading] = React.useState(false);
-  const [detailsExpanded, setDetailsExpanded] = React.useState(!recordFirstEnabled);
+  const [detailsExpanded, setDetailsExpanded] = React.useState(!recordFirstEnabled || preferPatientDetailsFirst);
   const lookupIdRef = React.useRef(0);
 
   const handlePimsBlur = React.useCallback(() => {
@@ -225,16 +227,16 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     : slot.audioDuration;
 
   React.useEffect(() => {
-    if (!recordFirstEnabled) {
+    if (!recordFirstEnabled || preferPatientDetailsFirst) {
       setDetailsExpanded(true);
     }
-  }, [recordFirstEnabled]);
+  }, [preferPatientDetailsFirst, recordFirstEnabled]);
 
   React.useEffect(() => {
-    if (recordFirstEnabled && audioState !== 'idle') {
+    if (recordFirstEnabled && !preferPatientDetailsFirst && audioState !== 'idle') {
       setDetailsExpanded(false);
     }
-  }, [audioState, recordFirstEnabled]);
+  }, [audioState, preferPatientDetailsFirst, recordFirstEnabled]);
 
   // This slot is the "hot" one when it owns the recorder and is live.
   const recorderLive = isRecorderOwner && (isRecording || isPaused);
@@ -263,6 +265,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       onPimsIdBlur={handlePimsBlur}
       pimsLookupLoading={pimsLookupLoading}
       recordFirstEnabled={recordFirstEnabled}
+      recordFirstMultiPatient={preferPatientDetailsFirst}
     />
   );
   const formCard = recordFirstEnabled ? (
@@ -280,7 +283,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             Add patient details
           </Text>
           <Text className="text-body-sm text-content-tertiary mt-0.5">
-            Optional — AI will fill blanks from audio.
+            {preferPatientDetailsFirst
+              ? MULTI_PATIENT_RECORD_FIRST_COPY.detailsSubtitle
+              : 'Optional — AI will fill blanks from audio.'}
           </Text>
         </View>
         {detailsExpanded ? (
@@ -352,8 +357,8 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         )}
       </View>
 
-      {!recordFirstEnabled && formCard}
-      {!recordFirstEnabled && foreignLanguageCard}
+      {(!recordFirstEnabled || preferPatientDetailsFirst) && formCard}
+      {(!recordFirstEnabled || preferPatientDetailsFirst) && foreignLanguageCard}
 
       {/* Recording Controls */}
       <Animated.View style={recordCardAnimStyle}>
@@ -555,8 +560,8 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       </Card>
       </Animated.View>
 
-      {recordFirstEnabled && formCard}
-      {recordFirstEnabled && foreignLanguageCard}
+      {recordFirstEnabled && !preferPatientDetailsFirst && formCard}
+      {recordFirstEnabled && !preferPatientDetailsFirst && foreignLanguageCard}
 
       {/* Per-patient Submit */}
       {showSubmitCard && (

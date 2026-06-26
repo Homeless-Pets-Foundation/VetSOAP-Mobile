@@ -238,6 +238,18 @@ export const UNTITLED_VISIT_LABEL = 'Untitled visit';
 export const RECORD_FIRST_FORM_HINT =
   'Patient details are optional. Captivet can fill blank fields from the recording after upload.';
 
+export const MULTI_PATIENT_RECORD_FIRST_COPY = {
+  title: 'Add patient details first',
+  body:
+    'All multi-patient visits can include more than one patient name in each recording. ' +
+    'Add each patient\'s details first instead of using Recording First so Captivet labels each SOAP note correctly.',
+  addDetailsFirst: 'Add Details First',
+  continueRecordingFirst: 'Continue Recording First',
+  detailsSubtitle: 'Recommended before recording.',
+  formHint:
+    'For multi-patient visits, add each patient\'s details before recording. Patient names can appear across recordings and confuse AI labels.',
+} as const;
+
 export const METADATA_REVIEW_COPY = {
   title: 'AI filled these details',
   body: 'Review the details Captivet found in the recording.',

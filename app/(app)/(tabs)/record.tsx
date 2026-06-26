@@ -10,7 +10,13 @@ import { safeDeleteFile, safeDeleteDirectory, fileExists } from '../../../src/li
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
 import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
-import { OVERSIZED_CONFIRM_COPY, RECORD_BANNERS, SILENT_CHECK_COPY, TEMPLATE_DEFAULT_COPY } from '../../../src/constants/strings';
+import {
+  MULTI_PATIENT_RECORD_FIRST_COPY,
+  OVERSIZED_CONFIRM_COPY,
+  RECORD_BANNERS,
+  SILENT_CHECK_COPY,
+  TEMPLATE_DEFAULT_COPY,
+} from '../../../src/constants/strings';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { stashStorage } from '../../../src/lib/stashStorage';
@@ -387,6 +393,7 @@ function RecordingSession() {
   // any of our effects/handlers fire.
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const multiPatientRecordFirstWarningShownRef = useRef(false);
 
   const {
     stashes,
@@ -779,6 +786,18 @@ function RecordingSession() {
     return () => { if (timerId) clearTimeout(timerId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends only on recorder state transitions, not on session/slot refs which would cause infinite loops
   }, [recorder.state, recorder.audioUri, recorder.duration, recorder.maxMetering, saveAudio, buildPersistedSlot]);
+
+  // Keep the multi-patient record-first warning scoped to the current active
+  // appointment. A reset or clean single-patient return should warn again later.
+  useEffect(() => {
+    const isCleanSinglePatientSession =
+      session.slots.length === 1 &&
+      !hasUnsavedRecordings &&
+      session.recorderBoundToSlotId === null;
+    if (isCleanSinglePatientSession) {
+      multiPatientRecordFirstWarningShownRef.current = false;
+    }
+  }, [hasUnsavedRecordings, session.recorderBoundToSlotId, session.slots.length]);
 
   // Consistency guard: heal orphaned recording/paused states whenever slots change.
   //
@@ -2440,8 +2459,25 @@ function RecordingSession() {
   }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
+    const shouldWarnRecordFirstMultiPatient =
+      recordFirstEnabled &&
+      sessionRef.current.slots.length === 1 &&
+      !multiPatientRecordFirstWarningShownRef.current;
+
     addSlot();
-  }, [addSlot]);
+    if (shouldWarnRecordFirstMultiPatient) {
+      multiPatientRecordFirstWarningShownRef.current = true;
+      Alert.alert(
+        MULTI_PATIENT_RECORD_FIRST_COPY.title,
+        MULTI_PATIENT_RECORD_FIRST_COPY.body,
+        [
+          { text: MULTI_PATIENT_RECORD_FIRST_COPY.addDetailsFirst, style: 'default' },
+          { text: MULTI_PATIENT_RECORD_FIRST_COPY.continueRecordingFirst, style: 'cancel' },
+        ],
+        { cancelable: true }
+      );
+    }
+  }, [addSlot, recordFirstEnabled]);
 
   // -- Stash handlers --
 

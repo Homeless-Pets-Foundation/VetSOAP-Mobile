@@ -86,6 +86,34 @@ test('record-first UI is fail-closed behind auth capability and removes both req
   assert.match(form, /allowDeselect=\{recordFirstEnabled\}/);
 });
 
+test('record-first multi-patient flow warns once and prioritizes details without requiring them', async () => {
+  const strings = await read('src/constants/strings.ts');
+  assert.match(strings, /MULTI_PATIENT_RECORD_FIRST_COPY/);
+  assert.match(strings, /Add patient details first/);
+  assert.match(strings, /Continue Recording First/);
+
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(record, /multiPatientRecordFirstWarningShownRef/);
+  assert.match(record, /recordFirstEnabled &&\s*sessionRef\.current\.slots\.length === 1/);
+  assert.match(record, /Alert\.alert\(\s*MULTI_PATIENT_RECORD_FIRST_COPY\.title/);
+  assert.match(record, /isCleanSinglePatientSession/);
+
+  const slotCard = await read('src/components/PatientSlotCard.tsx');
+  assert.match(slotCard, /const preferPatientDetailsFirst = recordFirstEnabled && totalSlots > 1/);
+  assert.match(slotCard, /setDetailsExpanded\(true\)/);
+  assert.match(slotCard, /recordFirstMultiPatient=\{preferPatientDetailsFirst\}/);
+  assert.match(slotCard, /\(!recordFirstEnabled \|\| preferPatientDetailsFirst\) && formCard/);
+  assert.match(slotCard, /recordFirstEnabled && !preferPatientDetailsFirst && formCard/);
+  assert.match(slotCard, /const canStartRecording = \(recordFirstEnabled \|\| hasRequiredFields\)/);
+
+  const form = await read('src/components/PatientForm.tsx');
+  assert.match(form, /recordFirstMultiPatient\?: boolean/);
+  assert.match(
+    form,
+    /recordFirstMultiPatient\s*\?\s*MULTI_PATIENT_RECORD_FIRST_COPY\.formHint\s*:\s*RECORD_FIRST_FORM_HINT/
+  );
+});
+
 test('blank patient names render through display helper instead of stored placeholder text', async () => {
   const helper = await read('src/lib/recordingDisplay.ts');
   assert.match(helper, /UNTITLED_VISIT_LABEL/);

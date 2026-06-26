@@ -4,7 +4,12 @@ import { Star } from 'lucide-react-native';
 import { SegmentedControl } from './ui/SegmentedControl';
 import { TextInputField } from './ui/TextInputField';
 import { Button } from './ui/Button';
-import { RECORD_FIRST_FORM_HINT, SPECIES_OTHER_COPY, TEMPLATE_DEFAULT_COPY } from '../constants/strings';
+import {
+  MULTI_PATIENT_RECORD_FIRST_COPY,
+  RECORD_FIRST_FORM_HINT,
+  SPECIES_OTHER_COPY,
+  TEMPLATE_DEFAULT_COPY,
+} from '../constants/strings';
 import { useThemeColors } from '../hooks/useThemeColors';
 import type { CreateRecording, Template } from '../types';
 
@@ -39,6 +44,7 @@ interface PatientFormProps {
   onPimsIdBlur?: () => void;
   pimsLookupLoading?: boolean;
   recordFirstEnabled?: boolean;
+  recordFirstMultiPatient?: boolean;
 }
 
 export function PatientForm({
@@ -53,6 +59,7 @@ export function PatientForm({
   onPimsIdBlur,
   pimsLookupLoading,
   recordFirstEnabled = false,
+  recordFirstMultiPatient = false,
 }: PatientFormProps) {
   const colors = useThemeColors();
   // "Other" reveals a free-text species input. Initialized from persisted data
@@ -142,7 +149,9 @@ export function PatientForm({
 
       {recordFirstEnabled && (
         <Text className="text-body-sm text-content-tertiary mb-4">
-          {RECORD_FIRST_FORM_HINT}
+          {recordFirstMultiPatient
+            ? MULTI_PATIENT_RECORD_FIRST_COPY.formHint
+            : RECORD_FIRST_FORM_HINT}
         </Text>
       )}
 

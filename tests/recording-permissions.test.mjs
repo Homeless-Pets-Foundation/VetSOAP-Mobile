@@ -87,7 +87,8 @@ test('support staff recording gate covers entrypoints and submit paths', async (
   assert.match(record, /if \(!canRecordAppointments\(user\?\.role\)\) \{\s*showRecordPermissionAlert\(\);\s*return null;\s*\}/);
   assert.match(record, /const handleSubmitSingle = useCallback\([\s\S]*?if \(!canRecordAppointments\(user\?\.role\)\)/);
   assert.match(record, /const handleSubmitAll = useCallback\(\(\) => \{\s*if \(!canRecordAppointments\(user\?\.role\)\)/);
-  assert.match(record, /if \(!user\?\.id \|\| !canRecordAppointments\(user\.role\)\) return;/);
+  assert.match(record, /if \(roleBlocked\) \{\s*return <RecordingRoleGate \/>;\s*\}[\s\S]*return <RecordingSession \/>;/);
+  assert.match(record, /useEffect\(\(\) => \{\s*if \(!user\?\.id\) return;[\s\S]*scheduleNonUrgentWork\('record_pending_draft_scan'/);
 });
 
 test('API client maps known recording API error codes to safe messages', async () => {

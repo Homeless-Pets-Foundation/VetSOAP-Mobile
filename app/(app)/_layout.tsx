@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Redirect, Stack, useRouter } from 'expo-router';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthActions, useAuthMfa, useAuthReadiness, useAuthUser } from '../../src/hooks/useAuth';
 import { View, Text, ActivityIndicator, Pressable, Alert } from 'react-native';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
 import { DeviceRegistrationBanner } from '../../src/components/DeviceRegistrationBanner';
@@ -8,25 +8,27 @@ import { OfflineBanner } from '../../src/components/OfflineBanner';
 import { ACCOUNT_LOAD_ERROR_COPY } from '../../src/constants/strings';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { breadcrumb } from '../../src/lib/monitoring';
+import { usePendingDraftSync } from '../../src/hooks/usePendingDraftSync';
 
 const HALF_AUTH_TIMEOUT_MS = 30_000;
 
 export default function AppLayout() {
   const router = useRouter();
   const colors = useThemeColors();
+  const user = useAuthUser();
   const {
     isAuthenticated,
     isLoading,
-    user,
     userFetchState,
     userFetchError,
     retryFetchUser,
-    signOut,
-    mfaRequired,
     localRecoveryState,
     pendingRecoveryDraftSlotId,
     consumePendingRecoveryDraftSlotId,
-  } = useAuth();
+  } = useAuthReadiness();
+  const { signOut } = useAuthActions();
+  const { mfaRequired } = useAuthMfa();
+  usePendingDraftSync();
   const [isRetrying, setIsRetrying] = useState(false);
   const [halfAuthTimedOut, setHalfAuthTimedOut] = useState(false);
 

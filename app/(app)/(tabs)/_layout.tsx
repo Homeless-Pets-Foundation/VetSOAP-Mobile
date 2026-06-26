@@ -9,7 +9,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { useAuth } from '../../../src/hooks/useAuth';
+import { useAuthUser } from '../../../src/hooks/useAuth';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -35,7 +35,7 @@ function TabBarIcon({ Icon, color, focused, size }: { Icon: LucideIcon; color: s
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const user = useAuthUser();
   const colors = useThemeColors();
 
   const showRecordPermissionAlert = React.useCallback(() => {

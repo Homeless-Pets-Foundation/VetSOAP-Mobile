@@ -106,7 +106,7 @@ export default function DevicesScreen() {
   const { iconMd, iconLg } = useResponsive();
   const colors = useThemeColors();
   const queryClient = useQueryClient();
-  const { devices, capacity, isLoading, isError, refetch } = useDeviceCapacity();
+  const { devices, capacity, isLoading, isError, refetch } = useDeviceCapacity({ mode: 'manage' });
   const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [revokingId, setRevokingId] = useState<string | null>(null);
@@ -124,10 +124,7 @@ export default function DevicesScreen() {
       setRevokingId(sessionId);
     },
     onSuccess: () => {
-      // Invalidate both device-sessions and recordings so the Home banner +
-      // recordings list react immediately if revoke unblocks the user.
       queryClient.invalidateQueries({ queryKey: ['device-sessions'] }).catch(() => {});
-      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     },
     onError: (error: unknown) => {

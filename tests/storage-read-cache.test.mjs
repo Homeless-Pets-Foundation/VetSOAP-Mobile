@@ -290,7 +290,10 @@ test('draftStorage: syncPending for user A while scoped to user B cannot poison 
   assert.equal((await draftStorage.listDrafts()).length, 0);
 
   // syncPending rebinds currentUserId to A internally WITHOUT setUserId.
-  await draftStorage.syncPending('userA', async () => ({ id: 'server-xyz' }));
+  const result = await draftStorage.syncPending('userA', async () => ({ id: 'server-xyz' }));
+  assert.equal(result.attempted, 1);
+  assert.equal(result.succeeded, 1);
+  assert.equal(result.failed, 0);
 
   // B's view stays B's. A's draft got the server id.
   assert.equal((await draftStorage.listDrafts()).length, 0, 'B must not see A data after syncPending(A)');
@@ -298,6 +301,35 @@ test('draftStorage: syncPending for user A while scoped to user B cannot poison 
   assert.equal(aDrafts.length, 1);
   assert.equal(aDrafts[0].serverDraftId, 'server-xyz');
   assert.equal(aDrafts[0].pendingSync, false);
+});
+
+test('draftStorage: syncPending reports partial failures and leaves failed drafts pending', async () => {
+  const { draftStorage } = await loadDraftStorage();
+
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+  await draftStorage.saveDraft(makeSlot('slot2'));
+
+  let createAttempt = 0;
+  const result = await draftStorage.syncPending('userA', async () => {
+    createAttempt++;
+    if (createAttempt === 1) return { id: 'server-slot1' };
+    throw new Error('network failed');
+  });
+
+  assert.equal(result.attempted, 2);
+  assert.equal(result.succeeded, 1);
+  assert.equal(result.failed, 1);
+
+  const drafts = await draftStorage.listDraftsForUser('userA');
+  const slot1 = drafts.find((draft) => draft.slotId === 'slot1');
+  const slot2 = drafts.find((draft) => draft.slotId === 'slot2');
+  assert.ok(slot1);
+  assert.ok(slot2);
+  assert.equal(slot1.serverDraftId, 'server-slot1');
+  assert.equal(slot1.pendingSync, false);
+  assert.equal(slot2.serverDraftId, null);
+  assert.equal(slot2.pendingSync, true);
 });
 
 test('draftStorage: cached reads hand out defensive clones', async () => {

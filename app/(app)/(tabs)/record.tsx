@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList, AppState } from 'react-native';
+import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';
@@ -28,7 +28,7 @@ import {
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as audioFocus from '../../../modules/captivet-audio-focus';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
-import { useAuth } from '../../../src/hooks/useAuth';
+import { useAuthUser } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
 import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
 import { useResponsive } from '../../../src/hooks/useResponsive';
@@ -39,7 +39,7 @@ import { recordingsApi, getUploadPhase, isTransientUploadError } from '../../../
 import { ApiError } from '../../../src/api/client';
 import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import { trackEvent, type NetworkState, type AutoStashReason } from '../../../src/lib/analytics';
-import { breadcrumb, captureException } from '../../../src/lib/monitoring';
+import { breadcrumb, captureException, measurePhase } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
@@ -47,6 +47,7 @@ import { recordingActivity } from '../../../src/lib/recordingActivity';
 import { recordSubmitAttempt } from '../../../src/lib/submitTiming';
 import { setSessionActivity } from '../../../src/lib/sessionActivity';
 import { templatePreference } from '../../../src/lib/templatePreference';
+import { invalidateRecordingCaches } from '../../../src/lib/recordingQueryCache';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -310,6 +311,29 @@ class UploadCancelledByUser extends Error {
   }
 }
 
+function scheduleNonUrgentWork(
+  label: string,
+  work: () => Promise<void>,
+  fallbackMs = 2_500
+): () => void {
+  let cancelled = false;
+  let started = false;
+  const run = () => {
+    if (cancelled || started) return;
+    started = true;
+    measurePhase(label, undefined, work).catch(() => {});
+  };
+  const task = InteractionManager.runAfterInteractions(() => {
+    run();
+  });
+  const fallback = setTimeout(run, fallbackMs);
+  return () => {
+    cancelled = true;
+    clearTimeout(fallback);
+    task.cancel?.();
+  };
+}
+
 /** Promise-wrapped Alert.alert offering Upload Anyway when silence-check trips. */
 function confirmSilentUpload(): Promise<boolean> {
   return new Promise((resolve) => {
@@ -350,7 +374,7 @@ function RecordingSession() {
   const router = useRouter();
   const navigation = useNavigation();
   const queryClient = useQueryClient();
-  const { user } = useAuth();
+  const user = useAuthUser();
   const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
   const recorder = useAudioRecorder();
   const { width: screenWidth } = useWindowDimensions();
@@ -433,9 +457,13 @@ function RecordingSession() {
 
   /** Delete only the local auto-saved draft metadata/audio for a slot. */
   const deleteLocalSlotDraft = useCallback((slot: PatientSlot) => {
-    draftStorage.deleteDraft(slot.id).catch(() => {});
-    recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
-  }, []);
+    Promise.all([
+      draftStorage.deleteDraft(slot.id).catch(() => {}),
+      recoveryIntent.clearForDraftSlot(slot.id).catch(() => {}),
+    ]).then(() => {
+      invalidateRecordingCaches(queryClient, 'draft_deleted');
+    }).catch(() => {});
+  }, [queryClient]);
 
   /**
    * Delete the auto-saved draft tied to a slot — both the local SecureStore
@@ -1982,7 +2010,7 @@ function RecordingSession() {
 
         dispatch({ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: serverId });
         await draftStorage.updateServerDraftId(draftSlotId, serverId);
-        queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        invalidateRecordingCaches(queryClient, 'draft_changed');
       } catch (error) {
         const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
         if (isNetworkRequestFailed(error)) {
@@ -2098,10 +2126,10 @@ function RecordingSession() {
           draftSlotId,
           reason: recoveryReason,
         });
+        invalidateRecordingCaches(queryClient, 'draft_changed');
 
         if (completedUploadSlotIdsRef.current.has(slot.id)) {
-          draftStorage.deleteDraft(slot.id).catch(() => {});
-          recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+          deleteLocalSlotDraft(slot);
           return true;
         }
 
@@ -2129,7 +2157,7 @@ function RecordingSession() {
         return false;
       }
     },
-    [dispatch, isConnected, scheduleDraftSync, user?.id]
+    [deleteLocalSlotDraft, dispatch, isConnected, queryClient, scheduleDraftSync, user?.id]
   );
 
   autoSaveDraftRef.current = autoSaveDraft;
@@ -2305,7 +2333,7 @@ function RecordingSession() {
           const serverRecordingId = await uploadSlot(slot);
           if (serverRecordingId) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-            queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+            invalidateRecordingCaches(queryClient, 'submit_success');
 
             // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
             const otherSlotsWithRecordings = sessionRef.current.slots.some(
@@ -2420,7 +2448,7 @@ function RecordingSession() {
             : Haptics.NotificationFeedbackType.Warning
         ).catch(() => {});
 
-        queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        invalidateRecordingCaches(queryClient, 'submit_success');
 
         if (allSuccess) {
           releaseResumedStashIfAny();
@@ -2724,25 +2752,19 @@ function RecordingSession() {
 
   // Effect: check for pending drafts and update banner state
   useEffect(() => {
-    draftStorage.listDrafts().then((drafts) => {
-      setHasPendingDrafts(drafts.some((d) => d.pendingSync));
-    }).catch(() => {});
-  }, [session]);
-
-  // Effect: sync pending drafts when network becomes available
-  useEffect(() => {
-    if (!user?.id || !canRecordAppointments(user.role)) return;
-    const unsubscribe = NetInfo.addEventListener((state: any) => {
-      if (state.isConnected) {
-        draftStorage.syncPending(user.id, (formData) => recordingsApi.create(formData, { isDraft: true })).catch(() => {});
+    if (!user?.id) return;
+    let cancelled = false;
+    const cancelWork = scheduleNonUrgentWork('record_pending_draft_scan', async () => {
+      const drafts = await draftStorage.listDrafts();
+      if (!cancelled) {
+        setHasPendingDrafts(drafts.some((d) => d.pendingSync));
       }
-    });
+    }, 1_500);
     return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
+      cancelled = true;
+      cancelWork();
     };
-  }, [user?.id, user?.role]);
+  }, [session, user?.id]);
 
   // Effect: on mount (once per user), sweep local drafts whose audio files
   // are missing on disk. Those are "zombie" drafts — they'll render as "Not
@@ -2752,19 +2774,24 @@ function RecordingSession() {
   // the server row + local metadata clears them from the UI.
   useEffect(() => {
     if (!user?.id) return;
-    draftStorage
-      .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId))
-      .then((cleaned) => {
-        if (cleaned > 0) {
-          queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
-        }
-      })
-      .catch(() => {});
-    // Sweep stale FFmpeg-split temp dirs from a previous session that may
-    // have been force-quit mid-split. Live in-flight splits create their
-    // own uniquely-timestamped subdir and are guarded by the orchestrator's
-    // own try/catch — this only wipes leftovers.
-    cleanupSplitTempDirs(user.id);
+    let cancelled = false;
+    const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async () => {
+      const cleaned = await draftStorage
+        .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId))
+        .catch(() => 0);
+      if (!cancelled && cleaned > 0) {
+        invalidateRecordingCaches(queryClient, 'draft_deleted');
+      }
+      // Sweep stale FFmpeg-split temp dirs from a previous session that may
+      // have been force-quit mid-split. Live in-flight splits create their
+      // own uniquely-timestamped subdir and are guarded by the orchestrator's
+      // own try/catch — this only wipes leftovers.
+      cleanupSplitTempDirs(user.id);
+    }, 3_000);
+    return () => {
+      cancelled = true;
+      cancelWork();
+    };
   }, [user?.id, queryClient]);
 
   // Effect: status-aware 30-day eviction of un-sent recordings (drafts +
@@ -2781,7 +2808,8 @@ function RecordingSession() {
     if (evictionSweptUserRef.current === user.id) return;
     evictionSweptUserRef.current = user.id;
     const online = isConnected !== false;
-    (async () => {
+    let cancelled = false;
+    const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async () => {
       try {
         const getStatus = async (id: string): Promise<string | null> => {
           try {
@@ -2802,6 +2830,7 @@ function RecordingSession() {
         const totalExpired = expiredDrafts.length + expiredStashes.length;
         const totalExpiring = draftResult.expiring.length + stashResult.expiring.length;
 
+        if (cancelled) return;
         if (totalExpired > 0) {
           const n = totalExpired;
           const noun = n === 1 ? 'recording' : 'recordings';
@@ -2835,7 +2864,7 @@ function RecordingSession() {
                         // best-effort
                       }
                     }
-                    queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+                    invalidateRecordingCaches(queryClient, 'draft_deleted');
                   })().catch(() => {});
                 },
               },
@@ -2847,7 +2876,11 @@ function RecordingSession() {
       } catch (error) {
         if (__DEV__) console.error('[record] eviction sweep failed:', error);
       }
-    })().catch(() => {});
+    }, 4_000);
+    return () => {
+      cancelled = true;
+      cancelWork();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per user; isConnected read via closure at mount
   }, [user?.id]);
 
@@ -3228,21 +3261,38 @@ function RecordingSession() {
 }
 
 export default function RecordScreen() {
-  const { user } = useAuth();
+  const user = useAuthUser();
   const colors = useThemeColors();
   const [permissionStatus, setPermissionStatus] = useState<'checking' | 'granted' | 'denied'>('checking');
   const roleBlocked = !!user && !canRecordAppointments(user.role);
 
   useEffect(() => {
     if (roleBlocked) return;
-
-    getRecordingPermissionsAsync()
-      .then(({ granted }) => {
-        setPermissionStatus(granted ? 'granted' : 'denied');
-      })
-      .catch(() => {
+    let cancelled = false;
+    const watchdog = setTimeout(() => {
+      if (!cancelled) {
         setPermissionStatus('denied');
+      }
+    }, 4_000);
+
+    measurePhase('record_screen_mount_work', { work: 'permission_check' }, async () => {
+      const { granted } = await getRecordingPermissionsAsync();
+      if (!cancelled) {
+        setPermissionStatus(granted ? 'granted' : 'denied');
+      }
+    })
+      .catch(() => {
+        if (!cancelled) {
+          setPermissionStatus('denied');
+        }
+      })
+      .finally(() => {
+        clearTimeout(watchdog);
       });
+    return () => {
+      cancelled = true;
+      clearTimeout(watchdog);
+    };
   }, [roleBlocked]);
 
   if (roleBlocked) {

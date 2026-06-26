@@ -40,6 +40,12 @@ export interface DraftMetadata {
 
 export type ServerDraftPresence = 'present' | 'missing' | 'unknown';
 
+export interface DraftSyncResult {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+}
+
 /** Current user ID — set by AuthProvider to scope draft data per-user. */
 let currentUserId: string | null = null;
 
@@ -1040,29 +1046,33 @@ export const draftStorage = {
   async syncPending(
     userId: string,
     createFn: (formData: CreateRecording) => Promise<{ id: string }>
-  ): Promise<void> {
+  ): Promise<DraftSyncResult> {
     const previousUserId = currentUserId;
+    const result: DraftSyncResult = { attempted: 0, succeeded: 0, failed: 0 };
     try {
       currentUserId = userId;
 
       const drafts = await this.listDrafts();
 
-      let attempt = 0;
       for (const draft of drafts) {
         if (!draft.pendingSync) continue;
-        attempt++;
+        result.attempted++;
 
         try {
-          const result = await createFn(draft.formData);
-          await this.updateServerDraftId(draft.slotId, result.id);
+          const created = await createFn(draft.formData);
+          await this.updateServerDraftId(draft.slotId, created.id);
+          result.succeeded++;
         } catch {
           // Best-effort — skip drafts that fail to sync, but emit a
           // telemetry event so we can see spikes in offline-to-server
           // reconciliation failures.
-          emitDraftSyncRetryFailed(attempt);
+          result.failed++;
+          emitDraftSyncRetryFailed(result.attempted);
           continue;
         }
       }
+
+      return result;
     } finally {
       // Only restore if no external setUserId() (e.g. sign-out) happened
       // while we were awaiting — otherwise we'd clobber the new binding and

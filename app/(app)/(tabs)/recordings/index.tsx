@@ -1,17 +1,13 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Alert, View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import Animated, { FadeInRight } from 'react-native-reanimated';
 import { Search, Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
-import { ApiError } from '../../../../src/api/client';
-import { draftStorage } from '../../../../src/lib/draftStorage';
 import {
-  buildDraftResumeMap,
   mergeDraftRecordings,
   sortRecordingsByCreatedAt,
 } from '../../../../src/lib/draftRecordings';
@@ -20,7 +16,9 @@ import {
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
   RECORD_APPOINTMENT_PERMISSION_TITLE,
 } from '../../../../src/lib/recordingPermissions';
-import { useAuth } from '../../../../src/hooks/useAuth';
+import { useAuthUser } from '../../../../src/hooks/useAuth';
+import { useLocalDraftRecordings } from '../../../../src/hooks/useLocalDraftRecordings';
+import { useRetryableInitialLoadError } from '../../../../src/hooks/useRetryableInitialLoadError';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
@@ -29,6 +27,7 @@ import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { EmptyState } from '../../../../src/components/ui/EmptyState';
 import { Select } from '../../../../src/components/ui/Select';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
+import { measurePhase } from '../../../../src/lib/monitoring';
 
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
@@ -46,14 +45,13 @@ type StatusFilterValue =
 
 export default function RecordingsListScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const user = useAuthUser();
   const colors = useThemeColors();
   const { iconSm, iconLg } = useResponsive();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
-  const isInitialMountRef = useRef(true);
   const isTabFocused = useIsFocused();
   const shouldLoadRecordings = !!user && selectedStatusFilter !== 'draft';
   const shouldLoadDrafts = !!user && (selectedStatusFilter === 'all' || selectedStatusFilter === 'draft');
@@ -82,6 +80,7 @@ export default function RecordingsListScreen() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    isStale,
   } = useInfiniteQuery({
     queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', reviewStatusFilter ?? 'any', 'desc'],
     queryFn: ({ pageParam = 1 }) =>
@@ -146,6 +145,7 @@ export default function RecordingsListScreen() {
     isError: isDraftError,
     refetch: refetchDrafts,
     isRefetching: isDraftRefetching,
+    isStale: isDraftStale,
   } = useQuery({
     queryKey: ['recordings', 'drafts', 'list', debouncedSearch, 'desc'],
     queryFn: () =>
@@ -160,31 +160,45 @@ export default function RecordingsListScreen() {
     enabled: shouldLoadDrafts,
   });
 
-  const [localDrafts, setLocalDrafts] = useState<Awaited<ReturnType<typeof draftStorage.listDrafts>>>([]);
-  const refreshLocalDrafts = useCallback(() => {
-    draftStorage
-      .reconcileMissingServerDrafts(async (serverDraftId) => {
-        try {
-          const recording = await recordingsApi.get(serverDraftId);
-          return recording.status === 'draft' ? 'present' : 'unknown';
-        } catch (error) {
-          if (error instanceof ApiError && error.status === 404) {
-            return 'missing';
-          }
-          return 'unknown';
-        }
-      })
-      .then(() => draftStorage.listDrafts())
-      .then(setLocalDrafts)
-      .catch(() => {
-        setLocalDrafts([]);
-      });
-  }, []);
+  const {
+    localDrafts,
+    draftResumeMap,
+    refreshLocalDrafts,
+    isStale: areLocalDraftsStale,
+  } = useLocalDraftRecordings();
+  const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
 
-  const draftResumeMap = useMemo(
-    () => buildDraftResumeMap(localDrafts),
-    [localDrafts]
-  );
+  useEffect(() => {
+    areLocalDraftsStaleRef.current = areLocalDraftsStale;
+  }, [areLocalDraftsStale]);
+
+  const recordingsRetryKey = [
+    debouncedSearch || 'none',
+    serverStatusFilter ?? 'all',
+    reviewStatusFilter ?? 'any',
+  ].join(':');
+  const draftsRetryKey = [debouncedSearch || 'none', 'draft'].join(':');
+
+  useRetryableInitialLoadError({
+    screen: 'records',
+    source: 'recordings',
+    retryKey: recordingsRetryKey,
+    enabled: shouldLoadRecordings,
+    isError,
+    error,
+    hasData: (data?.pages.length ?? 0) > 0,
+    refetch,
+  });
+  useRetryableInitialLoadError({
+    screen: 'records',
+    source: 'drafts',
+    retryKey: draftsRetryKey,
+    enabled: shouldLoadDrafts,
+    isError: isDraftError,
+    error: draftError,
+    hasData: !!draftData,
+    refetch: refetchDrafts,
+  });
   const filteredLocalDrafts = useMemo(() => {
     const query = debouncedSearch.trim().toLowerCase();
     if (!query) return localDrafts;
@@ -230,12 +244,47 @@ export default function RecordingsListScreen() {
     if (shouldLoadDrafts) {
       refetchDrafts().catch(() => {});
     }
-    refreshLocalDrafts();
+    refreshLocalDrafts({ forceReconcile: true });
   }, [refetch, refetchDrafts, refreshLocalDrafts, shouldLoadDrafts, shouldLoadRecordings]);
 
-  // Refresh on every screen focus — required so drafts created or deleted on
-  // another device reconcile before this list renders from cached data.
-  useFocusEffect(handleRefresh);
+  const handleFocusRefresh = useCallback(() => {
+    const shouldRefetchRecordings = shouldLoadRecordings && isStale;
+    const shouldRefetchDrafts = shouldLoadDrafts && isDraftStale;
+    const shouldRefreshLocalDrafts = shouldLoadDrafts;
+    const localDraftsStale = areLocalDraftsStaleRef.current;
+    const staleSourceCount =
+      Number(shouldRefetchRecordings) +
+      Number(shouldRefetchDrafts) +
+      Number(shouldRefreshLocalDrafts);
+    measurePhase('records_focus_refresh', {
+      recordings_stale: shouldRefetchRecordings,
+      server_drafts_stale: shouldRefetchDrafts,
+      local_drafts_stale: localDraftsStale,
+      local_drafts_refreshed: shouldRefreshLocalDrafts,
+      skipped: !shouldRefetchRecordings && !shouldRefetchDrafts && !shouldRefreshLocalDrafts,
+      count: staleSourceCount,
+    }, () => {
+      if (shouldRefetchRecordings) {
+        refetch().catch(() => {});
+      }
+      if (shouldRefetchDrafts) {
+        refetchDrafts().catch(() => {});
+      }
+      if (shouldRefreshLocalDrafts) {
+        refreshLocalDrafts();
+      }
+    });
+  }, [
+    isDraftStale,
+    isStale,
+    refetch,
+    refetchDrafts,
+    refreshLocalDrafts,
+    shouldLoadDrafts,
+    shouldLoadRecordings,
+  ]);
+
+  useFocusEffect(handleFocusRefresh);
 
   const onEndReached = useCallback(() => {
     if (shouldLoadRecordings && hasNextPage && !isFetchingNextPage) {
@@ -252,13 +301,6 @@ export default function RecordingsListScreen() {
 
     router.push('/record');
   }, [router, user?.role]);
-
-  // Disable entry animations after initial data load
-  useEffect(() => {
-    if ((data || draftData) && isInitialMountRef.current) {
-      isInitialMountRef.current = false;
-    }
-  }, [data, draftData]);
 
   const isListLoading = selectedStatusFilter === 'draft'
     ? isDraftLoading
@@ -329,16 +371,9 @@ export default function RecordingsListScreen() {
       <FlatList
         data={displayRecordings}
         keyExtractor={keyExtractor}
-        renderItem={({ item, index }) => {
-          if (isInitialMountRef.current && index < 3) {
-            return (
-              <Animated.View entering={FadeInRight.delay(index * 50).duration(250)}>
-                <RecordingCard recording={item} localDraftSlotId={draftResumeMap[item.id]} />
-              </Animated.View>
-            );
-          }
-          return <RecordingCard recording={item} localDraftSlotId={draftResumeMap[item.id]} />;
-        }}
+        renderItem={({ item }) => (
+          <RecordingCard recording={item} localDraftSlotId={draftResumeMap[item.id]} />
+        )}
         contentContainerStyle={FLATLIST_CONTENT_STYLE}
         refreshControl={<RefreshControl refreshing={isListRefetching} onRefresh={handleRefresh} />}
         onEndReached={onEndReached}

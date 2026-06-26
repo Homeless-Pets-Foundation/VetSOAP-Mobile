@@ -1,5 +1,5 @@
 import React from 'react';
-import { type ViewProps } from 'react-native';
+import { View, type ViewProps } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 interface CardProps extends Pick<ViewProps, 'accessibilityLabel' | 'accessibilityRole'> {
@@ -20,8 +20,8 @@ export function Card({ children, className = '', animated = false, ...rest }: Ca
   }
 
   return (
-    <Animated.View className={`${baseClass} ${className}`} {...rest}>
+    <View className={`${baseClass} ${className}`} {...rest}>
       {children}
-    </Animated.View>
+    </View>
   );
 }

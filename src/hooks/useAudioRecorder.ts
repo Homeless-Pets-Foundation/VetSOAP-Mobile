@@ -47,15 +47,15 @@ const RECORDING_OPTIONS: RecordingOptions = {
   isMeteringEnabled: true,
   extension: '.m4a',
   sampleRate: 44100,
-  numberOfChannels: 2,
-  bitRate: 256000,
+  numberOfChannels: 1,
+  bitRate: 96000,
   android: {
     outputFormat: 'mpeg4',
     audioEncoder: 'aac',
     audioSource: 'voice_recognition',
   },
   ios: {
-    audioQuality: AudioQuality.MAX,
+    audioQuality: AudioQuality.HIGH,
     outputFormat: IOSOutputFormat.MPEG4AAC,
     linearPCMBitDepth: 16,
     linearPCMIsBigEndian: false,
@@ -63,9 +63,28 @@ const RECORDING_OPTIONS: RecordingOptions = {
   },
   web: {
     mimeType: 'audio/webm;codecs=opus',
-    bitsPerSecond: 256000,
+    bitsPerSecond: 96000,
   },
 };
+
+let androidNotificationPermissionChecked = false;
+
+async function ensureAndroidRecordingNotificationPermission(): Promise<void> {
+  if (Platform.OS !== 'android' || Platform.Version < 33) return;
+  if (androidNotificationPermissionChecked) return;
+  androidNotificationPermissionChecked = true;
+
+  try {
+    const permission = 'android.permission.POST_NOTIFICATIONS' as keyof typeof PermissionsAndroid.PERMISSIONS;
+    const alreadyGranted = await PermissionsAndroid.check(permission as any);
+    if (alreadyGranted) return;
+    await PermissionsAndroid.request(permission as any);
+    // Recording still works if denied — just no persistent notification,
+    // which may let the OS kill the process. Not a blocker.
+  } catch {
+    // Denial or bridge failure is nonfatal.
+  }
+}
 
 export function useAudioRecorder(): UseAudioRecorderReturn {
   const [state, setState] = useState<RecordingState>('idle');
@@ -331,17 +350,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setIsStarting(true);
     let startSucceeded = false;
     try {
-      // Android 13+ requires POST_NOTIFICATIONS for the foreground service notification.
-      // Without it the background recording service may fail to start silently.
-      if (Platform.OS === 'android' && Platform.Version >= 33) {
-        try {
-          await PermissionsAndroid.request(
-            'android.permission.POST_NOTIFICATIONS' as any,
-          );
-          // Recording still works if denied — just no persistent notification,
-          // which may let the OS kill the process. Not a blocker.
-        } catch {}
-      }
+      // Android 13+ requires POST_NOTIFICATIONS for the foreground service
+      // notification. Cache the session result so every recording start does
+      // not pay a repeated bridge/request cost.
+      await ensureAndroidRecordingNotificationPermission();
 
       await setAudioModeAsync({
         allowsRecording: true,

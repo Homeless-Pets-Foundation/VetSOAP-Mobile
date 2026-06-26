@@ -78,15 +78,7 @@ export function MetadataReviewCard({
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const formSeed = React.useMemo(
     () => buildMetadataFormSeed(recording, mode),
-    [
-      mode,
-      recording.patientName,
-      recording.clientName,
-      recording.species,
-      recording.breed,
-      recording.appointmentType,
-      recording.aiExtractedMetadata,
-    ]
+    [recording, mode]
   );
   const [form, setForm] = React.useState<MetadataForm>(formSeed);
 

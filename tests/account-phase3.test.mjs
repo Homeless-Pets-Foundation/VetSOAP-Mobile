@@ -11,7 +11,15 @@ async function read(path) {
 test('Phase 3 account API uses additive server contracts', async () => {
   const source = await read('src/api/account.ts');
   assert.match(source, /patch<UpdateMeResponse>\('\/auth\/me'/);
-  assert.match(source, /get<SubscriptionInfo>\('\/api\/billing\/subscription'\)/);
+  assert.match(source, /const SubscriptionInfoSchema = z\.object/);
+  assert.match(source, /plan: z\.object/);
+  assert.match(source, /seatCount: z\.number\(\)/);
+  assert.match(source, /capabilities: BillingCapabilitiesSchema/);
+  assert.match(source, /apiClient\.get<unknown>\('\/api\/billing\/subscription'\)/);
+  assert.match(source, /SubscriptionInfoSchema\.parse\(response\)/);
+  assert.match(source, /apiClient\.post<unknown>\('\/api\/billing\/portal'\)/);
+  assert.match(source, /PortalSessionResponseSchema\.parse\(response\)/);
+  assert.doesNotMatch(source, /manageUrl/);
   assert.match(source, /post<DeleteAccountResponse>\('\/auth\/delete-account',\s*\{ confirmation \}/);
 });
 
@@ -27,6 +35,8 @@ test('settings account surface is grouped and support links use direct openURL',
   assert.match(settings, /Linking\.openURL\(url\)/);
   assert.doesNotMatch(settings, /canOpenURL/);
   assert.match(settings, /countUnsentRecordings/);
+  assert.match(settings, /const canViewBilling = user\?\.role === 'owner' \|\| user\?\.role === 'admin'/);
+  assert.match(settings, /\{canViewBilling \? \(/);
 });
 
 test('delete-account flow requires typed DELETE, warns on unsent recordings, and preserves logout rules', async () => {
@@ -76,8 +86,28 @@ test('profile and subscription screens emit PHI-safe analytics only', async () =
   const subscription = await read('app/(app)/subscription.tsx');
   assert.match(subscription, /subscription_viewed/);
   assert.match(subscription, /status: data\.status/);
-  assert.match(subscription, /Linking\.openURL\(data\.manageUrl\)/);
+  assert.match(subscription, /plan\.name/);
+  assert.match(subscription, /seatCount/);
+  assert.match(subscription, /capabilities\.canManagePortal/);
+  assert.match(subscription, /isAllowedBillingUrl\(response\.url\)/);
+  assert.match(subscription, /Linking\.openURL\(response\.url\)/);
+  assert.match(subscription, /portalMutation\.mutate\(\)/);
+  assert.match(subscription, /enabled: canViewBilling/);
+  assert.match(subscription, /const hasCents = Math\.abs\(cents % 100\) > Number\.EPSILON/);
+  assert.match(subscription, /toFixed\(hasCents \? 2 : 0\)/);
+  assert.match(subscription, /if \(!canViewBilling\) return/);
+  assert.match(subscription, /canViewBilling\s*\?\s*<RefreshControl/);
+  assert.doesNotMatch(subscription, /manageUrl/);
   assert.doesNotMatch(subscription, /canOpenURL/);
+});
+
+test('root error fallback text is bounded so Android does not clip retry copy', async () => {
+  const layout = await read('app/_layout.tsx');
+  assert.match(layout, /maxWidth:\s*640/);
+  assert.match(layout, /width:\s*'100%'/);
+  assert.match(layout, /lineHeight:\s*22/);
+  assert.match(layout, /paddingHorizontal:\s*8/);
+  assert.match(layout, /minWidth:\s*128/);
 });
 
 test('device registration sends model name without static expo-device import', async () => {

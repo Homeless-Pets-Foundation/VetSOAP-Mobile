@@ -3,12 +3,13 @@ import { Modal, View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { ShieldAlert, Smartphone, Tablet, Monitor, X } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuth } from '../hooks/useAuth';
+import { useAuthDeviceRegistration } from '../hooks/useAuth';
 import { useResponsive } from '../hooks/useResponsive';
 import { useDeviceCapacity } from '../hooks/useDeviceCapacity';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { devicesApi, type DeviceSession } from '../api/devices';
 import { Button } from './ui/Button';
+import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 
 function getDeviceIcon(deviceType: string | null) {
   if (!deviceType) return Smartphone;
@@ -63,11 +64,11 @@ export function DeviceLimitModal() {
     deviceRegistrationBlock,
     dismissDeviceRegistrationBlock,
     retryDeviceRegistration,
-  } = useAuth();
+  } = useAuthDeviceRegistration();
   const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
   const queryClient = useQueryClient();
-  const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity();
+  const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity({ mode: 'manage' });
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
 
@@ -102,8 +103,9 @@ export function DeviceLimitModal() {
         const ok = await retryDeviceRegistration();
         if (ok) {
           queryClient
-            .invalidateQueries({ queryKey: ['recordings'] })
+            .invalidateQueries({ queryKey: ['device-sessions'] })
             .catch(() => {});
+          invalidateRecordingCaches(queryClient, 'device_registration_recovered');
         }
       } finally {
         setRetrying(false);
@@ -141,11 +143,10 @@ export function DeviceLimitModal() {
                 setRetrying(true);
                 const ok = await retryDeviceRegistration();
                 if (ok) {
-                  // Recordings may have been blocked by 428 prior to this —
-                  // unblock them now that the device is registered.
                   queryClient
-                    .invalidateQueries({ queryKey: ['recordings'] })
+                    .invalidateQueries({ queryKey: ['device-sessions'] })
                     .catch(() => {});
+                  invalidateRecordingCaches(queryClient, 'device_registration_recovered');
                 }
               } catch (error) {
                 const message =

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useIsFocused } from '@react-navigation/native';
-import { useAuth } from './useAuth';
+import { useAuthDeviceRegistration, useAuthUser } from './useAuth';
 import { devicesApi, type DeviceCapacity, type DeviceSession } from '../api/devices';
 
 export interface UseDeviceCapacityResult {
@@ -9,6 +9,10 @@ export interface UseDeviceCapacityResult {
   isLoading: boolean;
   isError: boolean;
   refetch: () => Promise<unknown>;
+}
+
+export interface UseDeviceCapacityOptions {
+  mode?: 'home' | 'manage';
 }
 
 /**
@@ -22,19 +26,23 @@ export interface UseDeviceCapacityResult {
  * revokes from another device or an admin bumps the org limit, so this is
  * already faster than typical ground-truth.
  */
-export function useDeviceCapacity(): UseDeviceCapacityResult {
-  const { user, deviceRegistrationBlock, deviceRegistrationPending } = useAuth();
+export function useDeviceCapacity(options: UseDeviceCapacityOptions = {}): UseDeviceCapacityResult {
+  const mode = options.mode ?? 'home';
+  const user = useAuthUser();
+  const { deviceRegistrationBlock, deviceRegistrationPending } = useAuthDeviceRegistration();
   const isTabFocused = useIsFocused();
   const canQueryDeviceSessions =
     !!user && !deviceRegistrationBlock && !deviceRegistrationPending;
+  const staleTime = mode === 'manage' ? 30_000 : 5 * 60_000;
 
   const query = useQuery({
     queryKey: ['device-sessions'],
     queryFn: () => devicesApi.list(),
     enabled: canQueryDeviceSessions,
-    refetchInterval: isTabFocused ? 60_000 : false,
-    refetchOnWindowFocus: true,
-    staleTime: 30_000,
+    refetchInterval: mode === 'manage' && isTabFocused ? 60_000 : false,
+    refetchOnWindowFocus: mode === 'manage',
+    refetchOnMount: mode === 'manage' ? 'always' : true,
+    staleTime,
   });
 
   return {

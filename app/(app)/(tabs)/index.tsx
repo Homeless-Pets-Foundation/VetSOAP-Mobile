@@ -16,6 +16,7 @@ import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../src/hooks/useThemeColors';
 import { useDeviceCapacity } from '../../../src/hooks/useDeviceCapacity';
 import { useLocalDraftRecordings } from '../../../src/hooks/useLocalDraftRecordings';
+import { useRetryableInitialLoadError } from '../../../src/hooks/useRetryableInitialLoadError';
 import { recordingsApi } from '../../../src/api/recordings';
 import { patientsApi } from '../../../src/api/patients';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
@@ -70,7 +71,12 @@ export default function HomeScreen() {
   });
 
   const { data, error, isLoading, isError, refetch, isRefetching } = recordingsQuery;
-  const { data: draftData, refetch: refetchDrafts } = draftsQuery;
+  const {
+    data: draftData,
+    error: draftError,
+    isError: isDraftError,
+    refetch: refetchDrafts,
+  } = draftsQuery;
   const recordings = useMemo(() => data?.data ?? [], [data?.data]);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
@@ -80,6 +86,26 @@ export default function HomeScreen() {
     refreshLocalDrafts,
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
+  useRetryableInitialLoadError({
+    screen: 'home',
+    source: 'recordings',
+    retryKey: 'recent',
+    enabled: !!user,
+    isError,
+    error,
+    hasData: !!data,
+    refetch,
+  });
+  useRetryableInitialLoadError({
+    screen: 'home',
+    source: 'drafts',
+    retryKey: 'recent-drafts',
+    enabled: !!user,
+    isError: isDraftError,
+    error: draftError,
+    hasData: !!draftData,
+    refetch: refetchDrafts,
+  });
   const drafts = useMemo(() => {
     if (!user) return [];
     return mergeDraftRecordings(localDrafts, draftData?.data ?? [], user.id, user.organizationId);

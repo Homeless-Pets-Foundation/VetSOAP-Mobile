@@ -18,6 +18,7 @@ import {
 } from '../../../../src/lib/recordingPermissions';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { useLocalDraftRecordings } from '../../../../src/hooks/useLocalDraftRecordings';
+import { useRetryableInitialLoadError } from '../../../../src/hooks/useRetryableInitialLoadError';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
@@ -165,6 +166,33 @@ export default function RecordingsListScreen() {
     refreshLocalDrafts,
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
+  const recordingsRetryKey = [
+    debouncedSearch || 'none',
+    serverStatusFilter ?? 'all',
+    reviewStatusFilter ?? 'any',
+  ].join(':');
+  const draftsRetryKey = [debouncedSearch || 'none', 'draft'].join(':');
+
+  useRetryableInitialLoadError({
+    screen: 'records',
+    source: 'recordings',
+    retryKey: recordingsRetryKey,
+    enabled: shouldLoadRecordings,
+    isError,
+    error,
+    hasData: (data?.pages.length ?? 0) > 0,
+    refetch,
+  });
+  useRetryableInitialLoadError({
+    screen: 'records',
+    source: 'drafts',
+    retryKey: draftsRetryKey,
+    enabled: shouldLoadDrafts,
+    isError: isDraftError,
+    error: draftError,
+    hasData: !!draftData,
+    refetch: refetchDrafts,
+  });
   const filteredLocalDrafts = useMemo(() => {
     const query = debouncedSearch.trim().toLowerCase();
     if (!query) return localDrafts;

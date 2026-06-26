@@ -68,6 +68,11 @@ play-service-account.json
 /ios
 /android
 
+# local Expo native module build output (modules/captivet-audio-focus etc.)
+modules/*/android/build/
+modules/*/android/.cxx/
+modules/*/ios/build/
+
 # Local working notes - internal infra details, not for the public repo
 docs/competitive-audit-2026-06.md
 docs/dark-mode-5d-completion-plan-2026-06.md

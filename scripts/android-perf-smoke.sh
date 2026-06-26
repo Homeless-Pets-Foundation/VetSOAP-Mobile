@@ -17,7 +17,7 @@ fi
 
 mkdir -p "${OUT_DIR}"
 
-"${ADB_BIN}" devices > "${OUT_DIR}/adb-devices.txt"
+"${ADB_BIN}" devices | tr -d '\r' > "${OUT_DIR}/adb-devices.txt"
 DEVICE_COUNT="$(awk 'NR > 1 && $2 == "device" { count++ } END { print count + 0 }' "${OUT_DIR}/adb-devices.txt")"
 if [[ "${DEVICE_COUNT}" -eq 0 ]]; then
   echo "No adb devices are connected." >&2

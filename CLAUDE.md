@@ -7,7 +7,7 @@
 - **State:** React Query = server; Context = auth; useReducer = multi-patient session
 - **Styling:** NativeWind v4 (Tailwind via `global.css`)
 - **Auth:** Supabase + `expo-secure-store` token persist
-- **Build:** EAS managed (no `android/`/`ios/` committed)
+- **Build:** EAS managed (no app-level `android/`/`ios/` committed). Exception: one local Expo native module in `modules/captivet-audio-focus/` (committed `android/`+`ios/` source — see File Conventions).
 
 ## Shared Infrastructure
 
@@ -172,7 +172,8 @@ Port 8081 busy → `lsof -ti:8081 | xargs kill -9`.
 - `src/constants/strings.ts` — centralized UI labels (`PROCESSING_STEP_LABELS`, `UPLOAD_OVERLAY_COPY`, `SOAP_SECTION_ACTIONS`). Add new labels here (one grep surfaces every site; i18n precursor).
 - `app/_layout.tsx` — gates app on `CONFIG_MISSING` before providers mount. Root `ErrorBoundary` wraps tree.
 - `src/components/ui/Button.tsx` — shared button + haptics, optional `icon`. `Haptics.impactAsync` has `.catch()`. No shadow on `ghost`. Every press flows here.
-- `src/hooks/useAudioRecorder.ts` — wraps expo-audio. `audioSource: 'voice_recognition'` on Android. `stop()` swallows; `pause()`/`resume()` catch+cleanup+rethrow. `resetWithoutDelete()` keeps file; `reset()` deletes file. Auto-releases on unmount.
+- `src/hooks/useAudioRecorder.ts` — wraps expo-audio. `audioSource: 'voice_recognition'` on Android. `stop()` swallows; `pause()`/`resume()` catch+cleanup+rethrow. `resetWithoutDelete()` keeps file; `reset()` deletes file. Auto-releases on unmount. `triggerInterruption()` → state `'interrupted'` (driven by `modules/captivet-audio-focus` on Android, expo-audio `hasError` on iOS).
+- `modules/captivet-audio-focus/` — local Expo native module (committed `android/` Kotlin + `ios/` Swift, `index.ts` JS bridge). Android-only `AudioManager` focus listener detecting call/alarm/voice-app interruptions expo-audio's foreground service hides; emits `audioFocusChange` (`loss` w/ `transient`/`permanent`/`duck` reason, `gain`). **iOS = no-op stub** (AVAudioSession interruptions arrive via expo-audio `hasError`). Consumed in `record.tsx` (see Multi-Patient Recording Architecture → audio-focus). `android/build/` is gitignored build output.
 - `src/hooks/useMultiPatientSession.ts` — `useReducer` multi-patient state. ≤10 `PatientSlot`s w/ `segments[]`, recorder binding, upload status, `CONTINUE_RECORDING` for multi-segment. `RESTORE_SESSION`+`REPLACE_ALL_SEGMENTS` validate URIs. `SET_DRAFT_IDS` sets `draftSlotId`+`serverDraftId`.
 - `src/hooks/useStashedSessions.ts` — stash list + resume. `stashSession` moves segments to stash dir, writes metadata, then `draftStorage.deleteDraft()` for every slot w/ `draftSlotId` (stash owns audio post-commit). `convertToPatientSlots` restores `serverDraftId`/`draftSlotId`.
 - `src/types/multiPatient.ts` — `PatientSlot` (incl. `draftSlotId`/`serverDraftId`), `AudioSegment`, `SessionAction`, `SessionState`.
@@ -221,6 +222,8 @@ Three layers, all env-gated + PHI-scrubbed. Each silently no-ops if its key is m
 **Data model** (`src/types/multiPatient.ts`): `AudioSegment` = `{ uri, duration }` (one continuous file). `PatientSlot` = form data (`CreateRecording`), `audioState` (`idle`|`recording`|`paused`|`stopped`), `segments[]`, upload lifecycle (`uploadStatus`, `uploadProgress`, `uploadError`, `serverRecordingId`), draft linkage (`draftSlotId`, `serverDraftId`). `SessionState` = `{ slots, activeIndex, recorderBoundToSlotId }`. `SessionAction` = discriminated union. Max 10 enforced in `ADD_SLOT`.
 
 **Recorder ownership:** single `useAudioRecorder` shared; one owner via `recorderBoundToSlotId`. `BIND_RECORDER` on start; `UNBIND_RECORDER` after capture (`recorder.state === 'stopped'` effect). Pending-start queue: new start while another active → stop current via `pendingStartSlotRef`, post-stop the pending slot auto-starts via `startRecordingRef`. Auto-pause on swipe-away (`handleScrollEnd`); pause fail (rethrown) → stop fallback. Consistency guard: effect watching `recorderBoundToSlotId` forces orphaned `recording` slot back to `stopped` (w/ segments) or `idle`.
+
+**Audio-focus interruption (Android, Rule 6 native half):** expo-audio on Android does **not** surface AudioFocus loss as `hasError` — its background-audio foreground service holds focus across calls. Local Expo native module `modules/captivet-audio-focus/` registers our own `AudioManager` focus listener to catch calls / alarms / other voice apps. `record.tsx` subscribes via `audioFocus.addListener`; on `loss` (ignoring `duck`, volume-only) while `recording`/`paused` it calls `recorder.triggerInterruption()` → recorder state `'interrupted'` → existing effect saves the partial segment, shows banner, arms pending-resume; `gain` auto-resumes (defers to `AppState 'active'` if backgrounded, to avoid double-resume race). **iOS = no-op stub** (AVAudioSession interruptions already arrive via expo-audio `hasError`); the stub exists so the cross-platform JS API doesn't throw at import. Don't replace with a static import that assumes the module on iOS.
 
 **Multi-segment:** each slot's `segments[]` = source of truth. `SAVE_AUDIO` appends + sums duration. `CONTINUE_RECORDING` → `idle` + hook `resetWithoutDelete()` (keeps file). Upload: `uploadSlot()` → `createWithFile()` (single) or `createWithSegments()` (multi uploads each segment to own presigned URL, confirms w/ all keys).
 

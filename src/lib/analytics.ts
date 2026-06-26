@@ -119,6 +119,13 @@ export type AnalyticsEvent =
   | { name: 'soap_section_edited'; props: { recording_id: string; section: SoapSectionName } }
   | { name: 'soap_exported'; props: { target: SoapExportTarget; recording_id: string } }
   | { name: 'soap_regenerated'; props: { recording_id: string; template_changed: boolean } }
+  | { name: 'recording_reprocessed'; props: {
+      recording_id: string;
+      transcription_model: string;
+      soap_model: string;
+      transcription_model_changed: boolean;
+      soap_model_changed: boolean;
+    } }
   | { name: 'email_draft_generated'; props: { recording_id: string } }
   | { name: 'soap_translated'; props: { recording_id: string; target_language: TranslationTargetLanguage } }
   | { name: 'suggested_task_resolved'; props: { action: 'accepted' | 'dismissed'; type: 'todo' | 'billing' } }

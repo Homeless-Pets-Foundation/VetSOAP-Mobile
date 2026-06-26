@@ -11,6 +11,21 @@ export type RecordingStatus =
 
 export type ReviewStatus = 'needs_review' | 'reviewed';
 
+// Reprocess (re-transcribe + regenerate SOAP) model selection. Sourced from
+// GET /api/organization/ai-models (org-scoped, key/allow-list filtered server-side).
+export interface AiModelOption {
+  id: string;
+  label: string;
+}
+export interface AiModelCategory {
+  default: string | null;
+  options: AiModelOption[];
+}
+export interface OrgAiModels {
+  transcription: AiModelCategory;
+  soap: AiModelCategory;
+}
+
 export interface CostBreakdown {
   transcriptionCostCents: number;
   generationCostCents: number;

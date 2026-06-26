@@ -286,7 +286,10 @@ export const REPROCESS_MODELS_COPY = {
   sheetTitle: 'Reprocess Recording',
   sheetBody:
     'Choose the transcription and SOAP models, then reprocess. This replaces the current ' +
-    'transcript and SOAP note and runs new processing.',
+    'transcript and SOAP note and may use billable AI credits or provider usage.',
+  confirmTitle: 'Reprocess recording?',
+  confirmBody:
+    'This will replace the current transcript and SOAP note and may use billable AI credits or provider usage.',
   transcriptionLabel: 'Transcription model',
   soapLabel: 'SOAP note model',
   currentPrefix: 'Last used: ',

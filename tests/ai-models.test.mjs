@@ -116,6 +116,46 @@ test('hasSelectableModels requires both usable + at least one real choice', asyn
   );
 });
 
+test('hasVisibleReprocessModelChoice ignores hidden foreign-language transcription choices', async () => {
+  const { FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL, hasVisibleReprocessModelChoice } =
+    await loadTsModule('src/lib/aiModels.ts');
+
+  const cat = (def, ids) => ({ default: def, options: ids.map((id) => ({ id, label: id })) });
+  const models = {
+    transcription: cat(FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL, [
+      FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL,
+      'nova-3-medical',
+    ]),
+    soap: cat('glm', ['glm']),
+  };
+
+  assert.equal(hasVisibleReprocessModelChoice(models), true);
+  assert.equal(hasVisibleReprocessModelChoice(models, { recordingForeignLanguage: true }), false);
+  assert.equal(
+    hasVisibleReprocessModelChoice(
+      {
+        transcription: cat(FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL, [
+          FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL,
+          'nova-3-medical',
+        ]),
+        soap: cat('glm', ['glm', 'gemini']),
+      },
+      { recordingForeignLanguage: true }
+    ),
+    true
+  );
+  assert.equal(
+    hasVisibleReprocessModelChoice(
+      {
+        transcription: cat('nova-3-medical', ['nova-3-medical']),
+        soap: cat('glm', ['glm', 'gemini']),
+      },
+      { recordingForeignLanguage: true }
+    ),
+    false
+  );
+});
+
 test('getCurrentModelLabel maps id → label, falls back to raw id', async () => {
   const { getCurrentModelLabel } = await loadTsModule('src/lib/aiModels.ts');
 

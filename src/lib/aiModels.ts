@@ -4,6 +4,8 @@
 // a value import from '../types' would pull RN deps into the vm and break it).
 import type { OrgAiModels, AiModelCategory, AiModelOption } from '../types';
 
+export const FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL = 'nova-3';
+
 function normalizeCategory(raw: unknown): AiModelCategory {
   const c = (raw ?? {}) as { default?: unknown; options?: unknown };
   const options: AiModelOption[] = Array.isArray(c.options)
@@ -40,6 +42,24 @@ export function hasSelectableModels(m: OrgAiModels): boolean {
   const soapUsable = m.soap.options.length >= 1 && m.soap.default != null;
   const anyChoice = m.transcription.options.length > 1 || m.soap.options.length > 1;
   return transcriptionUsable && soapUsable && anyChoice;
+}
+
+export function hasVisibleReprocessModelChoice(
+  m: OrgAiModels,
+  options: { recordingForeignLanguage?: boolean } = {}
+): boolean {
+  const hasForeignLanguageTranscriptionModel = m.transcription.options.some(
+    (model) => model.id === FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL
+  );
+  const transcriptionUsable = options.recordingForeignLanguage
+    ? hasForeignLanguageTranscriptionModel
+    : m.transcription.options.length >= 1 && m.transcription.default != null;
+  const soapUsable = m.soap.options.length >= 1 && m.soap.default != null;
+  const visibleChoice =
+    m.soap.options.length > 1 ||
+    (!options.recordingForeignLanguage && m.transcription.options.length > 1);
+
+  return transcriptionUsable && soapUsable && visibleChoice;
 }
 
 // "Currently: …" label. costBreakdown values may be a raw id or a model string not in options —

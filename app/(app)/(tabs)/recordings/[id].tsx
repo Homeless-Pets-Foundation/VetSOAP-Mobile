@@ -45,7 +45,7 @@ import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
-import { hasSelectableModels } from '../../../../src/lib/aiModels';
+import { hasVisibleReprocessModelChoice } from '../../../../src/lib/aiModels';
 import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
@@ -762,13 +762,15 @@ export default function RecordingDetailScreen() {
 
         {/* Reprocess — re-transcribe + regenerate SOAP with chosen models. Own card at top level so
             BOTH completed and failed (with audio) reach it; hidden until the backend returns a real,
-            key/allow-list-filtered model list with an actual choice (hasSelectableModels). The 202
-            body seeds status='uploaded' → the existing poller + ProcessingStepper take over. */}
+            key/allow-list-filtered model list with a visible actual choice. The 202 body seeds
+            status='uploaded' → the existing poller + ProcessingStepper take over. */}
         {id &&
           (recording.status === 'completed' || recording.status === 'failed') &&
           !!recording.audioFileUrl &&
           aiModels &&
-          hasSelectableModels(aiModels) && (
+          hasVisibleReprocessModelChoice(aiModels, {
+            recordingForeignLanguage: recording.foreignLanguage,
+          }) && (
             <ReprocessSheet
               recordingId={id}
               models={aiModels}

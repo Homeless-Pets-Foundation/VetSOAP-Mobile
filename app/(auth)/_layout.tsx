@@ -1,11 +1,12 @@
 import React from 'react';
 import { Redirect, Stack } from 'expo-router';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthMfa, useAuthReadiness } from '../../src/hooks/useAuth';
 import { View, ActivityIndicator } from 'react-native';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 
 export default function AuthLayout() {
-  const { isAuthenticated, isPasswordRecovery, isLoading, mfaRequired } = useAuth();
+  const { isAuthenticated, isPasswordRecovery, isLoading } = useAuthReadiness();
+  const { mfaRequired } = useAuthMfa();
   const colors = useThemeColors();
 
   if (isLoading) {

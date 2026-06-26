@@ -119,7 +119,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     slug: 'vetsoap-mobile',
     scheme: 'captivet',
     version: '1.13.7',
-    orientation: 'default',
+    orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
     splash: {

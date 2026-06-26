@@ -11,7 +11,7 @@ import { IconButton } from '../../src/components/ui/IconButton';
 import { Button } from '../../src/components/ui/Button';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { DELETE_ACCOUNT_COPY } from '../../src/constants/strings';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthActions } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { trackEvent } from '../../src/lib/analytics';
@@ -26,7 +26,7 @@ function formatDate(value?: string | null): string | null {
 
 export default function DeleteAccountScreen() {
   const router = useRouter();
-  const { signOut } = useAuth();
+  const { signOut } = useAuthActions();
   const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
   const [confirmation, setConfirmation] = useState('');

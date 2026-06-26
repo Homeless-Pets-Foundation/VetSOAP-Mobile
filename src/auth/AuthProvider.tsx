@@ -1,4 +1,4 @@
-import React, { createContext, useEffect, useState, useCallback, useRef } from 'react';
+import React, { createContext, useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
@@ -34,7 +34,7 @@ import {
   supportStaffRecoveryVault,
   type RecoveryPreserveResult,
 } from '../lib/supportStaffRecoveryVault';
-import { setMonitoringUser, clearMonitoringUser, captureException, captureMessage, breadcrumb } from '../lib/monitoring';
+import { setMonitoringUser, clearMonitoringUser, captureException, captureMessage, breadcrumb, measurePhase } from '../lib/monitoring';
 import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib/analytics';
 import { saveProfileCache, getCachedProfile } from '../lib/userProfileCache';
 import type { User } from '../types';
@@ -223,6 +223,101 @@ export const AuthContext = createContext<AuthContextType>({
   deviceRegistrationPending: false,
   isPasswordRecovery: false,
   clearPasswordRecovery: () => {},
+  mfaRequired: false,
+  mfaReturnPath: null,
+  mfaReason: null,
+  mfaCurrentLevel: 'aal1',
+  mfaNextLevel: 'aal1',
+  refreshMfaStatus: async () => ({ required: false }),
+  listMfaFactors: async () => [],
+  enrollMfaFactor: async () => {
+    throw new Error('MFA is not available.');
+  },
+  startMfaChallenge: async () => {
+    throw new Error('MFA is not available.');
+  },
+  verifyMfaChallenge: async () => {},
+  verifyMfaEnrollment: async () => {},
+  clearMfaChallenge: () => {},
+});
+
+export type AuthReadinessContextType = Pick<
+  AuthContextType,
+  | 'session'
+  | 'isAuthenticated'
+  | 'isLoading'
+  | 'userFetchState'
+  | 'userFetchError'
+  | 'profileSource'
+  | 'localRecoveryState'
+  | 'pendingRecoveryDraftSlotId'
+  | 'consumePendingRecoveryDraftSlotId'
+  | 'retryFetchUser'
+  | 'isPasswordRecovery'
+  | 'clearPasswordRecovery'
+>;
+
+export type AuthActionsContextType = Pick<
+  AuthContextType,
+  'signIn' | 'signInWithGoogle' | 'signInWithApple' | 'signOut'
+>;
+
+export type AuthDeviceRegistrationContextType = Pick<
+  AuthContextType,
+  | 'deviceRegistrationBlock'
+  | 'dismissDeviceRegistrationBlock'
+  | 'retryDeviceRegistration'
+  | 'deviceRegistrationPending'
+>;
+
+export type AuthMfaContextType = Pick<
+  AuthContextType,
+  | 'mfaRequired'
+  | 'mfaReturnPath'
+  | 'mfaReason'
+  | 'mfaCurrentLevel'
+  | 'mfaNextLevel'
+  | 'refreshMfaStatus'
+  | 'listMfaFactors'
+  | 'enrollMfaFactor'
+  | 'startMfaChallenge'
+  | 'verifyMfaChallenge'
+  | 'verifyMfaEnrollment'
+  | 'clearMfaChallenge'
+>;
+
+export const AuthUserContext = createContext<User | null>(null);
+
+export const AuthReadinessContext = createContext<AuthReadinessContextType>({
+  session: null,
+  isAuthenticated: false,
+  isLoading: true,
+  userFetchState: 'idle',
+  userFetchError: null,
+  profileSource: 'live',
+  localRecoveryState: 'idle',
+  pendingRecoveryDraftSlotId: null,
+  consumePendingRecoveryDraftSlotId: () => null,
+  retryFetchUser: async () => false,
+  isPasswordRecovery: false,
+  clearPasswordRecovery: () => {},
+});
+
+export const AuthActionsContext = createContext<AuthActionsContextType>({
+  signIn: async () => ({ error: null }),
+  signInWithGoogle: async () => ({ error: null }),
+  signInWithApple: async () => ({ error: null }),
+  signOut: async () => {},
+});
+
+export const AuthDeviceRegistrationContext = createContext<AuthDeviceRegistrationContextType>({
+  deviceRegistrationBlock: null,
+  dismissDeviceRegistrationBlock: () => {},
+  retryDeviceRegistration: async () => false,
+  deviceRegistrationPending: false,
+});
+
+export const AuthMfaContext = createContext<AuthMfaContextType>({
   mfaRequired: false,
   mfaReturnPath: null,
   mfaReason: null,
@@ -554,7 +649,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
       }, LOCAL_RECOVERY_SCAN_TIMEOUT_MS);
 
-      (async () => {
+      measurePhase('local_recovery_scan', { user_scoped: true }, async () => {
         try {
           const intent = await recoveryIntent.getForUser(userId);
           if (localRecoveryScanIdRef.current !== scanId) return;
@@ -586,7 +681,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } finally {
           clearTimeout(timeout);
         }
-      })().catch(() => {
+      }).catch(() => {
         clearTimeout(timeout);
         if (localRecoveryScanIdRef.current === scanId) {
           setLocalRecoveryState('error');
@@ -700,7 +795,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (registerDeviceInFlightRef.current) {
       return registerDeviceInFlightRef.current;
     }
-    const promise = (async (): Promise<boolean> => {
+    const promise = measurePhase('registerDevice', { platform: Platform.OS }, async (): Promise<boolean> => {
       try {
         const deviceId = await secureStorage.getDeviceId();
         if (!deviceId) {
@@ -787,7 +882,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } finally {
         registerDeviceInFlightRef.current = null;
       }
-    })();
+    });
     registerDeviceInFlightRef.current = promise;
     return promise;
   }, [handleMfaRequiredResponse]);
@@ -801,7 +896,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [registerDevice]
   );
 
-  const fetchUser = useCallback(async (): Promise<boolean> => {
+  const fetchUser = useCallback(async (): Promise<boolean> => measurePhase('fetchUser', undefined, async () => {
     const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
     setUserFetchState('loading');
     setUserFetchError(null);
@@ -958,7 +1053,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
     return false;
-  }, [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
+  }), [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
 
   const applyBearerMfaTokens = useCallback(async (tokens?: MfaApiResponse['tokens']) => {
     if (!tokens) return;
@@ -1427,7 +1522,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // post-update) recovers to "no session" 5s before the top-level watchdog
     // fires — gives the user the Sign-In screen rather than a captured
     // warning with no recovery action.
-    withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session').then(async (result) => {
+    measurePhase(
+      'auth_init_get_session',
+      undefined,
+      () => withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session')
+    ).then(async (result) => {
       const existingSession = result?.data?.session ?? null;
       if (existingSession) {
         if (existingSession.access_token) {
@@ -1789,45 +1888,164 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       'expires_at:', session.expires_at, 'user:', !!user);
   }
 
+  const authReadinessValue = useMemo<AuthReadinessContextType>(() => ({
+    session,
+    isAuthenticated,
+    isLoading,
+    userFetchState,
+    userFetchError,
+    profileSource,
+    localRecoveryState,
+    pendingRecoveryDraftSlotId,
+    consumePendingRecoveryDraftSlotId,
+    retryFetchUser: fetchUser,
+    isPasswordRecovery,
+    clearPasswordRecovery,
+  }), [
+    session,
+    isAuthenticated,
+    isLoading,
+    userFetchState,
+    userFetchError,
+    profileSource,
+    localRecoveryState,
+    pendingRecoveryDraftSlotId,
+    consumePendingRecoveryDraftSlotId,
+    fetchUser,
+    isPasswordRecovery,
+    clearPasswordRecovery,
+  ]);
+
+  const authActionsValue = useMemo<AuthActionsContextType>(() => ({
+    signIn,
+    signInWithGoogle,
+    signInWithApple,
+    signOut: handleSignOut,
+  }), [signIn, signInWithGoogle, signInWithApple, handleSignOut]);
+
+  const authDeviceRegistrationValue = useMemo<AuthDeviceRegistrationContextType>(() => ({
+    deviceRegistrationBlock,
+    dismissDeviceRegistrationBlock,
+    retryDeviceRegistration,
+    deviceRegistrationPending,
+  }), [
+    deviceRegistrationBlock,
+    dismissDeviceRegistrationBlock,
+    retryDeviceRegistration,
+    deviceRegistrationPending,
+  ]);
+
+  const authMfaValue = useMemo<AuthMfaContextType>(() => ({
+    mfaRequired,
+    mfaReturnPath,
+    mfaReason,
+    mfaCurrentLevel,
+    mfaNextLevel,
+    refreshMfaStatus,
+    listMfaFactors,
+    enrollMfaFactor,
+    startMfaChallenge,
+    verifyMfaChallenge,
+    verifyMfaEnrollment,
+    clearMfaChallenge,
+  }), [
+    mfaRequired,
+    mfaReturnPath,
+    mfaReason,
+    mfaCurrentLevel,
+    mfaNextLevel,
+    refreshMfaStatus,
+    listMfaFactors,
+    enrollMfaFactor,
+    startMfaChallenge,
+    verifyMfaChallenge,
+    verifyMfaEnrollment,
+    clearMfaChallenge,
+  ]);
+
+  const authContextValue = useMemo<AuthContextType>(() => ({
+    user,
+    session,
+    isAuthenticated,
+    isLoading,
+    userFetchState,
+    userFetchError,
+    profileSource,
+    localRecoveryState,
+    pendingRecoveryDraftSlotId,
+    consumePendingRecoveryDraftSlotId,
+    retryFetchUser: fetchUser,
+    signIn,
+    signInWithGoogle,
+    signInWithApple,
+    signOut: handleSignOut,
+    deviceRegistrationBlock,
+    dismissDeviceRegistrationBlock,
+    retryDeviceRegistration,
+    deviceRegistrationPending,
+    isPasswordRecovery,
+    clearPasswordRecovery,
+    mfaRequired,
+    mfaReturnPath,
+    mfaReason,
+    mfaCurrentLevel,
+    mfaNextLevel,
+    refreshMfaStatus,
+    listMfaFactors,
+    enrollMfaFactor,
+    startMfaChallenge,
+    verifyMfaChallenge,
+    verifyMfaEnrollment,
+    clearMfaChallenge,
+  }), [
+    user,
+    session,
+    isAuthenticated,
+    isLoading,
+    userFetchState,
+    userFetchError,
+    profileSource,
+    localRecoveryState,
+    pendingRecoveryDraftSlotId,
+    consumePendingRecoveryDraftSlotId,
+    fetchUser,
+    signIn,
+    signInWithGoogle,
+    signInWithApple,
+    handleSignOut,
+    deviceRegistrationBlock,
+    dismissDeviceRegistrationBlock,
+    retryDeviceRegistration,
+    deviceRegistrationPending,
+    isPasswordRecovery,
+    clearPasswordRecovery,
+    mfaRequired,
+    mfaReturnPath,
+    mfaReason,
+    mfaCurrentLevel,
+    mfaNextLevel,
+    refreshMfaStatus,
+    listMfaFactors,
+    enrollMfaFactor,
+    startMfaChallenge,
+    verifyMfaChallenge,
+    verifyMfaEnrollment,
+    clearMfaChallenge,
+  ]);
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        session,
-        isAuthenticated,
-        isLoading,
-        userFetchState,
-        userFetchError,
-        profileSource,
-        localRecoveryState,
-        pendingRecoveryDraftSlotId,
-        consumePendingRecoveryDraftSlotId,
-        retryFetchUser: fetchUser,
-        signIn,
-        signInWithGoogle,
-        signInWithApple,
-        signOut: handleSignOut,
-        deviceRegistrationBlock,
-        dismissDeviceRegistrationBlock,
-        retryDeviceRegistration,
-        deviceRegistrationPending,
-        isPasswordRecovery,
-        clearPasswordRecovery,
-        mfaRequired,
-        mfaReturnPath,
-        mfaReason,
-        mfaCurrentLevel,
-        mfaNextLevel,
-        refreshMfaStatus,
-        listMfaFactors,
-        enrollMfaFactor,
-        startMfaChallenge,
-        verifyMfaChallenge,
-        verifyMfaEnrollment,
-        clearMfaChallenge,
-      }}
-    >
-      {children}
+    <AuthContext.Provider value={authContextValue}>
+      <AuthUserContext.Provider value={user}>
+        <AuthReadinessContext.Provider value={authReadinessValue}>
+          <AuthActionsContext.Provider value={authActionsValue}>
+            <AuthDeviceRegistrationContext.Provider value={authDeviceRegistrationValue}>
+              <AuthMfaContext.Provider value={authMfaValue}>
+                {children}
+              </AuthMfaContext.Provider>
+            </AuthDeviceRegistrationContext.Provider>
+          </AuthActionsContext.Provider>
+        </AuthReadinessContext.Provider>
+      </AuthUserContext.Provider>
     </AuthContext.Provider>
   );
 }

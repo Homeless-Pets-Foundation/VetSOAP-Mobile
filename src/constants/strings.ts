@@ -179,6 +179,7 @@ export const SUBSCRIPTION_COPY = {
   statusActive: 'Active',
   statusPastDue: 'Past Due',
   statusCanceled: 'Canceled',
+  statusUnknown: 'Unknown',
   openFailedTitle: 'Could Not Open Billing',
   openFailedBody: 'Please try again in a moment.',
   goBack: 'Go back',
@@ -190,11 +191,14 @@ export const SUBSCRIPTION_COPY = {
   trialEnds: 'Trial ends',
   accessEnds: 'Access ends',
   renews: 'Renews',
-  seats: (used: number, total: number): string => `${used} of ${total} seats`,
+  seats: (count: number): string => `${count} billable ${count === 1 ? 'seat' : 'seats'}`,
   seatsLabel: 'Seats',
+  monthlyTotal: 'Monthly total',
+  annualTotal: 'Annual total',
   noBillingDates: 'No billing dates available.',
   manageBilling: 'Manage Billing',
   billingPortalOwnersOnly: 'Billing portal is available to organization owners and administrators.',
+  adminOnly: 'Subscription details are available to organization owners and administrators.',
 } as const;
 
 export const DELETE_ACCOUNT_COPY = {

@@ -10,7 +10,7 @@ import {
   type RecoveryItem,
   type RecoverySlot,
 } from '../../src/lib/supportStaffRecoveryVault';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthUser } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
@@ -72,7 +72,7 @@ function isFormComplete(form: CreateRecording | undefined): boolean {
 
 export default function RecordingRecoveryScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const user = useAuthUser();
   const { iconMd, iconLg } = useResponsive();
   const colors = useThemeColors();
   const [items, setItems] = useState<RecoveryItem[]>([]);

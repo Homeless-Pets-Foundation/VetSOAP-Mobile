@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { View, Text, TextInput, Pressable, Alert, AppState, Platform } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, usePathname, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import * as SplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -8,17 +8,16 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { useColorScheme } from 'nativewind';
 import { AuthProvider } from '../src/auth/AuthProvider';
 import { supabase } from '../src/auth/supabase';
-import { configureGoogleSignIn } from '../src/auth/socialAuth';
 import { StatusBar } from 'expo-status-bar';
 import { CONFIG_MISSING } from '../src/config';
 import { queryClient } from '../src/lib/queryClient';
 import { DeviceLimitModal } from '../src/components/DeviceLimitModal';
-import { initMonitoring, captureException } from '../src/lib/monitoring';
+import { initMonitoring, captureException, measurePhase } from '../src/lib/monitoring';
 import { initAnalytics, trackEvent } from '../src/lib/analytics';
 import { getSessionActivity } from '../src/lib/sessionActivity';
 import { getThemePreference } from '../src/lib/themePreference';
 import { useThemeColors } from '../src/hooks/useThemeColors';
-import { useAuth } from '../src/hooks/useAuth';
+import { useAuthMfa, useAuthReadiness, useAuthUser } from '../src/hooks/useAuth';
 import '../global.css';
 
 // App-wide default font (Inter, embedded at build time — app.config.ts).
@@ -62,6 +61,32 @@ function coarseAppState(state: string): AppStateCoarse {
   return 'unknown';
 }
 
+function coarseRoute(pathname: string | null): string {
+  if (!pathname) return 'unknown';
+  if (pathname.includes('/recordings/')) return '/recordings/[id]';
+  if (pathname.includes('/patient/')) return '/patient/[id]';
+  if (pathname.includes('/record')) return '/record';
+  if (pathname.includes('/recordings')) return '/recordings';
+  if (pathname.includes('/settings')) return '/settings';
+  if (pathname.includes('/devices')) return '/devices';
+  if (pathname.includes('/subscription')) return '/subscription';
+  if (pathname.includes('/mfa')) return '/mfa';
+  if (pathname.includes('/login')) return '/login';
+  return pathname === '/' ? '/' : 'other';
+}
+
+let rootBoundaryDiagnostics: Record<string, string | number | boolean | null> = {
+  route: 'unknown',
+  app_state: coarseAppState(AppState.currentState ?? 'unknown'),
+  auth_loading: true,
+  authenticated: false,
+  user_fetch_state: 'idle',
+  profile_source: 'live',
+  has_user: false,
+  mfa_required: false,
+  config_missing: CONFIG_MISSING,
+};
+
 // Initialize Sentry at module load so early crashes are captured. It
 // internally try/catches and no-ops if the DSN is unset — safe under rule 1.
 // PostHog init is deferred to after the first frame (see RootLayout) to keep
@@ -78,19 +103,11 @@ try {
   // noop — splash auto-hides, worst case is the old double transition (rule 1)
 }
 
-// Initialize native Google Sign-In once at module load, before any component
-// renders. Safe to call with missing/empty client IDs — configureGoogleSignIn
-// no-ops and logs a dev warning, and the Google button later surfaces a
-// user-friendly error if pressed.
-if (!CONFIG_MISSING) {
-  configureGoogleSignIn();
-}
-
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
-  { hasError: boolean; error: Error | null }
+  { hasError: boolean; error: Error | null; eventId?: string }
 > {
-  state = { hasError: false, error: null as Error | null };
+  state = { hasError: false, error: null as Error | null, eventId: undefined as string | undefined };
 
   static getDerivedStateFromError(error: Error) {
     return { hasError: true, error };
@@ -104,10 +121,16 @@ class ErrorBoundary extends React.Component<
     } catch {
       // noop
     }
-    captureException(error, {
+    const eventId = captureException(error, {
       tags: { boundary: 'root' },
-      extra: { componentStack: info.componentStack ?? '' },
+      extra: {
+        componentStack: info.componentStack ?? '',
+        rootBoundaryDiagnostics,
+      },
     });
+    if (eventId) {
+      this.setState({ eventId });
+    }
   }
 
   render() {
@@ -118,18 +141,39 @@ class ErrorBoundary extends React.Component<
 
       return (
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
-          <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 8 }}>
-            Something went wrong
-          </Text>
-          <Text style={{ fontSize: 14, color: '#78716c', textAlign: 'center', marginBottom: 16 }}>
-            {displayMessage}
-          </Text>
-          <Pressable
-            onPress={() => this.setState({ hasError: false, error: null })}
-            style={{ backgroundColor: '#0d8775', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}
-          >
-            <Text style={{ color: '#fff', fontWeight: '600' }}>Try Again</Text>
-          </Pressable>
+          <View style={{ width: '100%', maxWidth: 640, alignItems: 'center', paddingHorizontal: 16 }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 8, textAlign: 'center', paddingHorizontal: 4 }}>
+              Something went wrong
+            </Text>
+            <Text
+              style={{
+                width: '100%',
+                fontSize: 14,
+                lineHeight: 22,
+                color: '#78716c',
+                textAlign: 'center',
+                marginBottom: 16,
+                paddingHorizontal: 8,
+                flexShrink: 1,
+              }}
+            >
+              {displayMessage}
+            </Text>
+            <Pressable
+              onPress={() => this.setState({ hasError: false, error: null, eventId: undefined })}
+              style={{
+                backgroundColor: '#0d8775',
+                paddingHorizontal: 20,
+                paddingVertical: 10,
+                borderRadius: 8,
+                minWidth: 128,
+              }}
+            >
+              <Text style={{ color: '#fff', fontWeight: '600', textAlign: 'center', paddingHorizontal: 2 }}>
+                Try Again
+              </Text>
+            </Pressable>
+          </View>
         </View>
       );
     }
@@ -138,7 +182,7 @@ class ErrorBoundary extends React.Component<
 }
 
 function SplashGate() {
-  const { isLoading } = useAuth();
+  const { isLoading } = useAuthReadiness();
 
   useEffect(() => {
     if (!isLoading) {
@@ -154,6 +198,47 @@ function SplashGate() {
       SplashScreen.hideAsync().catch(() => {});
     }, 10_000);
     return () => clearTimeout(timeout);
+  }, []);
+
+  return null;
+}
+
+function RootDiagnosticsReporter() {
+  const pathname = usePathname();
+  const user = useAuthUser();
+  const readiness = useAuthReadiness();
+  const mfa = useAuthMfa();
+
+  useEffect(() => {
+    rootBoundaryDiagnostics = {
+      route: coarseRoute(pathname),
+      app_state: coarseAppState(AppState.currentState ?? 'unknown'),
+      auth_loading: readiness.isLoading,
+      authenticated: readiness.isAuthenticated,
+      user_fetch_state: readiness.userFetchState,
+      profile_source: readiness.profileSource,
+      has_user: Boolean(user),
+      mfa_required: mfa.mfaRequired,
+      config_missing: CONFIG_MISSING,
+    };
+  }, [
+    pathname,
+    readiness.isLoading,
+    readiness.isAuthenticated,
+    readiness.userFetchState,
+    readiness.profileSource,
+    user,
+    mfa.mfaRequired,
+  ]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      rootBoundaryDiagnostics = {
+        ...rootBoundaryDiagnostics,
+        app_state: coarseAppState(next),
+      };
+    });
+    return () => sub.remove();
   }, []);
 
   return null;
@@ -227,27 +312,28 @@ export default function RootLayout() {
     _coldStartReported = true;
     trackEvent({ name: 'session_start', props: { cold_start_ms: Date.now() - COLD_START_AT } });
 
-    // Permission snapshot — samples once per cold start. Non-prompting; if
-    // the user never granted mic access the app still functions up to the
-    // record screen and then shows the OS prompt. This fires so we can
-    // correlate "nothing recorded" bug reports with permission state.
-    (async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const Audio = require('expo-audio') as typeof import('expo-audio');
-        const result = await Audio.getRecordingPermissionsAsync();
-        const mic: 'granted' | 'denied' | 'undetermined' = result?.status === 'granted'
-          ? 'granted'
-          : result?.status === 'denied'
-            ? 'denied'
-            : 'undetermined';
-        // Notifications intentionally undetermined — expo-notifications isn't
-        // a current dep. Wire here if/when we add one.
-        trackEvent({ name: 'permissions_snapshot', props: { mic, notifications: 'undetermined' } });
-      } catch {
-        // swallow — permission probe is best-effort
-      }
-    })().catch(() => {});
+    // Permission snapshot is nonurgent. Run it after startup has had a chance
+    // to paint content so expo-audio's native module load stays off the cold
+    // critical path.
+    const permissionTimer = setTimeout(() => {
+      measurePhase('permission_snapshot', { skipped: false }, async () => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const Audio = require('expo-audio') as typeof import('expo-audio');
+          const result = await Audio.getRecordingPermissionsAsync();
+          const mic: 'granted' | 'denied' | 'undetermined' = result?.status === 'granted'
+            ? 'granted'
+            : result?.status === 'denied'
+              ? 'denied'
+              : 'undetermined';
+          // Notifications intentionally undetermined — expo-notifications isn't
+          // a current dep. Wire here if/when we add one.
+          trackEvent({ name: 'permissions_snapshot', props: { mic, notifications: 'undetermined' } });
+        } catch {
+          // swallow — permission probe is best-effort
+        }
+      }).catch(() => {});
+    }, 5_000);
 
     // App state transitions, tagged with what the user was doing. Catches
     // "recorder was active when the OS backgrounded us" and similar patterns.
@@ -262,6 +348,7 @@ export default function RootLayout() {
       prevState = nextCoarse;
     });
     return () => {
+      clearTimeout(permissionTimer);
       try { sub.remove(); } catch { /* noop */ }
     };
   }, []);
@@ -347,6 +434,7 @@ export default function RootLayout() {
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            <RootDiagnosticsReporter />
             <SplashGate />
             <ThemePreferenceHydrator />
             <ThemedStatusBar />

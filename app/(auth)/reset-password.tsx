@@ -2,13 +2,13 @@ import React, { useState } from 'react';
 import { View, Text, Alert, SafeAreaView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../src/auth/supabase';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthReadiness } from '../../src/hooks/useAuth';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
-  const { clearPasswordRecovery } = useAuth();
+  const { clearPasswordRecovery } = useAuthReadiness();
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);

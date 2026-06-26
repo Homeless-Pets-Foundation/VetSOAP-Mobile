@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import QRCode from 'react-native-qrcode-svg';
 import { AlertCircle, LogOut, RefreshCw, ShieldCheck } from 'lucide-react-native';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthActions, useAuthMfa, useAuthReadiness } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
@@ -32,6 +32,12 @@ export default function MfaScreen() {
   const colors = useThemeColors();
   const {
     isAuthenticated,
+    pendingRecoveryDraftSlotId,
+    consumePendingRecoveryDraftSlotId,
+    retryFetchUser,
+  } = useAuthReadiness();
+  const { signOut } = useAuthActions();
+  const {
     mfaRequired,
     mfaReturnPath,
     mfaReason,
@@ -42,11 +48,7 @@ export default function MfaScreen() {
     verifyMfaEnrollment,
     refreshMfaStatus,
     clearMfaChallenge,
-    pendingRecoveryDraftSlotId,
-    consumePendingRecoveryDraftSlotId,
-    retryFetchUser,
-    signOut,
-  } = useAuth();
+  } = useAuthMfa();
   const [mode, setMode] = useState<MfaMode>('loading');
   const [enrollment, setEnrollment] = useState<PendingEnrollment | null>(null);
   const [code, setCode] = useState('');

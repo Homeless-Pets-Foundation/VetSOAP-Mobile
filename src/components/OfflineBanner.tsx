@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CloudOff } from 'lucide-react-native';
-import { useAuth } from '../hooks/useAuth';
+import { useAuthDeviceRegistration, useAuthReadiness } from '../hooks/useAuth';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { OFFLINE_BANNER_COPY } from '../constants/strings';
 
@@ -13,7 +13,8 @@ import { OFFLINE_BANNER_COPY } from '../constants/strings';
  * retry CTA here. Disappears on its own when the live profile loads.
  */
 export function OfflineBanner() {
-  const { profileSource, deviceRegistrationPending, deviceRegistrationBlock } = useAuth();
+  const { profileSource } = useAuthReadiness();
+  const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
   const insets = useSafeAreaInsets();
   const colors = useThemeColors();
 

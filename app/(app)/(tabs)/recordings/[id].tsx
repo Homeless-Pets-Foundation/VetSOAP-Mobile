@@ -33,7 +33,7 @@ import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { fileExists } from '../../../../src/lib/fileOps';
 import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
-import { mergeUpdatedRecordingIntoRecordingsCache } from '../../../../src/lib/recordingMetadataSync';
+import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../../../../src/lib/recordingQueryCache';
 import {
   shouldEmitExtractionObserved,
   buildExtractionObservedProps,
@@ -46,7 +46,7 @@ import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
 import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
-import { useAuth } from '../../../../src/hooks/useAuth';
+import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
 import type { RecordingMetadataField, UpdateRecordingMetadata } from '../../../../src/types';
 
@@ -86,7 +86,7 @@ export default function RecordingDetailScreen() {
   const queryClient = useQueryClient();
   const { iconMd } = useResponsive();
   const colors = useThemeColors();
-  const { user } = useAuth();
+  const user = useAuthUser();
   const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
 
   const appStateRef = useRef(AppState.currentState);
@@ -223,8 +223,9 @@ export default function RecordingDetailScreen() {
     onSuccess: (updatedRecording) => {
       if (id && updatedRecording?.id === id) {
         queryClient.setQueryData(['recording', id], updatedRecording);
+        mergeRecordingIntoCachedLists(queryClient, updatedRecording);
       }
-      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      invalidateRecordingCaches(queryClient, 'review_update');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     },
     onError: (error: Error) => {
@@ -243,10 +244,11 @@ export default function RecordingDetailScreen() {
     onSuccess: (updatedRecording) => {
       if (id && updatedRecording?.id === id) {
         queryClient.setQueryData(['recording', id], updatedRecording);
+        mergeRecordingIntoCachedLists(queryClient, updatedRecording);
         pollingStartedAtRef.current = null;
       }
-      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
+      invalidateRecordingCaches(queryClient, 'processing_retry');
     },
     onError: (error: Error) => {
       if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
@@ -266,7 +268,7 @@ export default function RecordingDetailScreen() {
         trackEvent({ name: 'soap_regenerated', props: { recording_id: id, template_changed: false } });
         queryClient.removeQueries({ queryKey: ['soapNote', id] });
         queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
-        queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+        invalidateRecordingCaches(queryClient, 'soap_regenerated');
         pollingStartedAtRef.current = null;
         setActiveNoteTab('soap');
       }
@@ -292,10 +294,7 @@ export default function RecordingDetailScreen() {
     onSuccess: (updatedRecording, vars) => {
       if (id && updatedRecording?.id === id) {
         queryClient.setQueryData(['recording', id], updatedRecording);
-        queryClient.setQueriesData(
-          { queryKey: ['recordings'] },
-          (cached) => mergeUpdatedRecordingIntoRecordingsCache(cached, updatedRecording)
-        );
+        mergeRecordingIntoCachedLists(queryClient, updatedRecording);
       }
       const pimsPatientIdSubmitted = Object.prototype.hasOwnProperty.call(
         vars.payload.fields ?? {},
@@ -306,7 +305,7 @@ export default function RecordingDetailScreen() {
         queryClient.invalidateQueries({ queryKey: ['patient'] }).catch(() => {});
       }
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
-      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      invalidateRecordingCaches(queryClient, 'metadata_update');
       trackEvent({
         name: 'ai_metadata_review_resolved',
         props: {
@@ -495,7 +494,7 @@ export default function RecordingDetailScreen() {
     },
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      invalidateRecordingCaches(queryClient, recording?.status === 'draft' ? 'draft_deleted' : 'detail_deleted');
       queryClient.removeQueries({ queryKey: ['recording', id] });
       router.navigate('/recordings');
     },

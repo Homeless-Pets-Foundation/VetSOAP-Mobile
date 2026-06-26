@@ -3,7 +3,7 @@ import { View, Text, Image, KeyboardAvoidingView, Platform, Pressable } from 're
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
 import { AlertCircle, Eye, EyeOff, Info } from 'lucide-react-native';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthActions } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
@@ -16,7 +16,7 @@ const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 60_000; // 1 minute
 
 export default function LoginScreen() {
-  const { signIn, signInWithGoogle, signInWithApple } = useAuth();
+  const { signIn, signInWithGoogle, signInWithApple } = useAuthActions();
   const { scale, iconSm } = useResponsive();
   const colors = useThemeColors();
   const [email, setEmail] = useState('');

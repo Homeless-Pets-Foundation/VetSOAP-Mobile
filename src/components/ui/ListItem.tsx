@@ -1,16 +1,9 @@
 import React from 'react';
 import { Pressable, Text, View, type GestureResponderEvent, type PressableProps } from 'react-native';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { ChevronRight } from 'lucide-react-native';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { cx, HIT_SLOP, runMaybeAsyncEvent } from './styles';
-
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 interface ListItemProps extends Omit<PressableProps, 'children' | 'style' | 'onPress'> {
   title: React.ReactNode;
@@ -61,12 +54,7 @@ export function ListItem({
   ...rest
 }: ListItemProps) {
   const colors = useThemeColors();
-  const scale = useSharedValue(1);
   const canPress = !!onPress && !disabled;
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
 
   const handlePress = (event: GestureResponderEvent) => {
     if (haptic) {
@@ -103,26 +91,19 @@ export function ListItem({
 
   if (!onPress) {
     return (
-      <Animated.View
+      <View
         className={cx('card mb-2', disabled && 'opacity-50', className)}
         accessibilityLabel={accessibilityLabel}
-        style={animatedStyle}
         {...rest}
       >
         {body}
-      </Animated.View>
+      </View>
     );
   }
 
   return (
-    <AnimatedPressable
+    <Pressable
       onPress={handlePress}
-      onPressIn={() => {
-        if (canPress) scale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
-      }}
-      onPressOut={() => {
-        scale.value = withSpring(1, { damping: 15, stiffness: 300 });
-      }}
       disabled={!canPress}
       hitSlop={HIT_SLOP}
       pressRetentionOffset={HIT_SLOP}
@@ -130,10 +111,10 @@ export function ListItem({
       accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled }}
       className={cx('card mb-2', disabled && 'opacity-50', className)}
-      style={animatedStyle}
+      style={({ pressed }) => ({ opacity: pressed && canPress ? 0.96 : 1 })}
       {...rest}
     >
       {body}
-    </AnimatedPressable>
+    </Pressable>
   );
 }

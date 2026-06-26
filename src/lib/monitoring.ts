@@ -219,7 +219,8 @@ export type BreadcrumbCategory =
   | 'navigation'
   | 'network'
   | 'memory'
-  | 'ffmpeg';
+  | 'ffmpeg'
+  | 'performance';
 
 /** Record a breadcrumb. Safe to call even when Sentry is disabled. */
 export function breadcrumb(
@@ -262,21 +263,22 @@ function subKeyForException(error: unknown, tags?: Record<string, string>): stri
 export function captureException(
   error: unknown,
   context?: { tags?: Record<string, string>; extra?: Record<string, unknown> },
-): void {
-  if (!_initialized) return;
+): string | undefined {
+  if (!_initialized) return undefined;
   const gate = shouldEmit('capture_exception', subKeyForException(error, context?.tags));
-  if (!gate.emit) return;
+  if (!gate.emit) return undefined;
   try {
     const extra = { ...(context?.extra ?? {}) };
     if (gate.suppressedPriorWindow > 0) {
       (extra as Record<string, unknown>).suppressed_prior_window = gate.suppressedPriorWindow;
     }
-    Sentry.captureException(error, {
+    return Sentry.captureException(error, {
       tags: context?.tags,
       extra,
     });
   } catch {
     // swallow
+    return undefined;
   }
 }
 
@@ -312,5 +314,104 @@ export function captureMessage(
     });
   } catch {
     // swallow
+  }
+}
+
+type PhaseTagValue = string | number | boolean | null | undefined;
+
+function phaseTagString(value: PhaseTagValue): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return String(value).slice(0, 64);
+}
+
+function nowMs(): number {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      return performance.now();
+    }
+  } catch {
+    // Fall back below.
+  }
+  return Date.now();
+}
+
+function bucketDuration(durationMs: number): string {
+  if (durationMs >= 5000) return '5000ms_plus';
+  if (durationMs >= 2000) return '2000ms_plus';
+  if (durationMs >= 1000) return '1000ms_plus';
+  if (durationMs >= 500) return '500ms_plus';
+  if (durationMs >= 250) return '250ms_plus';
+  return 'under_250ms';
+}
+
+/**
+ * Measure an app-specific phase without adding required startup work.
+ * Fixed phase names + low-cardinality tags only; callers must not pass PHI.
+ */
+export function measurePhase<T>(
+  name: string,
+  tags: Record<string, PhaseTagValue> | undefined,
+  fn: () => T,
+): T;
+export function measurePhase<T>(
+  name: string,
+  tags: Record<string, PhaseTagValue> | undefined,
+  fn: () => Promise<T>,
+): Promise<T>;
+export function measurePhase<T>(
+  name: string,
+  tags: Record<string, PhaseTagValue> | undefined,
+  fn: () => T | Promise<T>,
+): T | Promise<T> {
+  const startedAt = nowMs();
+  const finish = (outcome: 'success' | 'error') => {
+    const durationMs = Math.max(0, Math.round(nowMs() - startedAt));
+    const sanitizedTags: Record<string, string> = {
+      phase: name,
+      duration_bucket: bucketDuration(durationMs),
+      outcome,
+    };
+    for (const [key, value] of Object.entries(tags ?? {})) {
+      const safe = phaseTagString(value);
+      if (safe !== undefined) sanitizedTags[key] = safe;
+    }
+
+    breadcrumb('performance', 'phase_complete', {
+      phase: name,
+      duration_ms: durationMs,
+      duration_bucket: sanitizedTags.duration_bucket,
+      outcome,
+      skipped: sanitizedTags.skipped,
+      count: sanitizedTags.count,
+    });
+
+    if (durationMs >= 1000) {
+      captureMessage(`slow_phase_${name}`, 'warning', {
+        tags: sanitizedTags,
+        extra: { duration_ms: durationMs },
+      });
+    }
+  };
+
+  try {
+    const result = fn();
+    if (result && typeof (result as Promise<T>).then === 'function') {
+      return (result as Promise<T>).then(
+        (value) => {
+          finish('success');
+          return value;
+        },
+        (error) => {
+          finish('error');
+          throw error;
+        }
+      );
+    }
+    finish('success');
+    return result;
+  } catch (error) {
+    finish('error');
+    throw error;
   }
 }

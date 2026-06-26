@@ -1,10 +1,5 @@
 import React from 'react';
 import { Alert, View, Text, Pressable } from 'react-native';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { ChevronRight, CloudOff, Smartphone, Sparkles } from 'lucide-react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -17,9 +12,8 @@ import type { Recording } from '../types';
 import { METADATA_REVIEW_COPY } from '../constants/strings';
 import { displayPatientName, isUntitledVisit } from '../lib/recordingDisplay';
 import { getRecordingReviewStatus } from '../lib/recordingReview';
+import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../lib/recordingQueryCache';
 import { useThemeColors } from '../hooks/useThemeColors';
-
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 interface RecordingCardProps {
   recording: Recording;
@@ -68,20 +62,16 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
   const router = useRouter();
   const queryClient = useQueryClient();
   const colors = useThemeColors();
-  const scale = useSharedValue(1);
   const reviewStatus = getRecordingReviewStatus(recording);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
 
   const reviewMutation = useMutation({
     mutationFn: (reviewed: boolean) => recordingsApi.updateReview(recording.id, { reviewed }),
     onSuccess: (updatedRecording) => {
       if (updatedRecording?.id) {
         queryClient.setQueryData(['recording', updatedRecording.id], updatedRecording);
+        mergeRecordingIntoCachedLists(queryClient, updatedRecording);
       }
-      queryClient.invalidateQueries({ queryKey: ['recordings'] }).catch(() => {});
+      invalidateRecordingCaches(queryClient, 'review_update');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     },
     onError: (error: Error) => {
@@ -95,22 +85,27 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
     },
   });
 
-  const parsedDate = new Date(recording.createdAt);
-  const formattedDate = isNaN(parsedDate.getTime())
-    ? ''
-    : parsedDate.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
+  const formattedDate = React.useMemo(() => {
+    const parsedDate = new Date(recording.createdAt);
+    return isNaN(parsedDate.getTime())
+      ? ''
+      : parsedDate.toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+  }, [recording.createdAt]);
 
-  const description = [
-    recording.species,
-    recording.breed ? `${recording.breed}` : null,
-  ]
-    .filter(Boolean)
-    .join(' \u00B7 ');
+  const description = React.useMemo(
+    () => [
+      recording.species,
+      recording.breed ? `${recording.breed}` : null,
+    ]
+      .filter(Boolean)
+      .join(' \u00B7 '),
+    [recording.breed, recording.species]
+  );
 
   const clientLabel = recording.clientName?.trim();
   const patientLabel = displayPatientName(recording);
@@ -129,7 +124,7 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
   const showReviewChip = recording.status === 'completed' && reviewStatus !== null;
 
   return (
-    <AnimatedPressable
+    <Pressable
       onPress={() => {
         if (recording.status === 'draft' && localDraftSlotId) {
           router.push(`/(tabs)/record?draftSlotId=${localDraftSlotId}` as any);
@@ -137,16 +132,10 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
           router.push(`/recordings/${recording.id}` as `/recordings/${string}`);
         }
       }}
-      onPressIn={() => {
-        scale.value = withSpring(0.98, { damping: 15, stiffness: 300 });
-      }}
-      onPressOut={() => {
-        scale.value = withSpring(1, { damping: 15, stiffness: 300 });
-      }}
       accessibilityRole="button"
       accessibilityLabel={`Recording from ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
       className="card mb-2"
-      style={animatedStyle}
+      style={({ pressed }) => ({ opacity: pressed ? 0.96 : 1 })}
     >
       <View className="flex-row justify-between items-center">
         <View className="flex-1 mr-3">
@@ -223,7 +212,7 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
           <ChevronRight color={colors.contentTertiary} size={18} />
         </View>
       </View>
-    </AnimatedPressable>
+    </Pressable>
   );
 }, (prev, next) =>
   prev.recording.id === next.recording.id &&
@@ -232,6 +221,7 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
   prev.recording.clientName === next.recording.clientName &&
   prev.recording.species === next.recording.species &&
   prev.recording.breed === next.recording.breed &&
+  prev.recording.createdAt === next.recording.createdAt &&
   getRecordingReviewStatus(prev.recording) === getRecordingReviewStatus(next.recording) &&
   prev.recording.aiExtractedMetadata?.review === next.recording.aiExtractedMetadata?.review &&
   (prev.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) ===

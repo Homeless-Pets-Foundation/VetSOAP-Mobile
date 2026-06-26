@@ -2,18 +2,21 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
-import { CalendarClock, ChevronLeft, CreditCard, ExternalLink, Users } from 'lucide-react-native';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { CalendarClock, ChevronLeft, CreditCard, DollarSign, ExternalLink, Users } from 'lucide-react-native';
 import { accountApi, type SubscriptionInfo } from '../../src/api/account';
 import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
 import { Card } from '../../src/components/ui/Card';
 import { IconButton } from '../../src/components/ui/IconButton';
 import { Button } from '../../src/components/ui/Button';
 import { EmptyState } from '../../src/components/ui/EmptyState';
+import { useAuthUser } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { trackEvent } from '../../src/lib/analytics';
 import { SUBSCRIPTION_COPY } from '../../src/constants/strings';
+
+const ALLOWED_BILLING_HOSTS = ['billing.stripe.com', 'checkout.stripe.com', 'invoice.stripe.com'];
 
 function formatDate(value?: string | null): string | null {
   if (!value) return null;
@@ -22,8 +25,9 @@ function formatDate(value?: string | null): string | null {
   return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function formatStatus(status: string): string {
+function formatStatus(status?: string | null): string {
   switch (status) {
+    case 'trial':
     case 'trialing':
       return SUBSCRIPTION_COPY.statusTrial;
     case 'active':
@@ -33,7 +37,24 @@ function formatStatus(status: string): string {
     case 'canceled':
       return SUBSCRIPTION_COPY.statusCanceled;
     default:
-      return status.replace(/_/g, ' ');
+      return typeof status === 'string' && status.trim()
+        ? status.replace(/_/g, ' ')
+        : SUBSCRIPTION_COPY.statusUnknown;
+  }
+}
+
+function formatCents(cents?: number | null, cycle?: 'monthly' | 'annual'): string | null {
+  if (typeof cents !== 'number' || !Number.isFinite(cents)) return null;
+  const suffix = cycle === 'annual' ? '/yr' : '/mo';
+  return `$${(cents / 100).toFixed(0)}${suffix}`;
+}
+
+function isAllowedBillingUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && ALLOWED_BILLING_HOSTS.includes(parsed.host);
+  } catch {
+    return false;
   }
 }
 
@@ -63,14 +84,33 @@ function InfoRow({
 
 export default function SubscriptionScreen() {
   const router = useRouter();
+  const user = useAuthUser();
   const { iconMd, iconSm, iconLg } = useResponsive();
   const colors = useThemeColors();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const trackedStatusRef = useRef<string | null>(null);
+  const canViewBilling = user?.role === 'owner' || user?.role === 'admin';
 
   const { data, isLoading, isError, refetch } = useQuery<SubscriptionInfo>({
     queryKey: ['account-subscription'],
     queryFn: accountApi.getSubscription,
+    enabled: canViewBilling,
+  });
+
+  const portalMutation = useMutation({
+    mutationFn: accountApi.createBillingPortalSession,
+    onSuccess: (response) => {
+      if (!isAllowedBillingUrl(response.url)) {
+        Alert.alert(SUBSCRIPTION_COPY.openFailedTitle, SUBSCRIPTION_COPY.openFailedBody);
+        return;
+      }
+      Linking.openURL(response.url).catch(() => {
+        Alert.alert(SUBSCRIPTION_COPY.openFailedTitle, SUBSCRIPTION_COPY.openFailedBody);
+      });
+    },
+    onError: () => {
+      Alert.alert(SUBSCRIPTION_COPY.openFailedTitle, SUBSCRIPTION_COPY.openFailedBody);
+    },
   });
 
   useEffect(() => {
@@ -86,19 +126,10 @@ export default function SubscriptionScreen() {
       .catch(() => {});
   }, [refetch]);
 
-  const openManageBilling = useCallback(() => {
-    if (!data?.manageUrl) return;
-    Linking.openURL(data.manageUrl).catch(() => {
-      Alert.alert(SUBSCRIPTION_COPY.openFailedTitle, SUBSCRIPTION_COPY.openFailedBody);
-    });
-  }, [data?.manageUrl]);
-
-  const renewalDate = formatDate(data?.renewsAt);
   const trialDate = formatDate(data?.trialEndsAt);
-  const seats =
-    typeof data?.seatsUsed === 'number' && typeof data?.seatsTotal === 'number'
-      ? SUBSCRIPTION_COPY.seats(data.seatsUsed, data.seatsTotal)
-      : null;
+  const seats = typeof data?.seatCount === 'number' ? SUBSCRIPTION_COPY.seats(data.seatCount) : null;
+  const billableAmount = formatCents(data?.billableAmount, data?.billingCycle);
+  const canManagePortal = data?.capabilities.canManagePortal === true;
 
   return (
     <SafeAreaView className="screen items-center">
@@ -122,7 +153,14 @@ export default function SubscriptionScreen() {
           contentContainerStyle={{ paddingBottom: 28 }}
           refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
         >
-          {isLoading ? (
+          {!canViewBilling ? (
+            <EmptyState
+              contained
+              icon={CreditCard}
+              iconSize={iconLg}
+              description={SUBSCRIPTION_COPY.adminOnly}
+            />
+          ) : isLoading ? (
             <Card className="p-8 items-center">
               <ActivityIndicator color={colors.brand500} />
             </Card>
@@ -145,7 +183,7 @@ export default function SubscriptionScreen() {
               <Card className="p-5 mb-4">
                 <Text className="text-caption text-content-tertiary mb-1">{SUBSCRIPTION_COPY.currentPlan}</Text>
                 <Text className="text-title font-bold text-content-primary capitalize">
-                  {data.plan || SUBSCRIPTION_COPY.defaultPlan}
+                  {data.plan.name || SUBSCRIPTION_COPY.defaultPlan}
                 </Text>
                 <Text className="text-body text-content-secondary mt-1">{formatStatus(data.status)}</Text>
               </Card>
@@ -158,13 +196,6 @@ export default function SubscriptionScreen() {
                     icon={<CalendarClock color={colors.brand500} size={iconSm} />}
                   />
                 ) : null}
-                {renewalDate ? (
-                  <InfoRow
-                    label={data.status === 'canceled' ? SUBSCRIPTION_COPY.accessEnds : SUBSCRIPTION_COPY.renews}
-                    value={renewalDate}
-                    icon={<CalendarClock color={colors.brand500} size={iconSm} />}
-                  />
-                ) : null}
                 {seats ? (
                   <InfoRow
                     label={SUBSCRIPTION_COPY.seatsLabel}
@@ -172,19 +203,29 @@ export default function SubscriptionScreen() {
                     icon={<Users color={colors.brand500} size={iconSm} />}
                   />
                 ) : null}
-                {!trialDate && !renewalDate && !seats ? (
+                {billableAmount ? (
+                  <InfoRow
+                    label={data.billingCycle === 'annual' ? SUBSCRIPTION_COPY.annualTotal : SUBSCRIPTION_COPY.monthlyTotal}
+                    value={billableAmount}
+                    icon={<DollarSign color={colors.brand500} size={iconSm} />}
+                  />
+                ) : null}
+                {!trialDate && !seats && !billableAmount ? (
                   <Text className="text-body text-content-secondary">{SUBSCRIPTION_COPY.noBillingDates}</Text>
                 ) : null}
               </Card>
 
               <Button
-                onPress={openManageBilling}
-                disabled={!data.manageUrl}
+                onPress={() => {
+                  portalMutation.mutate();
+                }}
+                disabled={!canManagePortal}
+                loading={portalMutation.isPending}
                 icon={<ExternalLink color={colors.contentOnBrand} size={iconSm} />}
               >
                 {SUBSCRIPTION_COPY.manageBilling}
               </Button>
-              {!data.manageUrl ? (
+              {!canManagePortal ? (
                 <Text className="text-caption text-content-tertiary text-center mt-3">
                   {SUBSCRIPTION_COPY.billingPortalOwnersOnly}
                 </Text>

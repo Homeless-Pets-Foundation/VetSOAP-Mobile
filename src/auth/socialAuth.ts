@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID } from '../config';
-import { captureMessage } from '../lib/monitoring';
+import { captureMessage, measurePhase } from '../lib/monitoring';
 
 // Lazy-load social auth native modules to avoid crashing on dev client APKs
 // built before these dependencies were added. Each module is only required
@@ -158,7 +158,8 @@ async function persistAppleProfileMetadata(
 
 /**
  * Configure the native Google Sign-In SDK. Safe to call multiple times.
- * Call once at app startup, before any Google button is pressed. Does not throw.
+ * Called lazily from the Google sign-in flow so optional native modules stay
+ * off the cold-start path. Does not throw.
  */
 export function configureGoogleSignIn(): void {
   if (googleConfigured) return;
@@ -173,12 +174,14 @@ export function configureGoogleSignIn(): void {
   }
 
   try {
-    const { GoogleSignin } = getGoogleSignin();
-    GoogleSignin.configure({
-      webClientId: GOOGLE_WEB_CLIENT_ID,
-      iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
-      scopes: ['profile', 'email'],
-      offlineAccess: false,
+    measurePhase('google_sign_in_configure', { platform: Platform.OS }, () => {
+      const { GoogleSignin } = getGoogleSignin();
+      GoogleSignin.configure({
+        webClientId: GOOGLE_WEB_CLIENT_ID,
+        iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
+        scopes: ['profile', 'email'],
+        offlineAccess: false,
+      });
     });
     googleConfigured = true;
   } catch (error) {
@@ -206,8 +209,8 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
   }
 
   try {
-    const { GoogleSignin } = getGoogleSignin();
     if (!googleConfigured) configureGoogleSignIn();
+    const { GoogleSignin } = getGoogleSignin();
 
     if (Platform.OS === 'android') {
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });

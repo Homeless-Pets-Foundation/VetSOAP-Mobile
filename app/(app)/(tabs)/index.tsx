@@ -1,9 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Alert, View, Text, Pressable } from 'react-native';
 import Animated, {
-  FadeInDown,
-  FadeInUp,
-  FadeInRight,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -14,15 +11,15 @@ import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Mic, ChevronRight, FileText, Settings, ShieldAlert, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuth } from '../../../src/hooks/useAuth';
+import { useAuthUser } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../src/hooks/useThemeColors';
 import { useDeviceCapacity } from '../../../src/hooks/useDeviceCapacity';
+import { useLocalDraftRecordings } from '../../../src/hooks/useLocalDraftRecordings';
 import { recordingsApi } from '../../../src/api/recordings';
 import { patientsApi } from '../../../src/api/patients';
-import { ApiError } from '../../../src/api/client';
-import { draftStorage } from '../../../src/lib/draftStorage';
-import { buildDraftResumeMap, mergeDraftRecordings } from '../../../src/lib/draftRecordings';
+import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
+import { measurePhase } from '../../../src/lib/monitoring';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -39,7 +36,7 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const user = useAuthUser();
   const colors = useThemeColors();
   const { iconMd, iconLg } = useResponsive();
   const ctaScale = useSharedValue(1);
@@ -77,31 +74,12 @@ export default function HomeScreen() {
   const recordings = useMemo(() => data?.data ?? [], [data?.data]);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
-  const [localDrafts, setLocalDrafts] = useState<Awaited<ReturnType<typeof draftStorage.listDrafts>>>([]);
-  const refreshLocalDrafts = useCallback(() => {
-    draftStorage
-      .reconcileMissingServerDrafts(async (serverDraftId) => {
-        try {
-          const recording = await recordingsApi.get(serverDraftId);
-          return recording.status === 'draft' ? 'present' : 'unknown';
-        } catch (error) {
-          if (error instanceof ApiError && error.status === 404) {
-            return 'missing';
-          }
-          return 'unknown';
-        }
-      })
-      .then(() => draftStorage.listDrafts())
-      .then(setLocalDrafts)
-      .catch(() => {
-        setLocalDrafts([]);
-      });
-  }, []);
-
-  const draftResumeMap = useMemo(
-    () => buildDraftResumeMap(localDrafts),
-    [localDrafts]
-  );
+  const {
+    localDrafts,
+    draftResumeMap,
+    refreshLocalDrafts,
+    isStale: areLocalDraftsStale,
+  } = useLocalDraftRecordings();
   const drafts = useMemo(() => {
     if (!user) return [];
     return mergeDraftRecordings(localDrafts, draftData?.data ?? [], user.id, user.organizationId);
@@ -140,7 +118,7 @@ export default function HomeScreen() {
   const handleRefresh = useCallback(() => {
     refetch().catch(() => {});
     refetchDrafts().catch(() => {});
-    refreshLocalDrafts();
+    refreshLocalDrafts({ forceReconcile: true });
   }, [refetch, refetchDrafts, refreshLocalDrafts]);
 
   const handleRecordPress = useCallback(() => {
@@ -154,15 +132,43 @@ export default function HomeScreen() {
     router.push('/record');
   }, [router, user?.role]);
 
-  // Refresh on every screen focus — required so drafts created elsewhere
-  // (e.g. after tapping Finish on the Record tab) or deleted elsewhere
-  // disappear when the user returns to Home without a full app remount.
-  useFocusEffect(handleRefresh);
+  const handleFocusRefresh = useCallback(() => {
+    const staleSourceCount =
+      Number(recordingsQuery.isStale) +
+      Number(draftsQuery.isStale) +
+      Number(areLocalDraftsStale);
+    measurePhase('home_focus_refresh', {
+      recordings_stale: recordingsQuery.isStale,
+      server_drafts_stale: draftsQuery.isStale,
+      local_drafts_stale: areLocalDraftsStale,
+      skipped: staleSourceCount === 0,
+      count: staleSourceCount,
+    }, () => {
+      if (recordingsQuery.isStale) {
+        refetch().catch(() => {});
+      }
+      if (draftsQuery.isStale) {
+        refetchDrafts().catch(() => {});
+      }
+      if (areLocalDraftsStale) {
+        refreshLocalDrafts();
+      }
+    });
+  }, [
+    areLocalDraftsStale,
+    draftsQuery.isStale,
+    recordingsQuery.isStale,
+    refetch,
+    refetchDrafts,
+    refreshLocalDrafts,
+  ]);
+
+  useFocusEffect(handleFocusRefresh);
 
   return (
     <ScreenContainer refreshing={isRefetching} onRefresh={handleRefresh}>
       {/* Header */}
-      <Animated.View entering={FadeInDown.duration(400)} className="mb-6 flex-row items-start justify-between">
+      <View className="mb-6 flex-row items-start justify-between">
         <View className="flex-1">
           <Text
             className="text-display font-bold text-content-primary"
@@ -186,7 +192,7 @@ export default function HomeScreen() {
         >
           <Settings color={colors.contentTertiary} size={iconMd} />
         </Pressable>
-      </Animated.View>
+      </View>
 
       {/* Device limit warning */}
       {capacity && (capacity.isAtLimit || capacity.isNearLimit) ? (
@@ -248,7 +254,7 @@ export default function HomeScreen() {
       </AnimatedPressable>
 
       {showRecentPatientSummary ? (
-        <Animated.View entering={FadeInUp.duration(400).delay(75)} className="mb-6">
+        <View className="mb-6">
           <Card className="border-brand-100 dark:border-border-default">
             <View className="flex-row items-start">
               <View className="w-10 h-10 rounded-full bg-brand-50 dark:bg-surface-sunken justify-center items-center mr-3">
@@ -286,11 +292,11 @@ export default function HomeScreen() {
               </View>
             </View>
           </Card>
-        </Animated.View>
+        </View>
       ) : null}
 
       {/* Stats */}
-      <Animated.View entering={FadeInUp.duration(400).delay(100)} className="flex-row gap-3 mb-6">
+      <View className="flex-row gap-3 mb-6">
         <Card className="flex-1" accessibilityLabel={`${totalRecordings} total recordings`}>
           <Text className="text-display font-bold text-brand-500">
             {totalRecordings}
@@ -322,7 +328,7 @@ export default function HomeScreen() {
             {processingCount > 0 ? 'Processing' : draftCount > 0 ? 'Not Submitted' : 'All Complete'}
           </Text>
         </Card>
-      </Animated.View>
+      </View>
 
       {/* Recent Recordings */}
       {drafts.length > 0 ? (
@@ -330,10 +336,10 @@ export default function HomeScreen() {
           <View className="flex-row justify-between items-center mb-3">
             <Text className="section-title">Not Submitted</Text>
           </View>
-          {drafts.map((recording, index) => (
-            <Animated.View key={recording.id} entering={FadeInRight.delay(index * 50).duration(300)}>
+          {drafts.map((recording) => (
+            <View key={recording.id}>
               <RecordingCard recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
-            </Animated.View>
+            </View>
           ))}
         </View>
       ) : null}
@@ -388,10 +394,10 @@ export default function HomeScreen() {
             </Text>
           </Card>
         ) : (
-          recordings.map((recording, index) => (
-            <Animated.View key={recording.id} entering={FadeInRight.delay(index * 50).duration(300)}>
+          recordings.map((recording) => (
+            <View key={recording.id}>
               <RecordingCard recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
-            </Animated.View>
+            </View>
           ))
         )}
       </View>

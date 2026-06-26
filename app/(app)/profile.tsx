@@ -10,7 +10,7 @@ import { Card } from '../../src/components/ui/Card';
 import { IconButton } from '../../src/components/ui/IconButton';
 import { Button } from '../../src/components/ui/Button';
 import { TextInputField } from '../../src/components/ui/TextInputField';
-import { useAuth } from '../../src/hooks/useAuth';
+import { useAuthReadiness, useAuthUser } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { trackEvent } from '../../src/lib/analytics';
@@ -45,7 +45,8 @@ function authPasswordMessage(message?: string): string {
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { user, retryFetchUser } = useAuth();
+  const user = useAuthUser();
+  const { retryFetchUser } = useAuthReadiness();
   const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
 

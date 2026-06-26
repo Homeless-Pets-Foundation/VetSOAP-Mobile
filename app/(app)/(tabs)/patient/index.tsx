@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import Animated, { FadeInRight } from 'react-native-reanimated';
 import { User } from 'lucide-react-native';
 import { patientsApi } from '../../../../src/api/patients';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
@@ -21,7 +20,6 @@ export default function PatientListScreen() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
-  const isInitialMountRef = useRef(true);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -75,13 +73,6 @@ export default function PatientListScreen() {
     }
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  // Disable entry animations after initial data load
-  useEffect(() => {
-    if (data && isInitialMountRef.current) {
-      isInitialMountRef.current = false;
-    }
-  }, [data]);
-
   return (
     <SafeAreaView className="screen items-center">
       <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
@@ -116,16 +107,7 @@ export default function PatientListScreen() {
         <FlatList
           data={patients}
           keyExtractor={keyExtractor}
-          renderItem={({ item, index }) => {
-            if (isInitialMountRef.current && index < 3) {
-              return (
-                <Animated.View entering={FadeInRight.delay(index * 50).duration(250)}>
-                  <PatientRow patient={item} />
-                </Animated.View>
-              );
-            }
-            return <PatientRow patient={item} />;
-          }}
+          renderItem={({ item }) => <PatientRow patient={item} />}
           contentContainerStyle={FLATLIST_CONTENT_STYLE}
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} />}
           onEndReached={onEndReached}

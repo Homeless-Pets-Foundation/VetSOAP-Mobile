@@ -20,7 +20,7 @@ import {
   UserRound,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuth } from '../../../src/hooks/useAuth';
+import { useAuthActions, useAuthUser } from '../../../src/hooks/useAuth';
 import type { SignOutRecoveryMode } from '../../../src/auth/AuthProvider';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { biometrics } from '../../../src/lib/biometrics';
@@ -65,7 +65,8 @@ const THEME_OPTIONS = [
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const user = useAuthUser();
+  const { signOut } = useAuthActions();
   const { iconSm, iconMd } = useResponsive();
   const colors = useThemeColors();
   const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
@@ -75,6 +76,7 @@ export default function SettingsScreen() {
   const [biometricType, setBiometricType] = useState('Biometric');
   const [recoveryCount, setRecoveryCount] = useState(0);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const canViewBilling = user?.role === 'owner' || user?.role === 'admin';
 
   const openLink = useCallback((url: string, link: 'help_center' | 'contact' | 'terms' | 'privacy') => {
     Linking.openURL(url)
@@ -313,17 +315,19 @@ export default function SettingsScreen() {
             leading={<UserRound color={colors.brand500} size={iconSm} />}
             trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
           />
-          <ListItem
-            onPress={() => {
-              router.push('/subscription' as never);
-            }}
-            accessibilityLabel="View subscription"
-            title="Subscription"
-            subtitle="Plan, trial, renewal, and billing portal"
-            leading={<CreditCard color={colors.brand500} size={iconSm} />}
-            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
-            className="mb-5"
-          />
+          {canViewBilling ? (
+            <ListItem
+              onPress={() => {
+                router.push('/subscription' as never);
+              }}
+              accessibilityLabel="View subscription"
+              title="Subscription"
+              subtitle="Plan, trial, renewal, and billing portal"
+              leading={<CreditCard color={colors.brand500} size={iconSm} />}
+              trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+              className="mb-5"
+            />
+          ) : null}
 
           <SectionHeading>APP</SectionHeading>
           <Card className="mb-5">

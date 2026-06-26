@@ -3,13 +3,13 @@ import { View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertTriangle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuth } from '../hooks/useAuth';
+import { useAuthDeviceRegistration } from '../hooks/useAuth';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { DEVICE_REGISTRATION_BANNER_COPY } from '../constants/strings';
 
 export function DeviceRegistrationBanner() {
   const colors = useThemeColors();
-  const { deviceRegistrationPending, deviceRegistrationBlock, retryDeviceRegistration } = useAuth();
+  const { deviceRegistrationPending, deviceRegistrationBlock, retryDeviceRegistration } = useAuthDeviceRegistration();
   const [isRetrying, setIsRetrying] = useState(false);
   const insets = useSafeAreaInsets();
 

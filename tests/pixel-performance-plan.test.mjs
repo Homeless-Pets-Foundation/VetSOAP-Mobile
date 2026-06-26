@@ -118,15 +118,30 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   const pendingSync = await read('src/hooks/usePendingDraftSync.ts');
   const record = await read('app/(app)/(tabs)/record.tsx');
   const cache = await read('src/lib/recordingQueryCache.ts');
+  const draftStorage = await read('src/lib/draftStorage.ts');
+  const homeFocusRefresh = home.slice(
+    home.indexOf('const handleFocusRefresh'),
+    home.indexOf('useFocusEffect(handleFocusRefresh)')
+  );
+  const recordsFocusRefresh = records.slice(
+    records.indexOf('const handleFocusRefresh'),
+    records.indexOf('useFocusEffect(handleFocusRefresh)')
+  );
 
   assert.match(home, /recordingsQuery\.isStale/);
   assert.match(home, /refreshLocalDrafts/);
   assert.match(home, /local_drafts_refreshed: true/);
   assert.match(home, /refreshLocalDrafts\(\);/);
+  assert.match(home, /const areLocalDraftsStaleRef = useRef\(areLocalDraftsStale\)/);
+  assert.match(homeFocusRefresh, /const localDraftsStale = areLocalDraftsStaleRef\.current/);
+  assert.doesNotMatch(homeFocusRefresh, /\bareLocalDraftsStale\b/);
   assert.match(records, /shouldRefetchRecordings = shouldLoadRecordings && isStale/);
   assert.match(records, /refreshLocalDrafts/);
   assert.match(records, /local_drafts_refreshed: shouldRefreshLocalDrafts/);
   assert.match(records, /if \(shouldRefreshLocalDrafts\) \{\s*refreshLocalDrafts\(\);/);
+  assert.match(records, /const areLocalDraftsStaleRef = useRef\(areLocalDraftsStale\)/);
+  assert.match(recordsFocusRefresh, /const localDraftsStale = areLocalDraftsStaleRef\.current/);
+  assert.doesNotMatch(recordsFocusRefresh, /\bareLocalDraftsStale\b/);
 
   assert.match(localDrafts, /queryKey: \['local-drafts', userId\]/);
   assert.match(localDrafts, /const RECONCILE_INTERVAL_MS = 5 \* 60_000/);
@@ -138,14 +153,23 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(pendingSync, /const lastFailedAtByUser = new Map/);
   assert.match(pendingSync, /AppState\.currentState !== 'active'/);
   assert.match(pendingSync, /NetInfo\.addEventListener/);
+  assert.match(pendingSync, /result\.failed > 0[\s\S]*lastFailedAtByUser\.set\(userId, Date\.now\(\)\)/);
+  assert.match(pendingSync, /result\.succeeded > 0[\s\S]*invalidateRecordingCaches\(queryClient, 'draft_changed'\)/);
+  assert.doesNotMatch(pendingSync, /\.finally\(\(\) => \{\s*invalidateRecordingCaches\(queryClient, 'draft_changed'\)/);
   assert.match(pendingSync, /\.catch\(\(\) => \{\}\)/);
 
   assert.match(record, /function scheduleNonUrgentWork/);
   assert.match(record, /InteractionManager\.runAfterInteractions\(\(\) => \{/);
   assert.match(record, /measurePhase\(label, undefined, work\)\.catch\(\(\) => \{\}\)/);
+  assert.match(record, /Promise\.all\(\[\s*[\s\S]*draftStorage\.deleteDraft\(slot\.id\)[\s\S]*\]\)\.then\(\(\) => \{\s*invalidateRecordingCaches\(queryClient, 'draft_deleted'\);/);
   assert.match(record, /'record_pending_draft_scan'/);
   assert.match(record, /'orphan_cleanup'/);
   assert.match(record, /'thirty_day_eviction'/);
+
+  assert.match(draftStorage, /export interface DraftSyncResult/);
+  assert.match(draftStorage, /attempted: number;\s*succeeded: number;\s*failed: number;/);
+  assert.match(draftStorage, /Promise<DraftSyncResult>/);
+  assert.match(draftStorage, /result\.failed\+\+/);
 
   assert.match(cache, /export type RecordingCacheMutation/);
   assert.match(cache, /refetchType: 'active'/);

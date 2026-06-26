@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Alert, View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -166,6 +166,12 @@ export default function RecordingsListScreen() {
     refreshLocalDrafts,
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
+  const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
+
+  useEffect(() => {
+    areLocalDraftsStaleRef.current = areLocalDraftsStale;
+  }, [areLocalDraftsStale]);
+
   const recordingsRetryKey = [
     debouncedSearch || 'none',
     serverStatusFilter ?? 'all',
@@ -245,6 +251,7 @@ export default function RecordingsListScreen() {
     const shouldRefetchRecordings = shouldLoadRecordings && isStale;
     const shouldRefetchDrafts = shouldLoadDrafts && isDraftStale;
     const shouldRefreshLocalDrafts = shouldLoadDrafts;
+    const localDraftsStale = areLocalDraftsStaleRef.current;
     const staleSourceCount =
       Number(shouldRefetchRecordings) +
       Number(shouldRefetchDrafts) +
@@ -252,7 +259,7 @@ export default function RecordingsListScreen() {
     measurePhase('records_focus_refresh', {
       recordings_stale: shouldRefetchRecordings,
       server_drafts_stale: shouldRefetchDrafts,
-      local_drafts_stale: areLocalDraftsStale,
+      local_drafts_stale: localDraftsStale,
       local_drafts_refreshed: shouldRefreshLocalDrafts,
       skipped: !shouldRefetchRecordings && !shouldRefetchDrafts && !shouldRefreshLocalDrafts,
       count: staleSourceCount,
@@ -268,7 +275,6 @@ export default function RecordingsListScreen() {
       }
     });
   }, [
-    areLocalDraftsStale,
     isDraftStale,
     isStale,
     refetch,

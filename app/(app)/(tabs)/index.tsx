@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { Alert, View, Text, Pressable } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -86,6 +86,12 @@ export default function HomeScreen() {
     refreshLocalDrafts,
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
+  const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
+
+  useEffect(() => {
+    areLocalDraftsStaleRef.current = areLocalDraftsStale;
+  }, [areLocalDraftsStale]);
+
   useRetryableInitialLoadError({
     screen: 'home',
     source: 'recordings',
@@ -162,10 +168,11 @@ export default function HomeScreen() {
     const staleServerSourceCount =
       Number(recordingsQuery.isStale) +
       Number(draftsQuery.isStale);
+    const localDraftsStale = areLocalDraftsStaleRef.current;
     measurePhase('home_focus_refresh', {
       recordings_stale: recordingsQuery.isStale,
       server_drafts_stale: draftsQuery.isStale,
-      local_drafts_stale: areLocalDraftsStale,
+      local_drafts_stale: localDraftsStale,
       local_drafts_refreshed: true,
       skipped: false,
       count: staleServerSourceCount + 1,
@@ -179,7 +186,6 @@ export default function HomeScreen() {
       refreshLocalDrafts();
     });
   }, [
-    areLocalDraftsStale,
     draftsQuery.isStale,
     recordingsQuery.isStale,
     refetch,

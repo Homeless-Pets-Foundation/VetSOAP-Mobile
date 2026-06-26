@@ -457,9 +457,12 @@ function RecordingSession() {
 
   /** Delete only the local auto-saved draft metadata/audio for a slot. */
   const deleteLocalSlotDraft = useCallback((slot: PatientSlot) => {
-    draftStorage.deleteDraft(slot.id).catch(() => {});
-    recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
-    invalidateRecordingCaches(queryClient, 'draft_deleted');
+    Promise.all([
+      draftStorage.deleteDraft(slot.id).catch(() => {}),
+      recoveryIntent.clearForDraftSlot(slot.id).catch(() => {}),
+    ]).then(() => {
+      invalidateRecordingCaches(queryClient, 'draft_deleted');
+    }).catch(() => {});
   }, [queryClient]);
 
   /**
@@ -2126,9 +2129,7 @@ function RecordingSession() {
         invalidateRecordingCaches(queryClient, 'draft_changed');
 
         if (completedUploadSlotIdsRef.current.has(slot.id)) {
-          draftStorage.deleteDraft(slot.id).catch(() => {});
-          recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
-          invalidateRecordingCaches(queryClient, 'draft_deleted');
+          deleteLocalSlotDraft(slot);
           return true;
         }
 
@@ -2156,7 +2157,7 @@ function RecordingSession() {
         return false;
       }
     },
-    [dispatch, isConnected, queryClient, scheduleDraftSync, user?.id]
+    [deleteLocalSlotDraft, dispatch, isConnected, queryClient, scheduleDraftSync, user?.id]
   );
 
   autoSaveDraftRef.current = autoSaveDraft;

@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react-native';
 import { providerIssuesApi, type ProviderIssue } from '../api/providerIssues';
 import { Banner } from './ui/Banner';
-import { useAuth } from '../hooks/useAuth';
+import { useAuthUser } from '../hooks/useAuth';
 
 const PROVIDER_LABELS: Record<string, string> = {
   z_ai: 'Z.ai',
@@ -30,19 +30,22 @@ function providerWithModel(issue: ProviderIssue): string {
 }
 
 function messageForIssue(issue: ProviderIssue): string {
-  const fallback = issue.fallbackProvider
+  const fallback = issue.outcome === 'fallback_success' && issue.fallbackProvider
     ? `${providerLabel(issue.fallbackProvider)} fallback is completing SOAP notes.`
     : 'SOAP generation may not complete automatically until this is fixed.';
+  const ownership = issue.actionableByOrgAdmin
+    ? issue.recommendedAction
+    : 'CaptiVet operations has been notified.';
   const code = issue.externalCode ? ` (code ${issue.externalCode})` : '';
   return `${providerWithModel(issue)} needs attention. ${fallback} ${providerLabel(
     issue.primaryProvider
-  )} reported ${errorClassLabel(issue.errorClass)}${code}. ${issue.recommendedAction}`;
+  )} reported ${errorClassLabel(issue.errorClass)}${code}. ${ownership}`;
 }
 
 export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { user } = useAuth();
+  const user = useAuthUser();
   const canView = user?.role === 'owner' || user?.role === 'admin';
   const queryKey = ['organization', 'provider-issues', 'active'] as const;
 
@@ -81,12 +84,13 @@ export function ProviderIssueBanner({ location }: { location: 'home' | 'settings
   }, [canView, refetch]);
 
   if (!canView) return null;
-  const issue = data?.issues.find((item) => item.actionableByOrgAdmin);
+  const issue = data?.issues[0];
   if (!issue) return null;
 
   return (
     <View className="mb-4">
       <Banner
+        key={issue.issueKey}
         variant="warning"
         icon={AlertTriangle}
         message={messageForIssue(issue)}

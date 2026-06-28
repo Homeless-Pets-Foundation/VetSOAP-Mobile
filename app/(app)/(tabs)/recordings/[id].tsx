@@ -20,6 +20,7 @@ import { ClientEmailCard } from '../../../../src/components/ClientEmailCard';
 import { ExportSheet } from '../../../../src/components/ExportSheet';
 import { ReprocessSheet } from '../../../../src/components/ReprocessSheet';
 import { TranslationCard } from '../../../../src/components/TranslationCard';
+import { ConsultAICard } from '../../../../src/components/ConsultAICard';
 import { SuggestedTasksCard } from '../../../../src/components/SuggestedTasksCard';
 import { MetadataReviewCard } from '../../../../src/components/MetadataReviewCard';
 import { ProcessingStepper } from '../../../../src/components/ProcessingStepper';
@@ -985,6 +986,9 @@ export default function RecordingDetailScreen() {
             {recordingPermissions.canCopy && <TranslationCard recordingId={id} />}
           </>
         )}
+
+        {/* Consult AI — outbound link to the Captivet web app; not tied to processing state or permissions */}
+        {id && <ConsultAICard />}
 
         {/* SOAP Note */}
         {recording.status === 'completed' && (

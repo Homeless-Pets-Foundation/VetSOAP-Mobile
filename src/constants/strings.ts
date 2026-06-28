@@ -332,6 +332,12 @@ export const LONG_RECORDING_WARNING_COPY = {
   body: 'Long recording — may be slow to edit on older tablets.',
 } as const;
 
+export const CONSULT_COPY = {
+  title: 'Consult AI',
+  body: 'Open the Consult AI assistant in the Captivet web app.',
+  open: 'Open',
+} as const;
+
 // Non-blocking warning appears when cumulative slot duration crosses this threshold.
 // The waveform editor still works, but peak extraction on weak hardware (e.g. A7 Lite)
 // can take a long time for multi-hour recordings.

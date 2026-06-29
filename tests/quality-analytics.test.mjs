@@ -128,6 +128,35 @@ test('parseDashboardQualityEnvelope returns null quality during rollout', async 
   assert.equal(JSON.stringify(parsed), JSON.stringify({ periodDays: 30, quality: null }));
 });
 
+test('parseDashboardQualityEnvelope accepts explicit null quality during rollout', async () => {
+  const { parseDashboardQualityEnvelope } = await loadQualityAnalytics();
+
+  const parsed = parseDashboardQualityEnvelope({ periodDays: 30, quality: null });
+
+  assert.equal(JSON.stringify(parsed), JSON.stringify({ periodDays: 30, quality: null }));
+});
+
+test('parseDashboardQualityEnvelope accepts fractional average durations', async () => {
+  const { parseDashboardQualityEnvelope } = await loadQualityAnalytics();
+
+  const parsed = parseDashboardQualityEnvelope(
+    envelope({
+      quality: {
+        org: summary({ averageRecordingLengthSeconds: 320.5 }),
+        me: summary({ processingLatencyAvgSeconds: 30.5 }),
+        byAppointmentType: [breakdown({ averageRecordingLengthSeconds: 120.25 })],
+        byModel: [breakdown({ processingLatencyP90Seconds: 45.75 })],
+        byProvider: null,
+      },
+    })
+  );
+
+  assert.equal(parsed.quality.org.averageRecordingLengthSeconds, 320.5);
+  assert.equal(parsed.quality.me.processingLatencyAvgSeconds, 30.5);
+  assert.equal(parsed.quality.byAppointmentType[0].averageRecordingLengthSeconds, 120.25);
+  assert.equal(parsed.quality.byModel[0].processingLatencyP90Seconds, 45.75);
+});
+
 test('parseDashboardQualityEnvelope rejects malformed present quality', async () => {
   const { parseDashboardQualityEnvelope } = await loadQualityAnalytics();
 
@@ -193,4 +222,5 @@ test('QualityAnalyticsCard renders clearer labels and all-user breakdown section
   assert.match(source, /function BreakdownRow/);
   assert.match(source, /quality\.byAppointmentType\?\.length/);
   assert.match(source, /quality\.byModel\?\.length/);
+  assert.match(source, /item\.completedRecordings > 0/);
 });

@@ -5,7 +5,7 @@ const QualityRateSchema = z.number().nonnegative().nullable();
 
 const QualitySummarySchema = z.object({
   completedRecordings: z.number().int().nonnegative(),
-  averageRecordingLengthSeconds: z.number().int().nonnegative(),
+  averageRecordingLengthSeconds: z.number().nonnegative(),
   failedUploadAttempts: z.number().int().nonnegative(),
   silentAudioEvents: z.number().int().nonnegative(),
   reprocessCount: z.number().int().nonnegative(),
@@ -14,9 +14,9 @@ const QualitySummarySchema = z.object({
   soapEditRate: QualityRateSchema,
   missingMetadataCount: z.number().int().nonnegative(),
   missingMetadataRate: QualityRateSchema,
-  processingLatencyAvgSeconds: z.number().int().nonnegative().nullable(),
-  processingLatencyP50Seconds: z.number().int().nonnegative().nullable(),
-  processingLatencyP90Seconds: z.number().int().nonnegative().nullable(),
+  processingLatencyAvgSeconds: z.number().nonnegative().nullable(),
+  processingLatencyP50Seconds: z.number().nonnegative().nullable(),
+  processingLatencyP90Seconds: z.number().nonnegative().nullable(),
 });
 
 const QualityProviderSummarySchema = QualitySummarySchema.extend({
@@ -42,7 +42,7 @@ const DashboardQualitySchema = z.object({
 const DashboardQualityEnvelopeSchema = z
   .object({
     periodDays: z.literal(30),
-    quality: DashboardQualitySchema.optional(),
+    quality: DashboardQualitySchema.nullable().optional(),
   })
   .passthrough();
 

@@ -146,6 +146,8 @@ export const QUALITY_ANALYTICS_COPY = {
   retry: 'Retry',
   org: 'Practice',
   you: 'You',
+  appointmentTypes: 'Appointment types',
+  models: 'Models',
   providers: 'Providers',
   noRecordings: 'No recordings',
   metrics: {
@@ -153,10 +155,10 @@ export const QUALITY_ANALYTICS_COPY = {
     averageLength: 'Avg length',
     uploadIssues: 'Upload issues',
     silentAudio: 'Silent audio',
-    reprocessRate: 'Reprocess rate',
-    soapEditRate: 'SOAP edit rate',
+    reprocessRate: 'Reprocessed',
+    soapEditRate: 'Edited notes',
     missingDetails: 'Missing details',
-    p90Processing: 'P90 processing',
+    p90Processing: '90% done by',
   },
 } as const;
 

@@ -19,6 +19,7 @@ import { useLocalDraftRecordings } from '../../../src/hooks/useLocalDraftRecordi
 import { useRetryableInitialLoadError } from '../../../src/hooks/useRetryableInitialLoadError';
 import { recordingsApi } from '../../../src/api/recordings';
 import { patientsApi } from '../../../src/api/patients';
+import { qualityAnalyticsApi } from '../../../src/api/qualityAnalytics';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
@@ -39,6 +40,7 @@ import { Banner } from '../../../src/components/ui/Banner';
 import { ProviderIssueBannerContent, useActiveProviderIssue } from '../../../src/components/ProviderIssueBanner';
 import { useDurableRecoveries } from '../../../src/hooks/useDurableRecoveries';
 import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
+import { QualityAnalyticsCard } from '../../../src/components/QualityAnalyticsCard';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -100,6 +102,18 @@ export default function HomeScreen() {
     isError: isDraftError,
     refetch: refetchDrafts,
   } = draftsQuery;
+  const qualityQuery = useQuery({
+    queryKey: ['dashboard', 'quality', user?.organizationId],
+    queryFn: () => qualityAnalyticsApi.getDashboardQuality(),
+    enabled: !!user,
+  });
+  const {
+    data: qualityData,
+    isError: isQualityError,
+    isLoading: isQualityLoading,
+    isStale: isQualityStale,
+    refetch: refetchQuality,
+  } = qualityQuery;
   const recordings = useMemo(() => data?.data ?? [], [data?.data]);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
@@ -174,9 +188,10 @@ export default function HomeScreen() {
     if (canLoadServerData) {
       refetch().catch(() => {});
       refetchDrafts().catch(() => {});
+      refetchQuality().catch(() => {});
     }
     refreshLocalDrafts({ forceReconcile: true });
-  }, [canLoadServerData, refetch, refetchDrafts, refreshLocalDrafts]);
+  }, [canLoadServerData, refetch, refetchDrafts, refetchQuality, refreshLocalDrafts]);
 
   const handleRecordPress = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
@@ -192,11 +207,13 @@ export default function HomeScreen() {
   const handleFocusRefresh = useCallback(() => {
     const staleServerSourceCount =
       Number(canLoadServerData && recordingsQuery.isStale) +
-      Number(canLoadServerData && draftsQuery.isStale);
+      Number(canLoadServerData && draftsQuery.isStale) +
+      Number(canLoadServerData && isQualityStale);
     const localDraftsStale = areLocalDraftsStaleRef.current;
     measurePhase('home_focus_refresh', {
       recordings_stale: canLoadServerData && recordingsQuery.isStale,
       server_drafts_stale: canLoadServerData && draftsQuery.isStale,
+      quality_stale: canLoadServerData && isQualityStale,
       local_drafts_stale: localDraftsStale,
       local_drafts_refreshed: true,
       skipped: false,
@@ -208,14 +225,19 @@ export default function HomeScreen() {
       if (canLoadServerData && draftsQuery.isStale) {
         refetchDrafts().catch(() => {});
       }
+      if (canLoadServerData && isQualityStale) {
+        refetchQuality().catch(() => {});
+      }
       refreshLocalDrafts();
     });
   }, [
     canLoadServerData,
     draftsQuery.isStale,
+    isQualityStale,
     recordingsQuery.isStale,
     refetch,
     refetchDrafts,
+    refetchQuality,
     refreshLocalDrafts,
   ]);
 
@@ -507,6 +529,15 @@ export default function HomeScreen() {
             </View>
           ))
         )}
+      </View>
+
+      <View className="mb-8">
+        <QualityAnalyticsCard
+          data={qualityData}
+          isLoading={isQualityLoading}
+          isError={isQualityError}
+          refetch={refetchQuality}
+        />
       </View>
     </ScreenContainer>
   );

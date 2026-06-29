@@ -107,7 +107,9 @@ function SummaryBlock({ title, summary }: { title: string; summary: QualitySumma
 function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; maxCompleted: number }) {
   const colors = useThemeColors();
   const barWidth: DimensionValue =
-    maxCompleted > 0 ? `${Math.max(8, Math.round((item.completedRecordings / maxCompleted) * 100))}%` : '0%';
+    maxCompleted > 0 && item.completedRecordings > 0
+      ? `${Math.max(8, Math.round((item.completedRecordings / maxCompleted) * 100))}%`
+      : '0%';
   const badges = issueLabels(item);
 
   return (

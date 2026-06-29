@@ -138,6 +138,30 @@ export const SUGGESTED_TASKS_COPY = {
   dismissFailed: 'Could not dismiss this task. Please try again.',
 } as const;
 
+export const QUALITY_ANALYTICS_COPY = {
+  title: 'Clinic Quality',
+  subtitle: '30-day clinic signals',
+  empty: 'No clinic quality data yet.',
+  unavailable: 'Clinic quality is unavailable right now.',
+  retry: 'Retry',
+  org: 'Practice',
+  you: 'You',
+  appointmentTypes: 'Appointment types',
+  models: 'Models',
+  providers: 'Providers',
+  noRecordings: 'No recordings',
+  metrics: {
+    completed: 'Completed',
+    averageLength: 'Avg length',
+    uploadIssues: 'Upload issues',
+    silentAudio: 'Silent audio',
+    reprocessRate: 'Reprocessed',
+    soapEditRate: 'Edited notes',
+    missingDetails: 'Missing details',
+    p90Processing: '90% done by',
+  },
+} as const;
+
 export const TEMPLATE_DEFAULT_COPY = {
   makeDefault: 'Set default',
   defaultLabel: 'Default template',

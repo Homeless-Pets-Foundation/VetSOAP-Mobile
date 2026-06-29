@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View, type DimensionValue } from 'react-native';
 import {
   AlertTriangle,
   BarChart3,
@@ -14,6 +14,7 @@ import { useThemeColors } from '../hooks/useThemeColors';
 import { QUALITY_ANALYTICS_COPY } from '../constants/strings';
 import type {
   DashboardQualityEnvelope,
+  QualityBreakdownSummary,
   QualityProviderSummary,
   QualitySummary,
 } from '../api/qualityAnalytics';
@@ -56,6 +57,14 @@ function hasActivity(summary: QualitySummary): boolean {
   );
 }
 
+function issueLabels(summary: QualitySummary): string[] {
+  const labels: string[] = [];
+  if ((summary.missingMetadataRate ?? 0) >= 0.2) labels.push(QUALITY_ANALYTICS_COPY.metrics.missingDetails);
+  if ((summary.reprocessRate ?? 0) >= 0.2) labels.push(QUALITY_ANALYTICS_COPY.metrics.reprocessRate);
+  if ((summary.soapEditRate ?? 0) >= 0.5) labels.push(QUALITY_ANALYTICS_COPY.metrics.soapEditRate);
+  return labels.slice(0, 2);
+}
+
 function Metric({ label, value }: { label: string; value: string | number }) {
   return (
     <View className="w-1/2 pr-3 mb-3">
@@ -91,6 +100,73 @@ function SummaryBlock({ title, summary }: { title: string; summary: QualitySumma
           }
         />
       </View>
+    </View>
+  );
+}
+
+function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; maxCompleted: number }) {
+  const colors = useThemeColors();
+  const barWidth: DimensionValue =
+    maxCompleted > 0 ? `${Math.max(8, Math.round((item.completedRecordings / maxCompleted) * 100))}%` : '0%';
+  const badges = issueLabels(item);
+
+  return (
+    <View className="border-t border-border-default py-3">
+      <View className="flex-row items-start justify-between">
+        <Text className="text-body-sm font-semibold text-content-primary flex-1 pr-2" numberOfLines={1}>
+          {item.label}
+        </Text>
+        <Text className="text-caption font-semibold text-content-secondary" numberOfLines={1}>
+          {item.completedRecordings} rec
+        </Text>
+      </View>
+      <View className="h-1.5 rounded-full bg-surface-sunken overflow-hidden mt-2">
+        <View className="h-full rounded-full" style={{ width: barWidth, backgroundColor: colors.brand500 }} />
+      </View>
+      <View className="flex-row flex-wrap mt-2">
+        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
+          {QUALITY_ANALYTICS_COPY.metrics.averageLength} {formatDuration(item.averageRecordingLengthSeconds)}
+        </Text>
+        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
+          {QUALITY_ANALYTICS_COPY.metrics.reprocessRate} {formatRate(item.reprocessRate)}
+        </Text>
+        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
+          {QUALITY_ANALYTICS_COPY.metrics.soapEditRate} {formatRate(item.soapEditRate)}
+        </Text>
+        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
+          {QUALITY_ANALYTICS_COPY.metrics.p90Processing}{' '}
+          {item.processingLatencyP90Seconds === null ? 'n/a' : formatDuration(item.processingLatencyP90Seconds)}
+        </Text>
+      </View>
+      {badges.length ? (
+        <View className="flex-row flex-wrap mt-1">
+          {badges.map((badge) => (
+            <Text key={badge} className="text-caption text-warning-500 mr-2 mb-1" numberOfLines={1}>
+              {badge}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function BreakdownSection({ title, items }: { title: string; items: QualityBreakdownSummary[] }) {
+  const colors = useThemeColors();
+  if (!items.length) return null;
+  const maxCompleted = Math.max(...items.map((item) => item.completedRecordings), 0);
+
+  return (
+    <View className="mb-4">
+      <View className="flex-row items-center mb-1">
+        <Clock3 color={colors.contentTertiary} size={14} />
+        <Text className="text-body-sm font-semibold text-content-secondary ml-1">
+          {title}
+        </Text>
+      </View>
+      {items.slice(0, 5).map((item) => (
+        <BreakdownRow key={`${title}:${item.key}`} item={item} maxCompleted={maxCompleted} />
+      ))}
     </View>
   );
 }
@@ -137,6 +213,8 @@ export function QualityAnalyticsCard({
     quality &&
     ((quality.org ? hasActivity(quality.org) : false) ||
       hasActivity(quality.me) ||
+      (quality.byAppointmentType?.some(hasActivity) ?? false) ||
+      (quality.byModel?.some(hasActivity) ?? false) ||
       (quality.byProvider?.some(hasActivity) ?? false));
 
   return (
@@ -189,6 +267,15 @@ export function QualityAnalyticsCard({
         <View>
           {quality.org && <SummaryBlock title={QUALITY_ANALYTICS_COPY.org} summary={quality.org} />}
           <SummaryBlock title={QUALITY_ANALYTICS_COPY.you} summary={quality.me} />
+          {quality.byAppointmentType?.length ? (
+            <BreakdownSection
+              title={QUALITY_ANALYTICS_COPY.appointmentTypes}
+              items={quality.byAppointmentType}
+            />
+          ) : null}
+          {quality.byModel?.length ? (
+            <BreakdownSection title={QUALITY_ANALYTICS_COPY.models} items={quality.byModel} />
+          ) : null}
           {quality.byProvider?.length ? (
             <View>
               <View className="flex-row items-center mb-1">

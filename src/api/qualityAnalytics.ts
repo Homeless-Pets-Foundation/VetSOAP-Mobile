@@ -26,9 +26,16 @@ const QualityProviderSummarySchema = QualitySummarySchema.extend({
   lastRecordingAt: z.coerce.date().nullable(),
 });
 
+const QualityBreakdownSummarySchema = QualitySummarySchema.extend({
+  key: z.string(),
+  label: z.string(),
+});
+
 const DashboardQualitySchema = z.object({
   org: QualitySummarySchema.nullable(),
   me: QualitySummarySchema,
+  byAppointmentType: z.array(QualityBreakdownSummarySchema).optional().default([]),
+  byModel: z.array(QualityBreakdownSummarySchema).optional().default([]),
   byProvider: z.array(QualityProviderSummarySchema).nullable(),
 });
 
@@ -41,6 +48,7 @@ const DashboardQualityEnvelopeSchema = z
 
 export type QualitySummary = z.infer<typeof QualitySummarySchema>;
 export type QualityProviderSummary = z.infer<typeof QualityProviderSummarySchema>;
+export type QualityBreakdownSummary = z.infer<typeof QualityBreakdownSummarySchema>;
 export type DashboardQuality = z.infer<typeof DashboardQualitySchema>;
 export type DashboardQualityEnvelope = {
   periodDays: 30;

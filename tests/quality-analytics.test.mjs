@@ -55,6 +55,15 @@ function summary(overrides = {}) {
   };
 }
 
+function breakdown(overrides = {}) {
+  return {
+    key: 'Wellness',
+    label: 'Wellness',
+    ...summary({ completedRecordings: 12 }),
+    ...overrides,
+  };
+}
+
 function envelope(overrides = {}) {
   return {
     periodDays: 30,
@@ -62,6 +71,8 @@ function envelope(overrides = {}) {
     quality: {
       org: summary(),
       me: summary({ completedRecordings: 1, reprocessRate: 2 }),
+      byAppointmentType: [breakdown()],
+      byModel: [breakdown({ key: 'gemini-2.5-flash', label: 'gemini-2.5-flash' })],
       byProvider: [
         {
           ...summary(),
@@ -83,11 +94,13 @@ test('parseDashboardQualityEnvelope parses only periodDays and quality', async (
 
   assert.equal(parsed.periodDays, 30);
   assert.equal(parsed.quality.org.completedRecordings, 4);
+  assert.equal(parsed.quality.byAppointmentType[0].label, 'Wellness');
+  assert.equal(parsed.quality.byModel[0].label, 'gemini-2.5-flash');
   assert.equal(parsed.quality.byProvider[0].fullName, 'Dr. Vet');
   assert.equal('recentRecordings' in parsed, false);
 });
 
-test('parseDashboardQualityEnvelope accepts non-admin personal-only quality', async () => {
+test('parseDashboardQualityEnvelope accepts older non-admin personal-only quality', async () => {
   const { parseDashboardQualityEnvelope } = await loadQualityAnalytics();
 
   const parsed = parseDashboardQualityEnvelope(
@@ -102,6 +115,8 @@ test('parseDashboardQualityEnvelope accepts non-admin personal-only quality', as
 
   assert.equal(parsed.quality.org, null);
   assert.equal(parsed.quality.me.completedRecordings, 2);
+  assert.deepEqual(parsed.quality.byAppointmentType, []);
+  assert.deepEqual(parsed.quality.byModel, []);
   assert.equal(parsed.quality.byProvider, null);
 });
 
@@ -163,4 +178,19 @@ test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing
   assert.match(source, /\{quality\.org && <SummaryBlock title=\{QUALITY_ANALYTICS_COPY\.org\} summary=\{quality\.org\} \/>\}/);
   assert.match(source, /\{quality\.byProvider\?\.length \? \(/);
   assert.doesNotMatch(source, /onPress=\{async/);
+});
+
+test('QualityAnalyticsCard renders clearer labels and all-user breakdown sections', async () => {
+  const source = await read('src/components/QualityAnalyticsCard.tsx');
+  const copy = await read('src/constants/strings.ts');
+
+  assert.match(copy, /reprocessRate: 'Reprocessed'/);
+  assert.match(copy, /soapEditRate: 'Edited notes'/);
+  assert.match(copy, /p90Processing: '90% done by'/);
+  assert.doesNotMatch(copy, /Reprocess rate|SOAP edit rate|P90 processing/);
+  assert.match(copy, /appointmentTypes: 'Appointment types'/);
+  assert.match(copy, /models: 'Models'/);
+  assert.match(source, /function BreakdownRow/);
+  assert.match(source, /quality\.byAppointmentType\?\.length/);
+  assert.match(source, /quality\.byModel\?\.length/);
 });

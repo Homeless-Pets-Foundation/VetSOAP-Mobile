@@ -186,12 +186,20 @@ test('Home renders clinic quality after Recent Recordings and refreshes it safel
   assert.match(source, /import \{ qualityAnalyticsApi \} from ['"].*src\/api\/qualityAnalytics['"]/);
   assert.match(source, /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId\]/);
   assert.match(source, /queryFn:\s*\(\) => qualityAnalyticsApi\.getDashboardQuality\(\)/);
-  assert.match(source, /enabled:\s*!!user/);
   assert.match(source, /refetchQuality\(\)\.catch\(\(\) => \{\}\)/);
   assert(
     source.indexOf('Recent Recordings') < source.indexOf('<QualityAnalyticsCard'),
     'quality card should render after Recent Recordings'
   );
+});
+
+test('Home gates clinic quality fetch, manual refetch, and render by recording role', async () => {
+  const source = await read('app/(app)/(tabs)/index.tsx');
+
+  assert.match(source, /const canViewQualityAnalytics = canRecordAppointments\(user\?\.role\)/);
+  assert.match(source, /enabled:\s*!!user && canViewQualityAnalytics/);
+  assert.match(source, /if \(canViewQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(source, /\{canViewQualityAnalytics \? \(\s*<View className="mb-8">\s*<QualityAnalyticsCard/);
 });
 
 test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing quality', async () => {

@@ -116,6 +116,13 @@ export default function HomeScreen() {
     refetch: refetchQuality,
   } = qualityQuery;
   const recordings = useMemo(() => data?.data ?? [], [data?.data]);
+  const processingRecordingIds = useMemo(() => {
+    return new Set(
+      recordings
+        .filter((r) => !['completed', 'failed', 'pending_metadata'].includes(r.status))
+        .map((r) => r.id)
+    );
+  }, [recordings]);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   const {
@@ -125,10 +132,21 @@ export default function HomeScreen() {
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
   const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
+  const processingRecordingIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     areLocalDraftsStaleRef.current = areLocalDraftsStale;
   }, [areLocalDraftsStale]);
+
+  useEffect(() => {
+    const completedProcessing = [...processingRecordingIdsRef.current].some(
+      (id) => !processingRecordingIds.has(id)
+    );
+    if (canViewQualityAnalytics && completedProcessing) {
+      refetchQuality().catch(() => {});
+    }
+    processingRecordingIdsRef.current = processingRecordingIds;
+  }, [canViewQualityAnalytics, processingRecordingIds, refetchQuality]);
 
   useRetryableInitialLoadError({
     screen: 'home',

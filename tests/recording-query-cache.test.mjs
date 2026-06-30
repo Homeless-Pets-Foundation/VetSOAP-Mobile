@@ -13,6 +13,7 @@ test('recording cache helper narrows invalidation keys by mutation type', async 
   assert.match(source, /case 'draft_changed':\s*case 'draft_deleted':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
   assert.match(source, /case 'device_registration_recovered':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
   assert.match(source, /case 'submit_success':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\], \['dashboard', 'quality'\]\]/);
+  assert.match(source, /case 'detail_deleted':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\], \['dashboard', 'quality'\]\]/);
   assert.match(source, /case 'soap_regenerated':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['dashboard', 'quality'\]\]/);
   assert.match(source, /case 'metadata_update':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['dashboard', 'quality'\]\]/);
   assert.match(source, /refetchType: 'active'/);

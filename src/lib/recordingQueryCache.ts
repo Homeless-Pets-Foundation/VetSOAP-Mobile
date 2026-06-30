@@ -24,7 +24,7 @@ export function recordingInvalidationKeysFor(mutation: RecordingCacheMutation): 
     case 'submit_success':
       return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts'], ['dashboard', 'quality']];
     case 'detail_deleted':
-      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts']];
+      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts'], ['dashboard', 'quality']];
     case 'processing_retry':
       return [['recordings', 'recent'], ['recordings', 'list']];
     case 'soap_regenerated':

@@ -115,35 +115,29 @@ function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; m
   return (
     <View className="border-t border-border-default py-3">
       <View className="flex-row items-start justify-between">
-        <Text className="text-body-sm font-semibold text-content-primary flex-1 pr-2" numberOfLines={1}>
+        <Text className="text-body-sm font-semibold text-content-primary flex-1 pr-2" numberOfLines={2}>
           {item.label}
         </Text>
-        <Text className="text-caption font-semibold text-content-secondary" numberOfLines={1}>
+        <Text className="text-caption font-semibold text-content-secondary ml-2" numberOfLines={1}>
           {item.completedRecordings} rec
         </Text>
       </View>
       <View className="h-1.5 rounded-full bg-surface-sunken overflow-hidden mt-2">
         <View className="h-full rounded-full" style={{ width: barWidth, backgroundColor: colors.brand500 }} />
       </View>
-      <View className="flex-row flex-wrap mt-2">
-        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
-          {QUALITY_ANALYTICS_COPY.metrics.averageLength} {formatDuration(item.averageRecordingLengthSeconds)}
-        </Text>
-        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
-          {QUALITY_ANALYTICS_COPY.metrics.reprocessRate} {formatRate(item.reprocessRate)}
-        </Text>
-        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
-          {QUALITY_ANALYTICS_COPY.metrics.soapEditRate} {formatRate(item.soapEditRate)}
-        </Text>
-        <Text className="text-caption text-content-tertiary mr-3 mb-1" numberOfLines={1}>
-          {QUALITY_ANALYTICS_COPY.metrics.p90Processing}{' '}
-          {item.processingLatencyP90Seconds === null ? 'n/a' : formatDuration(item.processingLatencyP90Seconds)}
-        </Text>
+      <View className="flex-row flex-wrap mt-3">
+        <Metric label={QUALITY_ANALYTICS_COPY.metrics.averageLength} value={formatDuration(item.averageRecordingLengthSeconds)} />
+        <Metric label={QUALITY_ANALYTICS_COPY.metrics.reprocessRate} value={formatRate(item.reprocessRate)} />
+        <Metric label={QUALITY_ANALYTICS_COPY.metrics.soapEditRate} value={formatRate(item.soapEditRate)} />
+        <Metric
+          label={QUALITY_ANALYTICS_COPY.metrics.p90Processing}
+          value={item.processingLatencyP90Seconds === null ? 'n/a' : formatDuration(item.processingLatencyP90Seconds)}
+        />
       </View>
       {badges.length ? (
         <View className="flex-row flex-wrap mt-1">
           {badges.map((badge) => (
-            <Text key={badge} className="text-caption text-warning-500 mr-2 mb-1" numberOfLines={1}>
+            <Text key={badge} className="text-caption text-warning-500 mr-2 mb-1">
               {badge}
             </Text>
           ))}

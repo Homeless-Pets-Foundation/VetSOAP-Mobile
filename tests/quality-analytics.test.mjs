@@ -224,3 +224,11 @@ test('QualityAnalyticsCard renders clearer labels and all-user breakdown section
   assert.match(source, /quality\.byModel\?\.length/);
   assert.match(source, /item\.completedRecordings > 0/);
 });
+
+test('QualityAnalyticsCard breakdown rows do not force metric text into one clipped line', async () => {
+  const source = await read('src/components/QualityAnalyticsCard.tsx');
+
+  assert.doesNotMatch(source, /text-caption text-content-tertiary mr-3 mb-1" numberOfLines=\{1\}/);
+  assert.doesNotMatch(source, /text-caption text-warning-500 mr-2 mb-1" numberOfLines=\{1\}/);
+  assert.match(source, /<Metric label=\{QUALITY_ANALYTICS_COPY\.metrics\.averageLength\}/);
+});

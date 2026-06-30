@@ -120,6 +120,21 @@ test('parseDashboardQualityEnvelope accepts older non-admin personal-only qualit
   assert.equal(parsed.quality.byProvider, null);
 });
 
+test('parseDashboardQualityEnvelope defaults missing provider breakdown to null', async () => {
+  const { parseDashboardQualityEnvelope } = await loadQualityAnalytics();
+
+  const parsed = parseDashboardQualityEnvelope(
+    envelope({
+      quality: {
+        org: null,
+        me: summary({ completedRecordings: 2 }),
+      },
+    })
+  );
+
+  assert.equal(parsed.quality.byProvider, null);
+});
+
 test('parseDashboardQualityEnvelope returns null quality during rollout', async () => {
   const { parseDashboardQualityEnvelope } = await loadQualityAnalytics();
 
@@ -200,6 +215,15 @@ test('Home gates clinic quality fetch, manual refetch, and render by recording r
   assert.match(source, /enabled:\s*!!user && canViewQualityAnalytics/);
   assert.match(source, /if \(canViewQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
   assert.match(source, /\{canViewQualityAnalytics \? \(\s*<View className="mb-8">\s*<QualityAnalyticsCard/);
+});
+
+test('Home refreshes clinic quality when recent processing recordings leave processing', async () => {
+  const source = await read('app/(app)/(tabs)/index.tsx');
+
+  assert.match(source, /const processingRecordingIds = useMemo\(\(\) =>/);
+  assert.match(source, /const processingRecordingIdsRef = useRef<Set<string>>\(new Set\(\)\)/);
+  assert.match(source, /const completedProcessing = \[\.\.\.processingRecordingIdsRef\.current\]\.some/);
+  assert.match(source, /if \(canViewQualityAnalytics && completedProcessing\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
 });
 
 test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing quality', async () => {

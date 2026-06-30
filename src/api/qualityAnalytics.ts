@@ -36,7 +36,7 @@ const DashboardQualitySchema = z.object({
   me: QualitySummarySchema,
   byAppointmentType: z.array(QualityBreakdownSummarySchema).optional().default([]),
   byModel: z.array(QualityBreakdownSummarySchema).optional().default([]),
-  byProvider: z.array(QualityProviderSummarySchema).nullable(),
+  byProvider: z.array(QualityProviderSummarySchema).nullable().optional().default(null),
 });
 
 const DashboardQualityEnvelopeSchema = z

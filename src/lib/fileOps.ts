@@ -80,3 +80,45 @@ export async function safeCopyFile(sourceUri: string, destUri: string): Promise<
   }
   return fileExists(destUri);
 }
+
+/**
+ * Copy only the first `byteCount` bytes of `sourceUri` into `destUri`,
+ * overwriting any existing dest. Streams via a FileHandle in bounded chunks so a
+ * large recording never loads whole into JS memory.
+ *
+ * Used by the durable-AAC upload path: a crash can leave a torn partial ADTS
+ * frame past the manifest's `completeFrameBytes` anchor, so we upload only the
+ * complete-frame prefix rather than the raw (possibly malformed-tailed) file.
+ * Returns true only when exactly `byteCount` bytes were written; false on any
+ * open/read/write failure or short read (caller falls back to the full file).
+ */
+export function writeFilePrefix(sourceUri: string, destUri: string, byteCount: number): boolean {
+  if (!Number.isFinite(byteCount) || byteCount <= 0) return false;
+  let src: ReturnType<File['open']> | null = null;
+  let dst: ReturnType<File['open']> | null = null;
+  try {
+    const source = new File(sourceUri);
+    if (!source.exists) return false;
+    const dest = new File(destUri);
+    if (dest.exists) dest.delete();
+    dest.create();
+    src = source.open();
+    dst = dest.open();
+    const CHUNK = 1024 * 1024; // 1 MiB
+    let remaining = Math.floor(byteCount);
+    while (remaining > 0) {
+      const toRead = Math.min(CHUNK, remaining);
+      const bytes = src.readBytes(toRead);
+      if (!bytes || bytes.length === 0) break; // EOF before byteCount
+      dst.writeBytes(bytes);
+      remaining -= bytes.length;
+      if (bytes.length < toRead) break; // short read: source shorter than byteCount
+    }
+    return remaining <= 0;
+  } catch {
+    return false;
+  } finally {
+    try { src?.close(); } catch { /* best-effort */ }
+    try { dst?.close(); } catch { /* best-effort */ }
+  }
+}

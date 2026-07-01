@@ -172,6 +172,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     capturedDurationMs: 0,
   });
   const lastCommitAtRef = useRef<number | null>(null);
+  // Mirror of committedThroughMs readable synchronously (state is stale inside
+  // ref-based callbacks). The durably-saved-through time is the crash-safe
+  // duration to attribute to an interrupted capture.
+  const committedThroughMsRef = useRef(0);
   const [committedThroughMs, setCommittedThroughMs] = useState(0);
   const [completeFrameBytes, setCompleteFrameBytes] = useState(0);
   const [activeDurableRecordingId, setActiveDurableRecordingId] = useState<string | null>(null);
@@ -337,6 +341,16 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     if (!wasRecording) return;
     breadcrumb('record', 'durable_recorder_interrupted', { from_state: stateRef.current });
     freezeElapsedClock();
+    // The native module flushes + writes the manifest BEFORE emitting the
+    // interruption event, but only updates durableDurationMsRef on
+    // stop/pause/resume — so a finish taken straight off getDurableSnapshot()
+    // here would attribute durationMs=0. Fold in the last committed progress
+    // (the crash-safe durably-saved-through time) so the saved durable draft
+    // carries a real duration and never triggers a false silent-upload prompt.
+    durableDurationMsRef.current = Math.max(
+      durableDurationMsRef.current,
+      committedThroughMsRef.current,
+    );
     setState('interrupted');
   }, [freezeElapsedClock]);
   const runDurableInterruptionRef = useRef(runDurableInterruption);
@@ -348,6 +362,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     const subs = [
       durableRecorder.addRecordingProgressListener((e) => {
         if (backendRef.current !== 'durable' || e.recordingId !== durableRecordingIdRef.current) return;
+        committedThroughMsRef.current = e.committedThroughMs;
         setCommittedThroughMs(e.committedThroughMs);
         setCompleteFrameBytes(e.completeFrameBytes);
         lastCommitAtRef.current = Date.now();
@@ -509,14 +524,33 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
           // rejecting timeout lets the finally release the lock and fall through
           // to the expo path. (The record.tsx watchdog is a second layer, but it
           // can't unwind the hook's own start state.)
+          let durableStartTimedOut = false;
+          const startPromise = durableRecorder.start({
+            userId: ctx.userId,
+            slotId: ctx.slotId,
+            recordingId: ctx.recordingId,
+          });
+          // If the timeout wins the race we fall back to expo-audio, but the
+          // native start may still resolve LATE and own the mic + foreground
+          // service with no JS slot referencing it. Discard that orphan capture
+          // (best-effort) so it releases the mic instead of racing the expo path.
+          startPromise.then(
+            () => {
+              if (durableStartTimedOut) {
+                durableRecorder
+                  .discard({ userId: ctx.userId, recordingId: ctx.recordingId })
+                  .catch(() => {});
+              }
+            },
+            () => { /* rejected start: nothing to release */ },
+          );
           const manifest = await Promise.race([
-            durableRecorder.start({
-              userId: ctx.userId,
-              slotId: ctx.slotId,
-              recordingId: ctx.recordingId,
-            }),
+            startPromise,
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('durable start timed out')), DURABLE_START_TIMEOUT_MS),
+              setTimeout(() => {
+                durableStartTimedOut = true;
+                reject(new Error('durable start timed out'));
+              }, DURABLE_START_TIMEOUT_MS),
             ),
           ]);
           backendRef.current = 'durable';

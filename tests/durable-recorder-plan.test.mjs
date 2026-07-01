@@ -72,7 +72,8 @@ test('durable capture flag is server-driven, default off', async () => {
 
 test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(src, /createWithFile\(\s*slot\.formData,\s*durableUri,\s*'audio\/aac'/);
+  // Upload the truncated complete-frame prefix (durableUploadUri), NOT the raw file.
+  assert.match(src, /createWithFile\(\s*slot\.formData,\s*durableUploadUri,\s*'audio\/aac'/);
   assert.match(src, /idempotencyKey: `durable-\$\{durable\.recordingId\}`/);
   assert.match(src, /setServerRecordingId\(\{ userId: uid, recordingId: durable\.recordingId/);
   // markUploaded appears before deleteDraft which appears before purgeAfterUpload.
@@ -83,6 +84,31 @@ test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone',
   assert.match(src, /durableTombstone\.add\(durable\.recordingId\)/);
   // durable upload bypasses maybeSplitForUpload (that path is for legacy segments).
   assert.match(src, /if \(slot\.durable\) \{/);
+});
+
+test('uploadSlot durable: upload only the complete-ADTS-frame prefix', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+  // Truncate to completeFrameBytes only when the file is longer (torn crash tail).
+  assert.match(src, /const completeFrameBytes = manifest\?\.audioFile\.completeFrameBytes \?\? 0/);
+  assert.match(src, /completeFrameBytes > 0 && completeFrameBytes < durableSizeBytes/);
+  assert.match(src, /writeFilePrefix\(durableUri, tempUri, completeFrameBytes\)/);
+  // The temp prefix is cleaned up on both success and failure.
+  assert.match(src, /if \(durablePrefixTempUri\) safeDeleteFile\(durablePrefixTempUri\)/);
+  // fileOps exposes the streaming prefix copy.
+  const fileOps = await read('src/lib/fileOps.ts');
+  assert.match(fileOps, /export function writeFilePrefix\(sourceUri: string, destUri: string, byteCount: number\): boolean/);
+});
+
+test('uploadSlot durable: dirty metadata is patched before promoting the draft', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+  // The durable branch flushes edited formData to the server draft before promote,
+  // mirroring the legacy segment path (finding: stale metadata promoted otherwise).
+  const iDurableBranch = src.indexOf('if (slot.durable) {');
+  const iPatch = src.indexOf('patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData)', iDurableBranch);
+  const iCreateWithFile = src.indexOf("'audio/aac'", iDurableBranch);
+  assert.ok(iPatch > iDurableBranch && iPatch < iCreateWithFile,
+    'durable branch must patch dirty metadata before createWithFile');
+  assert.match(src, /if \(slot\.serverDraftId && slot\.draftMetadataDirty\) \{/);
 });
 
 test('draftStorage: durable-aware orphan/audio checks + metadata-only save', async () => {
@@ -185,7 +211,13 @@ test('durable free-space gate + hook start timeout are wired', async () => {
   const hook = await read('src/hooks/useAudioRecorder.ts');
   // Hook-internal durable start timeout (unwinds isStartingRef on a hung native start).
   assert.match(hook, /DURABLE_START_TIMEOUT_MS/);
-  assert.match(hook, /Promise\.race\(\[[\s\S]*?durableRecorder\.start/);
+  // The native start is captured then raced against the timeout, so a LATE-
+  // resolving start (after we fell back to expo) can be discarded to release the
+  // mic/foreground service instead of orphaning the capture.
+  assert.match(hook, /const startPromise = durableRecorder\.start\(/);
+  assert.match(hook, /Promise\.race\(\[\s*startPromise/);
+  assert.match(hook, /durableStartTimedOut = true/);
+  assert.match(hook, /if \(durableStartTimedOut\) \{[\s\S]*?durableRecorder\s*\.discard\(/);
 });
 
 test('support-staff vault preserves durable BYTES + cross-user recovered upload', async () => {
@@ -200,4 +232,84 @@ test('support-staff vault preserves durable BYTES + cross-user recovered upload'
   assert.match(rec, /const hasNativeManifest = !!manifest/);
   assert.match(rec, /durable\.recoveredAudioUri/);
   assert.match(rec, /if \(hasNativeManifest\) \{[\s\S]*?markUploaded/);
+});
+
+// ── Codex-review regression guards (durable submit-reachability + recovery) ──
+
+test('durable-only slots are submit-reachable (per-patient + Submit All)', async () => {
+  // PatientSlotCard: the Submit card must show for a durable slot with empty segments.
+  const card = await read('src/components/PatientSlotCard.tsx');
+  assert.match(card, /const hasCapturedAudio = hasSegments \|\| !!slot\.durable/);
+  assert.match(card, /showSubmitCard = \(recordFirstEnabled \|\| hasRequiredFields\) && hasCapturedAudio/);
+  // SubmitPanel already counts durable audio.
+  const panel = await read('src/components/SubmitPanel.tsx');
+  assert.match(panel, /s\.segments\.length > 0 \|\| s\.durable !== null/);
+  // Submit All + post-single-submit "others remaining" both include durable slots.
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(rec, /\(s\.segments\.length > 0 \|\| !!s\.durable\) &&\s*\n\s*s\.uploadStatus !== 'success'/);
+  assert.match(rec, /s\.segments\.length > 0 \|\| !!s\.durable \|\| s\.audioState === 'recording'/);
+});
+
+test('interrupted durable capture attributes committed duration (not 0)', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  // committedThroughMs is mirrored into a ref and folded into the durable duration
+  // on interruption so a finish taken from the snapshot never saves durationMs=0.
+  assert.match(hook, /committedThroughMsRef\.current = e\.committedThroughMs/);
+  assert.match(hook, /durableDurationMsRef\.current = Math\.max\(\s*durableDurationMsRef\.current,\s*committedThroughMsRef\.current,?\s*\)/);
+});
+
+test('record start is gated by the server min-version floor', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(rec, /import \{ getRecordStartGate \} from '\.\.\/\.\.\/\.\.\/src\/lib\/minVersion'/);
+  // Gate consulted at the single mic-start funnel (fresh + Resume→Continue).
+  const iFn = rec.indexOf('const startRecordingForSlot = useCallback(');
+  const iGate = rec.indexOf("getRecordStartGate() === 'block'", iFn);
+  const iInFlight = rec.indexOf('startInFlightRef.current = true;', iFn);
+  assert.ok(iGate > iFn && iGate < iInFlight, 'min-version gate must run before start proceeds');
+});
+
+test('recovered durable draft preserves the death-surviving server anchor', async () => {
+  const draft = await read('src/lib/draftStorage.ts');
+  // saveDraft falls back to slot.serverDraftId when no local draft exists yet.
+  assert.match(draft, /const resolvedServerDraftId = existingDurable\?\.serverDraftId \?\? slot\.serverDraftId \?\? null/);
+  assert.match(draft, /serverDraftId: resolvedServerDraftId/);
+  assert.match(draft, /pendingSync: existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/);
+});
+
+test('native self-heal scan returns confirmed-uploaded-but-not-purged manifests', async () => {
+  // JS routes confirmed-uploaded manifests to the selfHeal bucket (never offer).
+  const logic = await read('src/lib/durableAudio/recoveryLogic.ts');
+  assert.match(logic, /if \(isConfirmedUploaded\(manifest\)\) \{[\s\S]*?selfHeal\.push\(manifest\)/);
+  // Android: return the uploaded manifest instead of dropping it (was `return null`).
+  const kt = await read(
+    'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt',
+  );
+  assert.match(kt, /if \(m\.state == DurableState\.UPLOADED \|\| !m\.confirmedUploadAt\.isNullOrEmpty\(\)\) \{[\s\S]*?return m\.toMap\(\)/);
+  // iOS: return the uploaded manifest instead of `continue`.
+  const swift = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
+  assert.match(swift, /if manifest\.isConfirmedUploaded \{[\s\S]*?results\.append\(manifest\.toDictionary\(\)\)/);
+});
+
+test('iOS benign route change does not emit a fatal interruption', async () => {
+  const swift = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
+  // The default (non-oldDeviceUnavailable) route-change branch fsyncs but must NOT
+  // emit "interruption" (JS treats every interruption as fatal → orphaned capture).
+  const iDefault = swift.indexOf('// Non-fatal route change (new device available, category change)');
+  assert.ok(iDefault > 0, 'benign route-change branch must exist');
+  const iMediaReset = swift.indexOf('@objc private func handleMediaReset', iDefault);
+  const branch = swift.slice(iDefault, iMediaReset);
+  assert.doesNotMatch(branch, /emit\("interruption"/);
+});
+
+test('recovered slot ids are unique (no constant "recovered" collision)', async () => {
+  // JS derives the draft/slot id from the unique recordingId, not manifest.slotId.
+  const screen = await read('app/(app)/durable-recovery.tsx');
+  assert.match(screen, /const slotId = m\.recordingId/);
+  assert.match(screen, /draftSlotId: slotId/);
+  assert.match(screen, /params: \{ draftSlotId: m\.recordingId \}/);
+  // Android orphan synthesis uses recordingId as slotId (iOS parity), not "recovered".
+  const kt = await read(
+    'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt',
+  );
+  assert.doesNotMatch(kt, /slotId = "recovered"/);
 });

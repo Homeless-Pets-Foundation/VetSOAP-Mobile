@@ -54,8 +54,14 @@ function isEditNotApplied(m: DurableRecordingManifest): boolean {
 }
 
 function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
+  // Derive the draft/slot id from the (unique) recordingId, NOT manifest.slotId:
+  // Android synthesizes orphan manifests with a constant slotId ("recovered"), so
+  // reusing it would make two recovered orphans collide on the same draft key and
+  // overwrite each other. recordingId is the per-recording directory name and is
+  // always unique + a valid durable id.
+  const slotId = m.recordingId;
   return {
-    id: m.slotId,
+    id: slotId,
     formData: { ...BLANK_FORM },
     audioState: 'stopped',
     segments: [],
@@ -73,7 +79,7 @@ function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
     uploadProgress: 0,
     uploadError: null,
     serverRecordingId: null,
-    draftSlotId: m.slotId,
+    draftSlotId: slotId,
     serverDraftId: m.serverRecordingId ?? null,
     draftMetadataDirty: false,
     pendingConfirm: null,
@@ -98,10 +104,12 @@ export default function DurableRecoveryScreen() {
       setBusyId(m.recordingId);
       try {
         // Synthesize a durable draft, then reuse the existing draft-resume path.
+        // The draft/slot id is derived from recordingId (see manifestToDurableSlot)
+        // so the resume param must match — never the possibly-non-unique slotId.
         await draftStorage.saveDraft(manifestToDurableSlot(m));
         durableRecoveryStore.remove(m.recordingId);
         trackEvent({ name: 'durable_recovery_restored', props: { mode: 'review' } });
-        router.replace({ pathname: '/(tabs)/record', params: { draftSlotId: m.slotId } } as never);
+        router.replace({ pathname: '/(tabs)/record', params: { draftSlotId: m.recordingId } } as never);
       } catch {
         Alert.alert('Recovery Failed', 'Could not restore this recording. Please try again.');
         setBusyId(null);

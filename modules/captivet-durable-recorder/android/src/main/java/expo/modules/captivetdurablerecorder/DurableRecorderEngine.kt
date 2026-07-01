@@ -986,10 +986,17 @@ internal object DurableRecorderEngine {
 
     if (m != null) {
       if (m.userId != userId) return null
-      // Exclude ONLY on the confirmed-upload signal (state 'uploaded' or
-      // confirmedUploadAt) — NEVER on serverRecordingId alone (created-but-
-      // unconfirmed is still recoverable + reconciled by JS).
-      if (m.state == DurableState.UPLOADED || !m.confirmedUploadAt.isNullOrEmpty()) return null
+      // Confirmed-uploaded (state 'uploaded' or confirmedUploadAt set) but
+      // audio.aac is still on disk — the process was killed after markUploaded
+      // but before purgeAfterUpload / draft-delete. Return it so the JS self-heal
+      // path purges the leftover; JS routes isConfirmedUploaded manifests to
+      // selfHeal (never offer), so this never resurfaces as a recovery card.
+      // Skip the reparse below (irrelevant for a purge target). NEVER exclude on
+      // serverRecordingId alone (created-but-unconfirmed is still recoverable).
+      if (m.state == DurableState.UPLOADED || !m.confirmedUploadAt.isNullOrEmpty()) {
+        // Persisted manifest already carries audioUri; return as-is for JS to purge.
+        return m.toMap()
+      }
       if (!RECOVERABLE_STATES.contains(m.state)) return null
 
       val anchorsPending = m.anchorsPending == true
@@ -1042,7 +1049,10 @@ internal object DurableRecorderEngine {
     val synth = DurableManifest(
       recordingId = recordingId,
       userId = userId,
-      slotId = "recovered",
+      // Use the (unique) recordingId as the slotId placeholder — NOT a constant
+      // like "recovered" — so two recovered orphans never collide on the same
+      // draft key when the JS recovery screen restores them (iOS parity).
+      slotId = recordingId,
       state = if (full.malformed) DurableState.ERROR else DurableState.STOPPED,
       startedAt = iso,
       updatedAt = iso,

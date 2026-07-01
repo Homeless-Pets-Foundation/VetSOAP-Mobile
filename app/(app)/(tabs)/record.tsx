@@ -6,8 +6,9 @@ import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { safeDeleteFile, safeDeleteDirectory, fileExists } from '../../../src/lib/fileOps';
+import { safeDeleteFile, safeDeleteDirectory, fileExists, writeFilePrefix } from '../../../src/lib/fileOps';
 import { getInfoAsync } from 'expo-file-system/legacy';
+import { Paths } from 'expo-file-system';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
 import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import {
@@ -30,6 +31,7 @@ import * as audioFocus from '../../../modules/captivet-audio-focus';
 import * as durableRecorder from '../../../modules/captivet-durable-recorder';
 import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
 import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
+import { getRecordStartGate } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
@@ -1351,6 +1353,19 @@ function RecordingSession() {
   const startRecordingForSlot = useCallback(
     (slotId: string) => {
       if (startInFlightRef.current) return;
+      // Server-enforced min-version floor: block STARTING new capture (fresh or
+      // Resume→Continue — every mic start funnels through here) on a build known
+      // to be below the floor. Already-captured audio stays uploadable; unknown
+      // floor / unknown current version fails open (allow). Rule: fail-closed
+      // only on a KNOWN-below-floor build.
+      if (getRecordStartGate() === 'block') {
+        breadcrumb('record', 'record_start_blocked_min_version', {});
+        Alert.alert(
+          'Update Required',
+          'A newer version of Captivet is required to start new recordings. Please update the app from the store. Recordings you have already captured can still be submitted.',
+        );
+        return;
+      }
       startInFlightRef.current = true;
       (async () => {
         try {
@@ -1867,45 +1882,92 @@ function RecordingSession() {
             }
           }
 
+          // Upload ONLY the complete-ADTS-frame prefix. A crash can leave a torn
+          // partial frame past the manifest's completeFrameBytes anchor; sending
+          // the raw file would fail server-side ADTS validation. When the file is
+          // longer than the anchor, stream the prefix into a temp .aac and upload
+          // that; a clean stop has anchor === size so this is skipped. Only the
+          // native-manifest path has a trustworthy anchor (a recovered vault copy
+          // was already truncated at recovery time).
+          let durableUploadUri = durableUri;
+          let durablePrefixTempUri: string | null = null;
+          const completeFrameBytes = manifest?.audioFile.completeFrameBytes ?? 0;
+          if (hasNativeManifest && completeFrameBytes > 0 && completeFrameBytes < durableSizeBytes) {
+            const tempUri = `${Paths.cache.uri}durable-upload-${durable.recordingId}.aac`;
+            if (writeFilePrefix(durableUri, tempUri, completeFrameBytes)) {
+              durableUploadUri = tempUri;
+              durablePrefixTempUri = tempUri;
+              breadcrumb('upload', 'durable_prefix_truncated', {
+                file_bytes: durableSizeBytes,
+                prefix_bytes: completeFrameBytes,
+              });
+            } else if (__DEV__) {
+              // Best-effort: on failure fall back to the full file (server may
+              // still accept it if the tail happened to be frame-aligned).
+              console.error('[Record] durable prefix truncation failed; uploading full file');
+            }
+          }
+
           setUploadStatus(slot.id, 'uploading', { progress: 5 });
           let lastDurableProgress = 0;
-          const durableUseExisting = slot.serverDraftId ?? slot.serverRecordingId ?? undefined;
-          const durableResult = await recordingsApi.createWithFile(
-            slot.formData,
-            durableUri,
-            'audio/aac',
-            {
-              fileName: 'recording.aac',
-              // Deterministic key derived from the on-disk durable recordingId so
-              // a retried create() after a kill reuses the same server row.
-              idempotencyKey: `durable-${durable.recordingId}`,
-              // Persist serverRecordingId into the manifest BEFORE the R2 PUT.
-              // No-op for a recovered vault copy (no native manifest to anchor).
-              onRecordingCreated: async (recordingId) => {
-                if (!hasNativeManifest) return;
-                await durableRecorder
-                  .setServerRecordingId({ userId: uid, recordingId: durable.recordingId, serverRecordingId: recordingId })
-                  .catch(() => {});
+          // Promote-in-place: reuse the death-surviving server draft. If the user
+          // edited patient/client details after the draft was created, flush the
+          // edits to the server FIRST so the promoted recording does not keep
+          // stale metadata (mirrors the segment path's patchDraftMetadata logic).
+          let durableUseExisting = slot.serverDraftId ?? slot.serverRecordingId ?? undefined;
+          if (slot.serverDraftId && slot.draftMetadataDirty) {
+            const outcome = await patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData);
+            if (outcome === 'success') {
+              dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
+            } else if (outcome === 'draft_missing') {
+              // Draft gone server-side → drop the anchor and fresh-create.
+              durableUseExisting = slot.serverRecordingId ?? undefined;
+            }
+            // 'not_draft' + 'transient_failure' fall through: keep promoting.
+          }
+          let durableResult;
+          try {
+            durableResult = await recordingsApi.createWithFile(
+              slot.formData,
+              durableUploadUri,
+              'audio/aac',
+              {
+                fileName: 'recording.aac',
+                // Deterministic key derived from the on-disk durable recordingId so
+                // a retried create() after a kill reuses the same server row.
+                idempotencyKey: `durable-${durable.recordingId}`,
+                // Persist serverRecordingId into the manifest BEFORE the R2 PUT.
+                // No-op for a recovered vault copy (no native manifest to anchor).
+                onRecordingCreated: async (recordingId) => {
+                  if (!hasNativeManifest) return;
+                  await durableRecorder
+                    .setServerRecordingId({ userId: uid, recordingId: durable.recordingId, serverRecordingId: recordingId })
+                    .catch(() => {});
+                },
+                onUploadProgress: ({ percent }) => {
+                  const now = Date.now();
+                  if (now - lastDurableProgress >= 500) {
+                    lastDurableProgress = now;
+                    setUploadStatus(slot.id, 'uploading', { progress: Math.round(5 + (percent * 85) / 100) });
+                  }
+                },
+                onR2Complete: (hint) => {
+                  setUploadStatus(slot.id, 'uploading', {
+                    progress: 95,
+                    pendingConfirm: { recordingId: hint.recordingId, fileKey: hint.fileKey },
+                  });
+                },
+                resume: slot.pendingConfirm ?? undefined,
+                ...(durableUseExisting ? { existingRecordingId: durableUseExisting } : {}),
+                audioDurationSeconds: durableDurationSeconds,
+                slotIndex,
               },
-              onUploadProgress: ({ percent }) => {
-                const now = Date.now();
-                if (now - lastDurableProgress >= 500) {
-                  lastDurableProgress = now;
-                  setUploadStatus(slot.id, 'uploading', { progress: Math.round(5 + (percent * 85) / 100) });
-                }
-              },
-              onR2Complete: (hint) => {
-                setUploadStatus(slot.id, 'uploading', {
-                  progress: 95,
-                  pendingConfirm: { recordingId: hint.recordingId, fileKey: hint.fileKey },
-                });
-              },
-              resume: slot.pendingConfirm ?? undefined,
-              ...(durableUseExisting ? { existingRecordingId: durableUseExisting } : {}),
-              audioDurationSeconds: durableDurationSeconds,
-              slotIndex,
-            },
-          );
+            );
+          } finally {
+            // Drop the truncated-prefix temp on both success and failure; the
+            // original audio.aac (and its manifest) stay untouched for retry.
+            if (durablePrefixTempUri) safeDeleteFile(durablePrefixTempUri);
+          }
 
           completedUploadSlotIdsRef.current.add(slot.id);
           setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: durableResult.id });
@@ -2733,7 +2795,7 @@ function RecordingSession() {
             // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
             const otherSlotsWithRecordings = sessionRef.current.slots.some(
               (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
-                (s.segments.length > 0 || s.audioState === 'recording' || s.audioState === 'paused')
+                (s.segments.length > 0 || !!s.durable || s.audioState === 'recording' || s.audioState === 'paused')
             );
 
             if (otherSlotsWithRecordings) {
@@ -2788,7 +2850,7 @@ function RecordingSession() {
     }
 
     const slotsToUpload = sessionRef.current.slots.filter(
-      (s) => s.segments.length > 0 &&
+      (s) => (s.segments.length > 0 || !!s.durable) &&
         s.uploadStatus !== 'success' &&
         s.uploadStatus !== 'uploading' &&
         !slotHasLiveRecorder(s)

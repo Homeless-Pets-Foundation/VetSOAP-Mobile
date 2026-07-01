@@ -532,6 +532,13 @@ export const draftStorage = {
     // recordings use durableActiveStore, never saveDraft.)
     if (slot.durable) {
       const existingDurable = await readDraftChunks(userId, slot.id);
+      // Preserve the server draft/recording anchor across this save. On crash
+      // recovery a manifest can carry a serverRecordingId (set pre-death) with NO
+      // prior local draft, so `existingDurable` is null — fall back to the slot's
+      // serverDraftId so the death-surviving anchor is not dropped (otherwise the
+      // next Submit fresh-creates a duplicate server recording instead of
+      // promoting the already-created draft). Prefer an existing local anchor.
+      const resolvedServerDraftId = existingDurable?.serverDraftId ?? slot.serverDraftId ?? null;
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
         savedAt: new Date().toISOString(),
@@ -539,8 +546,13 @@ export const draftStorage = {
         segments: [],
         durable: slot.durable,
         audioDuration: slot.durable.durationMs / 1000,
-        serverDraftId: existingDurable?.serverDraftId ?? null,
-        pendingSync: existingDurable?.serverDraftId ? existingDurable.pendingSync : true,
+        serverDraftId: resolvedServerDraftId,
+        // An existing local draft keeps its own pendingSync. A recovery-supplied
+        // anchor means the server row already exists (no create needed) → synced;
+        // no anchor at all means we still owe a server-draft create → pending.
+        pendingSync: existingDurable?.serverDraftId
+          ? existingDurable.pendingSync
+          : !resolvedServerDraftId,
       };
       await writeDraftChunks(userId, slot.id, JSON.stringify(durableMetadata));
       const index = await readDraftIndex();

@@ -221,6 +221,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const isPaused = audioState === 'paused';
   const isStopped = audioState === 'stopped';
   const hasSegments = slot.segments.length > 0;
+  // A durable recording has empty `segments` (audio lives in audio.aac), so any
+  // submit/upload gate must treat a durable ref as captured audio too — else a
+  // durable-only slot renders no Submit card and is unsubmittable.
+  const hasCapturedAudio = hasSegments || !!slot.durable;
   const previousSegmentsDuration = slot.segments.reduce((sum, s) => sum + s.duration, 0);
   const duration = isRecorderOwner
     ? previousSegmentsDuration + recorder.duration
@@ -251,7 +255,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
   // Allow recording when idle (even with existing segments — for continuation)
   const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !recorder.isStarting && !isFinishSaving;
-  const showSubmitCard = (recordFirstEnabled || hasRequiredFields) && slot.segments.length > 0 && slot.uploadStatus !== 'success';
+  const showSubmitCard = (recordFirstEnabled || hasRequiredFields) && hasCapturedAudio && slot.uploadStatus !== 'success';
   const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading' && !isFinishSaving;
   const patientForm = (
     <PatientForm

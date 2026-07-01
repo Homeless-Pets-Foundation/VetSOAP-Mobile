@@ -581,8 +581,15 @@ final class DurableRecorderEngine: NSObject {
       let size = fileSize ?? 0
 
       if var manifest = DurableManifest.read(userId: userId, recordingId: recordingId) {
-        // Exclude ONLY on the confirmed-upload signal (never serverRecordingId).
-        if manifest.isConfirmedUploaded { continue }
+        // Confirmed-uploaded but audio.aac is still on disk (process killed after
+        // markUploaded but before purgeAfterUpload / draft-delete). Return it so
+        // the JS self-heal path purges the leftover — JS routes isConfirmedUploaded
+        // manifests to selfHeal, never offer, so this never resurfaces as a card.
+        // Skip the reparse/validation below (irrelevant for a purge target).
+        if manifest.isConfirmedUploaded {
+          results.append(manifest.toDictionary())
+          continue
+        }
         if !DurableManifest.recoverableStates.contains(manifest.state) { continue }
 
         let anchorsPending = manifest.anchorsPending ?? false
@@ -1256,12 +1263,13 @@ final class DurableRecorderEngine: NSObject {
         }
       }
     default:
-      // Non-fatal route change (new device available, category change): just
-      // fsync + inform JS; keep capturing on the new route.
+      // Non-fatal route change (new device available, category change): keep
+      // capturing on the new route — just fsync the durable file. Do NOT emit
+      // `interruption`: the JS hook treats every interruption as fatal
+      // (finalizes + resets the durable slot), which would desync JS from the
+      // still-running native recorder and orphan the capture. A benign route
+      // change needs no JS action.
       writerQueue.async { self.writer?.fsync() }
-      if let rid = rid {
-        emit("interruption", ["recordingId": rid, "reason": "route_change"])
-      }
     }
   }
 

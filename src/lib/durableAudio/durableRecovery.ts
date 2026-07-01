@@ -71,7 +71,15 @@ async function selfHeal(userId: string, manifest: DurableRecordingManifest): Pro
   await durableActiveStore.clearActive(recordingId).catch(() => {});
 }
 
-export async function scanDurableRecoveries(userId: string): Promise<DurableRecordingManifest[]> {
+export async function scanDurableRecoveries(
+  userId: string,
+  // True once this scan has been superseded by a sign-out / newer scan. The scan
+  // sets module-global user scopes (tombstone/activeStore) and calls draftStorage
+  // (globally scoped to the CURRENT signed-in user), so a stale scan resuming past
+  // the watchdog after a fast user switch could delete/tombstone the NEXT user's
+  // data. Bail before every mutating side effect, not just before publishing.
+  isCancelled: () => boolean = () => false,
+): Promise<DurableRecordingManifest[]> {
   if (!isValidDurableId(userId)) return [];
   durableTombstone.setUserId(userId);
   durableActiveStore.setUserId(userId);
@@ -92,8 +100,10 @@ export async function scanDurableRecoveries(userId: string): Promise<DurableReco
   // selection: if already confirmed-uploaded, mark uploaded so it self-heals and
   // is never re-offered.
   for (const m of manifests) {
+    if (isCancelled()) return [];
     if (!needsServerReconcile(m) || !m.serverRecordingId) continue;
     const uploaded = await serverStatusIsUploaded(m.serverRecordingId);
+    if (isCancelled()) return [];
     if (uploaded === true) {
       await durableRecorder
         .markUploaded({ userId, recordingId: m.recordingId, confirmedUploadAt: new Date().toISOString() })
@@ -132,6 +142,7 @@ export async function scanDurableRecoveries(userId: string): Promise<DurableReco
   for (const d of drafts) {
     const rid = d.durable?.recordingId;
     if (rid && stashRecordingIds.has(rid)) {
+      if (isCancelled()) return [];
       await draftStorage.deleteDraft(d.slotId).catch(() => {});
       draftRecordingIds.delete(rid);
     }
@@ -156,6 +167,7 @@ export async function scanDurableRecoveries(userId: string): Promise<DurableReco
   });
 
   for (const m of toHeal) {
+    if (isCancelled()) return [];
     await selfHeal(userId, m);
   }
 
@@ -204,7 +216,10 @@ export async function runDurableRecoveryScan(userId: string): Promise<void> {
     }, SCAN_WATCHDOG_MS);
   });
   try {
-    const offer = await Promise.race([scanDurableRecoveries(userId), watchdog]);
+    const offer = await Promise.race([
+      scanDurableRecoveries(userId, () => myGeneration !== scanGeneration),
+      watchdog,
+    ]);
     settled = true;
     publish(offer);
     if (offer.length > 0 && myGeneration === scanGeneration) {

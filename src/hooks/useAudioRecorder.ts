@@ -503,7 +503,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     if (!durableRecordingIdRef.current) return null;
     return {
       recordingId: durableRecordingIdRef.current,
-      durationMs: durableDurationMsRef.current,
+      // durableDurationMsRef only advances on pause/resume/successful stop — a
+      // timed-out or failed durable stop leaves it stale (possibly 0). Fold in the
+      // last committed (crash-safe flushed) and live durations so a recovered
+      // finish never saves a real recording as a durationMs=0 card/upload.
+      durationMs: Math.max(
+        durableDurationMsRef.current,
+        committedThroughMsRef.current,
+        durableLiveRef.current.capturedDurationMs,
+      ),
       peakDb: durablePeakDbRef.current,
       sampleRate: durableSampleRateRef.current,
       bitrate: durableBitrateRef.current,

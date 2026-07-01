@@ -165,10 +165,20 @@ export const stashAudioManager = {
         }
       }
 
+      // A VAULT-RESTORED durable slot's audio is the copied recoveredAudioUri; if
+      // that file is gone the pointer is stale (submit would fail with missing
+      // audio), so drop the durable ref. A NATIVE durable slot has no
+      // recoveredAudioUri — its audio.aac lives under the durable root, validated
+      // by the durable module, so its recordingId pointer is kept as-is.
+      const durableStale =
+        !!slot.durable?.recoveredAudioUri && !fileExists(slot.durable.recoveredAudioUri);
+      if (durableStale) missingCount++;
+
       // Keep slots even if they have no segments (they still have form data)
       validSlots.push({
         ...slot,
         segments: validSegments,
+        durable: durableStale ? null : slot.durable,
         audioDuration: validSegments.reduce((sum, s) => sum + s.duration, 0),
       });
     }

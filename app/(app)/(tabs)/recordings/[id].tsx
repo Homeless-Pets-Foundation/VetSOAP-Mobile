@@ -32,8 +32,9 @@ import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
-import { fileExists } from '../../../../src/lib/fileOps';
+import { fileExists, safeDeleteFile } from '../../../../src/lib/fileOps';
 import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
+import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
 import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
 import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../../../../src/lib/recordingQueryCache';
@@ -509,6 +510,23 @@ export default function RecordingDetailScreen() {
       // If a local draft points at this server row, purge it too so the
       // "Not Submitted" card won't resurrect on next focus.
       if (draftLocalSlotId) {
+        // draftStorage.deleteDraft() intentionally does NOT purge a durable
+        // recording's native audio.aac (a stash may share it), so a durable draft
+        // deleted from here would leave the audio on disk and the launch recovery
+        // scan would resurrect it. Discard the native recording (and any loose
+        // vault-restored copy) first.
+        try {
+          const localDraft = await draftStorage.getDraft(draftLocalSlotId);
+          const rid = localDraft?.durable?.recordingId;
+          if (rid && isValidDurableId(rid) && user?.id) {
+            await durableRecorder.discard({ userId: user.id, recordingId: rid }).catch(() => {});
+          }
+          if (localDraft?.durable?.recoveredAudioUri) {
+            safeDeleteFile(localDraft.durable.recoveredAudioUri);
+          }
+        } catch {
+          /* best-effort — proceed with the metadata delete */
+        }
         await draftStorage.deleteDraft(draftLocalSlotId).catch(() => {});
         await recoveryIntent.clearForDraftSlot(draftLocalSlotId).catch(() => {});
       }

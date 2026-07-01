@@ -452,12 +452,13 @@ test('durable-only stash failure surfaces the Save Failed alert', async () => {
   assert.match(rec, /const hasRecordings = postFlushSession\.slots\.some\(\(s\) => s\.segments\.length > 0 \|\| !!s\.durable\)/);
 });
 
-test('post-upload deleteDraft retries; loadDraft blocks a tombstoned durable resume', async () => {
+test('post-upload deleteDraft is verified + retried; loadDraft blocks a tombstoned durable resume', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  // deleteDraft is retried before falling back to the tombstone-only self-heal.
-  const iFirst = rec.indexOf('await draftStorage.deleteDraft(slot.id);');
-  const iSecond = rec.indexOf('await draftStorage.deleteDraft(slot.id);', iFirst + 1);
-  assert.ok(iFirst > 0 && iSecond > iFirst, 'the post-upload deleteDraft must retry once');
+  // deleteDraft swallows its own storage errors, so success is VERIFIED via
+  // getDraft (not a try/catch) and confirmDraftGone is retried once.
+  assert.match(rec, /const confirmDraftGone = async \(\): Promise<boolean>/);
+  assert.match(rec, /const still = await draftStorage\.getDraft\(slot\.id\)\.catch\(\(\) => null\);\n\s*return still === null;/);
+  assert.match(rec, /let draftDeleted = await confirmDraftGone\(\);\n\s*if \(!draftDeleted\) draftDeleted = await confirmDraftGone\(\);/);
   // loadDraft refuses to resume an already-uploaded (tombstoned) durable draft.
   const iLoad = rec.indexOf('const loadDraft = useCallback(');
   const iGuard = rec.indexOf('durableTombstone\n            .has(draft.durable.recordingId)', iLoad);
@@ -520,4 +521,48 @@ test('stashing a vault-restored durable slot copies its recovered AAC into the s
   assert.match(mgr, /if \(stashedDurable\?\.recoveredAudioUri\)/);
   assert.match(mgr, /new ExpoFile\(stashedDurable\.recoveredAudioUri\)\.copy\(new ExpoFile\(durableDest\)\)/);
   assert.match(mgr, /stashedDurable = \{ \.\.\.stashedDurable, recoveredAudioUri: durableDest \}/);
+});
+
+test('DurablePaths NUL-id check uses an escaped literal, not a raw NUL byte', async () => {
+  const path = 'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurablePaths.kt';
+  const kt = await read(path);
+  assert.ok(!kt.includes(String.fromCharCode(0)), 'DurablePaths.kt must not contain a raw NUL byte (git treats it as binary)');
+  assert.match(kt, /id\.contains\('\\u0000'\)/);
+});
+
+test('durable snapshot folds committed + live duration (no zero-duration on stop fail)', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  const iSnap = hook.indexOf('const getDurableSnapshot = useCallback(');
+  const iMax = hook.indexOf('Math.max(', iSnap);
+  const iEnd = hook.indexOf('}, []);', iSnap);
+  assert.ok(iMax > iSnap && iMax < iEnd, 'getDurableSnapshot must Math.max the durations');
+  const body = hook.slice(iSnap, iEnd);
+  assert.match(body, /committedThroughMsRef\.current/);
+  assert.match(body, /durableLiveRef\.current\.capturedDurationMs/);
+});
+
+test('validateStashedAudio drops a durable slot whose recovered AAC is gone', async () => {
+  const mgr = await read('src/lib/stashAudioManager.ts');
+  const iFn = mgr.indexOf('async validateStashedAudio(');
+  const region = mgr.slice(iFn, iFn + 1600);
+  assert.match(region, /const durableStale =\s*!!slot\.durable\?\.recoveredAudioUri && !fileExists\(slot\.durable\.recoveredAudioUri\)/);
+  assert.match(region, /durable: durableStale \? null : slot\.durable/);
+});
+
+test('a superseded durable recovery scan cannot mutate storage', async () => {
+  const scan = await read('src/lib/durableAudio/durableRecovery.ts');
+  // scanDurableRecoveries takes an isCancelled predicate and bails before each
+  // mutating side effect; runDurableRecoveryScan passes the generation check.
+  assert.match(scan, /isCancelled: \(\) => boolean = \(\) => false/);
+  const guards = scan.match(/if \(isCancelled\(\)\) return \[\];/g) || [];
+  assert.ok(guards.length >= 3, 'isCancelled must guard reconcile, stash-mid-crash delete, and selfHeal');
+  assert.match(scan, /scanDurableRecoveries\(userId, \(\) => myGeneration !== scanGeneration\)/);
+});
+
+test('draft detail delete discards durable native audio before clearing metadata', async () => {
+  const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
+  const iMut = detail.indexOf('const deleteMutation = useMutation(');
+  const iDiscard = detail.indexOf('durableRecorder.discard({ userId: user.id, recordingId: rid })', iMut);
+  const iDelete = detail.indexOf('await draftStorage.deleteDraft(draftLocalSlotId)', iMut);
+  assert.ok(iDiscard > iMut && iDiscard < iDelete, 'detail delete must discard durable audio before deleteDraft');
 });

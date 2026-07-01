@@ -2022,24 +2022,27 @@ function RecordingSession() {
               .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
               .catch(() => {});
           }
-          let draftDeleted = true;
-          try {
-            await draftStorage.deleteDraft(slot.id);
-            await recoveryIntent.clearForDraftSlot(slot.id);
-          } catch {
-            // Retry once — most deleteDraft failures are a transient SecureStore/
-            // Keystore hiccup. Stale metadata makes Home show a resumable "Not
-            // Submitted" card for an already-confirmed recording; tapping it would
-            // re-submit against the confirmed server row. Closing the window here
-            // is cheap (loadDraft's tombstone guard + cleanupOrphaned self-heal the
-            // rest).
+          // draftStorage.deleteDraft() is best-effort and SWALLOWS its own storage
+          // failures (resolves without throwing), so a try/catch can't tell whether
+          // the metadata was actually removed. VERIFY via getDraft — otherwise a
+          // Keystore failure would leave the draft on disk while we purge the native
+          // audio.aac, stranding a "Not Submitted" card whose recording is gone.
+          const confirmDraftGone = async (): Promise<boolean> => {
             try {
               await draftStorage.deleteDraft(slot.id);
               await recoveryIntent.clearForDraftSlot(slot.id);
             } catch {
-              draftDeleted = false;
+              return false;
             }
-          }
+            const still = await draftStorage.getDraft(slot.id).catch(() => null);
+            return still === null;
+          };
+          // Retry once — most deleteDraft failures are a transient SecureStore/
+          // Keystore hiccup. Stale metadata makes Home show a resumable "Not
+          // Submitted" card for an already-confirmed recording; loadDraft's tombstone
+          // guard + cleanupOrphaned self-heal the rest.
+          let draftDeleted = await confirmDraftGone();
+          if (!draftDeleted) draftDeleted = await confirmDraftGone();
           if (draftDeleted) {
             if (hasNativeManifest) {
               await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});

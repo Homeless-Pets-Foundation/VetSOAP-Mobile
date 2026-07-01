@@ -42,22 +42,43 @@ export function setMinVersionFloor(version: unknown): void {
   }
 }
 
+let hydrationPromise: Promise<void> | null = null;
+
 /**
  * Hydrate the cached floor from persistent storage at app startup (before any
  * record-start gate check). A stored floor only fills an UNKNOWN in-memory value;
- * a fresher floor already learned this session is never downgraded.
+ * a fresher floor already learned this session is never downgraded. Memoized so
+ * repeated calls share one SecureStore read.
  */
-export async function hydrateMinVersionFloor(): Promise<void> {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
-    const stored = await secureStorage.getRawItem(FLOOR_STORAGE_KEY, 'minVersion.hydrateFloor');
-    if (!cachedFloor && typeof stored === 'string' && VERSION_RE.test(stored.trim())) {
-      cachedFloor = stored.trim();
-    }
-  } catch {
-    /* best-effort; unknown floor fails open (allow) */
+export function hydrateMinVersionFloor(): Promise<void> {
+  if (!hydrationPromise) {
+    hydrationPromise = (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+        const stored = await secureStorage.getRawItem(FLOOR_STORAGE_KEY, 'minVersion.hydrateFloor');
+        if (!cachedFloor && typeof stored === 'string' && VERSION_RE.test(stored.trim())) {
+          cachedFloor = stored.trim();
+        }
+      } catch {
+        /* best-effort; unknown floor fails open (allow) */
+      }
+    })();
   }
+  return hydrationPromise;
+}
+
+/**
+ * Await floor hydration (bounded) before a record-start gate check, so an offline
+ * cold start can't allow record-start on a known-below-floor build before the
+ * persisted floor has loaded into memory. Kicks off hydration if not started;
+ * times out (fail-open) rather than blocking record-start on a hung SecureStore.
+ */
+export async function ensureFloorHydrated(timeoutMs = 2000): Promise<void> {
+  await Promise.race([
+    hydrateMinVersionFloor(),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]).catch(() => {});
 }
 
 export function getMinVersionFloor(): string | null {
@@ -67,6 +88,7 @@ export function getMinVersionFloor(): string | null {
 /** Test-only reset hook. */
 export function __resetMinVersionFloor(): void {
   cachedFloor = null;
+  hydrationPromise = null;
 }
 
 /** Compare dotted numeric versions. Returns <0, 0, >0. Missing parts = 0. */

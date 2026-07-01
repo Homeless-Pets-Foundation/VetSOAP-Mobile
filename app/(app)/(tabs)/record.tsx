@@ -31,7 +31,7 @@ import * as audioFocus from '../../../modules/captivet-audio-focus';
 import * as durableRecorder from '../../../modules/captivet-durable-recorder';
 import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
 import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
-import { getRecordStartGate } from '../../../src/lib/minVersion';
+import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
@@ -1214,6 +1214,10 @@ function RecordingSession() {
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
     (s) => (s.segments.length > 0 && s.uploadStatus !== 'success') ||
+            // A durable slot has empty segments (audio in audio.aac); count it as
+            // unsaved whenever it hasn't uploaded, or the leave guard would let a
+            // finished-but-unsubmitted durable recording slip away without warning.
+            (!!s.durable && s.uploadStatus !== 'success') ||
             s.audioState === 'recording' || s.audioState === 'paused'
   ).length;
 
@@ -1353,22 +1357,24 @@ function RecordingSession() {
   const startRecordingForSlot = useCallback(
     (slotId: string) => {
       if (startInFlightRef.current) return;
-      // Server-enforced min-version floor: block STARTING new capture (fresh or
-      // Resume→Continue — every mic start funnels through here) on a build known
-      // to be below the floor. Already-captured audio stays uploadable; unknown
-      // floor / unknown current version fails open (allow). Rule: fail-closed
-      // only on a KNOWN-below-floor build.
-      if (getRecordStartGate() === 'block') {
-        breadcrumb('record', 'record_start_blocked_min_version', {});
-        Alert.alert(
-          'Update Required',
-          'A newer version of Captivet is required to start new recordings. Please update the app from the store. Recordings you have already captured can still be submitted.',
-        );
-        return;
-      }
       startInFlightRef.current = true;
       (async () => {
         try {
+          // Server-enforced min-version floor: block STARTING new capture (fresh or
+          // Resume→Continue — every mic start funnels through here) on a build known
+          // to be below the floor. Await bounded floor hydration FIRST so an offline
+          // cold start can't race past a persisted-but-not-yet-loaded floor.
+          // Already-captured audio stays uploadable; unknown floor / unknown current
+          // version fails open (allow) — fail-closed only on a KNOWN-below-floor build.
+          await ensureFloorHydrated();
+          if (getRecordStartGate() === 'block') {
+            breadcrumb('record', 'record_start_blocked_min_version', {});
+            Alert.alert(
+              'Update Required',
+              'A newer version of Captivet is required to start new recordings. Please update the app from the store. Recordings you have already captured can still be submitted.',
+            );
+            return;
+          }
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
           bindRecorder(slotId);
           // Durable capture only for a FRESH recording (no durable/segments yet)
@@ -1495,7 +1501,16 @@ function RecordingSession() {
 
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-          await recorder.stop();
+          // The card is already in the "Saving…" state, so a hung native durable
+          // stop would strand the user forever with no draft written. Bound the
+          // durable stop with the same watchdog used for start (rejects → the
+          // catch below shows the error Alert and the finally clears the state).
+          // The expo path stop is already bounded internally, so wrap only durable.
+          if (recorder.activeDurableRecordingId) {
+            await withDurableOpWatchdog(recorder.stop(), 'stop');
+          } else {
+            await recorder.stop();
+          }
 
           // Durable manual finish: audio is in audio.aac; attach the durable ref
           // and save a metadata-only draft (no segment files).
@@ -3175,6 +3190,9 @@ function RecordingSession() {
     const trulyUnsaved = currentSlots.some(
       (s) =>
         (s.segments.length > 0 && !s.draftSlotId && s.uploadStatus !== 'success') ||
+        // Durable slot (empty segments): count as unsaved whenever not uploaded so
+        // loading another draft can't silently reset an unsubmitted durable slot.
+        (!!s.durable && s.uploadStatus !== 'success') ||
         s.audioState === 'recording' ||
         s.audioState === 'paused'
     );

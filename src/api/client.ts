@@ -323,9 +323,13 @@ export class ApiClient {
         if (headerFloor) setMinVersionFloor(headerFloor);
         // Server-driven durable-capture flag: only the deploy that can process
         // ADTS AAC turns this on, so the client never captures AAC the server
-        // can't handle. Absent header leaves the cached value (default off).
+        // can't handle. FAIL CLOSED on an absent header — a rollback / mixed
+        // deploy / non-ADTS server drops the signal, and leaving the flag enabled
+        // would keep the client capturing + upload/confirm/purge AAC against an
+        // incompatible backend. The durable-capable deploy sets this header on its
+        // responses, so absent == not-durable-capable == disable new capture.
         const durableFlag = resp.headers.get('x-durable-capture-enabled');
-        if (durableFlag !== null) setDurableCaptureFlag(durableFlag);
+        setDurableCaptureFlag(durableFlag !== null ? durableFlag : false);
       } catch { /* headers may be unavailable on some RN fetch polyfills */ }
 
       // 426 Upgrade Required is terminal-non-auth: no token refresh, no sign-out,

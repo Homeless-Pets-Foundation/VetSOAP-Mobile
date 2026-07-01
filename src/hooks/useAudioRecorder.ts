@@ -827,6 +827,19 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     if (latestAudioUriRef.current) {
       safeDeleteFile(latestAudioUriRef.current);
     }
+    // reset() is the DELETE/discard variant (resetWithoutDelete keeps the file).
+    // If a durable capture is still live+bound here, discard its native audio.aac
+    // + manifest BEFORE resetDurableState() clears the recordingId — otherwise the
+    // launch recovery scan re-offers a recording the user explicitly discarded.
+    if (
+      backendRef.current === 'durable' &&
+      durableUserIdRef.current &&
+      durableRecordingIdRef.current
+    ) {
+      durableRecorder
+        .discard({ userId: durableUserIdRef.current, recordingId: durableRecordingIdRef.current })
+        .catch(() => {});
+    }
     setState('idle');
     setAudioUri(null);
     latestAudioUriRef.current = null;

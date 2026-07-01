@@ -881,6 +881,20 @@ export const draftStorage = {
     if (!userId) return;
 
     try {
+      // A support-staff-recovery-restored durable draft references its audio via
+      // durable.recoveredAudioUri — a loose .aac OUTSIDE the draft dir that the
+      // directory delete below won't remove. Delete it so "Delete Draft" / "Delete
+      // & Start Over" doesn't leave orphaned clinical audio on disk. Do NOT purge
+      // the NATIVE durable audio.aac here: a stash can share it (stashSession
+      // deletes the draft while keeping that audio), so purging would corrupt it.
+      try {
+        const meta = await readDraftChunks(userId, slotId);
+        const recoveredAudioUri = meta?.durable?.recoveredAudioUri;
+        if (recoveredAudioUri) safeDeleteFile(recoveredAudioUri);
+      } catch {
+        /* best-effort — proceed with the rest of the delete */
+      }
+
       // Delete audio directory
       const dir = slotDraftDirForUser(userId, slotId);
       safeDeleteDirectory(dir);

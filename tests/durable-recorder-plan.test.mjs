@@ -264,12 +264,13 @@ test('interrupted durable capture attributes committed duration (not 0)', async 
 
 test('record start is gated by the server min-version floor', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(rec, /import \{ getRecordStartGate \} from '\.\.\/\.\.\/\.\.\/src\/lib\/minVersion'/);
-  // Gate consulted at the single mic-start funnel (fresh + Resume→Continue).
+  assert.match(rec, /import \{ getRecordStartGate, ensureFloorHydrated \} from '\.\.\/\.\.\/\.\.\/src\/lib\/minVersion'/);
+  // The gate is consulted at the single mic-start funnel (fresh + Resume→Continue)
+  // and hydration is AWAITED first so an offline cold start can't race the floor.
   const iFn = rec.indexOf('const startRecordingForSlot = useCallback(');
+  const iHydrate = rec.indexOf('await ensureFloorHydrated()', iFn);
   const iGate = rec.indexOf("getRecordStartGate() === 'block'", iFn);
-  const iInFlight = rec.indexOf('startInFlightRef.current = true;', iFn);
-  assert.ok(iGate > iFn && iGate < iInFlight, 'min-version gate must run before start proceeds');
+  assert.ok(iHydrate > iFn && iGate > iHydrate, 'hydration must be awaited before the gate check');
 });
 
 test('recovered durable draft preserves the death-surviving server anchor', async () => {
@@ -352,7 +353,8 @@ test('durable recovery scan drops results after sign-out (generation guard)', as
 
 test('min-version floor is persisted + hydrated across restarts', async () => {
   const src = await read('src/lib/minVersion.ts');
-  assert.match(src, /export async function hydrateMinVersionFloor/);
+  assert.match(src, /export function hydrateMinVersionFloor/);
+  assert.match(src, /export async function ensureFloorHydrated/);
   assert.match(src, /setRawItem\(FLOOR_STORAGE_KEY/);
   assert.match(src, /getRawItem\(FLOOR_STORAGE_KEY/);
   // hydrate only fills an UNKNOWN in-memory value (never downgrades a fresher one).
@@ -369,4 +371,54 @@ test('iOS recovery recounts the bounded tail past the anchor before offering', a
   assert.match(swift, /if size > anchor \{[\s\S]*?AdtsScanner\.scanFile\(url: audioURL, maxBytes: size, startOffset: anchor\)/);
   const writer = await read('modules/captivet-durable-recorder/ios/AdtsWriter.swift');
   assert.match(writer, /static func scanFile\(url: URL, maxBytes: Int, startOffset: Int = 0\)/);
+});
+
+// ── Codex-review round 3 regression guards (PR #126) ──
+
+test('durable finish stop is bounded by the op watchdog', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  // A hung native durable stop after the card is "Saving…" would strand the user;
+  // the durable stop is raced against withDurableOpWatchdog(..., 'stop').
+  assert.match(rec, /await withDurableOpWatchdog\(recorder\.stop\(\), 'stop'\)/);
+});
+
+test('discarding a live durable capture discards its native files before reset', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  // reset() (the delete/discard variant) discards the active durable recordingId
+  // BEFORE resetDurableState() clears it, or recovery re-offers a discarded take.
+  const iReset = hook.indexOf('const reset = useCallback(');
+  const iDiscard = hook.indexOf('durableRecorder\n        .discard(', iReset);
+  const iResetState = hook.indexOf('resetDurableState();', iReset);
+  assert.ok(iDiscard > iReset && iResetState > iDiscard, 'discard must precede resetDurableState in reset()');
+});
+
+test('durable slots are counted in the unsaved leave/reset guards', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  // Both unsavedCount (leave guard) and trulyUnsaved (draft-load reset) count a
+  // durable slot that has not uploaded (empty segments would otherwise skip it).
+  const matches = rec.match(/\(!!s\.durable && s\.uploadStatus !== 'success'\)/g) || [];
+  assert.ok(matches.length >= 2, 'both unsaved predicates must include durable');
+});
+
+test('deleteDraft removes a recovered durable AAC but not shared native audio', async () => {
+  const src = await read('src/lib/draftStorage.ts');
+  const iFn = src.indexOf('async deleteDraft(');
+  const iRead = src.indexOf('readDraftChunks(userId, slotId)', iFn);
+  const iDelFile = src.indexOf('safeDeleteFile(recoveredAudioUri)', iFn);
+  const iDelDir = src.indexOf('safeDeleteDirectory(dir)', iFn);
+  assert.ok(iRead > iFn && iDelFile > iRead && iDelDir > iDelFile,
+    'deleteDraft must delete recoveredAudioUri before the draft dir');
+});
+
+test('durable-capture flag fails closed when the header is absent', async () => {
+  const src = await read('src/api/client.ts');
+  assert.match(src, /setDurableCaptureFlag\(durableFlag !== null \? durableFlag : false\)/);
+});
+
+test('Android durable service stops itself if foreground promotion fails', async () => {
+  const kt = await read(
+    'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderService.kt',
+  );
+  assert.match(kt, /val promoted = runCatching \{ startForegroundNotification\(\) \}\.isSuccess/);
+  assert.match(kt, /if \(!promoted\) \{[\s\S]*?stopSelf\(\)/);
 });

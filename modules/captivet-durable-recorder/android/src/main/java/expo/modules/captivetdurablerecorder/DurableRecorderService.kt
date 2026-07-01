@@ -33,9 +33,19 @@ class DurableRecorderService : Service() {
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    // Every call wrapped: a notification/wakelock failure must never crash the
-    // process — capture keeps running and recovery still works (Rule 1).
-    runCatching { startForegroundNotification() }
+    // The engine starts us with startForegroundService(), so Android REQUIRES a
+    // timely startForeground(). If promotion fails (notification build error,
+    // ForegroundServiceStartNotAllowedException, or the mic FGS-permission path
+    // throwing), swallowing it silently leaves an un-promoted service the OS then
+    // kills the whole app for. Instead stopSelf(): in-app foreground capture keeps
+    // running via the engine (a process singleton); only background/locked mic
+    // access is lost — far better than a hard app kill.
+    val promoted = runCatching { startForegroundNotification() }.isSuccess
+    if (!promoted) {
+      runCatching { stopSelf() }
+      return START_NOT_STICKY
+    }
+    // Wakelock is a best-effort battery guard; its failure must not crash (Rule 1).
     runCatching { acquireWakeLock() }
     // START_NOT_STICKY: a restarted service has no engine state to attach to;
     // process-death recovery is handled by listRecoverableSessions, not by a

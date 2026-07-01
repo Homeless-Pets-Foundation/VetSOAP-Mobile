@@ -19,6 +19,7 @@ import { useLocalDraftRecordings } from '../../../src/hooks/useLocalDraftRecordi
 import { useRetryableInitialLoadError } from '../../../src/hooks/useRetryableInitialLoadError';
 import { recordingsApi } from '../../../src/api/recordings';
 import { patientsApi } from '../../../src/api/patients';
+import { qualityAnalyticsApi } from '../../../src/api/qualityAnalytics';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { measurePhase } from '../../../src/lib/monitoring';
 import {
@@ -33,6 +34,7 @@ import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
 import { Banner } from '../../../src/components/ui/Banner';
 import { ProviderIssueBanner } from '../../../src/components/ProviderIssueBanner';
+import { QualityAnalyticsCard } from '../../../src/components/QualityAnalyticsCard';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -44,6 +46,7 @@ export default function HomeScreen() {
   const ctaScale = useSharedValue(1);
   const isTabFocused = useIsFocused();
   const { capacity } = useDeviceCapacity();
+  const canViewQualityAnalytics = canRecordAppointments(user?.role);
 
   // Parallel fetch — useQueries fires both requests at once instead of letting
   // React Query serialize independent useQuery calls. Saves 100-300 ms on cold
@@ -78,7 +81,26 @@ export default function HomeScreen() {
     isError: isDraftError,
     refetch: refetchDrafts,
   } = draftsQuery;
+  const qualityQuery = useQuery({
+    queryKey: ['dashboard', 'quality', user?.organizationId],
+    queryFn: () => qualityAnalyticsApi.getDashboardQuality(),
+    enabled: !!user && canViewQualityAnalytics,
+  });
+  const {
+    data: qualityData,
+    isError: isQualityError,
+    isLoading: isQualityLoading,
+    isStale: isQualityStale,
+    refetch: refetchQuality,
+  } = qualityQuery;
   const recordings = useMemo(() => data?.data ?? [], [data?.data]);
+  const processingRecordingIds = useMemo(() => {
+    return new Set(
+      recordings
+        .filter((r) => !['completed', 'failed', 'pending_metadata'].includes(r.status))
+        .map((r) => r.id)
+    );
+  }, [recordings]);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   const {
@@ -88,10 +110,21 @@ export default function HomeScreen() {
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
   const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
+  const processingRecordingIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     areLocalDraftsStaleRef.current = areLocalDraftsStale;
   }, [areLocalDraftsStale]);
+
+  useEffect(() => {
+    const completedProcessing = [...processingRecordingIdsRef.current].some(
+      (id) => !processingRecordingIds.has(id)
+    );
+    if (canViewQualityAnalytics && completedProcessing) {
+      refetchQuality().catch(() => {});
+    }
+    processingRecordingIdsRef.current = processingRecordingIds;
+  }, [canViewQualityAnalytics, processingRecordingIds, refetchQuality]);
 
   useRetryableInitialLoadError({
     screen: 'home',
@@ -151,8 +184,11 @@ export default function HomeScreen() {
   const handleRefresh = useCallback(() => {
     refetch().catch(() => {});
     refetchDrafts().catch(() => {});
+    if (canViewQualityAnalytics) {
+      refetchQuality().catch(() => {});
+    }
     refreshLocalDrafts({ forceReconcile: true });
-  }, [refetch, refetchDrafts, refreshLocalDrafts]);
+  }, [canViewQualityAnalytics, refetch, refetchDrafts, refetchQuality, refreshLocalDrafts]);
 
   const handleRecordPress = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
@@ -166,13 +202,16 @@ export default function HomeScreen() {
   }, [router, user?.role]);
 
   const handleFocusRefresh = useCallback(() => {
+    const qualityStale = canViewQualityAnalytics && isQualityStale;
     const staleServerSourceCount =
       Number(recordingsQuery.isStale) +
-      Number(draftsQuery.isStale);
+      Number(draftsQuery.isStale) +
+      Number(qualityStale);
     const localDraftsStale = areLocalDraftsStaleRef.current;
     measurePhase('home_focus_refresh', {
       recordings_stale: recordingsQuery.isStale,
       server_drafts_stale: draftsQuery.isStale,
+      quality_stale: qualityStale,
       local_drafts_stale: localDraftsStale,
       local_drafts_refreshed: true,
       skipped: false,
@@ -184,13 +223,19 @@ export default function HomeScreen() {
       if (draftsQuery.isStale) {
         refetchDrafts().catch(() => {});
       }
+      if (qualityStale) {
+        refetchQuality().catch(() => {});
+      }
       refreshLocalDrafts();
     });
   }, [
+    canViewQualityAnalytics,
     draftsQuery.isStale,
+    isQualityStale,
     recordingsQuery.isStale,
     refetch,
     refetchDrafts,
+    refetchQuality,
     refreshLocalDrafts,
   ]);
 
@@ -434,6 +479,17 @@ export default function HomeScreen() {
           ))
         )}
       </View>
+
+      {canViewQualityAnalytics ? (
+        <View className="mb-8">
+          <QualityAnalyticsCard
+            data={qualityData}
+            isLoading={isQualityLoading}
+            isError={isQualityError}
+            refetch={refetchQuality}
+          />
+        </View>
+      ) : null}
     </ScreenContainer>
   );
 }

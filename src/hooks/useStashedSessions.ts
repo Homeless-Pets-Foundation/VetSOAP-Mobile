@@ -343,11 +343,24 @@ export function useStashedSessions(userId: string | null) {
         if (!isScopeCurrent(scopedUserId)) return null;
 
         if (!allValid) {
+          // "All missing" must count every audio unit validateStashedAudio can
+          // mark missing: each copied segment file PLUS each vault-restored
+          // durable slot whose recovered AAC copy it validates (those with a
+          // `recoveredAudioUri`; native durable slots have none and are checked
+          // by the durable module, so they never reach this !allValid branch).
+          // Comparing against segments alone misclassifies a durable-only stash
+          // (segments=0) whose recovered AAC is gone (missingCount=1) as
+          // "partial", restoring an empty no-audio slot instead of pruning the
+          // stale stash.
           const totalSegments = stash.slots.reduce(
             (sum, s) => sum + s.segments.length,
             0
           );
-          const allMissing = missingCount === totalSegments;
+          const totalDurableRecovered = stash.slots.reduce(
+            (sum, s) => sum + (s.durable?.recoveredAudioUri ? 1 : 0),
+            0
+          );
+          const allMissing = missingCount === totalSegments + totalDurableRecovered;
 
           if (allMissing) {
             Alert.alert(

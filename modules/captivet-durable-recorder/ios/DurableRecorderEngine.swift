@@ -322,6 +322,20 @@ final class DurableRecorderEngine: NSObject {
       throw fail(.invalidId, "invalid ids", recordingId)
     }
 
+    // Single-owner: refuse to resume while a live capture already holds the mic.
+    // resume() rebuilds the pipeline (reopens the writer at completeFrameBytes,
+    // reinstalls the tap, restarts the engine); running that against an active
+    // capture would replace self.writer + re-tap a running engine and drop/
+    // truncate every frame written since the last ~2s commit. Only a PARKED
+    // recording (paused / interrupted) or a cold restart (currentRecordingId nil)
+    // may resume — mirrors start()'s active-capture guard and Android resume()'s
+    // busy guard. Rejects a double-tap Resume or a stale JS resume firing while
+    // native is still recording.
+    if currentRecordingId != nil,
+       (currentState == "recording" || currentState == "starting") {
+      throw fail(.busy, "another recording is active", currentRecordingId)
+    }
+
     // Load the manifest to recover locked settings + the seek anchor. This also
     // supports resuming a parked recording after an interruption / cold restart.
     guard let manifest = DurableManifest.read(userId: userId, recordingId: recordingId) else {
@@ -329,6 +343,12 @@ final class DurableRecorderEngine: NSObject {
     }
     if manifest.isConfirmedUploaded {
       throw fail(.state, "cannot resume an uploaded recording", recordingId)
+    }
+    // Parity with Android resume() (throws EDITED): an edited durable recording is
+    // a single spliced stream — appending a fresh tail after an edit would produce
+    // a mixed edited/tail file. iOS has no dedicated EDITED code, so reuse .state.
+    if manifest.edited == true {
+      throw fail(.state, "cannot resume an edited recording", recordingId)
     }
 
     let audioURL: URL

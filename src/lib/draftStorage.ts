@@ -1213,10 +1213,17 @@ export const draftStorage = {
    * Sync all pending drafts to the server.
    * For each draft with pendingSync=true, calls createFn to create a server Recording.
    * Then updates the draft with the server ID and marks as synced.
+   *
+   * createFn receives the full DraftMetadata (NOT just formData) so a durable
+   * draft can create with a deterministic `durable-${recordingId}` idempotency
+   * key. A random key here would strand the created row if the app dies before
+   * updateServerDraftId() persists the anchor, and a later Submit (which reuses
+   * `durable-${recordingId}`) would then fresh-create a duplicate server row
+   * instead of promoting it. See usePendingDraftSync for the durable branch.
    */
   async syncPending(
     userId: string,
-    createFn: (formData: CreateRecording) => Promise<{ id: string }>
+    createFn: (draft: DraftMetadata) => Promise<{ id: string }>
   ): Promise<DraftSyncResult> {
     const previousUserId = currentUserId;
     const result: DraftSyncResult = { attempted: 0, succeeded: 0, failed: 0 };
@@ -1230,7 +1237,7 @@ export const draftStorage = {
         result.attempted++;
 
         try {
-          const created = await createFn(draft.formData);
+          const created = await createFn(draft);
           await this.updateServerDraftId(draft.slotId, created.id);
           result.succeeded++;
         } catch {

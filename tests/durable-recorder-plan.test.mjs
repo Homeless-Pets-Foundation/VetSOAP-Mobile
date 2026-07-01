@@ -566,3 +566,75 @@ test('draft detail delete discards durable native audio before clearing metadata
   const iDelete = detail.indexOf('await draftStorage.deleteDraft(draftLocalSlotId)', iMut);
   assert.ok(iDiscard > iMut && iDiscard < iDelete, 'detail delete must discard durable audio before deleteDraft');
 });
+
+test('iOS durable resume rejects an active capture + an edited recording', async () => {
+  const swift = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
+  const iResume = swift.indexOf('func resume(userId: String, recordingId: String)');
+  const iEnd = swift.indexOf('func stop(', iResume);
+  const body = swift.slice(iResume, iEnd);
+  // Active-capture guard (mirrors start() + Android busy guard).
+  assert.match(body, /if currentRecordingId != nil,\s*\(currentState == "recording" \|\| currentState == "starting"\) \{\s*throw fail\(\.busy/);
+  // Edited-recording guard (parity with Android EDITED).
+  assert.match(body, /if manifest\.edited == true \{\s*throw fail\(\.state, "cannot resume an edited recording"/);
+});
+
+test('JS durable resume is re-entrancy-guarded and treats BUSY as a no-op', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  assert.match(hook, /const resumeInFlightRef = useRef\(false\)/);
+  const iResume = hook.indexOf('const resume = useCallback(');
+  const iEnd = hook.indexOf('recorder.record();', iResume);
+  const body = hook.slice(iResume, iEnd);
+  assert.match(body, /if \(resumeInFlightRef\.current\) return;/);
+  assert.match(body, /resumeInFlightRef\.current = true;/);
+  // A BUSY rejection must NOT fall through to the graceful-stop path, and the
+  // matcher must catch BOTH iOS ("BUSY") and Android ("ERR_DURABLE_BUSY") codes.
+  assert.match(body, /\/BUSY\/\.test\(codeStr\) \|\| \/\\bBUSY\\b\/\.test\(String\(error\)\)/);
+  assert.match(body, /resumeInFlightRef\.current = false;/);
+});
+
+test('durable pause/resume native calls are bounded by a timeout', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  assert.match(hook, /const DURABLE_PAUSE_TIMEOUT_MS =/);
+  assert.match(hook, /const DURABLE_RESUME_TIMEOUT_MS =/);
+  assert.match(hook, /function withDurableTimeout<T>/);
+  assert.match(hook, /withDurableTimeout\(\s*durableRecorder\.pause\(\),\s*DURABLE_PAUSE_TIMEOUT_MS/);
+  assert.match(hook, /withDurableTimeout\(\s*durableRecorder\.resume\(\{ userId, recordingId \}\),\s*DURABLE_RESUME_TIMEOUT_MS/);
+});
+
+test('durable self-heal verifies draft deletion before purging audio', async () => {
+  const rec = await read('src/lib/durableAudio/durableRecovery.ts');
+  const iFn = rec.indexOf('async function selfHeal(');
+  const iPurge = rec.indexOf('purgeAfterUpload({ userId, recordingId })', iFn);
+  const iVerify = rec.indexOf('const still = await draftStorage.getDraft(manifest.slotId)', iFn);
+  assert.ok(iVerify > iFn && iVerify < iPurge, 'selfHeal must verify getDraft===null before purge');
+  assert.match(rec.slice(iFn, iPurge), /let draftDeleted = await confirmDraftGone\(\);/);
+});
+
+test('durable offline draft-create uses a deterministic idempotency anchor', async () => {
+  // syncPending hands the full draft (not just formData) so the durable branch can
+  // key on the recordingId; a random key would strand the row -> duplicate on Submit.
+  const store = await read('src/lib/draftStorage.ts');
+  assert.match(store, /createFn: \(draft: DraftMetadata\) => Promise<\{ id: string \}>/);
+  assert.match(store, /const created = await createFn\(draft\);/);
+  const pending = await read('src/hooks/usePendingDraftSync.ts');
+  assert.match(pending, /idempotencyKey: `durable-\$\{durableRecordingId\}`/);
+  assert.match(pending, /setServerRecordingId\(\{ userId, recordingId: durableRecordingId, serverRecordingId: created\.id \}\)/);
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(rec, /idempotencyKey: `durable-\$\{durableRecordingId\}`/);
+});
+
+test('durable active-pointer write is bounded so a hung Keystore cannot strand start', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(rec, /function raceDurableActiveWrite/);
+  assert.match(rec, /const DURABLE_ACTIVE_WRITE_TIMEOUT_MS =/);
+  // The timeout RESOLVES (setTimeout(resolve, ...)) so start always proceeds.
+  assert.match(rec, /timer = setTimeout\(resolve, DURABLE_ACTIVE_WRITE_TIMEOUT_MS\)/);
+  assert.match(rec, /await raceDurableActiveWrite\(\s*durableActiveStore\.setActive\(/);
+});
+
+test('resumeSession counts missing durable audio in the all-missing prune check', async () => {
+  const useStash = await read('src/hooks/useStashedSessions.ts');
+  assert.match(useStash, /const totalDurableRecovered = stash\.slots\.reduce\(/);
+  assert.match(useStash, /s\.durable\?\.recoveredAudioUri \? 1 : 0/);
+  assert.match(useStash, /const allMissing = missingCount === totalSegments \+ totalDurableRecovered;/);
+});

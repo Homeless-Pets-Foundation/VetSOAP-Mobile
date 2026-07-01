@@ -32,6 +32,38 @@ const DURABLE_START_TIMEOUT_MS = 10_000;
  */
 const DURABLE_STOP_TIMEOUT_MS = 10_000;
 
+/**
+ * Hard caps on the native durable pause()/resume() promises. Same rationale as
+ * DURABLE_START/STOP: a native bridge that hangs during an audio-session /
+ * audio-focus edge case must not leave pause()/resume() awaiting forever — the
+ * slot would never reach paused/stopped, the record.tsx Alert (Rule 6) would
+ * never fire, and the recording control would not reflect the recoverable
+ * on-disk file. Unlike start/stop, record.tsx does NOT wrap pause()/resume() in
+ * withDurableOpWatchdog, so this internal race is the ONLY guard.
+ */
+const DURABLE_PAUSE_TIMEOUT_MS = 10_000;
+const DURABLE_RESUME_TIMEOUT_MS = 10_000;
+
+/**
+ * Race a durable native op against a rejecting timeout so a hung native bridge
+ * can't leave the hook awaiting forever (Rule 24). On timeout the returned
+ * promise rejects with `label`, letting pause()/resume() run their Rule-6
+ * cleanup (best-effort graceful stop -> state 'stopped') and RETHROW so
+ * record.tsx surfaces the Alert. A late-settling native op is harmless: its
+ * result is ignored (mirrors the inline races in start()/stop()).
+ */
+function withDurableTimeout<T>(op: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    op,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label)), ms);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 /** Context required to start a durable capture (audio.aac under the user root). */
 export interface DurableStartContext {
   userId: string;
@@ -141,6 +173,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const [isStarting, setIsStarting] = useState(false);
   const stoppingRef = useRef(false);
   const isStartingRef = useRef(false);
+  // Re-entrancy guard for durable resume(): a double-tap Resume (or a stale JS
+  // resume firing before the first updates React state) must be a no-op, not a
+  // second native resume() — the native side now rejects the second call with
+  // BUSY, and the resume catch would otherwise stop the recording the first tap
+  // just restarted. Set true for the duration of a durable resume, reset in finally.
+  const resumeInFlightRef = useRef(false);
   const mediaResetAlertedRef = useRef(false);
   const hasErrorAlertedRef = useRef(false);
   const latestAudioUriRef = useRef<string | null>(null);
@@ -660,7 +698,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     capturedDurationRef.current = freezeElapsedClock();
     if (backendRef.current === 'durable') {
       try {
-        const manifest = await durableRecorder.pause();
+        const manifest = await withDurableTimeout(
+          durableRecorder.pause(),
+          DURABLE_PAUSE_TIMEOUT_MS,
+          'durable pause timed out',
+        );
         durableDurationMsRef.current = manifest.durationMs;
         durablePeakDbRef.current = Math.max(durablePeakDbRef.current, manifest.peakDb);
         setState('paused');
@@ -678,10 +720,14 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         // so record.tsx shows feedback (Rule 6 contract).
         finalizeDuration();
         try {
-          const stopped = await durableRecorder.stop();
+          const stopped = await withDurableTimeout(
+            durableRecorder.stop(),
+            DURABLE_STOP_TIMEOUT_MS,
+            'durable stop timed out',
+          );
           durableDurationMsRef.current = stopped.durationMs;
         } catch {
-          /* already broken — file stays recoverable via the manifest */
+          /* already broken or timed out — file stays recoverable via the manifest */
         }
         setState('stopped');
         throw error;
@@ -727,12 +773,32 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         // No durable target — nothing to resume into; surface as an error.
         throw new Error('Durable resume: missing recording context');
       }
+      // Double-tap / re-entrant resume: the first call owns the restart; a second
+      // must not fire a second native resume (native rejects it BUSY) — no-op.
+      if (resumeInFlightRef.current) return;
+      resumeInFlightRef.current = true;
       try {
-        const manifest = await durableRecorder.resume({ userId, recordingId });
+        const manifest = await withDurableTimeout(
+          durableRecorder.resume({ userId, recordingId }),
+          DURABLE_RESUME_TIMEOUT_MS,
+          'durable resume timed out',
+        );
         durableDurationMsRef.current = manifest.durationMs;
         resumeElapsedClock();
         setState('recording');
       } catch (error) {
+        // BUSY = a concurrent resume already restarted this capture (double-tap
+        // that raced past the in-flight guard). The live recording belongs to the
+        // first call — do NOT stop it. Swallow as a no-op, leaving state intact.
+        // Match on the code SUBSTRING: iOS surfaces code "BUSY", Android surfaces
+        // "ERR_DURABLE_BUSY" (DurableErrors.BUSY) whose message has no "BUSY" word,
+        // so a \bBUSY\b message probe alone would miss Android — dropping the live
+        // recording on the PRIMARY platform. The message probe stays as a fallback.
+        const codeStr = String((error as { code?: unknown } | null)?.code ?? '');
+        if (/BUSY/.test(codeStr) || /\bBUSY\b/.test(String(error))) {
+          if (__DEV__) console.warn('[AudioRecorder] durable resume ignored — capture already active');
+          return;
+        }
         if (__DEV__) console.error('[AudioRecorder] durable resume failed:', error);
         trackEvent({ name: 'durable_resume_failed', props: { error_code: 'RESUME_FAILED' } });
         reportClientError({
@@ -745,13 +811,19 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         // Existing audio.aac stays recoverable; surface a graceful stop.
         finalizeDuration();
         try {
-          const stopped = await durableRecorder.stop();
+          const stopped = await withDurableTimeout(
+            durableRecorder.stop(),
+            DURABLE_STOP_TIMEOUT_MS,
+            'durable stop timed out',
+          );
           durableDurationMsRef.current = stopped.durationMs;
         } catch {
-          /* file stays recoverable via the manifest */
+          /* broken or timed out — file stays recoverable via the manifest */
         }
         setState('stopped');
         throw error;
+      } finally {
+        resumeInFlightRef.current = false;
       }
       return;
     }

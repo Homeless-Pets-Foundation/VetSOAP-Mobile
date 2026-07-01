@@ -352,6 +352,28 @@ async function withDurableOpWatchdog<T>(
   }
 }
 
+// The durable "active pointer" is a death-surviving breadcrumb that should be
+// written (best-effort) BEFORE native start, but it goes through SecureStore and
+// can hang forever on a locked Keystore (Direct Boot / low storage). A trailing
+// `.catch()` only handles rejection, not a hang — awaiting it unbounded would
+// strand `startInFlightRef` + the recorder binding before withDurableOpWatchdog()
+// or the start handler's finally ever runs, locking recording until app restart.
+// Bound the write with a short timeout that RESOLVES (never rejects) so start
+// always proceeds. Tradeoff: on timeout the pointer is skipped, losing only the
+// "prior process died mid-capture" launch breadcrumb — crash recovery still
+// reconstructs the recording from the native manifest.
+const DURABLE_ACTIVE_WRITE_TIMEOUT_MS = 3000;
+
+function raceDurableActiveWrite(p: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, DURABLE_ACTIVE_WRITE_TIMEOUT_MS);
+  });
+  return Promise.race([p.catch(() => {}), bound]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 /** Sentinel error thrown when the user taps Cancel on the oversize confirm dialog. */
 class UploadCancelledByUser extends Error {
   constructor() {
@@ -1424,8 +1446,12 @@ function RecordingSession() {
               );
             }
             const recordingId = newDurableRecordingId();
-            // Write the active pointer BEFORE start (death-surviving breadcrumb).
-            await durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()).catch(() => {});
+            // Write the active pointer BEFORE start (death-surviving breadcrumb),
+            // but bound the SecureStore write so a hung Keystore can't strand the
+            // start handler before the watchdog/finally — see raceDurableActiveWrite.
+            await raceDurableActiveWrite(
+              durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
+            );
             await withDurableOpWatchdog(
               recorder.start({ userId: user.id, slotId, recordingId }),
               'start',
@@ -2503,8 +2529,29 @@ function RecordingSession() {
 
         if (!serverId) {
           if (submitIntentSlotIdsRef.current.has(slotId)) return;
-          const result = await recordingsApi.create(slot.formData, { isDraft: true });
+          // A durable slot MUST create with a deterministic idempotency key
+          // derived from its on-disk durable recordingId, so a later Submit
+          // (which reuses `durable-${recordingId}`) promotes THIS row instead of
+          // fresh-creating a duplicate if the app dies before updateServerDraftId
+          // lands. Also persist serverRecordingId into the manifest as the
+          // death-surviving anchor. Mirrors the submit path + usePendingDraftSync.
+          const durableRecordingId = slot.durable?.recordingId;
+          const result = durableRecordingId
+            ? await recordingsApi.create(slot.formData, {
+                isDraft: true,
+                idempotencyKey: `durable-${durableRecordingId}`,
+              })
+            : await recordingsApi.create(slot.formData, { isDraft: true });
           serverId = result.id;
+          if (durableRecordingId && user?.id) {
+            await durableRecorder
+              .setServerRecordingId({
+                userId: user.id,
+                recordingId: durableRecordingId,
+                serverRecordingId: serverId,
+              })
+              .catch(() => {});
+          }
 
           if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
             deleteRecordingWithRetry(serverId).catch(() => {});
@@ -2542,7 +2589,7 @@ function RecordingSession() {
         if (__DEV__) console.warn('[Record] syncServerDraft failed:', error);
       }
     },
-    [dispatch, isConnected, queryClient, user?.role]
+    [dispatch, isConnected, queryClient, user?.id, user?.role]
   );
 
   // Schedule phase 2. With DRAFT_DEBOUNCE_MS > 0, delays the server POST so

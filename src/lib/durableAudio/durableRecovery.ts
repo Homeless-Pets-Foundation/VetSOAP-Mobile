@@ -50,17 +50,42 @@ async function selfHeal(userId: string, manifest: DurableRecordingManifest): Pro
   const recordingId = manifest.recordingId;
   // 1. Delete the linked finished draft + its local audio FIRST, so
   //    cleanupOrphaned never sees an orphaned draft with a missing manifest.
-  try {
-    await draftStorage.deleteDraft(manifest.slotId);
-    await recoveryIntent.clearForDraftSlot(manifest.slotId);
-  } catch {
-    // Draft delete failed — leave the uploaded manifest for the next-launch
+  //    draftStorage.deleteDraft() is best-effort and SWALLOWS its own
+  //    SecureStore/Keystore failures (resolves without throwing), so a bare
+  //    try/catch can't tell whether the metadata was actually removed. VERIFY
+  //    via getDraft — mirroring the submit-path confirmDraftGone (record.tsx) —
+  //    otherwise a Keystore failure would fall through and purgeAfterUpload()
+  //    would delete the only local audio.aac while Home still shows a stale
+  //    "Not Submitted" card for the already-confirmed recording.
+  const confirmDraftGone = async (): Promise<boolean> => {
+    try {
+      await draftStorage.deleteDraft(manifest.slotId);
+      await recoveryIntent.clearForDraftSlot(manifest.slotId);
+    } catch {
+      return false;
+    }
+    const still = await draftStorage.getDraft(manifest.slotId).catch(() => null);
+    return still === null;
+  };
+  // Retry once — most deleteDraft failures are a transient SecureStore/Keystore
+  // hiccup. Residual edge: a TOTAL Keystore failure fails the write AND makes
+  // getDraft return null (read also swallows to null), so confirmDraftGone can
+  // read as `true` and we purge. That is bounded — the manifest is confirmed-
+  // uploaded (audio is on the server), step 3 tombstones the row, and
+  // cleanupOrphaned + loadDraft's tombstone guard self-heal the stale card on the
+  // next healthy launch — so this is acceptable rather than fully preventable
+  // (getDraft cannot distinguish "gone" from "unreadable").
+  let draftDeleted = await confirmDraftGone();
+  if (!draftDeleted) draftDeleted = await confirmDraftGone();
+  if (!draftDeleted) {
+    // Draft delete unverified — leave the uploaded manifest for the next-launch
     // retry (purge is idempotent) but STILL tombstone so an offline
-    // cleanupOrphaned never deletes the just-uploaded server row.
+    // cleanupOrphaned never deletes the just-uploaded server row (loadDraft's
+    // tombstone guard also blocks a resume-then-resubmit until the sweep runs).
     await durableTombstone.add(recordingId).catch(() => {});
     return;
   }
-  // 2. Purge the manifest/audio only after the draft delete succeeded.
+  // 2. Purge the manifest/audio only after the draft delete is VERIFIED gone.
   try {
     await durableRecorder.purgeAfterUpload({ userId, recordingId });
   } catch {

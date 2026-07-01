@@ -32,7 +32,7 @@ internal data class DurableManifest(
   var peakDb: Double, // running PCM peak (dBFS) measured pre-encode
   val appVersion: String,
   val buildNumber: String,
-  val audioUri: String,
+  var audioUri: String, // refreshed to the current absolute path during recovery (reassigned in the engine)
   var lastErrorCode: String? = null,
   var serverRecordingId: String? = null,
   var confirmedUploadAt: String? = null,

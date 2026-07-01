@@ -224,6 +224,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   // A durable recording has empty `segments` (audio lives in audio.aac), so any
   // submit/upload gate must treat a durable ref as captured audio too — else a
   // durable-only slot renders no Submit card and is unsubmittable.
+  const isDurableSlot = !!slot.durable;
   const hasCapturedAudio = hasSegments || !!slot.durable;
   const previousSegmentsDuration = slot.segments.reduce((sum, s) => sum + s.duration, 0);
   const duration = isRecorderOwner
@@ -505,8 +506,8 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Stopped with segments: continue, edit, or discard */}
-          {isStopped && hasSegments && isFinishSaving && (
+          {/* Stopped with captured audio (segments OR durable): continue, edit, discard */}
+          {isStopped && (hasSegments || isDurableSlot) && isFinishSaving && (
             <Text className="text-body-sm text-content-tertiary text-center" accessibilityLiveRegion="polite">
               Saving recording...
             </Text>
@@ -541,15 +542,43 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Stopped with no segments (error recovery) */}
-          {isStopped && !hasSegments && !isFinishSaving && (
+          {/* Stopped durable recording (audio in audio.aac, empty segments): the
+              Submit card below handles upload; Continue/Edit act on segment files
+              a single-file durable capture has none of, so offer only Delete &
+              Start Over here. Without this, a durable slot falls into the error-
+              recovery "Try Again" branch and loses the discard action. */}
+          {isStopped && !hasSegments && isDurableSlot && !isFinishSaving && (
+            <Animated.View entering={FadeIn.duration(200)} className="gap-2">
+              <Pressable
+                onPress={handleRecordAgain}
+                accessibilityRole="button"
+                accessibilityLabel="Delete recording and start over"
+                className="min-h-[44px] justify-center items-center"
+              >
+                <View className="flex-row items-center gap-1.5">
+                  <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
+                  {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
+                  <Text
+                    className="text-body-sm text-content-tertiary"
+                    allowFontScaling={false}
+                    style={{ flexShrink: 0, paddingRight: 2 }}
+                  >
+                    {'Delete & Start Over '}
+                  </Text>
+                </View>
+              </Pressable>
+            </Animated.View>
+          )}
+
+          {/* Stopped with no segments and NOT durable (native error recovery) */}
+          {isStopped && !hasSegments && !isDurableSlot && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)}>
               <Button variant="primary" onPress={handleContinueRecording}>Try Again</Button>
             </Animated.View>
           )}
         </View>
 
-        {isStopped && hasSegments && !isRecorderOwner && !isFinishSaving && (
+        {isStopped && (hasSegments || isDurableSlot) && !isRecorderOwner && !isFinishSaving && (
           <Text className="text-caption text-content-tertiary mt-2" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             Processing usually takes 1-2 minutes.
           </Text>

@@ -34,6 +34,7 @@ import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/free
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
+import { isValidDurableId } from '../../../src/lib/durableAudio/paths';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
 import { getSecureRandomHex } from '../../../src/lib/random';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
@@ -1149,6 +1150,7 @@ function RecordingSession() {
     // Home-visible drafts alive) pass their ids here so the cleanup loop
     // below doesn't silently delete the very rows the next step relies on.
     const preserve = new Set(opts?.preserveDraftSlotIds ?? []);
+    const durableUserId = user?.id;
 
     pendingStartSlotQueueRef.current = [];
     pendingStashRef.current = false;
@@ -1199,6 +1201,20 @@ function RecordingSession() {
       // the caller asked us to keep it (e.g. resume-from-Home is about to
       // load that draft and would otherwise read a freshly-deleted key).
       if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {
+        // A FINISHED durable slot keeps its audio in the native audio.aac; the
+        // recorder.reset() above only discards the still-BOUND live recorder, so
+        // an unbound finished durable slot would survive on disk and the launch
+        // recovery scan could re-offer a recording the user explicitly discarded.
+        // Discard its native recording + any loose recovered .aac copy here.
+        if (slot.durable) {
+          if (durableUserId) {
+            durableRecorder
+              .discard({ userId: durableUserId, recordingId: slot.durable.recordingId })
+              .catch(() => {});
+          }
+          durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+          if (slot.durable.recoveredAudioUri) safeDeleteFile(slot.durable.recoveredAudioUri);
+        }
         deleteSlotDraft(slot);
       }
     });
@@ -1209,7 +1225,7 @@ function RecordingSession() {
     releaseResumedStashIfAny();
 
     resetSession();
-  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft]);
+  }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft, user?.id]);
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
@@ -2001,7 +2017,18 @@ function RecordingSession() {
             await draftStorage.deleteDraft(slot.id);
             await recoveryIntent.clearForDraftSlot(slot.id);
           } catch {
-            draftDeleted = false;
+            // Retry once — most deleteDraft failures are a transient SecureStore/
+            // Keystore hiccup. Stale metadata makes Home show a resumable "Not
+            // Submitted" card for an already-confirmed recording; tapping it would
+            // re-submit against the confirmed server row. Closing the window here
+            // is cheap (loadDraft's tombstone guard + cleanupOrphaned self-heal the
+            // rest).
+            try {
+              await draftStorage.deleteDraft(slot.id);
+              await recoveryIntent.clearForDraftSlot(slot.id);
+            } catch {
+              draftDeleted = false;
+            }
           }
           if (draftDeleted) {
             if (hasNativeManifest) {
@@ -2013,8 +2040,11 @@ function RecordingSession() {
             }
             await durableTombstone.add(durable.recordingId).catch(() => {});
           } else {
-            // Leave the uploaded manifest for next-launch self-heal (idempotent),
-            // but still tombstone so cleanupOrphaned never deletes the uploaded row.
+            // deleteDraft still failed after a retry. Leave the uploaded manifest
+            // for next-launch self-heal (idempotent), and tombstone so
+            // cleanupOrphaned drops ONLY the stale local metadata (never the
+            // uploaded server row). loadDraft's tombstone guard blocks any
+            // resume-then-resubmit against the confirmed row until the sweep runs.
             await durableTombstone.add(durable.recordingId).catch(() => {});
           }
           durableRecoveryStore.remove(durable.recordingId);
@@ -3025,7 +3055,10 @@ function RecordingSession() {
           // stashSession returns false if no slots have audio, max stashes reached,
           // file copy failed, or SecureStore write failed. In all cases the active
           // session is untouched, so recordings (if any) are still here.
-          const hasRecordings = postFlushSession.slots.some((s) => s.segments.length > 0);
+          // Include durable slots (empty segments, audio in audio.aac) — otherwise
+          // a durable-only session that fails to stash (max stashes, SecureStore
+          // write fail) shows no feedback and the user thinks it saved.
+          const hasRecordings = postFlushSession.slots.some((s) => s.segments.length > 0 || !!s.durable);
           if (hasRecordings) {
             Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
           }
@@ -3099,6 +3132,25 @@ function RecordingSession() {
         if (!draft) {
           Alert.alert('Draft Not Found', 'This draft recording could not be found.');
           return;
+        }
+        // A durable draft that is already tombstoned was confirmed-uploaded (the
+        // post-upload deleteDraft failed, leaving a stale "Not Submitted" card).
+        // Resuming it would re-submit against the already-confirmed server row —
+        // drop the stale metadata and tell the user it is already submitted.
+        if (draft.durable && isValidDurableId(draft.durable.recordingId)) {
+          const alreadyUploaded = await durableTombstone
+            .has(draft.durable.recordingId)
+            .catch(() => false);
+          if (alreadyUploaded) {
+            draftStorage.deleteDraft(slotId).catch(() => {});
+            recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
+            Alert.alert(
+              'Already Submitted',
+              'This recording was already submitted. It has been cleared from your drafts.',
+            );
+            router.replace('/(tabs)/record' as any);
+            return;
+          }
         }
         // Validate all segment files still exist
         for (const seg of draft.segments) {

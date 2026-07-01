@@ -422,3 +422,43 @@ test('Android durable service stops itself if foreground promotion fails', async
   assert.match(kt, /val promoted = runCatching \{ startForegroundNotification\(\) \}\.isSuccess/);
   assert.match(kt, /if \(!promoted\) \{[\s\S]*?stopSelf\(\)/);
 });
+
+test('discardCurrentSession discards a finished durable slot\'s native files', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  const iFn = rec.indexOf('const discardCurrentSession = useCallback(');
+  const iRelease = rec.indexOf('releaseResumedStashIfAny();', iFn);
+  // The discard loop (before releaseResumedStashIfAny) discards the durable native
+  // recording for a slot being abandoned — reset() only covers the bound recorder.
+  const iDiscard = rec.indexOf('.discard({ userId: durableUserId, recordingId: slot.durable.recordingId })', iFn);
+  assert.ok(iDiscard > iFn && iDiscard < iRelease, 'discardCurrentSession must discard durable native files');
+  assert.match(rec.slice(iFn, iRelease), /if \(slot\.durable\.recoveredAudioUri\) safeDeleteFile\(slot\.durable\.recoveredAudioUri\)/);
+});
+
+test('a stopped durable slot shows Delete & Start Over, not Try Again', async () => {
+  const card = await read('src/components/PatientSlotCard.tsx');
+  // Durable completed slot (empty segments) gets its own controls branch and the
+  // error-recovery Try Again branch explicitly excludes durable.
+  assert.match(card, /isStopped && !hasSegments && isDurableSlot && !isFinishSaving/);
+  assert.match(card, /isStopped && !hasSegments && !isDurableSlot && !isFinishSaving/);
+});
+
+test('durable-only stash failure surfaces the Save Failed alert', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  // hasRecordings (the Save Failed gate) counts durable slots, or a durable-only
+  // stash failure would be silent.
+  assert.match(rec, /const hasRecordings = postFlushSession\.slots\.some\(\(s\) => s\.segments\.length > 0 \|\| !!s\.durable\)/);
+});
+
+test('post-upload deleteDraft retries; loadDraft blocks a tombstoned durable resume', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  // deleteDraft is retried before falling back to the tombstone-only self-heal.
+  const iFirst = rec.indexOf('await draftStorage.deleteDraft(slot.id);');
+  const iSecond = rec.indexOf('await draftStorage.deleteDraft(slot.id);', iFirst + 1);
+  assert.ok(iFirst > 0 && iSecond > iFirst, 'the post-upload deleteDraft must retry once');
+  // loadDraft refuses to resume an already-uploaded (tombstoned) durable draft.
+  const iLoad = rec.indexOf('const loadDraft = useCallback(');
+  const iGuard = rec.indexOf('durableTombstone\n            .has(draft.durable.recordingId)', iLoad);
+  const iRestore = rec.indexOf('restoreSession([restoredSlot])', iLoad);
+  assert.ok(iGuard > iLoad && iGuard < iRestore, 'loadDraft must check the tombstone before restoring a durable draft');
+  assert.match(rec.slice(iLoad, iRestore), /Already Submitted/);
+});

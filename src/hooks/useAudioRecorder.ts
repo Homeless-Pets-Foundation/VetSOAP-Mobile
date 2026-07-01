@@ -24,6 +24,14 @@ export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped' | 'inte
  */
 const DURABLE_START_TIMEOUT_MS = 10_000;
 
+/**
+ * Hard cap on the native durable stop() promise. Kept below the record.tsx
+ * withDurableOpWatchdog (12s): the caller-side watchdog only rejects the UI
+ * handler, so if the native stop hangs the hook must unwind its OWN stoppingRef
+ * lock + state here, or every later Finish/Save-for-Later early-returns forever.
+ */
+const DURABLE_STOP_TIMEOUT_MS = 10_000;
+
 /** Context required to start a durable capture (audio.aac under the user root). */
 export interface DurableStartContext {
   userId: string;
@@ -780,8 +788,19 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     const durationSeconds = finalizeDuration();
     if (backendRef.current === 'durable') {
       // Rule 6: stop() swallows native rejections; state + refs always cleaned.
+      // Rule 24: race the native stop against an internal timeout so a hung
+      // durable bridge can't leave stoppingRef=true forever (which would make
+      // every later Finish/Save-for-Later early-return at the guard above). The
+      // finally ALWAYS unwinds the lock + state. The audio.aac + manifest stay on
+      // disk (recoverable next launch); getDurableSnapshot() reads the last-polled
+      // duration, so the finish path still saves a durable draft.
       try {
-        const manifest = await durableRecorder.stop();
+        const manifest = await Promise.race([
+          durableRecorder.stop(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('durable stop timed out')), DURABLE_STOP_TIMEOUT_MS),
+          ),
+        ]);
         durableDurationMsRef.current = manifest.durationMs;
         durablePeakDbRef.current = Math.max(durablePeakDbRef.current, manifest.peakDb);
       } catch (error) {
@@ -792,12 +811,13 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
           message: String(error),
           durationSeconds,
         });
+      } finally {
+        // No expo audioUri for durable — the durable recordingId is the pointer.
+        setAudioUri(null);
+        latestAudioUriRef.current = null;
+        setState('stopped');
+        stoppingRef.current = false;
       }
-      // No expo audioUri for durable — the durable recordingId is the pointer.
-      setAudioUri(null);
-      latestAudioUriRef.current = null;
-      setState('stopped');
-      stoppingRef.current = false;
       return;
     }
     try {

@@ -1018,6 +1018,11 @@ internal object DurableRecorderEngine {
         m.committedBytes = tail.completeFrameBytes
         m.durationMs = AdtsWriter.framesToDurationMs(totalFrames, sr)
         m.audioUri = DurablePaths.fileUri(audio)
+        // Persist the newly-discovered tail anchor before returning: submit later
+        // re-reads the manifest from disk to pick the upload prefix, so without
+        // this a crash between commit ticks would upload only the stale anchor and
+        // drop the recovered tail (matches the byte-0 path + iOS).
+        runCatching { DurableManifest.writeAtomic(manifestFile, m) }
         return m.toMap()
       }
 

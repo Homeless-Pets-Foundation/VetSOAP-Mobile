@@ -305,6 +305,11 @@ async function buildItemFromSlots(
   let segmentIndex = 0;
   let expectedSegments = 0;
   let copiedSegments = 0;
+  // Durable slots have no segment files; count them separately so a dropped
+  // durable copy fails the whole item (a partial save would let required
+  // support-staff sign-out proceed while silently omitting that patient's audio).
+  let expectedDurable = 0;
+  let copiedDurable = 0;
 
   for (const slot of params.slots) {
     const recoveredSegments: RecoverySegment[] = [];
@@ -330,10 +335,12 @@ async function buildItemFromSlots(
     const hasDurable = buildSlotHasDurable(slot.durable);
     let durableForSlot: DurableSlotRef | null = null;
     if (hasDurable && slot.durable) {
+      expectedDurable++;
       const destUri = `${dir}durable-${segmentIndex}.aac`;
       segmentIndex++;
       const copiedUri = await copyDurableAudioToRecovery(params.source.sourceUserId, slot.durable, destUri);
       if (copiedUri) {
+        copiedDurable++;
         durableForSlot = { ...slot.durable, recoveredAudioUri: copiedUri };
       } else {
         // Could not preserve the bytes — do NOT make a false "recoverable"
@@ -358,8 +365,12 @@ async function buildItemFromSlots(
     });
   }
 
-  if (recoveredSlots.length === 0 || copiedSegments < expectedSegments) {
-    if (copiedSegments < expectedSegments) {
+  if (
+    recoveredSlots.length === 0 ||
+    copiedSegments < expectedSegments ||
+    copiedDurable < expectedDurable
+  ) {
+    if (copiedSegments < expectedSegments || copiedDurable < expectedDurable) {
       captureMessage('support_staff_recovery_copy_incomplete', 'warning', {
         tags: {
           phase: 'support_staff_recovery',
@@ -368,6 +379,8 @@ async function buildItemFromSlots(
         extra: {
           expected_segments: expectedSegments,
           copied_segments: copiedSegments,
+          expected_durable: expectedDurable,
+          copied_durable: copiedDurable,
         },
       });
     }
@@ -387,10 +400,24 @@ async function buildItemFromSlots(
   };
 }
 
+/**
+ * A vault item's durable slot is only recoverable if its COPIED audio still
+ * exists — a valid recordingId alone is not enough (the recovered .aac can be
+ * deleted out from under the pointer), or a stale card would survive and restore
+ * would fail later instead of pruning here.
+ */
+function vaultSlotHasDurableAudio(durable: DurableSlotRef | null | undefined): boolean {
+  return (
+    buildSlotHasDurable(durable) &&
+    !!durable?.recoveredAudioUri &&
+    fileExists(durable.recoveredAudioUri)
+  );
+}
+
 function itemHasAudio(item: RecoveryItem): boolean {
   return item.slots.some(
     (slot) =>
-      slot.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(slot.durable),
+      slot.segments.some((segment) => fileExists(segment.uri)) || vaultSlotHasDurableAudio(slot.durable),
   );
 }
 

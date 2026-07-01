@@ -85,20 +85,40 @@ export const stashAudioManager = {
         }
 
         // Rule 20 write site (2 of 3): carry the durable pointer through the
-        // stash. A durable slot has empty `segments` and its audio stays in
-        // audio.aac under the durable root (we do NOT copy it into the stash
-        // dir); `durable.recordingId` is the sole pointer, so Resume can
-        // re-reference it instead of orphaning the file.
+        // stash. A NATIVE durable slot has empty `segments` and its audio stays in
+        // audio.aac under the durable root (we do NOT copy it — deleteDraft never
+        // touches the native file); `durable.recordingId` is the sole pointer.
+        //
+        // A VAULT-RESTORED durable slot instead carries `recoveredAudioUri`, a
+        // loose .aac under recovered-durable/{user}. stashSession deletes the
+        // source draft after commit, and draftStorage.deleteDraft() removes that
+        // recoveredAudioUri — which would destroy the stash's only audio. Copy it
+        // into the STASH dir and re-point so the stash is self-contained. A copy
+        // failure aborts the whole stash (thrown below) rather than committing a
+        // stash whose audio is about to be deleted.
+        let stashedDurable = slot.durable ?? null;
+        if (stashedDurable?.recoveredAudioUri) {
+          const durableDest = `${dir}durable-${segmentIndex}.aac`;
+          segmentIndex++;
+          if (!fileExists(stashedDurable.recoveredAudioUri)) {
+            throw new Error('stash: durable recovered audio missing before copy');
+          }
+          new ExpoFile(stashedDurable.recoveredAudioUri).copy(new ExpoFile(durableDest));
+          if (!fileExists(durableDest)) {
+            throw new Error('stash: durable recovered audio copy failed');
+          }
+          stashedDurable = { ...stashedDurable, recoveredAudioUri: durableDest };
+        }
         stashedSlots.push({
           id: slot.id,
           formData: { ...slot.formData },
           segments: stashedSegments,
-          audioDuration: slot.durable
-            ? slot.durable.durationMs / 1000
+          audioDuration: stashedDurable
+            ? stashedDurable.durationMs / 1000
             : stashedSegments.reduce((sum, s) => sum + s.duration, 0),
           serverDraftId: slot.serverDraftId ?? null,
           draftSlotId: slot.draftSlotId ?? null,
-          durable: slot.durable ?? null,
+          durable: stashedDurable,
         });
       }
 

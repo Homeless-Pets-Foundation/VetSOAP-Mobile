@@ -137,10 +137,22 @@ export async function scanDurableRecoveries(userId: string): Promise<DurableReco
     }
   }
 
+  // Tombstoned recordingIds are confirmed-uploaded even if their manifest missed
+  // the 'uploaded' marker (markUploaded failed). Collect them so the selector
+  // purges rather than offers — a below-marker manifest with a deleted draft has
+  // no other suppressor.
+  const tombstonedRecordingIds = new Set<string>();
+  for (const m of manifests) {
+    if (await durableTombstone.has(m.recordingId).catch(() => false)) {
+      tombstonedRecordingIds.add(m.recordingId);
+    }
+  }
+
   const { offer, selfHeal: toHeal } = selectRecoverableSessions({
     manifests,
     draftRecordingIds,
     stashRecordingIds,
+    tombstonedRecordingIds,
   });
 
   for (const m of toHeal) {

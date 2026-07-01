@@ -16,6 +16,13 @@ export interface RecoverySelectionInput {
   draftRecordingIds: ReadonlySet<string>;
   /** Durable recordingIds already referenced by a stash (Saved Session). */
   stashRecordingIds: ReadonlySet<string>;
+  /**
+   * Durable recordingIds recorded as confirmed-uploaded (tombstoned). A manifest
+   * whose markUploaded() write failed still reads as un-uploaded on disk, so
+   * without this it would be OFFERED as unsent even though its server row is
+   * already confirmed. Route these to self-heal (purge), never offer.
+   */
+  tombstonedRecordingIds?: ReadonlySet<string>;
 }
 
 export interface RecoverySelection {
@@ -61,9 +68,17 @@ export function selectRecoverableSessions(input: RecoverySelectionInput): Recove
   const selfHeal: DurableRecordingManifest[] = [];
   const suppressed: DurableRecordingManifest[] = [];
 
+  const tombstoned = input.tombstonedRecordingIds ?? new Set<string>();
   for (const manifest of input.manifests) {
     if (isConfirmedUploaded(manifest)) {
       // Still on disk after a confirmed upload -> self-heal (purge), never offer.
+      selfHeal.push(manifest);
+      continue;
+    }
+    if (tombstoned.has(manifest.recordingId)) {
+      // Tombstoned = already confirmed-uploaded (even if this manifest missed its
+      // 'uploaded' marker because markUploaded failed). Purge it, never offer —
+      // otherwise a re-submit would target the already-confirmed server row.
       selfHeal.push(manifest);
       continue;
     }

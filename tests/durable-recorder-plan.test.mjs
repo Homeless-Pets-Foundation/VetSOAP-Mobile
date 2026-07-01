@@ -129,7 +129,10 @@ test('stash round-trip: durable through all 3 Rule 20 sites', async () => {
   const stashTypes = await read('src/types/stash.ts');
   assert.match(stashTypes, /durable\?: DurableSlotRef \| null/); // site 1
   const audioMgr = await read('src/lib/stashAudioManager.ts');
-  assert.match(audioMgr, /durable: slot\.durable \?\? null/); // site 2 (write)
+  // site 2 (write): the pointer is carried through, with a vault-restored
+  // recoveredAudioUri re-pointed into the stash dir (see the dedicated test below).
+  assert.match(audioMgr, /let stashedDurable = slot\.durable \?\? null/);
+  assert.match(audioMgr, /durable: stashedDurable,/);
   const useStash = await read('src/hooks/useStashedSessions.ts');
   assert.match(useStash, /const durable = slot\.durable \?\? null/); // site 3 (read)
 });
@@ -461,4 +464,60 @@ test('post-upload deleteDraft retries; loadDraft blocks a tombstoned durable res
   const iRestore = rec.indexOf('restoreSession([restoredSlot])', iLoad);
   assert.ok(iGuard > iLoad && iGuard < iRestore, 'loadDraft must check the tombstone before restoring a durable draft');
   assert.match(rec.slice(iLoad, iRestore), /Already Submitted/);
+});
+
+test('durable hook stop is bounded by an internal timeout that always unwinds', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  const iStop = hook.indexOf('const stop = useCallback(');
+  const iRace = hook.indexOf('DURABLE_STOP_TIMEOUT_MS', iStop);
+  const iFinally = hook.indexOf('} finally {', iStop);
+  const iClear = hook.indexOf('stoppingRef.current = false;', iFinally);
+  // The native durable stop is raced against a timeout and the lock/state reset
+  // runs in finally, so a hung bridge can't strand stoppingRef=true forever.
+  assert.ok(iRace > iStop, 'durable stop must race DURABLE_STOP_TIMEOUT_MS');
+  assert.ok(iFinally > iRace && iClear > iFinally, 'durable stop must clear stoppingRef in finally');
+});
+
+test('per-slot durable discard paths delete a recovered vault copy', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  // handleRecordAgain AND handleRemove delete slot.durable.recoveredAudioUri (a
+  // native discard() is a no-op for a vault-restored loose .aac).
+  const matches = rec.match(/if \(slot\.durable\.recoveredAudioUri\) safeDeleteFile\(slot\.durable\.recoveredAudioUri\)/g) || [];
+  assert.ok(matches.length >= 3, 'recordAgain + remove + discardCurrentSession must delete recoveredAudioUri');
+});
+
+test('recovery scan suppresses tombstoned recordingIds (never offers them)', async () => {
+  const logic = await read('src/lib/durableAudio/recoveryLogic.ts');
+  assert.match(logic, /tombstonedRecordingIds\?: ReadonlySet<string>/);
+  assert.match(logic, /if \(tombstoned\.has\(manifest\.recordingId\)\)/);
+  const scan = await read('src/lib/durableAudio/durableRecovery.ts');
+  assert.match(scan, /const tombstonedRecordingIds = new Set<string>\(\)/);
+  assert.match(scan, /tombstonedRecordingIds,/);
+});
+
+test('support-staff vault fails the whole item when a durable copy drops', async () => {
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(vault, /copiedDurable < expectedDurable/);
+  // itemHasAudio verifies the recovered durable file still exists, not just a valid id.
+  assert.match(vault, /function vaultSlotHasDurableAudio/);
+  assert.match(vault, /fileExists\(durable\.recoveredAudioUri\)/);
+});
+
+test('Android fast-path recovery persists the recovered anchor before returning', async () => {
+  const kt = await read(
+    'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt',
+  );
+  const iFast = kt.indexOf('if (canTailSeek) {');
+  const iWrite = kt.indexOf('runCatching { DurableManifest.writeAtomic(manifestFile, m) }', iFast);
+  const iReturn = kt.indexOf('return m.toMap()', iFast);
+  assert.ok(iWrite > iFast && iWrite < iReturn, 'fast-path must writeAtomic before returning');
+});
+
+test('stashing a vault-restored durable slot copies its recovered AAC into the stash dir', async () => {
+  const mgr = await read('src/lib/stashAudioManager.ts');
+  // The loose recoveredAudioUri is copied into the stash dir and re-pointed, so
+  // stashSession's post-commit deleteDraft can't destroy the stash's only audio.
+  assert.match(mgr, /if \(stashedDurable\?\.recoveredAudioUri\)/);
+  assert.match(mgr, /new ExpoFile\(stashedDurable\.recoveredAudioUri\)\.copy\(new ExpoFile\(durableDest\)\)/);
+  assert.match(mgr, /stashedDurable = \{ \.\.\.stashedDurable, recoveredAudioUri: durableDest \}/);
 });

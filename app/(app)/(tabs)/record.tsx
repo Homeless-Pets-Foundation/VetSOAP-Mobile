@@ -1693,12 +1693,17 @@ function RecordingSession() {
                   }
                 });
                 // Explicit user discard of a durable recording -> discard the
-                // durable audio.aac so recovery never re-offers it.
-                if (slot.durable && user?.id) {
-                  durableRecorder
-                    .discard({ userId: user.id, recordingId: slot.durable.recordingId })
-                    .catch(() => {});
+                // durable audio.aac so recovery never re-offers it. A vault-restored
+                // durable slot's audio is a loose recoveredAudioUri (no native
+                // manifest for discard() to remove), so delete that copy too.
+                if (slot.durable) {
+                  if (user?.id) {
+                    durableRecorder
+                      .discard({ userId: user.id, recordingId: slot.durable.recordingId })
+                      .catch(() => {});
+                  }
                   durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+                  if (slot.durable.recoveredAudioUri) safeDeleteFile(slot.durable.recoveredAudioUri);
                 }
                 deleteOrphanServerRecording(slot);
                 // Drop any auto-saved draft + server draft row — otherwise the
@@ -1754,11 +1759,16 @@ function RecordingSession() {
                         safeDeleteFile(seg.uri);
                       }
                     });
-                    if (slot.durable && user?.id) {
-                      durableRecorder
-                        .discard({ userId: user.id, recordingId: slot.durable.recordingId })
-                        .catch(() => {});
+                    if (slot.durable) {
+                      if (user?.id) {
+                        durableRecorder
+                          .discard({ userId: user.id, recordingId: slot.durable.recordingId })
+                          .catch(() => {});
+                      }
                       durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+                      // Vault-restored durable audio is a loose recoveredAudioUri
+                      // (no native manifest) — delete it too, else Remove leaves it.
+                      if (slot.durable.recoveredAudioUri) safeDeleteFile(slot.durable.recoveredAudioUri);
                     }
                     deleteOrphanServerRecording(slot);
                     // Slot is about to disappear — delete its draft row + local

@@ -544,9 +544,12 @@ test('durable snapshot folds committed + live duration (no zero-duration on stop
 test('validateStashedAudio drops a durable slot whose recovered AAC is gone', async () => {
   const mgr = await read('src/lib/stashAudioManager.ts');
   const iFn = mgr.indexOf('async validateStashedAudio(');
-  const region = mgr.slice(iFn, iFn + 1600);
+  const region = mgr.slice(iFn, iFn + 2400);
   assert.match(region, /const durableStale =\s*!!slot\.durable\?\.recoveredAudioUri && !fileExists\(slot\.durable\.recoveredAudioUri\)/);
-  assert.match(region, /durable: durableStale \? null : slot\.durable/);
+  assert.match(region, /const keptDurable = durableStale \? null : slot\.durable;/);
+  assert.match(region, /durable: keptDurable,/);
+  // Retained durable pointer keeps its authoritative duration (not segment-sum 0).
+  assert.match(region, /audioDuration: keptDurable\s*\?\s*keptDurable\.durationMs \/ 1000/);
 });
 
 test('a superseded durable recovery scan cannot mutate storage', async () => {
@@ -658,4 +661,35 @@ test('iOS resume closes the previous writer before replacing it', async () => {
   const iAssign = swift.indexOf('self.writer = w', iResume);
   const iClose = swift.indexOf('self.writer?.close()', iResume);
   assert.ok(iClose > iResume && iClose < iAssign, 'resume must close the old writer before assigning the new one');
+});
+
+test('background persister includes finished durable slots', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  const iPersist = rec.indexOf('const slotsToPersist = sessionRef.current.slots.filter(');
+  const body = rec.slice(iPersist, iPersist + 200);
+  assert.match(body, /\(slot\.segments\.length > 0 \|\| !!slot\.durable\) && slot\.uploadStatus !== 'success'/);
+});
+
+test('detail-page durable delete spares stash-shared audio and fails CLOSED', async () => {
+  const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
+  const iMut = detail.indexOf('const deleteMutation = useMutation(');
+  const iStrict = detail.indexOf('stashStorage.getStashedSessionsStrict()', iMut);
+  const iDiscard = detail.indexOf('durableRecorder.discard({ userId: user.id, recordingId: rid })', iMut);
+  assert.ok(iStrict > iMut && iStrict < iDiscard, 'must strict-read stashes before discarding');
+  const region = detail.slice(iMut, iDiscard + 60);
+  // A read failure must NOT discard (fail closed).
+  assert.match(region, /catch \{\s*safeToDiscard = false;/);
+  assert.match(region, /if \(safeToDiscard\) \{/);
+  // stashStorage exposes the strict (re-throwing) read.
+  const stash = await read('src/lib/stashStorage.ts');
+  assert.match(stash, /async getStashedSessionsStrict\(\): Promise<StashedSession\[\]>/);
+  assert.match(stash, /if \(throwOnError\) throw e;/);
+});
+
+test('vault restore cleans up copied durable audio when saveDraft fails', async () => {
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(vault, /const copiedDurableUris: string\[\] = \[\];/);
+  assert.match(vault, /copiedDurableUris\.push\(stableUri\);/);
+  const iCatch = vault.indexOf('await Promise.all(restoredSlotIds.map((slotId) => draftStorage.deleteDraft(slotId)');
+  assert.match(vault.slice(iCatch, iCatch + 600), /for \(const uri of copiedDurableUris\) safeDeleteFile\(uri\);/);
 });

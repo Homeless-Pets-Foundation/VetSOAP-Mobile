@@ -32,6 +32,7 @@ import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
+import { stashStorage } from '../../../../src/lib/stashStorage';
 import { fileExists, safeDeleteFile } from '../../../../src/lib/fileOps';
 import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
@@ -519,7 +520,25 @@ export default function RecordingDetailScreen() {
           const localDraft = await draftStorage.getDraft(draftLocalSlotId);
           const rid = localDraft?.durable?.recordingId;
           if (rid && isValidDurableId(rid) && user?.id) {
-            await durableRecorder.discard({ userId: user.id, recordingId: rid }).catch(() => {});
+            // A stash can share this native audio.aac (stash metadata committed,
+            // then the draft-delete during stashing failed / the app died in that
+            // window). Discard the native recording ONLY if we can POSITIVELY
+            // confirm NO stash references it. Fail CLOSED: a Keystore read failure
+            // must NOT be read as "no stashes" and delete a stash's shared audio
+            // (Lela-class loss) — worst case of skipping is the recovery scan
+            // re-offering a deleted card (recoverable), far better than data loss.
+            let safeToDiscard = false;
+            try {
+              const stashes = await stashStorage.getStashedSessionsStrict();
+              safeToDiscard = !stashes.some((s) =>
+                s.slots.some((sl) => sl.durable?.recordingId === rid),
+              );
+            } catch {
+              safeToDiscard = false; // read failed → assume shared → keep audio
+            }
+            if (safeToDiscard) {
+              await durableRecorder.discard({ userId: user.id, recordingId: rid }).catch(() => {});
+            }
           }
           if (localDraft?.durable?.recoveredAudioUri) {
             safeDeleteFile(localDraft.durable.recoveredAudioUri);

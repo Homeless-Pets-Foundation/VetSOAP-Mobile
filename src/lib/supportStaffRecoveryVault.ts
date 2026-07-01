@@ -6,6 +6,7 @@ import {
   fileExists,
   safeCopyFile,
   safeDeleteDirectory,
+  safeDeleteFile,
   writeFilePrefix,
 } from './fileOps';
 import { secureStorage } from './secureStorage';
@@ -709,6 +710,10 @@ export const supportStaffRecoveryVault = {
     if (slotsToRestore.some((entry) => entry === null)) return [];
 
     const restoredSlotIds: string[] = [];
+    // Durable .aac copies made into the stable dir this run. If a later saveDraft
+    // throws, the copy for the FAILED slot is not owned by any draft, so track +
+    // remove them in the catch — else each retry orphans another .aac.
+    const copiedDurableUris: string[] = [];
     try {
       for (let i = 0; i < slotsToRestore.length; i++) {
         const entry = slotsToRestore[i];
@@ -729,6 +734,7 @@ export const supportStaffRecoveryVault = {
           if (!(await safeCopyFile(recoveredAudioUri, stableUri))) {
             throw new Error('recovered durable audio copy failed');
           }
+          copiedDurableUris.push(stableUri);
           restoredSlot = {
             ...restoredSlot,
             durable: { ...restoredSlot.durable, recoveredAudioUri: stableUri },
@@ -739,6 +745,10 @@ export const supportStaffRecoveryVault = {
       }
     } catch (error) {
       await Promise.all(restoredSlotIds.map((slotId) => draftStorage.deleteDraft(slotId).catch(() => {})));
+      // Remove durable .aac copies for slots whose saveDraft did not commit. Copies
+      // for slots that DID save are owned by their draft (deleteDraft above removes
+      // recoveredAudioUri); safeDeleteFile is idempotent so deleting all is safe.
+      for (const uri of copiedDurableUris) safeDeleteFile(uri);
       throw error;
     }
 

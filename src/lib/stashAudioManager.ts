@@ -173,13 +173,19 @@ export const stashAudioManager = {
       const durableStale =
         !!slot.durable?.recoveredAudioUri && !fileExists(slot.durable.recoveredAudioUri);
       if (durableStale) missingCount++;
+      const keptDurable = durableStale ? null : slot.durable;
 
       // Keep slots even if they have no segments (they still have form data)
       validSlots.push({
         ...slot,
         segments: validSegments,
-        durable: durableStale ? null : slot.durable,
-        audioDuration: validSegments.reduce((sum, s) => sum + s.duration, 0),
+        durable: keptDurable,
+        // A retained durable pointer holds the authoritative duration in
+        // durationMs; a durable-only stash has empty segments (sum 0), so use the
+        // durable duration or convertToPatientSlots restores 0:00 into the UI.
+        audioDuration: keptDurable
+          ? keptDurable.durationMs / 1000
+          : validSegments.reduce((sum, s) => sum + s.duration, 0),
       });
     }
 

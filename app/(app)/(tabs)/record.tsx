@@ -1152,9 +1152,13 @@ function RecordingSession() {
       // microphone permission, the OS keeps the recorder alive through
       // screen lock and app-switch. We only persist drafts for slots
       // that already have captured segments — the live recording stays
-      // owned by expo-audio until the user taps Finish.
+      // owned by expo-audio until the user taps Finish. Include finished durable
+      // slots (empty segments, audio in audio.aac): without this, backgrounding
+      // right after Finish can lose the patient/client metadata on a kill (the
+      // durable audio recovers, but with no form data) — durable finish must get
+      // the same restart protection as segment recordings.
       const slotsToPersist = sessionRef.current.slots.filter(
-        (slot) => slot.segments.length > 0 && slot.uploadStatus !== 'success'
+        (slot) => (slot.segments.length > 0 || !!slot.durable) && slot.uploadStatus !== 'success'
       );
 
       await Promise.all(

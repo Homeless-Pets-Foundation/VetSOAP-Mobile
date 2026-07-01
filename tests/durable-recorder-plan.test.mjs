@@ -638,3 +638,24 @@ test('resumeSession counts missing durable audio in the all-missing prune check'
   assert.match(useStash, /s\.durable\?\.recoveredAudioUri \? 1 : 0/);
   assert.match(useStash, /const allMissing = missingCount === totalSegments \+ totalDurableRecovered;/);
 });
+
+test('iOS focus GAIN (.ended) is not emitted as a fatal interruption', async () => {
+  const swift = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
+  const iEnded = swift.indexOf('case .ended:');
+  const iDefault = swift.indexOf('@unknown default:', iEnded);
+  const body = swift.slice(iEnded, iDefault);
+  // The .ended branch must NOT emit a focus_gain interruption (resume is JS/AppState-driven).
+  assert.doesNotMatch(body, /emit\("interruption"/);
+  assert.doesNotMatch(swift, /"reason": "focus_gain"/);
+  // JS defense-in-depth: the durable interruption listener ignores a gain reason.
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  assert.match(hook, /if \(reason === 'focus_gain' \|\| reason === 'gain'\) return;/);
+});
+
+test('iOS resume closes the previous writer before replacing it', async () => {
+  const swift = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
+  const iResume = swift.indexOf('func resume(userId: String, recordingId: String)');
+  const iAssign = swift.indexOf('self.writer = w', iResume);
+  const iClose = swift.indexOf('self.writer?.close()', iResume);
+  assert.ok(iClose > iResume && iClose < iAssign, 'resume must close the old writer before assigning the new one');
+});

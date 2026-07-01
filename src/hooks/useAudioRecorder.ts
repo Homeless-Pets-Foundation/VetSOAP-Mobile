@@ -422,6 +422,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       }),
       durableRecorder.addInterruptionListener((e) => {
         if (backendRef.current !== 'durable' || e.recordingId !== durableRecordingIdRef.current) return;
+        // This flow is FATAL (finalizes + resets the durable slot), so it must run
+        // ONLY for genuine capture-losing interruptions. Ignore a focus/audio GAIN
+        // signal (resume is driven by AppState 'active') — defense in depth against
+        // any platform emitting a gain on the interruption channel.
+        const reason = (e as { reason?: unknown } | null)?.reason;
+        if (reason === 'focus_gain' || reason === 'gain') return;
         runDurableInterruptionRef.current();
       }),
       durableRecorder.addErrorListener((e) => {

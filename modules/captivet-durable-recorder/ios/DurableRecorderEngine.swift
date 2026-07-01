@@ -376,6 +376,13 @@ final class DurableRecorderEngine: NSObject {
         try self.configureSession(rate: self.sampleRate)
         // allowFallback:false — never drift the locked rate on resume (fail visibly).
         try self.buildConverters(rate: self.sampleRate, bits: self.bitrate, allowFallback: false)
+        // Close the previous writer BEFORE opening a new handle on the same
+        // audio.aac. pause() and the interruption handlers leave `self.writer`
+        // set (they only tear down converters), so replacing it without closing
+        // leaks the old FileHandle — repeated pause/resume in a long appointment
+        // exhausts descriptors, and later teardown only closes the newest writer.
+        self.writer?.close()
+        self.writer = nil
         let w = try AdtsWriter(fileURL: audioURL, sampleRate: self.sampleRate)
         // Truncate any torn partial tail to the last complete-frame anchor.
         try w.open(resumeFromByte: manifest.audioFile.completeFrameBytes,
@@ -1267,10 +1274,14 @@ final class DurableRecorderEngine: NSObject {
         }
       }
     case .ended:
-      // Signal JS to re-acquire (resume) when appropriate.
-      if let rid = rid {
-        emit("interruption", ["recordingId": rid, "reason": "focus_gain"])
-      }
+      // Focus GAIN is NOT an interruption. Do NOT emit on the `interruption`
+      // channel: the JS durable listener treats every interruption as FATAL
+      // (finalizes + resets the slot), so emitting a gain here would tear down a
+      // still-draining capture and strand a stale durable draft — the same race
+      // the `.began` teardown (writerQueue.async) can still be finishing. Resume
+      // is deferred to JS on AppState 'active' (see the `.began` comment + plan),
+      // so a gain needs no native signal.
+      break
     @unknown default:
       break
     }

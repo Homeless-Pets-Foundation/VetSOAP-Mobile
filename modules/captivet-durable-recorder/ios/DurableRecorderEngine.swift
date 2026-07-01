@@ -594,13 +594,11 @@ final class DurableRecorderEngine: NSObject {
 
         let anchorsPending = manifest.anchorsPending ?? false
         let anchor = manifest.audioFile.completeFrameBytes
-        // Fast tail-seek path: trust the manifest anchor when the file starts
-        // with a valid frame AND either the file ends exactly at the anchor
-        // (cleanly finalized) OR the next frame boundary at the anchor still
-        // carries a sync word (more frames written since the last commit; we
-        // accept the manifest's slight lag as a safe lower bound rather than
-        // re-counting a bounded tail — a one-version-old manifest must not block
-        // recovery). Only a torn/absent anchor forces the byte-0 reparse.
+        // Fast tail-seek path: trust the manifest anchor when the file starts with
+        // a valid frame AND either the file ends exactly at the anchor (cleanly
+        // finalized) OR the next frame boundary at the anchor still carries a sync
+        // word (frames were appended after the last ~2s commit tick). Only a
+        // torn/absent anchor forces the byte-0 reparse.
         let fastPathOK = !anchorsPending
           && manifest.adtsFrameCount > 0
           && anchor > 0
@@ -609,6 +607,26 @@ final class DurableRecorderEngine: NSObject {
           && (size == anchor || AdtsScanner.hasSyncWord(at: anchor, in: audioURL))
 
         if fastPathOK {
+          // Recount the bounded tail past the anchor (Android parity). Without
+          // this, a kill between commit ticks leaves size > anchor and the
+          // recovery returns the STALE anchor; the upload path then truncates to
+          // that anchor and silently drops the last seconds of recoverable audio.
+          if size > anchor {
+            let tail = AdtsScanner.scanFile(url: audioURL, maxBytes: size, startOffset: anchor)
+            if tail.frameCount > 0 {
+              let rate = tail.sampleRate > 0 ? tail.sampleRate : manifest.sampleRate
+              manifest.adtsFrameCount += tail.frameCount
+              manifest.audioFile.completeFrameBytes = tail.completeFrameBytes
+              manifest.audioFile.committedBytes = max(manifest.audioFile.committedBytes, tail.completeFrameBytes)
+              if rate > 0 {
+                manifest.durationMs = Int((Int64(manifest.adtsFrameCount) * 1024 * 1000) / Int64(rate))
+              }
+              manifest.anchorsPending = nil
+              manifest.updatedAt = nowISO()
+              // Re-finalize so later launches see the up-to-date anchor.
+              try? manifest.write(userId: userId, recordingId: recordingId)
+            }
+          }
           results.append(manifest.toDictionary())
           continue
         }

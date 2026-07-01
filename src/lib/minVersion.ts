@@ -21,11 +21,42 @@ export const UPGRADE_REQUIRED_CODE = 'UPGRADE_REQUIRED';
 let cachedFloor: string | null = null;
 
 const VERSION_RE = /^\d+(\.\d+)*$/;
+const FLOOR_STORAGE_KEY = 'captivet_min_version_floor';
 
 /** Cache a floor reported by the server. Ignores malformed values. */
 export function setMinVersionFloor(version: unknown): void {
   if (typeof version === 'string' && VERSION_RE.test(version.trim())) {
     cachedFloor = version.trim();
+    // Persist so a KNOWN-below-floor build still blocks record-start offline after
+    // a process restart. Without this, cachedFloor resets to null on relaunch and
+    // an offline device would treat the floor as unknown (fail-open) until the
+    // next API response re-learns it — silently allowing new recordings. Lazy +
+    // best-effort (Rule 3: SecureStore wrapped); never throws at module load.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+      secureStorage.setRawItem(FLOOR_STORAGE_KEY, cachedFloor, 'minVersion.persistFloor').catch(() => {});
+    } catch {
+      /* persistence unavailable — in-memory floor still gates this session */
+    }
+  }
+}
+
+/**
+ * Hydrate the cached floor from persistent storage at app startup (before any
+ * record-start gate check). A stored floor only fills an UNKNOWN in-memory value;
+ * a fresher floor already learned this session is never downgraded.
+ */
+export async function hydrateMinVersionFloor(): Promise<void> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+    const stored = await secureStorage.getRawItem(FLOOR_STORAGE_KEY, 'minVersion.hydrateFloor');
+    if (!cachedFloor && typeof stored === 'string' && VERSION_RE.test(stored.trim())) {
+      cachedFloor = stored.trim();
+    }
+  } catch {
+    /* best-effort; unknown floor fails open (allow) */
   }
 }
 

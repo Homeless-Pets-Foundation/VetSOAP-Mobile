@@ -6,6 +6,7 @@ import {
   fileExists,
   safeCopyFile,
   safeDeleteDirectory,
+  writeFilePrefix,
 } from './fileOps';
 import { secureStorage } from './secureStorage';
 import { captureMessage } from './monitoring';
@@ -17,6 +18,11 @@ import { isValidDurableId } from './durableAudio/paths';
 const CHUNK_SIZE = 1900;
 const MAX_RECOVERY_ITEMS = 50;
 const BASE_RECOVERY_DIR = `${Paths.document.uri}support-staff-recovery/`;
+// Stable per-user home for a restored durable recording's audio.aac. The vault
+// item's copy lives under recoveryDir(itemId), which restore deletes — a durable
+// draft only stores the pointer (saveDraft never copies durable bytes), so the
+// bytes must be moved here first or the restored draft points at a deleted file.
+const RESTORED_DURABLE_DIR = `${Paths.document.uri}recovered-durable/`;
 const ACTIVE_KEY = 'captivet_support_staff_recovery_active';
 
 type Generation = 'a' | 'b';
@@ -241,7 +247,7 @@ async function copyDurableAudioToRecovery(
       getManifest: (input: {
         userId: string;
         recordingId: string;
-      }) => Promise<{ audioFile?: { uri?: string } } | null>;
+      }) => Promise<{ audioFile?: { uri?: string; completeFrameBytes?: number } } | null>;
     };
     const manifest = await durableRecorder.getManifest({
       userId: sourceUserId,
@@ -249,6 +255,16 @@ async function copyDurableAudioToRecovery(
     });
     const srcUri = manifest?.audioFile?.uri;
     if (!srcUri || !fileExists(srcUri)) return null;
+    // Preserve ONLY the complete-ADTS-frame prefix. A crash-interrupted source can
+    // have a torn final frame past completeFrameBytes; the cross-user submit path
+    // treats recoveredAudioUri as ready-to-upload (no later truncation), so a whole
+    // -file copy would carry the torn tail into the vault and fail server-side ADTS
+    // validation on restore. A clean stop has completeFrameBytes === file size, so
+    // the prefix copy is byte-identical to the full file.
+    const completeFrameBytes = manifest?.audioFile?.completeFrameBytes;
+    if (typeof completeFrameBytes === 'number' && completeFrameBytes > 0) {
+      return writeFilePrefix(srcUri, destUri, completeFrameBytes) ? destUri : null;
+    }
     return (await safeCopyFile(srcUri, destUri)) ? destUri : null;
   } catch {
     return null;
@@ -670,7 +686,27 @@ export const supportStaffRecoveryVault = {
       for (let i = 0; i < slotsToRestore.length; i++) {
         const entry = slotsToRestore[i];
         if (!entry) continue;
-        const restoredSlot = makeRestoredSlot(entry.slot, entry.formData, i);
+        let restoredSlot = makeRestoredSlot(entry.slot, entry.formData, i);
+        // Durable restore: the recovered audio.aac lives under the vault item dir,
+        // which deleteItem() (below) removes — and saveDraft does NOT copy durable
+        // bytes (metadata-only). Move the bytes into a stable current-user home and
+        // repoint recoveredAudioUri BEFORE saving, so the restored draft's submit
+        // can still read the audio after the vault item is deleted.
+        const recoveredAudioUri = restoredSlot.durable?.recoveredAudioUri;
+        if (restoredSlot.durable && recoveredAudioUri) {
+          const stableDir = `${RESTORED_DURABLE_DIR}${user.id}/`;
+          if (!ensureDirectory(stableDir)) {
+            throw new Error('recovered durable dir unavailable');
+          }
+          const stableUri = `${stableDir}${restoredSlot.id}.aac`;
+          if (!(await safeCopyFile(recoveredAudioUri, stableUri))) {
+            throw new Error('recovered durable audio copy failed');
+          }
+          restoredSlot = {
+            ...restoredSlot,
+            durable: { ...restoredSlot.durable, recoveredAudioUri: stableUri },
+          };
+        }
         const { draftSlotId } = await draftStorage.saveDraft(restoredSlot);
         restoredSlotIds.push(draftSlotId);
       }

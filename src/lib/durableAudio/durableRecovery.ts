@@ -163,7 +163,25 @@ export async function scanDurableRecoveries(userId: string): Promise<DurableReco
  * availability event. Never throws; a stall resolves the watchdog and leaves the
  * offer list empty rather than blocking the recovery badge.
  */
+// Monotonic scan generation. Each scan captures the generation at launch; a later
+// sign-in (which starts a new scan) or a sign-out (invalidateDurableRecoveries)
+// bumps it, so an in-flight scan that resolves AFTER a sign-out or fast user switch
+// on a shared tablet never writes the previous user's offers into the global store.
+let scanGeneration = 0;
+
+/** Invalidate any in-flight recovery scan so it won't publish after sign-out. */
+export function invalidateDurableRecoveries(): void {
+  scanGeneration++;
+}
+
 export async function runDurableRecoveryScan(userId: string): Promise<void> {
+  const myGeneration = ++scanGeneration;
+  const publish = (offer: DurableRecordingManifest[]): void => {
+    // Only the newest scan may write the store; a stale scan (superseded by a
+    // sign-out or a newer scan) drops its result.
+    if (myGeneration !== scanGeneration) return;
+    durableRecoveryStore.set(offer);
+  };
   let settled = false;
   const watchdog = new Promise<DurableRecordingManifest[]>((resolve) => {
     setTimeout(() => {
@@ -176,13 +194,13 @@ export async function runDurableRecoveryScan(userId: string): Promise<void> {
   try {
     const offer = await Promise.race([scanDurableRecoveries(userId), watchdog]);
     settled = true;
-    durableRecoveryStore.set(offer);
-    if (offer.length > 0) {
+    publish(offer);
+    if (offer.length > 0 && myGeneration === scanGeneration) {
       trackEvent({ name: 'durable_recovery_available', props: { count: offer.length } });
     }
   } catch {
     settled = true;
-    durableRecoveryStore.set([]);
+    publish([]);
   }
 }
 

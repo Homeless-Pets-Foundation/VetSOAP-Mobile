@@ -228,15 +228,18 @@ enum AdtsScanner {
     }
   }
 
-  /// Bounded incremental header walk from byte 0.
-  static func scanFile(url: URL, maxBytes: Int) -> Result {
-    var result = Result(frameCount: 0, completeFrameBytes: 0, sampleRate: 0,
+  /// Bounded incremental header walk. Starts at `startOffset` (0 = whole file);
+  /// a non-zero offset walks only the tail after a manifest's complete-frame
+  /// anchor, so `completeFrameBytes` is returned as an ABSOLUTE byte position.
+  static func scanFile(url: URL, maxBytes: Int, startOffset: Int = 0) -> Result {
+    var result = Result(frameCount: 0, completeFrameBytes: startOffset, sampleRate: 0,
                         channels: 0, profile: 0, durationMs: 0,
                         truncatedFinal: false, malformed: false)
-    guard maxBytes > 0, let fh = try? FileHandle(forReadingFrom: url) else { return result }
+    guard maxBytes > startOffset, startOffset >= 0,
+          let fh = try? FileHandle(forReadingFrom: url) else { return result }
     defer { try? fh.close() }
 
-    var pos = 0
+    var pos = startOffset
     var lockedRateIndex = -1
     var lockedChannels = -1
     var lockedProfile = -1

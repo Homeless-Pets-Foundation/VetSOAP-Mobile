@@ -57,11 +57,15 @@ test('recordings.createWithFile: explicit/derived filename, not hardcoded m4a', 
 
 test('client.ts: 426 is a dedicated terminal-non-auth branch (no refresh/retry)', async () => {
   const src = await read('src/api/client.ts');
-  assert.match(src, /response\.status === 426/);
+  assert.match(src, /resp\.status === 426/);
   assert.match(src, /UPGRADE_REQUIRED/);
   // caches min-version + durable flag from response headers
   assert.match(src, /x-minimum-app-version/);
   assert.match(src, /x-durable-capture-enabled/);
+  // 426 handling re-runs on the FINAL response after a 401/428 retry, so a
+  // retried 426 still caches the floor + throws (never falls through to generic).
+  assert.match(src, /const handleUpgradeResponse = async/);
+  assert.match(src, /if \(retried\) await handleUpgradeResponse\(response\)/);
 });
 
 test('durable capture flag is server-driven, default off', async () => {
@@ -312,4 +316,57 @@ test('recovered slot ids are unique (no constant "recovered" collision)', async 
     'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt',
   );
   assert.doesNotMatch(kt, /slotId = "recovered"/);
+});
+
+// ── Codex-review round 2 regression guards (PR #126) ──
+
+test('support-staff vault durable copies are truncated to the complete-frame prefix', async () => {
+  const src = await read('src/lib/supportStaffRecoveryVault.ts');
+  // copyDurableAudioToRecovery uses writeFilePrefix(completeFrameBytes), not a whole-file copy.
+  assert.match(src, /completeFrameBytes\?: number/);
+  assert.match(src, /writeFilePrefix\(srcUri, destUri, completeFrameBytes\)/);
+});
+
+test('support-staff vault restore moves durable AAC to stable storage before deleting the item', async () => {
+  const src = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(src, /RESTORED_DURABLE_DIR/);
+  // The recovered AAC is copied to a stable current-user home and recoveredAudioUri
+  // repointed BEFORE saveDraft — so deleteItem() (vault dir) can't orphan it.
+  const iCopy = src.indexOf('safeCopyFile(recoveredAudioUri, stableUri)');
+  const iSave = src.indexOf('draftStorage.saveDraft(restoredSlot)');
+  const iDelete = src.indexOf('await this.deleteItem(user, item.id)');
+  assert.ok(iCopy > 0 && iSave > iCopy && iDelete > iSave,
+    'copy → saveDraft → deleteItem order must hold');
+});
+
+test('durable recovery scan drops results after sign-out (generation guard)', async () => {
+  const src = await read('src/lib/durableAudio/durableRecovery.ts');
+  assert.match(src, /export function invalidateDurableRecoveries/);
+  assert.match(src, /const myGeneration = \+\+scanGeneration/);
+  assert.match(src, /if \(myGeneration !== scanGeneration\) return/);
+  // AuthProvider invalidates before clearing the store on BOTH sign-out paths.
+  const auth = await read('src/auth/AuthProvider.tsx');
+  const invalidations = auth.match(/invalidateDurableRecoveries\(\)/g) || [];
+  assert.ok(invalidations.length >= 2, 'both sign-out paths must invalidate scans');
+});
+
+test('min-version floor is persisted + hydrated across restarts', async () => {
+  const src = await read('src/lib/minVersion.ts');
+  assert.match(src, /export async function hydrateMinVersionFloor/);
+  assert.match(src, /setRawItem\(FLOOR_STORAGE_KEY/);
+  assert.match(src, /getRawItem\(FLOOR_STORAGE_KEY/);
+  // hydrate only fills an UNKNOWN in-memory value (never downgrades a fresher one).
+  assert.match(src, /if \(!cachedFloor && typeof stored === 'string'/);
+  // wired at cold-start before any record-start gate check.
+  const auth = await read('src/auth/AuthProvider.tsx');
+  assert.match(auth, /hydrateMinVersionFloor\(\)\.catch/);
+});
+
+test('iOS recovery recounts the bounded tail past the anchor before offering', async () => {
+  const swift = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
+  // Fast path recounts frames appended after the last commit tick (size > anchor)
+  // so upload truncation to completeFrameBytes never drops the tail.
+  assert.match(swift, /if size > anchor \{[\s\S]*?AdtsScanner\.scanFile\(url: audioURL, maxBytes: size, startOffset: anchor\)/);
+  const writer = await read('modules/captivet-durable-recorder/ios/AdtsWriter.swift');
+  assert.match(writer, /static func scanFile\(url: URL, maxBytes: Int, startOffset: Int = 0\)/);
 });

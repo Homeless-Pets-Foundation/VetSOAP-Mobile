@@ -26,7 +26,8 @@ import { recoveryIntent } from '../lib/recoveryIntent';
 import { isValidDurableId } from '../lib/durableAudio/paths';
 import { durableTombstone } from '../lib/durableAudio/tombstone';
 import { durableActiveStore } from '../lib/durableAudio/activeStore';
-import { runDurableRecoveryScan } from '../lib/durableAudio/durableRecovery';
+import { runDurableRecoveryScan, invalidateDurableRecoveries } from '../lib/durableAudio/durableRecovery';
+import { hydrateMinVersionFloor } from '../lib/minVersion';
 import { durableRecoveryStore } from '../lib/durableAudio/recoveryState';
 import { audioTempFiles } from '../lib/audioTempFiles';
 import { queryClient } from '../lib/queryClient';
@@ -1403,6 +1404,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // clears the in-memory scope pointer + offer list; re-scans on re-sign-in).
     durableTombstone.setUserId(null);
     durableActiveStore.setUserId(null);
+    // Invalidate first so an in-flight launch scan that resolves after this
+    // sign-out cannot repopulate the offer list for the next signed-in user.
+    invalidateDurableRecoveries();
     durableRecoveryStore.clear();
     // Flush analytics then clear monitoring identity before we drop React state.
     // Flush is best-effort and bounded by internal PostHog timeouts.
@@ -1523,6 +1527,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [handleMfaRequiredResponse, handleSignOut, registerDevice]);
 
   useEffect(() => {
+    // Hydrate the persisted min-version floor before any record-start gate check,
+    // so a KNOWN-below-floor build blocks new recordings even on an OFFLINE cold
+    // start (before the first API response re-learns the floor). Best-effort.
+    hydrateMinVersionFloor().catch(() => {});
+
     // Belt-and-suspenders watchdog against hung native bridges in the cold-
     // start path (CLAUDE.md rule 29). Supabase GoTrue's auto-refresh timer
     // (rule 27), SecureStore reads on a freshly-rebuilt Keystore, and the
@@ -1674,6 +1683,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             draftStorage.setUserId(null);
             durableTombstone.setUserId(null);
             durableActiveStore.setUserId(null);
+            invalidateDurableRecoveries();
             durableRecoveryStore.clear();
             // Drop telemetry identity before dropping React auth state, so any
             // error captured during the final teardown doesn't attribute to

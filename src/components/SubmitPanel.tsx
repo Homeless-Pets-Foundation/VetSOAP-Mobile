@@ -12,10 +12,14 @@ interface SubmitPanelProps {
 }
 
 export function SubmitPanel({ slots, isSubmitting, onSubmitAll, hasActiveRecording }: SubmitPanelProps) {
-  const recorded = slots.filter((s) => s.segments.length > 0).length;
+  // A durable slot has empty segments (audio in audio.aac) but is a real,
+  // submittable recording — count it as recorded/ready or Submit All hides for
+  // durable-only sessions and durable slots are silently skipped.
+  const hasAudio = (s: PatientSlot) => s.segments.length > 0 || s.durable !== null;
+  const recorded = slots.filter(hasAudio).length;
   const uploaded = slots.filter((s) => s.uploadStatus === 'success').length;
   const readyToUpload = slots.filter(
-    (s) => s.segments.length > 0 && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
+    (s) => hasAudio(s) && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
   ).length;
 
   // Only show when 2+ slots and at least 1 has a completed recording not yet uploaded

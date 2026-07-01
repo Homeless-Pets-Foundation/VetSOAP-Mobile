@@ -110,6 +110,28 @@ export interface PlaybackUrlResult {
   segmentUrls: string[];
 }
 
+/**
+ * Derive the upload filename from contentType (preferred) or the URI extension,
+ * defaulting to .m4a. Durable AAC must upload as recording.aac with
+ * contentType audio/aac — never the legacy hardcoded recording.m4a.
+ */
+function deriveUploadFileName(fileUri: string, contentType: string): string {
+  const byType: Record<string, string> = {
+    'audio/aac': 'aac',
+    'audio/x-m4a': 'm4a',
+    'audio/mp4': 'm4a',
+    'audio/mpeg': 'mp3',
+    'audio/wav': 'wav',
+    'audio/webm': 'webm',
+  };
+  let ext = byType[contentType];
+  if (!ext) {
+    const m = /\.([a-z0-9]{1,5})(?:\?|#|$)/i.exec(fileUri);
+    ext = m ? m[1].toLowerCase() : 'm4a';
+  }
+  return `recording.${ext}`;
+}
+
 function generateIdempotencyKey(): string {
   // expo-crypto → global crypto → Math.random (per CLAUDE.md rule 26: the
   // idempotency key is the only non-security random on iOS Hermes where
@@ -314,10 +336,16 @@ export const recordingsApi = {
 
   async create(
     data: CreateRecording,
-    options?: { isDraft?: boolean }
+    options?: { isDraft?: boolean; idempotencyKey?: string }
   ): Promise<Recording> {
     const payload = normalizeCreateRecordingPayload(data);
-    const idempotencyKey = generateIdempotencyKey();
+    // Durable uploads pass a DETERMINISTIC idempotency key derived from the
+    // durable recordingId (on disk before Start), so a retried create() after a
+    // process kill reuses the same server row instead of duplicating. A random
+    // key would be lost on death (CLAUDE.md Rule 21 permits Math.random only for
+    // non-durable keys). Server idempotency enforcement closes the pre-response
+    // kill window (Server Compatibility Gates).
+    const idempotencyKey = options?.idempotencyKey ?? generateIdempotencyKey();
     return apiClient.post('/api/recordings', { ...payload, isDraft: options?.isDraft ?? false }, idempotencyKey);
   },
 
@@ -413,6 +441,16 @@ export const recordingsApi = {
       existingRecordingId?: string;
       audioDurationSeconds?: number;
       slotIndex?: number;
+      // Explicit upload filename. Durable AAC passes 'recording.aac'; without it
+      // we derive an extension from contentType/uri rather than the legacy
+      // hardcoded 'recording.m4a' (which would mislabel an audio/aac upload).
+      fileName?: string;
+      // Deterministic idempotency key (durable fresh-create dedup, see create()).
+      idempotencyKey?: string;
+      // Called with the server row id AFTER create/fetch and BEFORE the R2 PUT,
+      // so the durable submit can persist serverRecordingId into the manifest
+      // (temp+rename) as the death-surviving anchor before bytes go up.
+      onRecordingCreated?: (recordingId: string) => void | Promise<void>;
     }
   ): Promise<Recording> {
     // Retry path: R2 already holds the file; just re-run confirm.
@@ -436,7 +474,7 @@ export const recordingsApi = {
         if (e instanceof ApiError && e.status === 404) {
           if (__DEV__) console.warn('[upload] existing draft missing, creating fresh');
           try {
-            recording = await this.create(data);
+            recording = await this.create(data, { idempotencyKey: options?.idempotencyKey });
           } catch (createError) { tagPhase(createError, 'create_draft'); }
         } else {
           tagPhase(e, 'create_draft');
@@ -444,8 +482,20 @@ export const recordingsApi = {
       }
     } else {
       try {
-        recording = await this.create(data);
+        recording = await this.create(data, { idempotencyKey: options?.idempotencyKey });
       } catch (e) { tagPhase(e, 'create_draft'); }
+    }
+
+    // Persist the server row id into the durable manifest BEFORE the R2 PUT, so a
+    // post-create kill reconciles (via serverRecordingId) instead of
+    // fresh-creating a duplicate. Best-effort: the deterministic idempotency key
+    // is the backstop if this write fails.
+    if (options?.onRecordingCreated) {
+      try {
+        await options.onRecordingCreated(recording.id);
+      } catch {
+        /* best-effort manifest anchor */
+      }
     }
 
     let r2UploadComplete = false;
@@ -490,7 +540,7 @@ export const recordingsApi = {
         try {
           const resp = await this.getUploadUrl(
             recording.id,
-            'recording.m4a',
+            options?.fileName ?? deriveUploadFileName(fileUri, contentType),
             contentType,
             fileSizeBytes
           );

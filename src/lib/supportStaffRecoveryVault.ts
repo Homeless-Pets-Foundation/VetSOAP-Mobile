@@ -11,7 +11,8 @@ import { secureStorage } from './secureStorage';
 import { captureMessage } from './monitoring';
 import type { CreateRecording, User } from '../types';
 import type { StashedSession, StashedSlot } from '../types/stash';
-import type { PatientSlot, AudioSegment } from '../types/multiPatient';
+import type { PatientSlot, AudioSegment, DurableSlotRef } from '../types/multiPatient';
+import { isValidDurableId } from './durableAudio/paths';
 
 const CHUNK_SIZE = 1900;
 const MAX_RECOVERY_ITEMS = 50;
@@ -53,6 +54,10 @@ export interface RecoverySlot {
   audioDuration: number;
   sourceDraftSlotId?: string | null;
   sourceServerDraftId?: string | null;
+  // Durable AAC pointer preserved into the vault. A durable item has empty
+  // `segments` and references audio.aac via this pointer; itemHasAudio + the
+  // vault builders must treat a valid non-purged durable manifest as audio.
+  durable?: DurableSlotRef | null;
 }
 
 export interface RecoveryItem {
@@ -217,6 +222,39 @@ async function copySegmentToRecovery(
   return safeCopyFile(sourceUri, destUri);
 }
 
+/**
+ * Copy a durable slot's audio.aac from the SOURCE user's (user-scoped) native
+ * durable root into the neutral vault dir, returning the local copy URI or null
+ * if the manifest/file is unavailable or the copy failed. The copy is what makes
+ * a durable recording readable by a DIFFERENT restoring user.
+ */
+async function copyDurableAudioToRecovery(
+  sourceUserId: string,
+  durable: DurableSlotRef,
+  destUri: string
+): Promise<string | null> {
+  try {
+    // Lazy-require the optional native bridge (Rule 19) so the common non-durable
+    // preserve path never pulls it in (and old dev clients don't crash on import).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const durableRecorder = require('../../modules/captivet-durable-recorder') as {
+      getManifest: (input: {
+        userId: string;
+        recordingId: string;
+      }) => Promise<{ audioFile?: { uri?: string } } | null>;
+    };
+    const manifest = await durableRecorder.getManifest({
+      userId: sourceUserId,
+      recordingId: durable.recordingId,
+    });
+    const srcUri = manifest?.audioFile?.uri;
+    if (!srcUri || !fileExists(srcUri)) return null;
+    return (await safeCopyFile(srcUri, destUri)) ? destUri : null;
+  } catch {
+    return null;
+  }
+}
+
 function sourceFromUser(user: RecoverySourceUser): RecoverySourceFields {
   return {
     sourceUserId: user.id,
@@ -239,6 +277,7 @@ async function buildItemFromSlots(
       audioDuration?: number;
       sourceDraftSlotId?: string | null;
       sourceServerDraftId?: string | null;
+      durable?: DurableSlotRef | null;
     }[];
   }
 ): Promise<RecoveryItem | null> {
@@ -268,12 +307,36 @@ async function buildItemFromSlots(
       });
     }
 
-    if (recoveredSegments.length === 0) continue;
+    // A durable slot has no files under `segments[]` — audio.aac lives in the
+    // user-scoped native durable root, which a DIFFERENT restoring user cannot
+    // read. Copy the bytes into the neutral vault dir and carry the copy URI on
+    // the pointer so cross-user restore + submit can upload it directly.
+    const hasDurable = buildSlotHasDurable(slot.durable);
+    let durableForSlot: DurableSlotRef | null = null;
+    if (hasDurable && slot.durable) {
+      const destUri = `${dir}durable-${segmentIndex}.aac`;
+      segmentIndex++;
+      const copiedUri = await copyDurableAudioToRecovery(params.source.sourceUserId, slot.durable, destUri);
+      if (copiedUri) {
+        durableForSlot = { ...slot.durable, recoveredAudioUri: copiedUri };
+      } else {
+        // Could not preserve the bytes — do NOT make a false "recoverable"
+        // promise. The original stays under the source user's durable root,
+        // untouched by preserve (so it is not lost, just not vault-copied).
+        captureMessage('support_staff_recovery_durable_copy_failed', 'warning', {
+          tags: { phase: 'support_staff_recovery', kind: params.kind },
+        });
+      }
+    }
+    if (recoveredSegments.length === 0 && !durableForSlot) continue;
     recoveredSlots.push({
       id: slot.id,
       formData: slot.formData ? { ...slot.formData } : null,
       segments: recoveredSegments,
-      audioDuration: slot.audioDuration ?? recoveredSegments.reduce((sum, s) => sum + s.duration, 0),
+      durable: durableForSlot,
+      audioDuration: durableForSlot
+        ? durableForSlot.durationMs / 1000
+        : slot.audioDuration ?? recoveredSegments.reduce((sum, s) => sum + s.duration, 0),
       sourceDraftSlotId: slot.sourceDraftSlotId ?? null,
       sourceServerDraftId: slot.sourceServerDraftId ?? null,
     });
@@ -309,7 +372,10 @@ async function buildItemFromSlots(
 }
 
 function itemHasAudio(item: RecoveryItem): boolean {
-  return item.slots.some((slot) => slot.segments.some((segment) => fileExists(segment.uri)));
+  return item.slots.some(
+    (slot) =>
+      slot.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(slot.durable),
+  );
 }
 
 function canUseRecovery(user: RecoveryUser | null | undefined): user is RecoveryUser {
@@ -389,6 +455,7 @@ function draftToBuildSlot(draft: DraftMetadata) {
     audioDuration: draft.audioDuration,
     sourceDraftSlotId: draft.slotId,
     sourceServerDraftId: draft.serverDraftId,
+    durable: draft.durable ?? null,
   };
 }
 
@@ -400,7 +467,13 @@ function stashedSlotToBuildSlot(slot: StashedSlot) {
     audioDuration: slot.audioDuration,
     sourceDraftSlotId: slot.draftSlotId ?? null,
     sourceServerDraftId: slot.serverDraftId ?? null,
+    durable: slot.durable ?? null,
   };
+}
+
+/** A build slot carries recoverable audio if it has segment files OR a durable pointer. */
+function buildSlotHasDurable(durable: DurableSlotRef | null | undefined): boolean {
+  return !!durable && isValidDurableId(durable.recordingId);
 }
 
 async function buildDraftItemsForSource(
@@ -412,7 +485,11 @@ async function buildDraftItemsForSource(
   let failedCount = 0;
 
   for (const draft of drafts) {
-    if (!draft.segments.some((segment) => fileExists(segment.uri))) continue;
+    if (
+      !draft.segments.some((segment) => fileExists(segment.uri)) &&
+      !buildSlotHasDurable(draft.durable)
+    )
+      continue;
     recoverableCount++;
     const item = await buildItemFromSlots({
       recoveryKey: `draft:${source.sourceUserId}:${draft.slotId}`,
@@ -439,7 +516,10 @@ async function buildStashItemsForSource(
   let failedCount = 0;
 
   for (const stash of stashes) {
-    const slots = stash.slots.filter((slot) => slot.segments.some((segment) => fileExists(segment.uri)));
+    const slots = stash.slots.filter(
+      (slot) =>
+        slot.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(slot.durable),
+    );
     if (slots.length === 0) continue;
     recoverableCount++;
     const item = await buildItemFromSlots({
@@ -465,13 +545,15 @@ function makeRestoredSlot(slot: RecoverySlot, formData: CreateRecording, index: 
     peakMetering: segment.peakMetering,
   }));
   const slotId = makeId(`recovered-${index + 1}`);
+  const durable = slot.durable ?? null;
   return {
     id: slotId,
     formData,
     audioState: 'stopped',
     segments,
+    durable,
     audioUri: segments.at(-1)?.uri ?? null,
-    audioDuration: slot.audioDuration || segments.reduce((sum, segment) => sum + segment.duration, 0),
+    audioDuration: durable ? durable.durationMs / 1000 : slot.audioDuration || segments.reduce((sum, segment) => sum + segment.duration, 0),
     uploadStatus: 'pending',
     uploadProgress: 0,
     uploadError: null,
@@ -498,9 +580,14 @@ export const supportStaffRecoveryVault = {
     try {
       const drafts = await draftStorage.listDrafts();
       const stashes = await stashStorage.getStashedSessions();
-      const draftCount = drafts.filter((draft) => draft.segments.some((segment) => fileExists(segment.uri))).length;
+      const draftCount = drafts.filter(
+        (draft) =>
+          draft.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(draft.durable)
+      ).length;
       const stashCount = stashes.filter((stash) =>
-        stash.slots.some((slot) => slot.segments.some((segment) => fileExists(segment.uri)))
+        stash.slots.some(
+          (slot) => slot.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(slot.durable)
+        )
       ).length;
       return draftCount + stashCount;
     } catch {

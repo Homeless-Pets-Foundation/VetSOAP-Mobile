@@ -33,6 +33,7 @@ import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { fileExists } from '../../../../src/lib/fileOps';
+import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
 import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
 import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../../../../src/lib/recordingQueryCache';
@@ -414,7 +415,12 @@ export default function RecordingDetailScreen() {
       .then((drafts) => {
         if (cancelled) return;
         const match = drafts.find((d) => d.serverDraftId === id);
-        if (match && match.segments.length > 0 && match.segments.every((s) => fileExists(s.uri))) {
+        // A durable draft has empty segments — audio lives in audio.aac — so a
+        // valid durable pointer counts as a resumable local draft (mirrors
+        // isDraftResumable). Without this the durable "Not Submitted" card opens
+        // a dead-end detail view instead of resuming into Record.
+        const durableResumable = !!match?.durable && isValidDurableId(match.durable.recordingId);
+        if (match && (durableResumable || (match.segments.length > 0 && match.segments.every((s) => fileExists(s.uri))))) {
           setDraftLocalSlotId(match.slotId);
         } else {
           setDraftLocalSlotId(null);

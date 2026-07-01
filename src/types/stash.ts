@@ -1,4 +1,5 @@
 import type { CreateRecording } from './index';
+import type { DurableSlotRef } from './multiPatient';
 
 export interface StashedSegment {
   uri: string; // documentDirectory path after move
@@ -16,6 +17,12 @@ export interface StashedSlot {
   // for forward-compat with stashes written by older clients (treat missing as null).
   serverDraftId?: string | null;
   draftSlotId?: string | null;
+  // Durable AAC capture pointer (Rule 20 site 1 of 3). A durable slot has empty
+  // `segments[]` and its audio lives only in audio.aac under the durable root;
+  // `durable.recordingId` (+ codec/sampleRate/bitrate) MUST survive the stash
+  // round-trip or Resume orphans the file. Optional/forward-compat: legacy
+  // stashes written before durable rollout have no `durable` and keep segments[].
+  durable?: DurableSlotRef | null;
 }
 
 export interface StashedSession {

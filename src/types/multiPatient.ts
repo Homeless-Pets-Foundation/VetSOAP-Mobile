@@ -21,11 +21,40 @@ export interface PendingConfirm {
   segmentCount?: number;
 }
 
+/**
+ * Pointer to a durable-recorder capture (one growing audio.aac). When present,
+ * this slot's audio lives ONLY in the durable file — `segments[]` is empty and
+ * `durable.recordingId` is the sole on-disk pointer. Per CLAUDE.md Rule 20 this
+ * MUST round-trip through all three stash sites (StashedSlot,
+ * moveSegmentsToStashDir, convertToPatientSlots) or Resume orphans audio.aac.
+ * Carries codec/sampleRate/bitrate so Resume reopens the encoder with the
+ * locked settings. `edited` is intentionally NOT here — it is manifest-derived
+ * (a stash round-trip could drop a slot flag).
+ */
+export interface DurableSlotRef {
+  recordingId: string;
+  codec: 'aac_lc';
+  sampleRate: 16000 | 24000;
+  bitrate: 32000 | 48000;
+  durationMs: number; // frame-derived authoritative recovered/upload duration
+  peakDb: number;     // PCM running peak for the synthetic silent-audio guard
+  // Set ONLY on a support-staff cross-user vault restore: a local file:// copy of
+  // audio.aac in a neutral, current-user-readable dir. The native durable root is
+  // user-scoped, so a recording captured under the departing support_staff user
+  // has no manifest under the restoring owner's scope — the submit path uploads
+  // this copied file directly. Must stay a local URI (Rule 15).
+  recoveredAudioUri?: string | null;
+}
+
 export interface PatientSlot {
   id: string;
   formData: CreateRecording;
   audioState: 'idle' | 'recording' | 'paused' | 'stopped';
   segments: AudioSegment[];
+  // Durable AAC capture pointer (null for legacy segments[] m4a slots). A slot
+  // is "durable" iff `durable !== null`; every submit-path consumer branches on
+  // durable-vs-legacy.
+  durable: DurableSlotRef | null;
   audioUri: string | null;   // last segment's URI (compat)
   audioDuration: number;     // sum of all segment durations
   uploadStatus: 'pending' | 'uploading' | 'success' | 'error';
@@ -60,6 +89,10 @@ export type SessionAction =
   | { type: 'DELETE_SEGMENT'; slotId: string; segmentIndex: number }
   | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] }
   | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null }
+  // Attach/update the durable capture pointer on a slot (set on Finish/park of a
+  // durable recording, and re-applied after Resume). Frame-derived durationMs +
+  // PCM peakDb come from the durable manifest. Does NOT touch audioState/upload.
+  | { type: 'SET_DURABLE_RECORDING'; slotId: string; durable: DurableSlotRef }
   | { type: 'CLEAR_DRAFT_DIRTY'; slotId: string }
   // Re-point a slot's segments at durable draft copies after draftStorage.saveDraft
   // succeeds. Without this, slot.segments[].uri keeps pointing at recorder-temp

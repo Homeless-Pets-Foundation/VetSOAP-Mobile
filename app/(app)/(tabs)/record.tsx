@@ -27,6 +27,13 @@ import {
 } from 'expo-audio';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as audioFocus from '../../../modules/captivet-audio-focus';
+import * as durableRecorder from '../../../modules/captivet-durable-recorder';
+import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
+import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
+import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
+import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
+import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
+import { getSecureRandomHex } from '../../../src/lib/random';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
 import { useAuthUser } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
@@ -39,7 +46,7 @@ import { recordingsApi, getUploadPhase, isTransientUploadError } from '../../../
 import { ApiError } from '../../../src/api/client';
 import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import { trackEvent, type NetworkState, type AutoStashReason } from '../../../src/lib/analytics';
-import { breadcrumb, captureException, measurePhase } from '../../../src/lib/monitoring';
+import { breadcrumb, captureException, captureMessage, measurePhase } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
@@ -246,6 +253,14 @@ async function checkSilentAudio(slot: PatientSlot): Promise<{
   inconclusive: boolean;
   reason: SilenceCheckReason | null;
 }> {
+  // Durable slot: no segments[] — build the guard from the manifest peakDb
+  // (PCM-domain dBFS, same reference as expo-audio's peakMetering). Without this
+  // the guard is a no-op for every durable upload (empty segments -> fail open).
+  if (slot.durable) {
+    return slot.durable.peakDb <= SILENT_METERING_THRESHOLD_DB
+      ? { silent: true, inconclusive: false, reason: 'metering_all_below_threshold' }
+      : { silent: false, inconclusive: false, reason: null };
+  }
   if (slot.segments.length === 0) return { silent: false, inconclusive: false, reason: null };
 
   const durationSeconds = slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0);
@@ -301,6 +316,37 @@ async function sumSegmentSizes(segments: AudioSegment[]): Promise<number> {
     totalBytes += size;
   }
   return totalBytes;
+}
+
+// ─── Durable capture helpers ───────────────────────────────────────────────
+const DURABLE_OP_WATCHDOG_MS = 12000;
+
+function newDurableRecordingId(): string {
+  return `dr-${getSecureRandomHex(16)}`;
+}
+
+/**
+ * Rule 24 hard watchdog around native mic/FGS/AVAudioEngine ops that gate a
+ * render state — on a silent native hang (locked storage, permission edge) it
+ * rejects so callers flip out of the gating state into a recoverable error.
+ */
+async function withDurableOpWatchdog<T>(
+  p: Promise<T>,
+  op: 'start' | 'pause' | 'resume' | 'stop',
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watchdog = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      captureMessage('durable_recorder_op_watchdog', 'warning', { tags: { op } });
+      trackEvent({ name: 'durable_recorder_op_watchdog', props: { op } });
+      reject(new Error(`durable ${op} timed out`));
+    }, DURABLE_OP_WATCHDOG_MS);
+  });
+  try {
+    return await Promise.race([p, watchdog]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Sentinel error thrown when the user taps Cancel on the oversize confirm dialog. */
@@ -400,6 +446,7 @@ function RecordingSession() {
     saveAudio,
     clearAudio,
     continueRecording,
+    setDurableRecording,
     bindRecorder,
     unbindRecorder,
     setUploadStatus,
@@ -739,6 +786,45 @@ function RecordingSession() {
       recorder.reset();
       return () => { if (timerId) clearTimeout(timerId); };
     }
+    // Durable capture finish: audio lives in audio.aac (no audioUri). Convert the
+    // snapshot into the slot's durable ref and arm the draft save, rather than
+    // falling into the segment/null-audioUri branches (the latter would show a
+    // false "Recording Error" because durable produces no URI).
+    if (recorder.activeDurableRecordingId && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
+      audioCaptureDoneRef.current = true;
+      const slotId = session.recorderBoundToSlotId;
+      const snap = recorder.getDurableSnapshot();
+      if (snap) {
+        setDurableRecording(slotId, {
+          recordingId: snap.recordingId,
+          codec: 'aac_lc',
+          sampleRate: snap.sampleRate,
+          bitrate: snap.bitrate,
+          durationMs: snap.durationMs,
+          peakDb: snap.peakDb,
+        });
+        pendingDraftSlotIdRef.current = slotId;
+        pendingDraftMinSegmentCountRef.current = 0;
+        pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
+        // Clean finish — clear the "was recording at exit" active pointer.
+        durableActiveStore.clearActive(snap.recordingId).catch(() => {});
+      } else {
+        unbindRecorder();
+      }
+      recordingSegmentStartedAtMsRef.current = null;
+      if (pendingStashRef.current) {
+        recorder.resetWithoutDelete();
+      } else if (pendingStartSlotQueueRef.current.length > 0) {
+        const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
+        recorder.resetWithoutDelete();
+        timerId = setTimeout(() => {
+          startRecordingRef.current(nextSlotId);
+        }, 250);
+      } else {
+        recorder.resetWithoutDelete();
+      }
+      return () => { if (timerId) clearTimeout(timerId); };
+    }
     if (recorder.audioUri && session.recorderBoundToSlotId && !audioCaptureDoneRef.current) {
       audioCaptureDoneRef.current = true;
       const slotId = session.recorderBoundToSlotId;
@@ -813,7 +899,7 @@ function RecordingSession() {
 
     return () => { if (timerId) clearTimeout(timerId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends only on recorder state transitions, not on session/slot refs which would cause infinite loops
-  }, [recorder.state, recorder.audioUri, recorder.duration, recorder.maxMetering, saveAudio, buildPersistedSlot]);
+  }, [recorder.state, recorder.audioUri, recorder.duration, recorder.maxMetering, recorder.activeDurableRecordingId, saveAudio, buildPersistedSlot, setDurableRecording]);
 
   // Keep the multi-patient record-first warning scoped to the current active
   // appointment. A reset or clean single-patient return should warn again later.
@@ -839,7 +925,11 @@ function RecordingSession() {
     session.slots.forEach((slot) => {
       if (slot.id === session.recorderBoundToSlotId) return;
       if (slot.audioState === 'recording' || slot.audioState === 'paused') {
-        const nextState = slot.segments.length > 0 ? 'stopped' : 'idle';
+        // A durable slot has empty segments but its audio lives in audio.aac —
+        // heal to 'stopped' referencing the durable recordingId, never 'idle'
+        // (which would drop the audio from session state). Plan: durable orphan
+        // consistency guard.
+        const nextState = slot.segments.length > 0 || slot.durable ? 'stopped' : 'idle';
         breadcrumb('record', 'orphan_state_healed', {
           from: slot.audioState,
           to: nextState,
@@ -880,6 +970,32 @@ function RecordingSession() {
       recorder.resetWithoutDelete();
       return;
     }
+    // Durable interruption: audio.aac is already durably saved + marked
+    // interrupted natively. v1 does NOT auto-resume-append (that needs the
+    // multi-segment AAC path); instead finish the recording as a submittable
+    // durable draft so nothing is orphaned. The user submits or re-records.
+    if (recorder.activeDurableRecordingId) {
+      audioCaptureDoneRef.current = true;
+      const snap = recorder.getDurableSnapshot();
+      if (snap) {
+        setDurableRecording(slotId, {
+          recordingId: snap.recordingId,
+          codec: 'aac_lc',
+          sampleRate: snap.sampleRate,
+          bitrate: snap.bitrate,
+          durationMs: snap.durationMs,
+          peakDb: snap.peakDb,
+        });
+        pendingDraftSlotIdRef.current = slotId;
+        pendingDraftMinSegmentCountRef.current = 0;
+        pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
+        durableActiveStore.clearActive(snap.recordingId).catch(() => {});
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      breadcrumb('record', 'durable_interruption_finished', { slot_id: slotId });
+      recorder.resetWithoutDelete();
+      return;
+    }
     if (recorder.audioUri) {
       // Skip the next 'stopped'-driven autosave: the hook calls stop() inside
       // its interruption handler, which would otherwise double-fire the audio
@@ -912,9 +1028,15 @@ function RecordingSession() {
   recorderStateForFocusRef.current = recorder.state;
   const triggerInterruptionRef = useRef(recorder.triggerInterruption);
   triggerInterruptionRef.current = recorder.triggerInterruption;
+  // Durable capture handles audio-focus loss inside its own native module and
+  // emits `interruption` (consumed by the hook). Don't ALSO react via the
+  // captivet-audio-focus listener, or the same loss gets double-handled.
+  const durableActiveRef = useRef<string | null>(recorder.activeDurableRecordingId);
+  durableActiveRef.current = recorder.activeDurableRecordingId;
   useEffect(() => {
     const sub = audioFocus.addListener((event) => {
       if (event.type === 'loss') {
+        if (durableActiveRef.current) return; // durable module owns this
         if (event.reason === 'duck') return; // ducking is volume-only, not pause
         if (interruptionPendingResumeRef.current) return; // already handling
         const state = recorderStateForFocusRef.current;
@@ -1234,7 +1356,46 @@ function RecordingSession() {
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
           bindRecorder(slotId);
-          await recorder.start();
+          // Durable capture only for a FRESH recording (no durable/segments yet)
+          // when the server-driven flag is on and the native module is available.
+          // recorder.start(ctx) itself falls back to expo-audio on durable failure.
+          const startSlot = sessionRef.current.slots.find((s) => s.id === slotId);
+          const freshDurable =
+            isDurableCaptureEnabled() &&
+            durableRecorder.isAvailable() &&
+            !!user?.id &&
+            !!startSlot &&
+            !startSlot.durable &&
+            startSlot.segments.length === 0;
+          if (freshDurable && user?.id) {
+            // Storage Policy (plan): block a new durable recording below 250 MiB
+            // free, warn below 500 MiB. Unknown free space fails open ('ok').
+            const spaceGate = checkPreRecordFreeSpace();
+            if (spaceGate === 'block') {
+              unbindRecorder();
+              trackEvent({ name: 'durable_low_space_stop', props: { free_bytes: getFreeDiskBytes() ?? undefined } });
+              Alert.alert(
+                'Not Enough Storage',
+                'Your device is too low on free space to start a recording. Free up space (about 250 MB) and try again.',
+              );
+              return;
+            }
+            if (spaceGate === 'warn') {
+              Alert.alert(
+                'Low Storage',
+                'Your device is low on free space. The recording may stop early if space runs out — free up space if you can.',
+              );
+            }
+            const recordingId = newDurableRecordingId();
+            // Write the active pointer BEFORE start (death-surviving breadcrumb).
+            await durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()).catch(() => {});
+            await withDurableOpWatchdog(
+              recorder.start({ userId: user.id, slotId, recordingId }),
+              'start',
+            );
+          } else {
+            await recorder.start();
+          }
           if (recordFirstEnabled) {
             const slot = sessionRef.current.slots.find((s) => s.id === slotId);
             if (slot && slot.segments.length === 0) {
@@ -1262,7 +1423,7 @@ function RecordingSession() {
         startInFlightRef.current = false;
       });
     },
-    [recorder, bindRecorder, unbindRecorder, setAudioState, recordFirstEnabled]
+    [recorder, bindRecorder, unbindRecorder, setAudioState, recordFirstEnabled, user?.id]
   );
 
   // Keep the ref in sync for the effect
@@ -1320,6 +1481,61 @@ function RecordingSession() {
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
           await recorder.stop();
+
+          // Durable manual finish: audio is in audio.aac; attach the durable ref
+          // and save a metadata-only draft (no segment files).
+          if (recorder.activeDurableRecordingId) {
+            const snap = recorder.getDurableSnapshot();
+            const boundSlot = sessionRef.current.slots.find((s) => s.id === targetSlotId);
+            if (!snap) {
+              // Killed before the first complete frame — nothing recoverable.
+              unbindRecorder();
+              recordingSegmentStartedAtMsRef.current = null;
+              if (boundSlot) {
+                setAudioState(targetSlotId, boundSlot.segments.length > 0 ? 'stopped' : 'idle');
+              }
+              recorder.resetWithoutDelete();
+              Alert.alert(
+                'Recording Error',
+                'The recording could not be captured. Any previously saved segments are still available.',
+              );
+              return;
+            }
+            const durableRef = {
+              recordingId: snap.recordingId,
+              codec: 'aac_lc' as const,
+              sampleRate: snap.sampleRate,
+              bitrate: snap.bitrate,
+              durationMs: snap.durationMs,
+              peakDb: snap.peakDb,
+            };
+            audioCaptureDoneRef.current = true;
+            pendingDraftSlotIdRef.current = null;
+            pendingDraftMinSegmentCountRef.current = 0;
+            pendingDraftRecoveryReasonRef.current.set(targetSlotId, 'draft_finish');
+            recordingSegmentStartedAtMsRef.current = null;
+            setDurableRecording(targetSlotId, durableRef);
+            durableActiveStore.clearActive(snap.recordingId).catch(() => {});
+            recorder.resetWithoutDelete();
+            if (boundSlot) {
+              const durableSlot: PatientSlot = {
+                ...boundSlot,
+                durable: durableRef,
+                segments: [],
+                audioUri: null,
+                audioDuration: snap.durationMs / 1000,
+                audioState: 'stopped',
+              };
+              const savedDurable = await autoSaveDraftRef.current(durableSlot);
+              if (!savedDurable) {
+                Alert.alert(
+                  'Recording Saved',
+                  'The recording is available on this screen, but it could not be saved for restart recovery. Submit it or use Save for Later before leaving the app.',
+                );
+              }
+            }
+            return;
+          }
 
           const snapshot = recorder.getPersistableSnapshot();
           if (!snapshot.audioUri) {
@@ -1381,15 +1597,26 @@ function RecordingSession() {
         }
       })().catch(() => {});
     },
-    [buildPersistedSlot, recorder, saveAudio, setAudioState, unbindRecorder]
+    [buildPersistedSlot, recorder, saveAudio, setAudioState, unbindRecorder, setDurableRecording]
   );
 
   const handleContinueRecording = useCallback(
     (slotId: string) => {
+      const slot = session.slots.find((s) => s.id === slotId);
+      // v1: a durable recording is one continuous audio.aac for the whole
+      // appointment. Appending a second segment would require the unsafe
+      // multi-segment AAC path, so Continue/Add-More is blocked for durable
+      // (and specifically for edited durable, per the plan). Submit or stash.
+      if (slot?.durable) {
+        Alert.alert(
+          'Recording Complete',
+          'This recording is ready to submit. Adding more audio to it is not supported — submit it or use Save for Later.',
+        );
+        return;
+      }
       if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
         recorder.resetWithoutDelete();
       }
-      const slot = session.slots.find((s) => s.id === slotId);
       if (slot) deleteOrphanServerRecording(slot);
       continueRecording(slotId);
     },
@@ -1419,6 +1646,14 @@ function RecordingSession() {
                     safeDeleteFile(seg.uri);
                   }
                 });
+                // Explicit user discard of a durable recording -> discard the
+                // durable audio.aac so recovery never re-offers it.
+                if (slot.durable && user?.id) {
+                  durableRecorder
+                    .discard({ userId: user.id, recordingId: slot.durable.recordingId })
+                    .catch(() => {});
+                  durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+                }
                 deleteOrphanServerRecording(slot);
                 // Drop any auto-saved draft + server draft row — otherwise the
                 // slot gets a fresh recording but the old "Not Submitted" card
@@ -1435,7 +1670,7 @@ function RecordingSession() {
         ]
       );
     },
-    [session.slots, session.recorderBoundToSlotId, clearAudio, recorder, deleteOrphanServerRecording, deleteSlotDraft]
+    [session.slots, session.recorderBoundToSlotId, clearAudio, recorder, deleteOrphanServerRecording, deleteSlotDraft, user?.id]
   );
 
   const handleRemove = useCallback(
@@ -1443,7 +1678,7 @@ function RecordingSession() {
       const slot = session.slots.find((s) => s.id === slotId);
       if (!slot) return;
 
-      const hasRecording = slot.segments.length > 0 || isSlotActivelyRecording(slot);
+      const hasRecording = slot.segments.length > 0 || !!slot.durable || isSlotActivelyRecording(slot);
 
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
@@ -1473,6 +1708,12 @@ function RecordingSession() {
                         safeDeleteFile(seg.uri);
                       }
                     });
+                    if (slot.durable && user?.id) {
+                      durableRecorder
+                        .discard({ userId: user.id, recordingId: slot.durable.recordingId })
+                        .catch(() => {});
+                      durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+                    }
                     deleteOrphanServerRecording(slot);
                     // Slot is about to disappear — delete its draft row + local
                     // audio so it doesn't surface as "Not Submitted" on Home.
@@ -1490,7 +1731,7 @@ function RecordingSession() {
         removeSlot(slotId);
       }
     },
-    [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder, deleteOrphanServerRecording, deleteSlotDraft]
+    [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder, deleteOrphanServerRecording, deleteSlotDraft, user?.id]
   );
 
   const slotHasLiveRecorder = useCallback(
@@ -1514,7 +1755,7 @@ function RecordingSession() {
         showRecordPermissionAlert();
         return null;
       }
-      if (slot.segments.length === 0 || slot.uploadStatus === 'uploading') return null;
+      if ((slot.segments.length === 0 && !slot.durable) || slot.uploadStatus === 'uploading') return null;
       if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
       // Synchronous ref guard — prevents a second concurrent upload of the same slot
       // during the window between button tap and React state update disabling the button.
@@ -1572,6 +1813,153 @@ function RecordingSession() {
       let uploadSizeBytes = 0;
 
       try {
+        // ── Durable AAC upload (single audio.aac, no segments[], bypass split) ──
+        if (slot.durable) {
+          const durable = slot.durable;
+          const uid = user?.id;
+          if (!uid) {
+            showRecordPermissionAlert();
+            return null;
+          }
+          const manifest = await durableRecorder.getManifest({ userId: uid, recordingId: durable.recordingId });
+          // A support-staff cross-user vault restore has no native manifest under
+          // THIS user's scope, but the vault preserved a local audio.aac copy
+          // (durable.recoveredAudioUri) that we upload directly. Native-manifest
+          // ops (anchor/markUploaded/purge) are skipped for that path.
+          const hasNativeManifest = !!manifest;
+          const durableUri = manifest?.audioFile.uri ?? durable.recoveredAudioUri ?? null;
+          if (!durableUri) {
+            // No native manifest and no recovered copy — needs an app update.
+            setUploadStatus(slot.id, 'error', {
+              error: 'This recording needs an app update to submit. Please update Captivet.',
+            });
+            trackEvent({ name: 'durable_recorder_unavailable', props: { reason: 'upload_no_manifest' } });
+            return null;
+          }
+          const durableDurationSeconds = Math.round(durable.durationMs / 1000);
+
+          // Recovered oversized source (older build/bug): block normal submit,
+          // keep local file, show contact-support message (do NOT purge).
+          const info = await getInfoAsync(durableUri);
+          const durableSizeBytes = info.exists ? info.size ?? 0 : 0;
+          if (!info.exists || durableSizeBytes === 0) {
+            setUploadStatus(slot.id, 'error', { error: 'The recording audio was not found on this device.' });
+            return null;
+          }
+          if (durableSizeBytes > 250 * 1024 * 1024) {
+            trackEvent({ name: 'durable_aac_oversize_recovered', props: { size_bytes: durableSizeBytes } });
+            setUploadStatus(slot.id, 'error', {
+              error: 'This recording is too large to submit automatically. Please contact support to recover it.',
+            });
+            return null;
+          }
+
+          // Silent-audio guard from the synthetic durable peak (fails closed).
+          const durableSilence = await checkSilentAudio(slot);
+          if (durableSilence.silent) {
+            const override = await confirmSilentUpload();
+            if (!override) {
+              const silentErr = new Error(
+                'This recording appears silent. Please verify microphone input and record again before uploading.',
+              ) as Error & { uploadPhase?: 'silent_check' };
+              silentErr.uploadPhase = 'silent_check';
+              throw silentErr;
+            }
+          }
+
+          setUploadStatus(slot.id, 'uploading', { progress: 5 });
+          let lastDurableProgress = 0;
+          const durableUseExisting = slot.serverDraftId ?? slot.serverRecordingId ?? undefined;
+          const durableResult = await recordingsApi.createWithFile(
+            slot.formData,
+            durableUri,
+            'audio/aac',
+            {
+              fileName: 'recording.aac',
+              // Deterministic key derived from the on-disk durable recordingId so
+              // a retried create() after a kill reuses the same server row.
+              idempotencyKey: `durable-${durable.recordingId}`,
+              // Persist serverRecordingId into the manifest BEFORE the R2 PUT.
+              // No-op for a recovered vault copy (no native manifest to anchor).
+              onRecordingCreated: async (recordingId) => {
+                if (!hasNativeManifest) return;
+                await durableRecorder
+                  .setServerRecordingId({ userId: uid, recordingId: durable.recordingId, serverRecordingId: recordingId })
+                  .catch(() => {});
+              },
+              onUploadProgress: ({ percent }) => {
+                const now = Date.now();
+                if (now - lastDurableProgress >= 500) {
+                  lastDurableProgress = now;
+                  setUploadStatus(slot.id, 'uploading', { progress: Math.round(5 + (percent * 85) / 100) });
+                }
+              },
+              onR2Complete: (hint) => {
+                setUploadStatus(slot.id, 'uploading', {
+                  progress: 95,
+                  pendingConfirm: { recordingId: hint.recordingId, fileKey: hint.fileKey },
+                });
+              },
+              resume: slot.pendingConfirm ?? undefined,
+              ...(durableUseExisting ? { existingRecordingId: durableUseExisting } : {}),
+              audioDurationSeconds: durableDurationSeconds,
+              slotIndex,
+            },
+          );
+
+          completedUploadSlotIdsRef.current.add(slot.id);
+          setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: durableResult.id });
+          recordSubmitAttempt(durableResult.id);
+
+          // Post-success, strict order: write the uploaded marker FIRST, then
+          // delete the draft, then (only if that succeeded) purge + tombstone.
+          const confirmedAt = new Date().toISOString();
+          if (hasNativeManifest) {
+            await durableRecorder
+              .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
+              .catch(() => {});
+          }
+          let draftDeleted = true;
+          try {
+            await draftStorage.deleteDraft(slot.id);
+            await recoveryIntent.clearForDraftSlot(slot.id);
+          } catch {
+            draftDeleted = false;
+          }
+          if (draftDeleted) {
+            if (hasNativeManifest) {
+              await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
+            } else if (durable.recoveredAudioUri) {
+              // Recovered vault copy — no native manifest to purge; delete the
+              // neutral local .aac directly now that the server confirmed.
+              safeDeleteFile(durable.recoveredAudioUri);
+            }
+            await durableTombstone.add(durable.recordingId).catch(() => {});
+          } else {
+            // Leave the uploaded manifest for next-launch self-heal (idempotent),
+            // but still tombstone so cleanupOrphaned never deletes the uploaded row.
+            await durableTombstone.add(durable.recordingId).catch(() => {});
+          }
+          durableRecoveryStore.remove(durable.recordingId);
+
+          const durableLatencyMs = Date.now() - uploadStartedAt;
+          trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: durableResult.id } });
+          trackEvent({
+            name: 'submit_succeeded',
+            props: {
+              slot_index: slotIndex,
+              segment_count: 0,
+              duration_s: durableDurationSeconds,
+              size_bytes: durableSizeBytes,
+              recording_id: durableResult.id,
+              attempt_number: attemptNumber,
+              latency_ms: durableLatencyMs,
+            },
+          });
+          uploadAttemptCountsRef.current.delete(slot.id);
+          return durableResult.id;
+        }
+
         // Pre-flight: read local segment sizes before any expensive work.
         // This gives telemetry a real byte count and lets missing/empty files
         // fail as preflight errors instead of being misclassified as silence.
@@ -2224,7 +2612,14 @@ function RecordingSession() {
       const slotId = pendingDraftSlotIdRef.current;
       const slot = session.slots.find((s) => s.id === slotId);
       const minSegmentCount = pendingDraftMinSegmentCountRef.current;
-      if (slot && slot.segments.length > 0 && slot.segments.length >= minSegmentCount) {
+      // Durable slots have empty segments[] (audio in audio.aac) — save once the
+      // durable ref is attached; segment slots wait for the segment list.
+      const ready = slot
+        ? slot.durable
+          ? true
+          : slot.segments.length > 0 && slot.segments.length >= minSegmentCount
+        : false;
+      if (slot && ready) {
         pendingDraftSlotIdRef.current = null;
         pendingDraftMinSegmentCountRef.current = 0;
         autoSaveDraft(slot).catch(() => {});
@@ -2660,6 +3055,8 @@ function RecordingSession() {
           formData: draft.formData,
           audioState: 'stopped',
           segments: draft.segments,
+          // Durable drafts reference audio.aac (empty segments); restore the pointer.
+          durable: draft.durable ?? null,
           audioUri: draft.segments.at(-1)?.uri ?? null,
           audioDuration: draft.audioDuration,
           uploadStatus: 'pending',
@@ -2777,7 +3174,19 @@ function RecordingSession() {
     let cancelled = false;
     const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async () => {
       const cleaned = await draftStorage
-        .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId))
+        .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId), {
+          // Reconcile the legacy empty-server-linked branch before deleting any
+          // server row (fail-closed offline so a just-uploaded row is never lost).
+          getStatus: async (serverDraftId) => {
+            try {
+              const rec = await recordingsApi.get(serverDraftId);
+              return (rec?.status as string | undefined) ?? null;
+            } catch {
+              return null;
+            }
+          },
+          isOnline: isConnected !== false,
+        })
         .catch(() => 0);
       if (!cancelled && cleaned > 0) {
         invalidateRecordingCaches(queryClient, 'draft_deleted');
@@ -2792,6 +3201,10 @@ function RecordingSession() {
       cancelled = true;
       cancelWork();
     };
+    // isConnected is read at sweep time (mount / user switch) on purpose — the
+    // orphan sweep should not re-run on every connectivity flap; a mount-time
+    // offline read simply fails the legacy reconcile closed (safe).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, queryClient]);
 
   // Effect: status-aware 30-day eviction of un-sent recordings (drafts +
@@ -2957,6 +3370,16 @@ function RecordingSession() {
   const handleEditRecording = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
+      // v1: the waveform editor operates on legacy m4a segments. A durable AAC
+      // recording (empty segments[], audio in audio.aac) is submitted as-is;
+      // in-app editing of durable recordings is a follow-up.
+      if (slot?.durable) {
+        Alert.alert(
+          'Editing Not Available',
+          'This recording can be submitted as-is. Editing recordings captured with crash-safe recording is not supported yet.',
+        );
+        return;
+      }
       if (!slot || slot.segments.length === 0) {
         Alert.alert('No Recording', 'Please record audio before editing.');
         return;

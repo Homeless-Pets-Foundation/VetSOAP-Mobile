@@ -1,10 +1,40 @@
 import { useReducer, useCallback } from 'react';
 import type { CreateRecording } from '../types';
-import type { PatientSlot, SessionAction, SessionState, AudioSegment } from '../types/multiPatient';
+import type { PatientSlot, SessionAction, SessionState, AudioSegment, DurableSlotRef } from '../types/multiPatient';
+import { isValidDurableId } from '../lib/durableAudio/paths';
 
 /** Validate that a segment URI is a local file path (not a remote URL). */
 function isLocalFileUri(uri: string): boolean {
   return uri.startsWith('file://') || uri.startsWith('/');
+}
+
+/**
+ * Validate a durable pointer restored from a stash/draft round-trip (Rule 15):
+ * the recordingId must pass the path-traversal/charset guard and codec settings
+ * must be in range, else we drop the pointer rather than restore a slot that
+ * could address audio outside the user's durable root.
+ */
+function validateDurable(durable: DurableSlotRef | null | undefined): DurableSlotRef | null {
+  if (!durable || typeof durable !== 'object') return null;
+  if (!isValidDurableId(durable.recordingId)) return null;
+  if (durable.sampleRate !== 16000 && durable.sampleRate !== 24000) return null;
+  if (durable.bitrate !== 32000 && durable.bitrate !== 48000) return null;
+  if (durable.codec !== 'aac_lc') return null;
+  // Rule 15: a vault-restore recoveredAudioUri must be a LOCAL uri or we drop it,
+  // so a compromised stash/vault can't point submit at a remote URL.
+  const recoveredAudioUri =
+    typeof durable.recoveredAudioUri === 'string' && isLocalFileUri(durable.recoveredAudioUri)
+      ? durable.recoveredAudioUri
+      : null;
+  return {
+    recordingId: durable.recordingId,
+    codec: 'aac_lc',
+    sampleRate: durable.sampleRate,
+    bitrate: durable.bitrate,
+    durationMs: typeof durable.durationMs === 'number' && durable.durationMs >= 0 ? durable.durationMs : 0,
+    peakDb: typeof durable.peakDb === 'number' && Number.isFinite(durable.peakDb) ? durable.peakDb : -160,
+    ...(recoveredAudioUri ? { recoveredAudioUri } : {}),
+  };
 }
 
 /** Filter segments to only include local file URIs. */
@@ -34,6 +64,7 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
     },
     audioState: 'idle',
     segments: [],
+    durable: null,
     audioUri: null,
     audioDuration: 0,
     uploadStatus: 'pending',
@@ -188,7 +219,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, segments: [], audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
+            ? { ...slot, segments: [], durable: null, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
             : slot
         ),
       };
@@ -206,6 +237,29 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             : slot
         ),
       };
+
+    case 'SET_DURABLE_RECORDING': {
+      const durable = validateDurable(action.durable);
+      if (!durable) return state;
+      return {
+        ...state,
+        slots: state.slots.map((slot) =>
+          slot.id === action.slotId
+            ? {
+                ...slot,
+                durable,
+                // Durable audio lives only in audio.aac; segments stays empty.
+                audioDuration: durable.durationMs / 1000,
+                audioUri: null,
+                audioState: 'stopped',
+              }
+            : slot
+        ),
+        // Capture for this slot is complete — release the recorder, mirroring SAVE_AUDIO.
+        recorderBoundToSlotId:
+          state.recorderBoundToSlotId === action.slotId ? null : state.recorderBoundToSlotId,
+      };
+    }
 
     case 'BIND_RECORDER':
       return { ...state, recorderBoundToSlotId: action.slotId };
@@ -245,11 +299,19 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
       return {
         slots: action.slots.map((slot) => {
           const validSegments = validateSegments(slot.segments);
+          // A durable slot's audio lives only in audio.aac (segments empty).
+          // Validate the restored durable pointer (Rule 15) and keep the slot
+          // even though it has no segments — dropping it would orphan audio.aac.
+          const durable = validateDurable(slot.durable);
+          const segmentDuration = validSegments.reduce((sum, s) => sum + s.duration, 0);
           return {
             ...slot,
             segments: validSegments,
-            audioDuration: validSegments.reduce((sum, s) => sum + s.duration, 0),
+            durable,
+            audioDuration: durable ? durable.durationMs / 1000 : segmentDuration,
             audioUri: validSegments.length > 0 ? validSegments[validSegments.length - 1].uri : null,
+            // A restored durable or segment recording is finished/parked.
+            audioState: durable || validSegments.length > 0 ? 'stopped' : (slot.audioState ?? 'idle'),
             // Stashes don't persist pendingConfirm, so restored slots always start
             // without one. Force null in case an older slot shape leaked through.
             pendingConfirm: null,
@@ -522,12 +584,16 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
     dispatch({ type: 'CONTINUE_RECORDING', slotId });
   }, []);
 
+  const setDurableRecording = useCallback((slotId: string, durable: DurableSlotRef) => {
+    dispatch({ type: 'SET_DURABLE_RECORDING', slotId, durable });
+  }, []);
+
   const hasUnsavedRecordings = state.slots.some(
-    (s) => s.segments.length > 0 || s.audioState === 'recording' || s.audioState === 'paused'
+    (s) => s.segments.length > 0 || s.durable !== null || s.audioState === 'recording' || s.audioState === 'paused'
   );
 
   const completedUnuploadedCount = state.slots.filter(
-    (s) => s.segments.length > 0 && s.uploadStatus !== 'success'
+    (s) => (s.segments.length > 0 || s.durable !== null) && s.uploadStatus !== 'success'
   ).length;
 
   return {
@@ -543,6 +609,7 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
     saveAudio,
     clearAudio,
     continueRecording,
+    setDurableRecording,
     bindRecorder,
     unbindRecorder,
     setUploadStatus,

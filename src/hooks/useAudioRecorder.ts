@@ -11,8 +11,34 @@ import {
 import { safeDeleteFile } from '../lib/fileOps';
 import { breadcrumb, captureException } from '../lib/monitoring';
 import { reportClientError } from '../api/telemetry';
+import * as durableRecorder from '../../modules/captivet-durable-recorder';
+import { isDurableCaptureEnabled } from '../lib/durableFlag';
+import { trackEvent } from '../lib/analytics';
 
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped' | 'interrupted';
+
+/**
+ * Hard cap on the native durable start() promise. Kept below the record.tsx
+ * withDurableOpWatchdog (12s) so the hook unwinds its own isStartingRef lock and
+ * falls back to the expo path before the outer watchdog fires.
+ */
+const DURABLE_START_TIMEOUT_MS = 10_000;
+
+/** Context required to start a durable capture (audio.aac under the user root). */
+export interface DurableStartContext {
+  userId: string;
+  slotId: string;
+  recordingId: string;
+}
+
+/** Snapshot of a finished durable capture, for building the slot's durable ref. */
+export interface DurableSnapshot {
+  recordingId: string;
+  durationMs: number;
+  peakDb: number;
+  sampleRate: 16000 | 24000;
+  bitrate: 32000 | 48000;
+}
 
 export interface UseAudioRecorderReturn {
   state: RecordingState;
@@ -33,7 +59,19 @@ export interface UseAudioRecorderReturn {
     duration: number;
     maxMetering?: number;
   };
-  start: () => Promise<void>;
+  /** Non-null while a durable capture owns the current recording. */
+  activeDurableRecordingId: string | null;
+  /** Reserved for a recoverable durable recording surfaced to this hook (null in v1). */
+  recoverableDurableRecordingId: string | null;
+  /** Durably-saved-through time (ms) — drives the secondary "saved" indicator. */
+  committedThroughMs: number;
+  /** Byte offset through the last complete ADTS frame (durable only). */
+  completeFrameBytes: number;
+  /** Timestamp of the last durable commit tick, or null. */
+  lastCommitAt: number | null;
+  /** Snapshot of a finished durable capture, or null when the expo path is used. */
+  getDurableSnapshot: () => DurableSnapshot | null;
+  start: (ctx?: DurableStartContext) => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
   stop: () => Promise<void>;
@@ -117,6 +155,26 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // getStatus() call throws (released/broken native handle).
   const lastStatusRef = useRef<{ metering: number | undefined; durationMillis: number } | null>(null);
   const stateRef = useRef<RecordingState>('idle');
+
+  // ─── Durable backend (flag-gated; expo path is untouched when off) ─────────
+  // Which backend owns the CURRENT capture. Only ever 'durable' when the runtime
+  // flag is on AND the native module is available AND a start context was given.
+  const backendRef = useRef<'expo' | 'durable'>('expo');
+  const durableUserIdRef = useRef<string | null>(null);
+  const durableSlotIdRef = useRef<string | null>(null);
+  const durableRecordingIdRef = useRef<string | null>(null);
+  const durableSampleRateRef = useRef<16000 | 24000>(16000);
+  const durableBitrateRef = useRef<32000 | 48000>(48000);
+  const durablePeakDbRef = useRef(-160);
+  const durableDurationMsRef = useRef(0);
+  const durableLiveRef = useRef<{ meteringDb: number; capturedDurationMs: number }>({
+    meteringDb: -160,
+    capturedDurationMs: 0,
+  });
+  const lastCommitAtRef = useRef<number | null>(null);
+  const [committedThroughMs, setCommittedThroughMs] = useState(0);
+  const [completeFrameBytes, setCompleteFrameBytes] = useState(0);
+  const [activeDurableRecordingId, setActiveDurableRecordingId] = useState<string | null>(null);
 
   const setElapsedSecondsValue = useCallback((seconds: number) => {
     const normalized = Math.max(0, seconds);
@@ -271,6 +329,50 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const runInterruptionFlowRef = useRef(runInterruptionFlow);
   runInterruptionFlowRef.current = runInterruptionFlow;
 
+  // Durable-backend interruption: the native module has already flushed + marked
+  // the manifest interrupted and kept audio.aac. JS just reflects the state so
+  // record.tsx arms pending-resume (the audio is already durable — no URI flush).
+  const runDurableInterruption = useCallback(() => {
+    const wasRecording = stateRef.current === 'recording' || stateRef.current === 'paused';
+    if (!wasRecording) return;
+    breadcrumb('record', 'durable_recorder_interrupted', { from_state: stateRef.current });
+    freezeElapsedClock();
+    setState('interrupted');
+  }, [freezeElapsedClock]);
+  const runDurableInterruptionRef = useRef(runDurableInterruption);
+  runDurableInterruptionRef.current = runDurableInterruption;
+
+  // Durable native event subscriptions. No-op subscriptions when the module is
+  // unavailable (bridge returns NOOP), so this is safe on old dev clients.
+  useEffect(() => {
+    const subs = [
+      durableRecorder.addRecordingProgressListener((e) => {
+        if (backendRef.current !== 'durable' || e.recordingId !== durableRecordingIdRef.current) return;
+        setCommittedThroughMs(e.committedThroughMs);
+        setCompleteFrameBytes(e.completeFrameBytes);
+        lastCommitAtRef.current = Date.now();
+        if (typeof e.peakDb === 'number' && e.peakDb > durablePeakDbRef.current) {
+          durablePeakDbRef.current = e.peakDb;
+        }
+      }),
+      durableRecorder.addLiveStatsListener((e) => {
+        if (backendRef.current !== 'durable' || e.recordingId !== durableRecordingIdRef.current) return;
+        durableLiveRef.current = { meteringDb: e.meteringDb, capturedDurationMs: e.capturedDurationMs };
+      }),
+      durableRecorder.addInterruptionListener((e) => {
+        if (backendRef.current !== 'durable' || e.recordingId !== durableRecordingIdRef.current) return;
+        runDurableInterruptionRef.current();
+      }),
+      durableRecorder.addErrorListener((e) => {
+        // Rule 12: gate console behind __DEV__; the typed {code,message} carries no PHI.
+        if (__DEV__) console.error('[DurableRecorder] error', e.code, e.message);
+      }),
+    ];
+    return () => {
+      for (const s of subs) s.remove();
+    };
+  }, []);
+
   // Create the expo-audio recorder (auto-released on unmount)
   const recorder = useExpoAudioRecorder(RECORDING_OPTIONS, statusListener);
 
@@ -329,20 +431,63 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     };
   }, [state]);
 
-  const getLiveStats = useCallback(() => ({
-    meteringDb: lastStatusRef.current?.metering ?? -160,
-    // Mirrors getPersistableSnapshot's live branch: the JS clock is the
-    // primary source (iOS native status throttling can't make it jump),
-    // native duration is the fallback when the JS clock loses (e.g. process
-    // was suspended), and the last transition value is the floor.
-    durationSeconds: Math.max(
-      elapsedSecondsRef.current,
-      getElapsedDurationSeconds(),
-      getNativeDurationSeconds()
-    ),
-  }), [getElapsedDurationSeconds, getNativeDurationSeconds]);
+  const getLiveStats = useCallback(() => {
+    if (backendRef.current === 'durable') {
+      // Durable live feed comes from the native liveStats channel (PCM metering +
+      // captured duration), floored by the JS elapsed clock so the timer never
+      // stalls if the native push is briefly late.
+      const live = durableLiveRef.current;
+      return {
+        meteringDb: live.meteringDb,
+        durationSeconds: Math.max(
+          elapsedSecondsRef.current,
+          getElapsedDurationSeconds(),
+          Math.floor(live.capturedDurationMs / 1000),
+        ),
+      };
+    }
+    return {
+      meteringDb: lastStatusRef.current?.metering ?? -160,
+      // Mirrors getPersistableSnapshot's live branch: the JS clock is the
+      // primary source (iOS native status throttling can't make it jump),
+      // native duration is the fallback when the JS clock loses (e.g. process
+      // was suspended), and the last transition value is the floor.
+      durationSeconds: Math.max(
+        elapsedSecondsRef.current,
+        getElapsedDurationSeconds(),
+        getNativeDurationSeconds()
+      ),
+    };
+  }, [getElapsedDurationSeconds, getNativeDurationSeconds]);
 
-  const start = useCallback(async () => {
+  /** Clear durable backend refs + state back to the idle/expo default. */
+  const resetDurableState = useCallback(() => {
+    backendRef.current = 'expo';
+    durableUserIdRef.current = null;
+    durableSlotIdRef.current = null;
+    durableRecordingIdRef.current = null;
+    durablePeakDbRef.current = -160;
+    durableDurationMsRef.current = 0;
+    durableLiveRef.current = { meteringDb: -160, capturedDurationMs: 0 };
+    lastCommitAtRef.current = null;
+    setCommittedThroughMs(0);
+    setCompleteFrameBytes(0);
+    setActiveDurableRecordingId(null);
+  }, []);
+
+  /** Snapshot of a finished durable capture (for building the slot's durable ref). */
+  const getDurableSnapshot = useCallback((): DurableSnapshot | null => {
+    if (!durableRecordingIdRef.current) return null;
+    return {
+      recordingId: durableRecordingIdRef.current,
+      durationMs: durableDurationMsRef.current,
+      peakDb: durablePeakDbRef.current,
+      sampleRate: durableSampleRateRef.current,
+      bitrate: durableBitrateRef.current,
+    };
+  }, []);
+
+  const start = useCallback(async (ctx?: DurableStartContext) => {
     if (isStartingRef.current || state !== 'idle') {
       throw new Error(`Recorder not ready (state: ${state})`);
     }
@@ -350,6 +495,71 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setIsStarting(true);
     let startSucceeded = false;
     try {
+      // Durable capture path — flag-gated + module-available + context provided.
+      // On ANY durable start failure, fall through to the expo-audio path
+      // (plan: "If the native module fails to load/start, fall back to
+      // expo-audio capture, emit telemetry, show durability unavailable").
+      const wantDurable = !!ctx && isDurableCaptureEnabled() && durableRecorder.isAvailable();
+      if (wantDurable && ctx) {
+        try {
+          // Internal Rule-24 timeout: a native start that never settles would
+          // otherwise leave isStartingRef=true forever (the finally never runs)
+          // → the recorder is permanently locked, and a late-resolving start
+          // would attach an orphan durable capture no slot owns. Racing a
+          // rejecting timeout lets the finally release the lock and fall through
+          // to the expo path. (The record.tsx watchdog is a second layer, but it
+          // can't unwind the hook's own start state.)
+          const manifest = await Promise.race([
+            durableRecorder.start({
+              userId: ctx.userId,
+              slotId: ctx.slotId,
+              recordingId: ctx.recordingId,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('durable start timed out')), DURABLE_START_TIMEOUT_MS),
+            ),
+          ]);
+          backendRef.current = 'durable';
+          durableUserIdRef.current = ctx.userId;
+          durableSlotIdRef.current = ctx.slotId;
+          durableRecordingIdRef.current = ctx.recordingId;
+          durableSampleRateRef.current = manifest.sampleRate;
+          durableBitrateRef.current = manifest.bitrate;
+          durablePeakDbRef.current = -160;
+          durableDurationMsRef.current = 0;
+          durableLiveRef.current = { meteringDb: -160, capturedDurationMs: 0 };
+          lastCommitAtRef.current = null;
+          setCommittedThroughMs(0);
+          setCompleteFrameBytes(0);
+          setActiveDurableRecordingId(ctx.recordingId);
+          startElapsedClock();
+          setState('recording');
+          setAudioUri(null);
+          latestAudioUriRef.current = null;
+          maxMeteringRef.current = -160;
+          hasMeteringSampleRef.current = false;
+          finalDurationRef.current = 0;
+          setFinalDuration(0);
+          capturedDurationRef.current = 0;
+          mediaResetAlertedRef.current = false;
+          hasErrorAlertedRef.current = false;
+          trackEvent({
+            name: 'durable_recorder_started',
+            props: { slot_index: 0, sample_rate: manifest.sampleRate, bitrate: manifest.bitrate },
+          });
+          startSucceeded = true;
+          return;
+        } catch (durableError) {
+          if (__DEV__) console.error('[AudioRecorder] durable start failed, falling back to expo-audio:', durableError);
+          trackEvent({ name: 'durable_recorder_unavailable', props: { reason: 'start_failed' } });
+          backendRef.current = 'expo';
+          durableRecordingIdRef.current = null;
+          setActiveDurableRecordingId(null);
+          // fall through to expo-audio path below
+        }
+      } else {
+        backendRef.current = 'expo';
+      }
       // Android 13+ requires POST_NOTIFICATIONS for the foreground service
       // notification. Cache the session result so every recording start does
       // not pay a repeated bridge/request cost.
@@ -398,6 +608,36 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const pause = useCallback(async () => {
     // Capture duration before native pause — native pause can reset durationMillis to 0
     capturedDurationRef.current = freezeElapsedClock();
+    if (backendRef.current === 'durable') {
+      try {
+        const manifest = await durableRecorder.pause();
+        durableDurationMsRef.current = manifest.durationMs;
+        durablePeakDbRef.current = Math.max(durablePeakDbRef.current, manifest.peakDb);
+        setState('paused');
+      } catch (error) {
+        if (__DEV__) console.error('[AudioRecorder] durable pause failed:', error);
+        reportClientError({
+          phase: 'recorder_pause',
+          severity: 'warning',
+          errorCode: 'DURABLE_PAUSE_FAILED',
+          message: String(error),
+          durationSeconds: capturedDurationRef.current,
+        });
+        // Keep the on-disk file recoverable: best-effort graceful stop (native
+        // flushes + marks the manifest), then surface to the caller (rethrow)
+        // so record.tsx shows feedback (Rule 6 contract).
+        finalizeDuration();
+        try {
+          const stopped = await durableRecorder.stop();
+          durableDurationMsRef.current = stopped.durationMs;
+        } catch {
+          /* already broken — file stays recoverable via the manifest */
+        }
+        setState('stopped');
+        throw error;
+      }
+      return;
+    }
     try {
       recorder.pause();
       setState('paused');
@@ -430,6 +670,41 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   }, [finalizeDuration, freezeElapsedClock, recorder]);
 
   const resume = useCallback(async () => {
+    if (backendRef.current === 'durable') {
+      const userId = durableUserIdRef.current;
+      const recordingId = durableRecordingIdRef.current;
+      if (!userId || !recordingId) {
+        // No durable target — nothing to resume into; surface as an error.
+        throw new Error('Durable resume: missing recording context');
+      }
+      try {
+        const manifest = await durableRecorder.resume({ userId, recordingId });
+        durableDurationMsRef.current = manifest.durationMs;
+        resumeElapsedClock();
+        setState('recording');
+      } catch (error) {
+        if (__DEV__) console.error('[AudioRecorder] durable resume failed:', error);
+        trackEvent({ name: 'durable_resume_failed', props: { error_code: 'RESUME_FAILED' } });
+        reportClientError({
+          phase: 'recorder_resume',
+          severity: 'warning',
+          errorCode: 'DURABLE_RESUME_FAILED',
+          message: String(error),
+          durationSeconds: capturedDurationRef.current,
+        });
+        // Existing audio.aac stays recoverable; surface a graceful stop.
+        finalizeDuration();
+        try {
+          const stopped = await durableRecorder.stop();
+          durableDurationMsRef.current = stopped.durationMs;
+        } catch {
+          /* file stays recoverable via the manifest */
+        }
+        setState('stopped');
+        throw error;
+      }
+      return;
+    }
     try {
       recorder.record();
       resumeElapsedClock();
@@ -469,6 +744,28 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     if (stoppingRef.current) return;
     stoppingRef.current = true;
     const durationSeconds = finalizeDuration();
+    if (backendRef.current === 'durable') {
+      // Rule 6: stop() swallows native rejections; state + refs always cleaned.
+      try {
+        const manifest = await durableRecorder.stop();
+        durableDurationMsRef.current = manifest.durationMs;
+        durablePeakDbRef.current = Math.max(durablePeakDbRef.current, manifest.peakDb);
+      } catch (error) {
+        if (__DEV__) console.error('[AudioRecorder] durable stop failed:', error);
+        reportClientError({
+          phase: 'recorder_stop',
+          severity: 'error',
+          message: String(error),
+          durationSeconds,
+        });
+      }
+      // No expo audioUri for durable — the durable recordingId is the pointer.
+      setAudioUri(null);
+      latestAudioUriRef.current = null;
+      setState('stopped');
+      stoppingRef.current = false;
+      return;
+    }
     try {
       await recorder.stop();
     } catch (error) {
@@ -508,7 +805,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
     hasErrorAlertedRef.current = false;
-  }, [resetElapsedClock]);
+    resetDurableState();
+  }, [resetElapsedClock, resetDurableState]);
 
   const resetWithoutDelete = useCallback(() => {
     setState('idle');
@@ -523,7 +821,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     stoppingRef.current = false;
     mediaResetAlertedRef.current = false;
     hasErrorAlertedRef.current = false;
-  }, [resetElapsedClock]);
+    resetDurableState();
+  }, [resetElapsedClock, resetDurableState]);
 
   return {
     state,
@@ -535,7 +834,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     getLiveStats,
     audioUri,
-    mimeType: 'audio/x-m4a',
+    mimeType: activeDurableRecordingId ? 'audio/aac' : 'audio/x-m4a',
     getPersistableSnapshot: () => ({
       audioUri: latestAudioUriRef.current,
       duration: finalDurationRef.current > 0
@@ -543,6 +842,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         : Math.max(elapsedSecondsRef.current, getElapsedDurationSeconds(), getNativeDurationSeconds()),
       maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     }),
+    activeDurableRecordingId,
+    recoverableDurableRecordingId: null,
+    committedThroughMs,
+    completeFrameBytes,
+    lastCommitAt: lastCommitAtRef.current,
+    getDurableSnapshot,
     start,
     pause,
     resume,

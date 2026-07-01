@@ -1,6 +1,7 @@
 import type { Recording } from '../types';
 import type { DraftMetadata } from './draftStorage';
 import { fileExists } from './fileOps';
+import { isValidDurableId } from './durableAudio/paths';
 
 const LOCAL_DRAFT_PREFIX = 'local-draft:';
 type RecordingSortOrder = 'asc' | 'desc';
@@ -10,6 +11,15 @@ export function getLocalDraftRecordingId(slotId: string): string {
 }
 
 export function isDraftResumable(draft: DraftMetadata): boolean {
+  // Durable draft: audio lives in audio.aac (segments[] is empty), so a valid
+  // durable pointer IS local audio. A confirmed-uploaded+purged durable draft
+  // is deleted before its tombstone is written (record.tsx / self-heal), so a
+  // durable pointer still present in a draft that survives to this sync check is
+  // non-purged — no async tombstone read needed here. Without this branch a
+  // finished durable recording is filtered out of the "Not Submitted" list AND
+  // the resume map, and the launch scan suppresses its recovery card (the draft
+  // references the recordingId) — leaving the recording unreachable.
+  if (draft.durable && isValidDurableId(draft.durable.recordingId)) return true;
   return draft.segments.length > 0 && draft.segments.every((segment) => fileExists(segment.uri));
 }
 

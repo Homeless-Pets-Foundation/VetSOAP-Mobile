@@ -131,6 +131,9 @@ async function loadRecoveryVaultForTest() {
         messages.push({ message, level, context });
       },
     },
+    './durableAudio/paths': {
+      isValidDurableId: (id) => typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id),
+    },
   };
 
   const module = { exports: {} };

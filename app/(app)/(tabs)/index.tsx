@@ -33,6 +33,7 @@ import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
 import { Banner } from '../../../src/components/ui/Banner';
 import { ProviderIssueBanner } from '../../../src/components/ProviderIssueBanner';
+import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -224,6 +225,9 @@ export default function HomeScreen() {
           <Settings color={colors.contentTertiary} size={iconMd} />
         </Pressable>
       </View>
+
+      {/* Durable crash-recovery banner (renders only when recordings recovered) */}
+      <DurableRecoveryBanner />
 
       {/* Device limit warning */}
       {capacity && (capacity.isAtLimit || capacity.isNearLimit) ? (

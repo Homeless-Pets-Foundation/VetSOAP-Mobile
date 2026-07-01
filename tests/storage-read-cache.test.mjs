@@ -204,6 +204,12 @@ async function loadDraftStorage(state) {
       safeDeleteDirectory: () => {},
       ensureDirectory: () => true,
     },
+    './durableAudio/paths': {
+      isValidDurableId: (id) => typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id),
+    },
+    './durableAudio/tombstone': {
+      durableTombstone: { has: async () => false },
+    },
   });
   return { draftStorage: mod.draftStorage, ...store };
 }

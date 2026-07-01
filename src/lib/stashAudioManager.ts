@@ -84,13 +84,21 @@ export const stashAudioManager = {
           segmentIndex++;
         }
 
+        // Rule 20 write site (2 of 3): carry the durable pointer through the
+        // stash. A durable slot has empty `segments` and its audio stays in
+        // audio.aac under the durable root (we do NOT copy it into the stash
+        // dir); `durable.recordingId` is the sole pointer, so Resume can
+        // re-reference it instead of orphaning the file.
         stashedSlots.push({
           id: slot.id,
           formData: { ...slot.formData },
           segments: stashedSegments,
-          audioDuration: stashedSegments.reduce((sum, s) => sum + s.duration, 0),
+          audioDuration: slot.durable
+            ? slot.durable.durationMs / 1000
+            : stashedSegments.reduce((sum, s) => sum + s.duration, 0),
           serverDraftId: slot.serverDraftId ?? null,
           draftSlotId: slot.draftSlotId ?? null,
+          durable: slot.durable ?? null,
         });
       }
 
@@ -271,7 +279,10 @@ export const stashAudioManager = {
         if (manifest) {
           // Validate that audio files still exist before recovering
           const { validSlots } = await this.validateStashedAudio(manifest.slots);
-          const hasAudio = validSlots.some((s) => s.segments.length > 0);
+          // A durable stash slot has no copied segment files (audio.aac lives in
+          // the durable root); treat a durable pointer as audio so orphan
+          // recovery never deletes a durable-only stash's metadata dir.
+          const hasAudio = validSlots.some((s) => s.segments.length > 0 || s.durable != null);
           if (hasAudio) {
             recovered.push({ ...manifest, slots: validSlots });
             continue;

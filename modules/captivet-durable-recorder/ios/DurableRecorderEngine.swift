@@ -853,6 +853,18 @@ final class DurableRecorderEngine: NSObject {
     let input = e.inputNode
     let tapFormat = hwFormat ?? input.outputFormat(forBus: 0)
 
+    // installTap(onBus:...) throws an UNCAUGHT Obj-C NSException
+    // ("required condition is false: IsFormatSampleRateAndChannelCountValid(format)")
+    // that terminates the whole app when the input node has no valid format —
+    // sampleRate 0 / 0 channels — which happens when there is no active mic route
+    // (the iOS Simulator, or an AVAudioSession that is not active / mid-route-change).
+    // Validate first and throw a *catchable* Swift error so the JS layer falls back
+    // to expo-audio (Rule 6 graceful degradation) instead of crashing the process.
+    guard tapFormat.sampleRate > 0, tapFormat.channelCount > 0 else {
+      throw fail(.engineStart,
+                 "no valid audio input format (sampleRate=\(tapFormat.sampleRate), channels=\(tapFormat.channelCount))")
+    }
+
     input.removeTap(onBus: 0)
     input.installTap(onBus: 0, bufferSize: tapBufferSize, format: tapFormat) { [weak self] buffer, _ in
       guard let self = self else { return }
@@ -959,9 +971,12 @@ final class DurableRecorderEngine: NSObject {
     guard let convB = converterB, let aac = aacFormat, let writer = writer else { return }
     let maxPacketSize = convB.maximumOutputPacketSize
     let approxPackets = AVAudioPacketCount(max(4, Int(mono.frameLength) / 1024 + 4))
-    guard let compressed = AVAudioCompressedBuffer(format: aac,
-                                                   packetCapacity: approxPackets,
-                                                   maximumPacketSize: maxPacketSize) else { return }
+    // AVAudioCompressedBuffer(format:packetCapacity:maximumPacketSize:) is
+    // non-failable in the current iOS SDK (Xcode 26), so `guard let` on it is a
+    // type error ("initializer for conditional binding must have Optional type").
+    let compressed = AVAudioCompressedBuffer(format: aac,
+                                             packetCapacity: approxPackets,
+                                             maximumPacketSize: maxPacketSize)
     var provided = false
     var convErr: NSError?
     let block: AVAudioConverterInputBlock = { _, outStatus in
@@ -996,9 +1011,11 @@ final class DurableRecorderEngine: NSObject {
   private func drainEncoderLocked() {
     guard let convB = converterB, let aac = aacFormat, let writer = writer else { return }
     let maxPacketSize = convB.maximumOutputPacketSize
-    guard let compressed = AVAudioCompressedBuffer(format: aac,
-                                                   packetCapacity: 8,
-                                                   maximumPacketSize: maxPacketSize) else { return }
+    // Non-failable initializer in the current iOS SDK (Xcode 26) — see the
+    // encodeAndWriteLocked site above; `guard let` would be a type error.
+    let compressed = AVAudioCompressedBuffer(format: aac,
+                                             packetCapacity: 8,
+                                             maximumPacketSize: maxPacketSize)
     var convErr: NSError?
     let block: AVAudioConverterInputBlock = { _, outStatus in
       outStatus.pointee = .endOfStream

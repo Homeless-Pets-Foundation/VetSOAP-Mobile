@@ -141,25 +141,30 @@ final class AdtsWriter {
     h[0] = 0xFF
     // 1111 0 00 1 : syncword low, MPEG-4 (0), layer (00), protection_absent (1).
     h[1] = 0xF1
-    h[2] = UInt8(
+    // Compute each multi-term byte as an Int first, then narrow to UInt8. Feeding
+    // a bitwise-OR chain straight into UInt8(_:) makes the Swift type-checker time
+    // out ("unable to type-check this expression in reasonable time") on Xcode 26 —
+    // it explores UInt8/Int × <</| overload combinations combinatorially. The
+    // computed values are unchanged.
+    let byte2: Int =
       ((profileField & 0x03) << 6) |
       ((sampleRateIndex & 0x0F) << 2) |
       (0 << 1) |                                   // private_bit
       ((channelConfig >> 2) & 0x01)                // channel_config MSB
-    )
-    h[3] = UInt8(
+    h[2] = UInt8(byte2)
+    let byte3: Int =
       ((channelConfig & 0x03) << 6) |              // channel_config low 2 bits
-      (((frameLength >> 11) & 0x03))               // frame_length bits 12..11
-    )
+      ((frameLength >> 11) & 0x03)                 // frame_length bits 12..11
+    h[3] = UInt8(byte3)
     h[4] = UInt8((frameLength >> 3) & 0xFF)        // frame_length bits 10..3
-    h[5] = UInt8(
-      (((frameLength & 0x07) << 5)) |              // frame_length bits 2..0
+    let byte5: Int =
+      ((frameLength & 0x07) << 5) |                // frame_length bits 2..0
       ((bufferFullness >> 6) & 0x1F)               // buffer_fullness high 5 bits
-    )
-    h[6] = UInt8(
+    h[5] = UInt8(byte5)
+    let byte6: Int =
       ((bufferFullness & 0x3F) << 2) |             // buffer_fullness low 6 bits
       (numRawDataBlocks & 0x03)
-    )
+    h[6] = UInt8(byte6)
     return Data(h)
   }
 

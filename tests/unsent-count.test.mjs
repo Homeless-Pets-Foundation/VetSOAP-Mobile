@@ -3,13 +3,33 @@
 // work that nothing else represents (its draft was deleted at stash time and not
 // recreated on resume), so it MUST be counted — otherwise the sign-out /
 // delete-account warning shows a generic prompt with no count.
+//
+// Self-contained loader (transpile the pure .ts with the `typescript` devDep +
+// run in a vm) so this test does not depend on any shared test helper that may
+// live only on another branch.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { loadTsModule } from './helpers/loadTs.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import vm from 'node:vm';
+import ts from 'typescript';
 
-// unsentCount.ts imports only a TYPE from ../types/stash (erased at transpile),
-// so it loads with no mocks.
-const mod = await loadTsModule('src/lib/unsentCount.ts');
+function loadPureTs(relPath) {
+  const abs = fileURLToPath(new URL(relPath, import.meta.url));
+  const compiled = ts.transpileModule(readFileSync(abs, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const moduleObj = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: moduleObj.exports,
+    module: moduleObj,
+    require: createRequire(abs), // unsentCount.ts imports only an erased type, so require is unused
+  });
+  return moduleObj.exports;
+}
+
+const { countUnsentStashSessions } = loadPureTs('../src/lib/unsentCount.ts');
 
 test('countUnsentStashSessions counts resumed stashes as unsent (O6)', () => {
   const sessions = [
@@ -18,9 +38,9 @@ test('countUnsentStashSessions counts resumed stashes as unsent (O6)', () => {
     { id: 'c' }, // resumedAt absent
   ];
   // Was 1 (only the un-resumed) before the fix — the resumed stash is now included.
-  assert.equal(mod.countUnsentStashSessions(sessions), 3);
+  assert.equal(countUnsentStashSessions(sessions), 3);
 });
 
 test('countUnsentStashSessions returns 0 for no sessions', () => {
-  assert.equal(mod.countUnsentStashSessions([]), 0);
+  assert.equal(countUnsentStashSessions([]), 0);
 });

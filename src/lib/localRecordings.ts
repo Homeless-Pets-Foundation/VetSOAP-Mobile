@@ -1,5 +1,6 @@
 import { draftStorage } from './draftStorage';
 import { stashStorage } from './stashStorage';
+import { countUnsentStashSessions } from './unsentCount';
 
 /**
  * Count un-sent recordings on this device for the current user: local drafts
@@ -20,7 +21,9 @@ export async function countUnsentRecordings(): Promise<number> {
   let stashes = 0;
   try {
     const sessions = await stashStorage.getStashedSessions();
-    stashes = sessions.filter((s) => !s.resumedAt).length;
+    // Count resumed stashes too — a resumed-but-unsubmitted session is unsent
+    // work that nothing else represents (finding O6). See countUnsentStashSessions.
+    stashes = countUnsentStashSessions(sessions);
   } catch {
     // best-effort
   }

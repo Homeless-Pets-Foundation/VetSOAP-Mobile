@@ -23,6 +23,12 @@ import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { draftStorage } from '../lib/draftStorage';
 import { recoveryIntent } from '../lib/recoveryIntent';
+import { isValidDurableId } from '../lib/durableAudio/paths';
+import { durableTombstone } from '../lib/durableAudio/tombstone';
+import { durableActiveStore } from '../lib/durableAudio/activeStore';
+import { runDurableRecoveryScan, invalidateDurableRecoveries } from '../lib/durableAudio/durableRecovery';
+import { hydrateMinVersionFloor } from '../lib/minVersion';
+import { durableRecoveryStore } from '../lib/durableAudio/recoveryState';
 import { audioTempFiles } from '../lib/audioTempFiles';
 import { queryClient } from '../lib/queryClient';
 import { audioEditorBridge } from '../lib/audioEditorBridge';
@@ -660,7 +666,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           const draft = await draftStorage.getDraft(intent.draftSlotId);
           if (localRecoveryScanIdRef.current !== scanId) return;
-          if (draft && draft.segments.length > 0) {
+          // A durable draft has empty segments (audio in audio.aac); a valid
+          // durable pointer is still a live resume target, so don't clear its
+          // RECOVERY_INTENT as "stale".
+          const durableIntentAlive = !!draft?.durable && isValidDurableId(draft.durable.recordingId);
+          if (draft && (draft.segments.length > 0 || durableIntentAlive)) {
             setRecoveryDraftSlotId(intent.draftSlotId);
             breadcrumb('auth', 'local_recovery_intent_ready', {
               reason: intent.reason,
@@ -720,6 +730,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setStashUserId(scopedUserId);
     draftStorage.setUserId(scopedUserId);
+    // Durable recorder stores are user-scoped too (Rule 13): set before any
+    // durable read/write (tombstone consult, recovery scan).
+    durableTombstone.setUserId(scopedUserId);
+    durableActiveStore.setUserId(scopedUserId);
     // One-shot per user: only scan on the first authenticated load (cold-start
     // session restore or fresh sign-in). Subsequent re-fetches of the same user
     // (TOKEN_REFRESHED, MFA re-check, foreground resume) skip the scan so the
@@ -727,6 +741,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (recoveryScannedUserIdRef.current !== scopedUserId) {
       recoveryScannedUserIdRef.current = scopedUserId;
       scanLocalRecoveryIntent(scopedUserId);
+      // Durable AAC crash-recovery scan (self-heals uploaded manifests,
+      // reconciles created-but-unconfirmed, surfaces the offer list). Runs under
+      // its own Rule 24 watchdog so a hung native scan never blocks app entry.
+      runDurableRecoveryScan(scopedUserId).catch(() => {});
     }
     activeUserRef.current = fetchedUser;
     setUser(fetchedUser);
@@ -1382,6 +1400,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Now clear stash user scoping and auth state
     setStashUserId(null);
     draftStorage.setUserId(null);
+    // Reset durable scope (data is PRESERVED across logout, Rule 8 — this only
+    // clears the in-memory scope pointer + offer list; re-scans on re-sign-in).
+    durableTombstone.setUserId(null);
+    durableActiveStore.setUserId(null);
+    // Invalidate first so an in-flight launch scan that resolves after this
+    // sign-out cannot repopulate the offer list for the next signed-in user.
+    invalidateDurableRecoveries();
+    durableRecoveryStore.clear();
     // Flush analytics then clear monitoring identity before we drop React state.
     // Flush is best-effort and bounded by internal PostHog timeouts.
     clearTelemetryIdentity();
@@ -1501,6 +1527,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [handleMfaRequiredResponse, handleSignOut, registerDevice]);
 
   useEffect(() => {
+    // Hydrate the persisted min-version floor before any record-start gate check,
+    // so a KNOWN-below-floor build blocks new recordings even on an OFFLINE cold
+    // start (before the first API response re-learns the floor). Best-effort.
+    hydrateMinVersionFloor().catch(() => {});
+
     // Belt-and-suspenders watchdog against hung native bridges in the cold-
     // start path (CLAUDE.md rule 29). Supabase GoTrue's auto-refresh timer
     // (rule 27), SecureStore reads on a freshly-rebuilt Keystore, and the
@@ -1650,6 +1681,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             queryClient.clear();
             setStashUserId(null);
             draftStorage.setUserId(null);
+            durableTombstone.setUserId(null);
+            durableActiveStore.setUserId(null);
+            invalidateDurableRecoveries();
+            durableRecoveryStore.clear();
             // Drop telemetry identity before dropping React auth state, so any
             // error captured during the final teardown doesn't attribute to
             // the expired user. Mirrors the handleSignOut ordering.

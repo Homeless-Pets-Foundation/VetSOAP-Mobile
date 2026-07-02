@@ -1,0 +1,7 @@
+{
+  "name": "captivet-durable-recorder",
+  "version": "0.1.0",
+  "description": "Native cross-platform durable audio recorder: streams mic audio continuously to one growing ADTS AAC file and recovers it after process death.",
+  "main": "index.ts",
+  "private": true
+}

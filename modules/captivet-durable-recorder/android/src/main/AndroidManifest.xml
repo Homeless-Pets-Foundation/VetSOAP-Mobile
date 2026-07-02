@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Microphone-typed foreground service for durable capture. Required on
+    Android 14+ to keep mic access alive while backgrounded. The RECORD_AUDIO,
+    FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, and WAKE_LOCK permissions
+    are declared at the app level (app.config.ts), so they are intentionally NOT
+    duplicated here. The leading-dot class name resolves against this module's
+    `namespace` (expo.modules.captivetdurablerecorder) at merge time.
+  -->
+  <application>
+    <service
+      android:name=".DurableRecorderService"
+      android:foregroundServiceType="microphone"
+      android:exported="false" />
+  </application>
+</manifest>

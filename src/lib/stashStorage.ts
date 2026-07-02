@@ -111,7 +111,15 @@ async function readSessionsForKeys(
   }
 }
 
-async function getStashedSessionsForUserId(userId: string): Promise<StashedSession[]> {
+async function getStashedSessionsForUserId(
+  userId: string,
+  // When true, a SecureStore/Keystore READ failure re-throws instead of being
+  // swallowed to []. A `[]` from the swallow is indistinguishable from "no
+  // stashes", which is unsafe for a DESTRUCTIVE caller (e.g. deciding whether a
+  // stash shares a durable audio file before discarding it): a read error would
+  // fail-open and delete shared audio. Strict callers fail CLOSED on the throw.
+  throwOnError = false,
+): Promise<StashedSession[]> {
   if (!userId) return [];
 
   if (stashRawCache && stashRawCache.userId === userId) {
@@ -162,7 +170,11 @@ async function getStashedSessionsForUserId(userId: string): Promise<StashedSessi
     if (genBSessions !== null) return genBSessions.sessions;
     if (genASessions !== null) return genASessions.sessions;
     return [];
-  } catch {
+  } catch (e) {
+    // A genuinely-absent key returns null above (→ []); this catch is the actual
+    // Keystore/SecureStore read FAILURE path, which strict callers must not treat
+    // as "no stashes".
+    if (throwOnError) throw e;
     return [];
   }
 }
@@ -198,6 +210,18 @@ export const stashStorage = {
   /** Read stashes for a specific user without rebinding the global stash scope. */
   async getStashedSessionsForUser(userId: string): Promise<StashedSession[]> {
     return getStashedSessionsForUserId(userId);
+  },
+
+  /**
+   * Like getStashedSessions but RE-THROWS on a SecureStore/Keystore read failure
+   * instead of returning []. Use before a destructive action that must fail CLOSED
+   * on an ambiguous read (e.g. "does any stash share this durable audio?" before
+   * discarding it) — a swallowed [] would fail-open and delete shared audio.
+   */
+  async getStashedSessionsStrict(): Promise<StashedSession[]> {
+    const userId = currentUserId;
+    if (!userId) return [];
+    return getStashedSessionsForUserId(userId, true);
   },
 
   async saveStashedSessions(sessions: StashedSession[]): Promise<boolean> {

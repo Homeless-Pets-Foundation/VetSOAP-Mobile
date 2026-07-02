@@ -106,6 +106,27 @@ export type AnalyticsEvent =
   | { name: 'draft_sync_retry_failed'; props: { attempt_number: number } }
   | { name: 'draft_orphan_sweep'; props: { found: number; deleted: number } }
   | { name: 'draft_save_segment_copy_failed'; props: { expected: number; saved: number; ensure_dir_failed: boolean; reasons: string; prior_valid_save: boolean } }
+  // Durable recorder (crash-recovery capture). All PHI-free.
+  | { name: 'durable_recorder_started'; props: { slot_index: number; sample_rate: number; bitrate: number } }
+  | { name: 'durable_commit_flushed'; props: { committed_through_ms: number; frame_count: number } }
+  | { name: 'durable_commit_lagged'; props: { lag_ms: number } }
+  | { name: 'durable_recorder_interrupted'; props: { reason: string } }
+  | { name: 'durable_resume_failed'; props: { error_code: string } }
+  | { name: 'durable_writer_backpressure'; props: { queue_ms?: number } }
+  | { name: 'durable_capture_drop'; props: { dropped_frames?: number } }
+  | { name: 'durable_process_recovered'; props: { recovered_count: number } }
+  | { name: 'durable_battery_opt_exemption'; props: { granted: boolean } }
+  | { name: 'durable_recovery_available'; props: { count: number } }
+  | { name: 'durable_recovery_restored'; props: { mode: 'resume' | 'review' | 'stash' } }
+  | { name: 'durable_recovery_discarded'; props: Record<string, never> }
+  | { name: 'durable_recorder_unavailable'; props: { reason: string } }
+  | { name: 'durable_upload_confirmed'; props: { recording_id?: string } }
+  | { name: 'durable_adts_parse_error'; props: { reason: string } }
+  | { name: 'durable_aac_size_warning'; props: { size_bytes: number } }
+  | { name: 'durable_aac_size_stop'; props: { size_bytes: number } }
+  | { name: 'durable_aac_oversize_recovered'; props: { size_bytes: number } }
+  | { name: 'durable_recorder_op_watchdog'; props: { op: 'start' | 'pause' | 'resume' | 'stop' | 'scan' } }
+  | { name: 'durable_low_space_stop'; props: { free_bytes?: number } }
   // API + network
   | { name: 'api_request_failed'; props: { endpoint_kind: EndpointKind; status: number; latency_ms: number; retried: boolean } }
   // Startup resilience

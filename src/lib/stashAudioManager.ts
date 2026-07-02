@@ -84,13 +84,41 @@ export const stashAudioManager = {
           segmentIndex++;
         }
 
+        // Rule 20 write site (2 of 3): carry the durable pointer through the
+        // stash. A NATIVE durable slot has empty `segments` and its audio stays in
+        // audio.aac under the durable root (we do NOT copy it — deleteDraft never
+        // touches the native file); `durable.recordingId` is the sole pointer.
+        //
+        // A VAULT-RESTORED durable slot instead carries `recoveredAudioUri`, a
+        // loose .aac under recovered-durable/{user}. stashSession deletes the
+        // source draft after commit, and draftStorage.deleteDraft() removes that
+        // recoveredAudioUri — which would destroy the stash's only audio. Copy it
+        // into the STASH dir and re-point so the stash is self-contained. A copy
+        // failure aborts the whole stash (thrown below) rather than committing a
+        // stash whose audio is about to be deleted.
+        let stashedDurable = slot.durable ?? null;
+        if (stashedDurable?.recoveredAudioUri) {
+          const durableDest = `${dir}durable-${segmentIndex}.aac`;
+          segmentIndex++;
+          if (!fileExists(stashedDurable.recoveredAudioUri)) {
+            throw new Error('stash: durable recovered audio missing before copy');
+          }
+          new ExpoFile(stashedDurable.recoveredAudioUri).copy(new ExpoFile(durableDest));
+          if (!fileExists(durableDest)) {
+            throw new Error('stash: durable recovered audio copy failed');
+          }
+          stashedDurable = { ...stashedDurable, recoveredAudioUri: durableDest };
+        }
         stashedSlots.push({
           id: slot.id,
           formData: { ...slot.formData },
           segments: stashedSegments,
-          audioDuration: stashedSegments.reduce((sum, s) => sum + s.duration, 0),
+          audioDuration: stashedDurable
+            ? stashedDurable.durationMs / 1000
+            : stashedSegments.reduce((sum, s) => sum + s.duration, 0),
           serverDraftId: slot.serverDraftId ?? null,
           draftSlotId: slot.draftSlotId ?? null,
+          durable: stashedDurable,
         });
       }
 
@@ -137,11 +165,27 @@ export const stashAudioManager = {
         }
       }
 
+      // A VAULT-RESTORED durable slot's audio is the copied recoveredAudioUri; if
+      // that file is gone the pointer is stale (submit would fail with missing
+      // audio), so drop the durable ref. A NATIVE durable slot has no
+      // recoveredAudioUri — its audio.aac lives under the durable root, validated
+      // by the durable module, so its recordingId pointer is kept as-is.
+      const durableStale =
+        !!slot.durable?.recoveredAudioUri && !fileExists(slot.durable.recoveredAudioUri);
+      if (durableStale) missingCount++;
+      const keptDurable = durableStale ? null : slot.durable;
+
       // Keep slots even if they have no segments (they still have form data)
       validSlots.push({
         ...slot,
         segments: validSegments,
-        audioDuration: validSegments.reduce((sum, s) => sum + s.duration, 0),
+        durable: keptDurable,
+        // A retained durable pointer holds the authoritative duration in
+        // durationMs; a durable-only stash has empty segments (sum 0), so use the
+        // durable duration or convertToPatientSlots restores 0:00 into the UI.
+        audioDuration: keptDurable
+          ? keptDurable.durationMs / 1000
+          : validSegments.reduce((sum, s) => sum + s.duration, 0),
       });
     }
 
@@ -271,7 +315,10 @@ export const stashAudioManager = {
         if (manifest) {
           // Validate that audio files still exist before recovering
           const { validSlots } = await this.validateStashedAudio(manifest.slots);
-          const hasAudio = validSlots.some((s) => s.segments.length > 0);
+          // A durable stash slot has no copied segment files (audio.aac lives in
+          // the durable root); treat a durable pointer as audio so orphan
+          // recovery never deletes a durable-only stash's metadata dir.
+          const hasAudio = validSlots.some((s) => s.segments.length > 0 || s.durable != null);
           if (hasAudio) {
             recovered.push({ ...manifest, slots: validSlots });
             continue;

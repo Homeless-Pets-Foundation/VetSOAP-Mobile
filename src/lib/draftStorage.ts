@@ -7,8 +7,10 @@ import {
   safeDeleteDirectory,
   ensureDirectory,
 } from './fileOps';
-import type { PatientSlot, AudioSegment } from '../types/multiPatient';
+import type { PatientSlot, AudioSegment, DurableSlotRef } from '../types/multiPatient';
 import type { CreateRecording } from '../types/index';
+import { isValidDurableId } from './durableAudio/paths';
+import { durableTombstone } from './durableAudio/tombstone';
 
 const STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
@@ -36,6 +38,12 @@ export interface DraftMetadata {
   audioDuration: number;
   serverDraftId: string | null;
   pendingSync: boolean;
+  // Durable AAC pointer for a finished durable draft. When set, the draft's
+  // audio lives in audio.aac under the durable root (NOT copied into
+  // drafts/{userId}/{slotId}/), so `segments` is empty. cleanupOrphaned /
+  // draftHasLocalAudio / the "Not Submitted" loader must treat a valid
+  // non-purged durable manifest as local audio even though segments is empty.
+  durable?: DurableSlotRef | null;
 }
 
 export type ServerDraftPresence = 'present' | 'missing' | 'unknown';
@@ -389,6 +397,24 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
     });
   }
 
+  // Carry the durable pointer through the read path. Without this, a durable
+  // draft loses its `durable.recordingId` on every round-trip — orphaning
+  // audio.aac on Resume, double-surfacing it in recovery, and misclassifying it
+  // in cleanupOrphaned/evictExpired/the vault. Validate the recordingId (Rule 15).
+  const rawDurable = parsed.durable;
+  let durable: DurableSlotRef | null | undefined;
+  if (rawDurable === null) {
+    durable = null;
+  } else if (
+    rawDurable &&
+    typeof rawDurable === 'object' &&
+    isValidDurableId((rawDurable as { recordingId?: unknown }).recordingId)
+  ) {
+    durable = rawDurable as DurableSlotRef;
+  } else {
+    durable = undefined;
+  }
+
   return {
     slotId: parsed.slotId,
     savedAt: parsed.savedAt,
@@ -400,6 +426,7 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
         : segments.reduce((sum, segment) => sum + segment.duration, 0),
     serverDraftId: parsed.serverDraftId,
     pendingSync: parsed.pendingSync,
+    durable,
   };
 }
 
@@ -495,6 +522,55 @@ export const draftStorage = {
     if (!userId) throw new Error('Draft storage: no user ID set');
 
     validateSlotId(slot.id);
+
+    // Durable AAC draft: the audio lives in audio.aac under the durable root, so
+    // we DO NOT copy segment files into drafts/{userId}/{slotId}/ (that would
+    // double-store the recording). We persist metadata-only with an empty
+    // `segments` and the durable pointer. draftHasLocalAudio / cleanupOrphaned
+    // treat a valid non-purged durable manifest as local audio so this is not
+    // mistaken for an orphan. (This is the FINISHED-draft path; active durable
+    // recordings use durableActiveStore, never saveDraft.)
+    if (slot.durable) {
+      const existingDurable = await readDraftChunks(userId, slot.id);
+      // Preserve the server draft/recording anchor across this save. On crash
+      // recovery a manifest can carry a serverRecordingId (set pre-death) with NO
+      // prior local draft, so `existingDurable` is null — fall back to the slot's
+      // serverDraftId so the death-surviving anchor is not dropped (otherwise the
+      // next Submit fresh-creates a duplicate server recording instead of
+      // promoting the already-created draft). Prefer an existing local anchor.
+      const resolvedServerDraftId = existingDurable?.serverDraftId ?? slot.serverDraftId ?? null;
+      const durableMetadata: DraftMetadata = {
+        slotId: slot.id,
+        savedAt: new Date().toISOString(),
+        formData: slot.formData,
+        segments: [],
+        durable: slot.durable,
+        audioDuration: slot.durable.durationMs / 1000,
+        serverDraftId: resolvedServerDraftId,
+        // An existing local draft keeps its own pendingSync. A recovery-supplied
+        // anchor means the server row already exists (no create needed) → synced;
+        // no anchor at all means we still owe a server-draft create → pending.
+        pendingSync: existingDurable?.serverDraftId
+          ? existingDurable.pendingSync
+          : !resolvedServerDraftId,
+      };
+      await writeDraftChunks(userId, slot.id, JSON.stringify(durableMetadata));
+      const index = await readDraftIndex();
+      if (!index.includes(slot.id)) {
+        index.push(slot.id);
+        await writeDraftIndex(index);
+      }
+      invalidateDraftsCache();
+      draftBreadcrumb('saved', {
+        slot_id: slot.id,
+        segment_count: 0,
+        expected_segments: 0,
+        has_server_draft: !!durableMetadata.serverDraftId,
+        pending_sync: durableMetadata.pendingSync,
+      });
+      // No segment files to promote — the durable recordingId is the pointer.
+      return { draftSlotId: slot.id, promotedSegments: [] };
+    }
 
     const dir = slotDraftDirForUser(userId, slot.id);
 
@@ -805,6 +881,20 @@ export const draftStorage = {
     if (!userId) return;
 
     try {
+      // A support-staff-recovery-restored durable draft references its audio via
+      // durable.recoveredAudioUri — a loose .aac OUTSIDE the draft dir that the
+      // directory delete below won't remove. Delete it so "Delete Draft" / "Delete
+      // & Start Over" doesn't leave orphaned clinical audio on disk. Do NOT purge
+      // the NATIVE durable audio.aac here: a stash can share it (stashSession
+      // deletes the draft while keeping that audio), so purging would corrupt it.
+      try {
+        const meta = await readDraftChunks(userId, slotId);
+        const recoveredAudioUri = meta?.durable?.recoveredAudioUri;
+        if (recoveredAudioUri) safeDeleteFile(recoveredAudioUri);
+      } catch {
+        /* best-effort — proceed with the rest of the delete */
+      }
+
       // Delete audio directory
       const dir = slotDraftDirForUser(userId, slotId);
       safeDeleteDirectory(dir);
@@ -854,6 +944,15 @@ export const draftStorage = {
 
   /** True if this draft still has at least one segment audio file on disk. */
   async draftHasLocalAudio(meta: DraftMetadata): Promise<boolean> {
+    // A durable draft has empty segments but its audio lives in audio.aac under
+    // the durable root. Treat a valid, non-purged durable pointer as local audio
+    // so the orphan sweep / "Not Submitted" loader don't mistake it for a
+    // missing-audio orphan. A tombstoned (confirmed-uploaded + purged) durable
+    // recording has no local audio left.
+    if (meta.durable && isValidDurableId(meta.durable.recordingId)) {
+      const purged = await durableTombstone.has(meta.durable.recordingId);
+      return !purged;
+    }
     if (!meta.segments || meta.segments.length === 0) return false;
     return meta.segments.some((s) => fileExists(s.uri));
   },
@@ -915,6 +1014,13 @@ export const draftStorage = {
         }
 
         if (uploadedConfirmed) {
+          // Never silently delete a non-purged durable recording: its audio.aac
+          // is the only local copy until purgeAfterUpload runs. Defer to the
+          // launch self-heal, which purges only after confirmed upload.
+          if (draft.durable && isValidDurableId(draft.durable.recordingId)) {
+            const purged = await durableTombstone.has(draft.durable.recordingId);
+            if (!purged) continue;
+          }
           // Redundant local copy. Delete silently only once truly old.
           if (ageDays >= maxAgeDays) {
             await this.deleteDraft(draft.slotId);
@@ -945,23 +1051,56 @@ export const draftStorage = {
    * Returns the number of drafts cleaned.
    */
   async cleanupOrphaned(
-    deleteServerDraft: (serverDraftId: string) => Promise<void>
+    deleteServerDraft: (serverDraftId: string) => Promise<void>,
+    opts?: {
+      // Server status probe for the empty-server-linked reconcile. Returns the
+      // recording status string or null when unverifiable.
+      getStatus?: (serverDraftId: string) => Promise<string | null>;
+      isOnline?: boolean;
+    }
   ): Promise<number> {
     const userId = currentUserId;
     if (!userId) return 0;
+
+    const getStatus = opts?.getStatus;
+    const isOnline = opts?.isOnline ?? true;
 
     let cleaned = 0;
     let found = 0;
     try {
       const drafts = await this.listDrafts();
       for (const draft of drafts) {
-        // Two orphan shapes get swept:
+        const durableId =
+          draft.durable && isValidDurableId(draft.durable.recordingId)
+            ? draft.durable.recordingId
+            : null;
+
+        // Durable-backed draft: audio lives in audio.aac. It is NOT an orphan
+        // unless its recording was confirmed-uploaded AND purged (tombstoned) —
+        // in which case the empty local draft is a stale leftover. Delete LOCAL
+        // metadata only; NEVER delete the server row (it IS the uploaded
+        // recording). Without this, the emptyButServerLinked branch below would
+        // destroy durable drafts on the next Record-tab mount.
+        if (durableId) {
+          const purged = await durableTombstone.has(durableId);
+          if (!purged) continue; // valid durable draft, not an orphan
+          found++;
+          draftBreadcrumb('orphan_sweep_delete', {
+            slot_id: draft.slotId,
+            shape: 'durable_purged',
+            segment_count: 0,
+            has_server_draft: !!draft.serverDraftId,
+          });
+          await this.deleteDraft(draft.slotId);
+          cleaned++;
+          continue;
+        }
+
+        // Legacy orphan shapes:
         //   (a) Non-empty segments but at least one file missing on disk.
         //   (b) Zero segments AND a serverDraftId — produced by an older
         //       build of saveDraft that silently swallowed all-segments-copy
-        //       failures and still created a server row. Without (b) those
-        //       orphans linger forever as a "Not on this device" card the
-        //       user has to delete by hand.
+        //       failures and still created a server row.
         const anyMissing =
           draft.segments.length > 0 &&
           draft.segments.some((s) => !fileExists(s.uri));
@@ -977,17 +1116,49 @@ export const draftStorage = {
           has_server_draft: !!draft.serverDraftId,
         });
 
-        if (draft.serverDraftId) {
+        if (anyMissing) {
+          // Audio is genuinely gone — safe to drop the server row + local meta.
+          if (draft.serverDraftId) {
+            try {
+              await deleteServerDraft(draft.serverDraftId);
+            } catch {
+              // Best-effort — server may already be gone or offline.
+            }
+          }
+          await this.deleteDraft(draft.slotId);
+          cleaned++;
+          continue;
+        }
+
+        // emptyButServerLinked: reconcile server status before deleting any row,
+        // and FAIL CLOSED. A just-uploaded recording (the uploaded-marker ->
+        // deleteDraft window) must never have its server row destroyed offline.
+        if (!getStatus || !isOnline || !draft.serverDraftId) {
+          // Unverifiable -> defer (do not delete). Cleaned next time online.
+          continue;
+        }
+        let status: string | null = null;
+        try {
+          status = await getStatus(draft.serverDraftId);
+        } catch {
+          status = null;
+        }
+        if (status === null) continue; // unverifiable -> defer
+        if (status === 'draft' || status === 'failed' || status === 'error') {
+          // Genuine orphan draft row — safe to delete server row + local.
           try {
             await deleteServerDraft(draft.serverDraftId);
           } catch {
-            // Best-effort — server may already be gone, or offline. We still
-            // clean up local metadata so the card disappears from the UI;
-            // any still-existing server row becomes a server-side TTL problem.
+            /* best-effort */
           }
+          await this.deleteDraft(draft.slotId);
+          cleaned++;
+        } else {
+          // Uploaded/processed — the row is real. Keep it; drop only the stale
+          // local metadata so the leftover card disappears.
+          await this.deleteDraft(draft.slotId);
+          cleaned++;
         }
-        await this.deleteDraft(draft.slotId);
-        cleaned++;
       }
     } catch {
       // Best-effort
@@ -1042,10 +1213,17 @@ export const draftStorage = {
    * Sync all pending drafts to the server.
    * For each draft with pendingSync=true, calls createFn to create a server Recording.
    * Then updates the draft with the server ID and marks as synced.
+   *
+   * createFn receives the full DraftMetadata (NOT just formData) so a durable
+   * draft can create with a deterministic `durable-${recordingId}` idempotency
+   * key. A random key here would strand the created row if the app dies before
+   * updateServerDraftId() persists the anchor, and a later Submit (which reuses
+   * `durable-${recordingId}`) would then fresh-create a duplicate server row
+   * instead of promoting it. See usePendingDraftSync for the durable branch.
    */
   async syncPending(
     userId: string,
-    createFn: (formData: CreateRecording) => Promise<{ id: string }>
+    createFn: (draft: DraftMetadata) => Promise<{ id: string }>
   ): Promise<DraftSyncResult> {
     const previousUserId = currentUserId;
     const result: DraftSyncResult = { attempted: 0, succeeded: 0, failed: 0 };
@@ -1059,7 +1237,7 @@ export const draftStorage = {
         result.attempted++;
 
         try {
-          const created = await createFn(draft.formData);
+          const created = await createFn(draft);
           await this.updateServerDraftId(draft.slotId, created.id);
           result.succeeded++;
         } catch {

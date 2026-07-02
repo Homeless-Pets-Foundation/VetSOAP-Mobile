@@ -126,9 +126,11 @@ test('local recovery scan runs once per authenticated user, not on every re-fetc
   // the already-loaded user does not re-enter 'scanning' (which blanks the app
   // and unmounts an active recording).
   assert.match(provider, /recoveryScannedUserIdRef\.current !== scopedUserId/);
+  // The guard wraps scanLocalRecoveryIntent (the durable-recovery scan may also
+  // run inside the same one-shot block).
   assert.match(
     provider,
-    /if \(recoveryScannedUserIdRef\.current !== scopedUserId\) \{\s*recoveryScannedUserIdRef\.current = scopedUserId;\s*scanLocalRecoveryIntent\(scopedUserId\);\s*\}/
+    /if \(recoveryScannedUserIdRef\.current !== scopedUserId\) \{\s*recoveryScannedUserIdRef\.current = scopedUserId;\s*scanLocalRecoveryIntent\(scopedUserId\);/
   );
   // The guard must be reset on every user-clear path so a fresh sign-in re-scans.
   // Three reset sites: applyFetchedUser null-branch, handleSignOut cleanup,

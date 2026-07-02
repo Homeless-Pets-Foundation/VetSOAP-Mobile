@@ -2,6 +2,8 @@ import { API_URL } from '../config';
 import { secureStorage } from '../lib/secureStorage';
 import { validateRequestUrl } from '../lib/sslPinning';
 import { getIdempotencyUuid } from '../lib/random';
+import { setMinVersionFloor, UPGRADE_REQUIRED_CODE } from '../lib/minVersion';
+import { setDurableCaptureFlag } from '../lib/durableFlag';
 
 const REQUEST_TIMEOUT_MS = 30000;
 
@@ -308,6 +310,49 @@ export class ApiClient {
     let retried = false;
     let response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
 
+    // Cache the min-app-version floor + durable flag from a response and handle a
+    // 426 as terminal-non-auth. Runs on the INITIAL response AND (below) on the
+    // final response after any 401/428 retry — otherwise a first 401/428 followed
+    // by a retried 426 would fall through to generic handling, never cache the
+    // floor, and let a below-floor build keep recording until it gets a direct 426.
+    const handleUpgradeResponse = async (resp: Response): Promise<void> => {
+      // Opportunistically cache the floor from ANY response so the offline-first
+      // record-start gate has a value without a dedicated round-trip.
+      try {
+        const headerFloor = resp.headers.get('x-minimum-app-version');
+        if (headerFloor) setMinVersionFloor(headerFloor);
+        // Server-driven durable-capture flag: only the deploy that can process
+        // ADTS AAC turns this on, so the client never captures AAC the server
+        // can't handle. FAIL CLOSED on an absent header — a rollback / mixed
+        // deploy / non-ADTS server drops the signal, and leaving the flag enabled
+        // would keep the client capturing + upload/confirm/purge AAC against an
+        // incompatible backend. The durable-capable deploy sets this header on its
+        // responses, so absent == not-durable-capable == disable new capture.
+        const durableFlag = resp.headers.get('x-durable-capture-enabled');
+        setDurableCaptureFlag(durableFlag !== null ? durableFlag : false);
+      } catch { /* headers may be unavailable on some RN fetch polyfills */ }
+
+      // 426 Upgrade Required is terminal-non-auth: no token refresh, no sign-out,
+      // no retry (distinct from the 401 DEVICE_REVOKED force-sign-out and the
+      // Rule 16/22 refresh/retry loops). Cache the floor and surface the typed code
+      // the record path reads to gate; do NOT fall through to buildErrorMessage
+      // (which would show a generic "Something went wrong" and block nothing).
+      if (resp.status === 426) {
+        const upgradeBody = await resp.clone().json().catch(() => ({})) ?? {};
+        if (typeof upgradeBody.minVersion === 'string') setMinVersionFloor(upgradeBody.minVersion);
+        const endpointKind = endpointKindOf(path);
+        emitApiRequestFailed(endpointKind, 426, Date.now() - fetchStartedAt, retried);
+        throw new ApiError(
+          'A newer version of Captivet is required. Please update the app to continue.',
+          426,
+          false,
+          undefined,
+          typeof upgradeBody.code === 'string' ? upgradeBody.code : UPGRADE_REQUIRED_CODE,
+        );
+      }
+    };
+    await handleUpgradeResponse(response);
+
     // On 428, the server is telling us this device has no session row and we
     // need to register before /api/* calls are accepted. Only the registration
     // endpoint itself is exempt from the handshake — calling it from here
@@ -370,6 +415,10 @@ export class ApiClient {
         try { await this.onSessionExpired?.(); } catch { /* ignore */ }
       }
     }
+
+    // A 401/428 retry above may have produced a 426 (or a fresh floor header);
+    // re-run the upgrade handling against the FINAL response so it is not lost.
+    if (retried) await handleUpgradeResponse(response);
 
     const latencyMs = Date.now() - fetchStartedAt;
     if (!response.ok) {

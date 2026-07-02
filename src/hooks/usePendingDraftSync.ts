@@ -3,6 +3,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { useQueryClient } from '@tanstack/react-query';
 import { recordingsApi } from '../api/recordings';
+import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import { draftStorage, type DraftSyncResult } from '../lib/draftStorage';
 import { measurePhase } from '../lib/monitoring';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
@@ -27,7 +28,28 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
 
   const job = measurePhase('pending_draft_sync', { user_scoped: true }, async () => {
     try {
-      const result = await draftStorage.syncPending(userId, (formData) => recordingsApi.create(formData, { isDraft: true }));
+      const result = await draftStorage.syncPending(userId, async (draft) => {
+        // A durable draft MUST create its server row with a deterministic
+        // idempotency key derived from its on-disk durable recordingId. A later
+        // Submit reuses the same `durable-${recordingId}` key, so the server
+        // promotes THIS row instead of fresh-creating a duplicate — even if the
+        // app dies after create() but before updateServerDraftId() persists the
+        // anchor. A random key here would strand the created row. Also persist
+        // serverRecordingId into the manifest as the death-surviving anchor so
+        // the launch recovery scan can reconcile it against the server.
+        const durableRecordingId = draft.durable?.recordingId;
+        if (durableRecordingId) {
+          const created = await recordingsApi.create(draft.formData, {
+            isDraft: true,
+            idempotencyKey: `durable-${durableRecordingId}`,
+          });
+          await durableRecorder
+            .setServerRecordingId({ userId, recordingId: durableRecordingId, serverRecordingId: created.id })
+            .catch(() => {});
+          return created;
+        }
+        return recordingsApi.create(draft.formData, { isDraft: true });
+      });
       if (result.failed > 0) {
         lastFailedAtByUser.set(userId, Date.now());
       } else {

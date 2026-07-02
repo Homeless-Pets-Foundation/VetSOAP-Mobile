@@ -1,0 +1,111 @@
+package expo.modules.captivetdurablerecorder
+
+import android.content.Context
+import expo.modules.kotlin.exception.CodedException
+import java.io.File
+
+/**
+ * Typed, code-carrying exception for every durable-recorder failure. Expo
+ * rejects the JS promise with `.code`, so callers branch on a stable string
+ * instead of a localized message. NEVER thrown in a way that terminates the
+ * process (CLAUDE.md Rule 1 / plan: all native errors become typed events).
+ */
+internal class DurableRecorderException(
+  code: String,
+  message: String,
+  cause: Throwable? = null,
+) : CodedException(code, message, cause)
+
+/** Stable error codes shared by the engine + module (rejected promise codes). */
+internal object DurableErrors {
+  const val INVALID_ID = "ERR_DURABLE_INVALID_ID"
+  const val NO_CONTEXT = "ERR_DURABLE_NO_CONTEXT"
+  const val BUSY = "ERR_DURABLE_BUSY"
+  const val IO = "ERR_DURABLE_IO"
+  const val MIC = "ERR_DURABLE_MIC"
+  const val ENCODER = "ERR_DURABLE_ENCODER"
+  const val START = "ERR_DURABLE_START"
+  const val PAUSE = "ERR_DURABLE_PAUSE"
+  const val RESUME = "ERR_DURABLE_RESUME"
+  const val CAPTURE = "ERR_DURABLE_CAPTURE"
+  const val NO_SESSION = "ERR_DURABLE_NO_SESSION"
+  const val NO_MANIFEST = "ERR_DURABLE_NO_MANIFEST"
+  const val WRONG_USER = "ERR_DURABLE_WRONG_USER"
+  const val STATE = "ERR_DURABLE_STATE"
+  const val EDITED = "ERR_DURABLE_EDITED"
+  const val MANIFEST_WRITE = "ERR_DURABLE_MANIFEST_WRITE"
+}
+
+/** Manifest `state` string values (mirror DurableRecorderState in manifest.ts). */
+internal object DurableState {
+  const val IDLE = "idle"
+  const val STARTING = "starting"
+  const val RECORDING = "recording"
+  const val PAUSED = "paused"
+  const val INTERRUPTED = "interrupted"
+  const val STOPPED = "stopped"
+  const val UPLOADED = "uploaded"
+  const val ERROR = "error"
+}
+
+/**
+ * Path layout + id validation for the durable recorder. Mirrors
+ * src/lib/durableAudio/paths.ts so the native + JS recovery paths agree on the
+ * exact on-disk shape: filesDir/durable-recordings/{userId}/{recordingId}/ with
+ * audio.aac + manifest.json.
+ *
+ * Every native entry point validates ids BEFORE touching the filesystem and
+ * resolves only under the supplied userId's root (plan: never infer user scope
+ * from recordingId; reject `/`, `\`, `..`, NUL, or chars outside [A-Za-z0-9_-]).
+ */
+internal object DurablePaths {
+  const val DIR_NAME = "durable-recordings"
+  const val AUDIO_FILENAME = "audio.aac"
+  const val MANIFEST_FILENAME = "manifest.json"
+  const val MANIFEST_TMP_FILENAME = "manifest.json.tmp"
+
+  private val SAFE_ID = Regex("^[A-Za-z0-9_-]+$")
+
+  fun isValidId(id: String?): Boolean {
+    if (id.isNullOrEmpty()) return false
+    if (id.contains("..")) return false
+    if (id.contains('\u0000')) return false
+    if (id.contains('/') || id.contains('\\')) return false
+    return SAFE_ID.matches(id)
+  }
+
+  /** Returns the validated id, or throws a typed INVALID_ID exception. */
+  fun requireValidId(id: String?, label: String): String {
+    if (!isValidId(id)) {
+      throw DurableRecorderException(DurableErrors.INVALID_ID, "Invalid durable id for $label")
+    }
+    return id!!
+  }
+
+  fun root(context: Context): File = File(context.filesDir, DIR_NAME)
+
+  fun userDir(context: Context, userId: String): File = File(root(context), userId)
+
+  fun recordingDir(context: Context, userId: String, recordingId: String): File =
+    File(userDir(context, userId), recordingId)
+
+  fun audioFile(context: Context, userId: String, recordingId: String): File =
+    File(recordingDir(context, userId, recordingId), AUDIO_FILENAME)
+
+  fun manifestFile(context: Context, userId: String, recordingId: String): File =
+    File(recordingDir(context, userId, recordingId), MANIFEST_FILENAME)
+
+  /**
+   * Defense-in-depth before any destructive op: confirm the resolved directory
+   * really sits under the user's root (canonical-path compare), even though ids
+   * are already charset-validated. Guards against symlink / edge path escapes.
+   */
+  fun isUnderUserRoot(context: Context, userId: String, dir: File): Boolean = runCatching {
+    val userRootPath = userDir(context, userId).canonicalPath
+    val target = dir.canonicalPath
+    target == userRootPath || target.startsWith(userRootPath + File.separator)
+  }.getOrDefault(false)
+
+  /** Local file URI (file:// + absolute path) accepted by manifest.ts isLocalUri. */
+  fun fileUri(file: File): String = "file://" + file.absolutePath
+}

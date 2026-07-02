@@ -6,6 +6,7 @@ import { draftStorage } from '../lib/draftStorage';
 import { recoveryIntent } from '../lib/recoveryIntent';
 import { safeDeleteFile } from '../lib/fileOps';
 import { getSecureRandomHex } from '../lib/random';
+import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import type { StashedSession } from '../types/stash';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
 
@@ -145,9 +146,12 @@ export function useStashedSessions(userId: string | null) {
         // This catches the React state timing bug where executeStash runs
         // before SAVE_AUDIO is processed — better to fail visibly than
         // silently stash an empty session and lose the recording.
+        // Durable slots have empty `segments` (audio is in audio.aac under the
+        // durable root) — count them as audio so a pure-durable session stashes.
         const preStashSegmentCount = slotsToStash.reduce((sum, s) => sum + s.segments.length, 0);
-        if (preStashSegmentCount === 0) {
-          if (__DEV__) console.error('[Stash] no audio segments in any slot — aborting to prevent data loss');
+        const hasDurableAudio = slotsToStash.some((s) => s.durable !== null);
+        if (preStashSegmentCount === 0 && !hasDurableAudio) {
+          if (__DEV__) console.error('[Stash] no audio in any slot — aborting to prevent data loss');
           return false;
         }
 
@@ -300,24 +304,31 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
 
       const convertToPatientSlots = (
-        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null }[]
+        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; durable?: PatientSlot['durable'] }[]
       ): PatientSlot[] => {
-        return stashedSlots.map((slot) => ({
-          id: slot.id,
-          formData: { ...slot.formData },
-          audioState: slot.segments.length > 0 ? ('stopped' as const) : ('idle' as const),
-          segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration, peakMetering: s.peakMetering })),
-          audioUri: slot.segments.length > 0 ? slot.segments[slot.segments.length - 1].uri : null,
-          audioDuration: slot.audioDuration,
-          uploadStatus: 'pending' as const,
-          uploadProgress: 0,
-          uploadError: null,
-          serverRecordingId: null,
-          draftSlotId: slot.draftSlotId ?? null,
-          serverDraftId: slot.serverDraftId ?? null,
-          draftMetadataDirty: false,
-          pendingConfirm: null,
-        }));
+        return stashedSlots.map((slot) => {
+          // Rule 20 read site (3 of 3): restore the durable pointer so Resume of a
+          // parked durable recording re-references audio.aac instead of orphaning it.
+          const durable = slot.durable ?? null;
+          const hasAudio = slot.segments.length > 0 || durable !== null;
+          return {
+            id: slot.id,
+            formData: { ...slot.formData },
+            audioState: hasAudio ? ('stopped' as const) : ('idle' as const),
+            segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration, peakMetering: s.peakMetering })),
+            durable,
+            audioUri: slot.segments.length > 0 ? slot.segments[slot.segments.length - 1].uri : null,
+            audioDuration: slot.audioDuration,
+            uploadStatus: 'pending' as const,
+            uploadProgress: 0,
+            uploadError: null,
+            serverRecordingId: null,
+            draftSlotId: slot.draftSlotId ?? null,
+            serverDraftId: slot.serverDraftId ?? null,
+            draftMetadataDirty: false,
+            pendingConfirm: null,
+          };
+        });
       };
 
       try {
@@ -332,11 +343,24 @@ export function useStashedSessions(userId: string | null) {
         if (!isScopeCurrent(scopedUserId)) return null;
 
         if (!allValid) {
+          // "All missing" must count every audio unit validateStashedAudio can
+          // mark missing: each copied segment file PLUS each vault-restored
+          // durable slot whose recovered AAC copy it validates (those with a
+          // `recoveredAudioUri`; native durable slots have none and are checked
+          // by the durable module, so they never reach this !allValid branch).
+          // Comparing against segments alone misclassifies a durable-only stash
+          // (segments=0) whose recovered AAC is gone (missingCount=1) as
+          // "partial", restoring an empty no-audio slot instead of pruning the
+          // stale stash.
           const totalSegments = stash.slots.reduce(
             (sum, s) => sum + s.segments.length,
             0
           );
-          const allMissing = missingCount === totalSegments;
+          const totalDurableRecovered = stash.slots.reduce(
+            (sum, s) => sum + (s.durable?.recoveredAudioUri ? 1 : 0),
+            0
+          );
+          const allMissing = missingCount === totalSegments + totalDurableRecovered;
 
           if (allMissing) {
             Alert.alert(
@@ -387,6 +411,20 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return;
 
       try {
+        // Discard any durable recordings this stash owns BEFORE removing it, so
+        // the durable audio.aac is not left on disk to be re-offered by the
+        // launch recovery scan after the stash (its suppressor) is gone.
+        const sessions = await stashStorage.getStashedSessions();
+        const target = sessions.find((s) => s.id === stashId);
+        if (target) {
+          for (const slot of target.slots) {
+            if (slot.durable?.recordingId) {
+              await durableRecorder
+                .discard({ userId: scopedUserId, recordingId: slot.durable.recordingId })
+                .catch(() => {});
+            }
+          }
+        }
         await stashAudioManager.deleteStashedAudio(stashId);
         if (!isScopeCurrent(scopedUserId)) return;
         await stashStorage.removeStashedSession(stashId);

@@ -1,0 +1,64 @@
+name: iOS Native Typecheck
+
+# Root-cause prevention for the durable-recorder F1/F3 defects: the module's Swift
+# had NEVER compiled in CI (EAS cloud iOS is billing-gated, and ci.yml only runs
+# JS jobs), so a type-check-timeout compile error (F1) and a start-crash (F3)
+# reached the branch undetected. This job type-checks the ExpoModulesCore-free
+# Swift files — AdtsWriter.swift + DurableRecorderEngine.swift (the F1/F3 hotspots),
+# plus DurablePaths/DurableManifest they depend on — on a plain macOS runner, no EAS
+# billing required.
+#
+# Scope + limits:
+#   * CaptivetDurableRecorderModule.swift is EXCLUDED (needs the full ExpoModulesCore
+#     pod: Module/Record/decorators). ci/durable-expo-stubs.swift stands in for the
+#     one Expo symbol the engine references (DurableException).
+#   * A typecheck catches F1-class (compile / type-check) errors, NOT F3-class
+#     (runtime NSException) — F3's mitigation is the format-validity guard + JS
+#     fallback in the code itself.
+#   * Android Kotlin is out of scope (needs the full Expo/Gradle stack).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/captivet-durable-recorder/ios/**'
+      - 'ci/durable-expo-stubs.swift'
+      - '.github/workflows/ios-native-typecheck.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/captivet-durable-recorder/ios/**'
+      - 'ci/durable-expo-stubs.swift'
+      - '.github/workflows/ios-native-typecheck.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ios-typecheck-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  swift-typecheck:
+    name: Swift typecheck (durable recorder)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun swiftc --version
+
+      - name: Type-check ExpoModulesCore-free Swift (F1/F3 hotspots)
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          echo "Using simulator SDK: $SDK"
+          xcrun swiftc -typecheck \
+            -sdk "$SDK" \
+            -target arm64-apple-ios16.0-simulator \
+            modules/captivet-durable-recorder/ios/AdtsWriter.swift \
+            modules/captivet-durable-recorder/ios/DurablePaths.swift \
+            modules/captivet-durable-recorder/ios/DurableManifest.swift \
+            modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift \
+            ci/durable-expo-stubs.swift

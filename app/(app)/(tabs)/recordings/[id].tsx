@@ -801,7 +801,10 @@ export default function RecordingDetailScreen() {
         {/* Audio playback — audioFileUrl exists from confirm-upload onward.
             Drafts are excluded (their audio is local; resume path owns it). */}
         {recording.audioFileUrl && recording.status !== 'draft' && id && (
-          <RecordingAudioPlayer recordingId={id} />
+          <RecordingAudioPlayer
+            recordingId={id}
+            initialDurationSeconds={recording.audioDurationSeconds}
+          />
         )}
 
         {/* Reprocess — re-transcribe + regenerate SOAP with chosen models. Own card at top level so

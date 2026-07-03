@@ -194,11 +194,12 @@ function SeekBar({
   // adjustable control (swipe up/down seeks by the same 15s step as the buttons).
   const handleAccessibilityAction = useCallback(
     (event: { nativeEvent: { actionName: string } }) => {
+      if (!enabled) return;
       const delta = event.nativeEvent.actionName === 'increment' ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS;
       const target = Math.min(duration, Math.max(0, displayTime + delta));
       onSeekTo(target);
     },
-    [duration, displayTime, onSeekTo]
+    [duration, displayTime, enabled, onSeekTo]
   );
 
   return (
@@ -263,6 +264,7 @@ function SeekBar({
 
 interface RecordingAudioPlayerProps {
   recordingId: string;
+  initialDurationSeconds?: number | null;
 }
 
 /**
@@ -273,7 +275,10 @@ interface RecordingAudioPlayerProps {
  * once (it may simply have expired), then degrades to an inline
  * "Audio unavailable" — never an Alert loop.
  */
-export function RecordingAudioPlayer({ recordingId }: RecordingAudioPlayerProps) {
+export function RecordingAudioPlayer({
+  recordingId,
+  initialDurationSeconds,
+}: RecordingAudioPlayerProps) {
   const colors = useThemeColors();
   const [recordingActive, setRecordingActive] = useState(recordingActivity.isActive());
 
@@ -306,13 +311,31 @@ export function RecordingAudioPlayer({ recordingId }: RecordingAudioPlayerProps)
     );
   }
 
-  return <ActiveAudioPlayer recordingId={recordingId} />;
+  return (
+    <ActiveAudioPlayer
+      recordingId={recordingId}
+      initialDurationSeconds={initialDurationSeconds}
+    />
+  );
 }
 
-function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
+function ActiveAudioPlayer({
+  recordingId,
+  initialDurationSeconds,
+}: {
+  recordingId: string;
+  initialDurationSeconds?: number | null;
+}) {
   const colors = useThemeColors();
   const playback = useAudioPlayback();
   const { isLoaded, isPlaying, duration, isBuffering, currentTimeSV, currentTimeRef } = playback;
+  const sanitizedInitialDuration =
+    typeof initialDurationSeconds === 'number' &&
+    Number.isFinite(initialDurationSeconds) &&
+    initialDurationSeconds > 0
+      ? initialDurationSeconds
+      : 0;
+  const displayDuration = duration > 0 ? duration : sanitizedInitialDuration;
 
   const [phase, setPhase] = useState<PlayerPhase>('idle');
   const [segmentUrls, setSegmentUrls] = useState<string[]>([]);
@@ -517,6 +540,7 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
   );
 
   const isBusy = phase === 'fetching' || phase === 'loading' || (phase === 'ready' && isBuffering);
+  const canSeek = phase === 'ready' && duration > 0;
   const errorMessage =
     errorCode === 'PLAYBACK_FORBIDDEN' ? AUDIO_PLAYER_COPY.forbidden : AUDIO_PLAYER_COPY.unavailable;
   const canRetry = errorCode !== 'PLAYBACK_FORBIDDEN';
@@ -557,11 +581,11 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
           <View className="flex-row items-center">
             <Pressable
               onPress={() => handleSeek(-SEEK_STEP_SECONDS)}
-              disabled={phase !== 'ready'}
+              disabled={!canSeek}
               accessibilityRole="button"
               accessibilityLabel="Rewind 15 seconds"
               className="w-11 h-11 items-center justify-center"
-              style={{ opacity: phase === 'ready' ? 1 : 0.35 }}
+              style={{ opacity: canSeek ? 1 : 0.35 }}
             >
               <RotateCcw size={20} color={colors.contentSecondary} />
             </Pressable>
@@ -585,20 +609,20 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
 
             <Pressable
               onPress={() => handleSeek(SEEK_STEP_SECONDS)}
-              disabled={phase !== 'ready'}
+              disabled={!canSeek}
               accessibilityRole="button"
               accessibilityLabel="Skip ahead 15 seconds"
               className="w-11 h-11 items-center justify-center"
-              style={{ opacity: phase === 'ready' ? 1 : 0.35 }}
+              style={{ opacity: canSeek ? 1 : 0.35 }}
             >
               <RotateCw size={20} color={colors.contentSecondary} />
             </Pressable>
 
             <SeekBar
               currentTimeSV={currentTimeSV}
-              duration={duration}
+              duration={displayDuration}
               displayTime={displayTime}
-              enabled={phase === 'ready'}
+              enabled={canSeek}
               onScrubStart={handleScrubStart}
               onScrubEnd={handleScrubEnd}
               onScrubCancel={handleScrubCancel}

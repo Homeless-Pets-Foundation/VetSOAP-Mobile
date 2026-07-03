@@ -540,6 +540,7 @@ function ActiveAudioPlayer({
   );
 
   const isBusy = phase === 'fetching' || phase === 'loading' || (phase === 'ready' && isBuffering);
+  const canSeek = phase === 'ready' && duration > 0;
   const errorMessage =
     errorCode === 'PLAYBACK_FORBIDDEN' ? AUDIO_PLAYER_COPY.forbidden : AUDIO_PLAYER_COPY.unavailable;
   const canRetry = errorCode !== 'PLAYBACK_FORBIDDEN';
@@ -580,11 +581,11 @@ function ActiveAudioPlayer({
           <View className="flex-row items-center">
             <Pressable
               onPress={() => handleSeek(-SEEK_STEP_SECONDS)}
-              disabled={phase !== 'ready'}
+              disabled={!canSeek}
               accessibilityRole="button"
               accessibilityLabel="Rewind 15 seconds"
               className="w-11 h-11 items-center justify-center"
-              style={{ opacity: phase === 'ready' ? 1 : 0.35 }}
+              style={{ opacity: canSeek ? 1 : 0.35 }}
             >
               <RotateCcw size={20} color={colors.contentSecondary} />
             </Pressable>
@@ -608,11 +609,11 @@ function ActiveAudioPlayer({
 
             <Pressable
               onPress={() => handleSeek(SEEK_STEP_SECONDS)}
-              disabled={phase !== 'ready'}
+              disabled={!canSeek}
               accessibilityRole="button"
               accessibilityLabel="Skip ahead 15 seconds"
               className="w-11 h-11 items-center justify-center"
-              style={{ opacity: phase === 'ready' ? 1 : 0.35 }}
+              style={{ opacity: canSeek ? 1 : 0.35 }}
             >
               <RotateCw size={20} color={colors.contentSecondary} />
             </Pressable>
@@ -621,7 +622,7 @@ function ActiveAudioPlayer({
               currentTimeSV={currentTimeSV}
               duration={displayDuration}
               displayTime={displayTime}
-              enabled={phase === 'ready'}
+              enabled={canSeek}
               onScrubStart={handleScrubStart}
               onScrubEnd={handleScrubEnd}
               onScrubCancel={handleScrubCancel}

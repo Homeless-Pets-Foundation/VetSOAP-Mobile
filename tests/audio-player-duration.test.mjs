@@ -16,10 +16,12 @@ test('recording detail passes server duration into player fallback without enabl
   assert.match(player, /initialDurationSeconds\?: number \| null/);
   assert.match(player, /const sanitizedInitialDuration =/);
   assert.match(player, /const displayDuration = duration > 0 \? duration : sanitizedInitialDuration/);
+  assert.match(player, /const canSeek = phase === 'ready' && duration > 0/);
   assert.match(player, /if \(!enabled\) return;/);
 
   const seekBarBlock = player.match(/<SeekBar[\s\S]*?\/>/);
   assert.ok(seekBarBlock, 'SeekBar render should exist');
   assert.match(seekBarBlock[0], /duration=\{displayDuration\}/);
-  assert.match(seekBarBlock[0], /enabled=\{phase === 'ready'\}/);
+  assert.match(seekBarBlock[0], /enabled=\{canSeek\}/);
+  assert.match(player, /disabled=\{!canSeek\}/);
 });

@@ -194,11 +194,12 @@ function SeekBar({
   // adjustable control (swipe up/down seeks by the same 15s step as the buttons).
   const handleAccessibilityAction = useCallback(
     (event: { nativeEvent: { actionName: string } }) => {
+      if (!enabled) return;
       const delta = event.nativeEvent.actionName === 'increment' ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS;
       const target = Math.min(duration, Math.max(0, displayTime + delta));
       onSeekTo(target);
     },
-    [duration, displayTime, onSeekTo]
+    [duration, displayTime, enabled, onSeekTo]
   );
 
   return (
@@ -263,6 +264,7 @@ function SeekBar({
 
 interface RecordingAudioPlayerProps {
   recordingId: string;
+  initialDurationSeconds?: number | null;
 }
 
 /**
@@ -273,7 +275,10 @@ interface RecordingAudioPlayerProps {
  * once (it may simply have expired), then degrades to an inline
  * "Audio unavailable" — never an Alert loop.
  */
-export function RecordingAudioPlayer({ recordingId }: RecordingAudioPlayerProps) {
+export function RecordingAudioPlayer({
+  recordingId,
+  initialDurationSeconds,
+}: RecordingAudioPlayerProps) {
   const colors = useThemeColors();
   const [recordingActive, setRecordingActive] = useState(recordingActivity.isActive());
 
@@ -306,13 +311,31 @@ export function RecordingAudioPlayer({ recordingId }: RecordingAudioPlayerProps)
     );
   }
 
-  return <ActiveAudioPlayer recordingId={recordingId} />;
+  return (
+    <ActiveAudioPlayer
+      recordingId={recordingId}
+      initialDurationSeconds={initialDurationSeconds}
+    />
+  );
 }
 
-function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
+function ActiveAudioPlayer({
+  recordingId,
+  initialDurationSeconds,
+}: {
+  recordingId: string;
+  initialDurationSeconds?: number | null;
+}) {
   const colors = useThemeColors();
   const playback = useAudioPlayback();
   const { isLoaded, isPlaying, duration, isBuffering, currentTimeSV, currentTimeRef } = playback;
+  const sanitizedInitialDuration =
+    typeof initialDurationSeconds === 'number' &&
+    Number.isFinite(initialDurationSeconds) &&
+    initialDurationSeconds > 0
+      ? initialDurationSeconds
+      : 0;
+  const displayDuration = duration > 0 ? duration : sanitizedInitialDuration;
 
   const [phase, setPhase] = useState<PlayerPhase>('idle');
   const [segmentUrls, setSegmentUrls] = useState<string[]>([]);
@@ -596,7 +619,7 @@ function ActiveAudioPlayer({ recordingId }: { recordingId: string }) {
 
             <SeekBar
               currentTimeSV={currentTimeSV}
-              duration={duration}
+              duration={displayDuration}
               displayTime={displayTime}
               enabled={phase === 'ready'}
               onScrubStart={handleScrubStart}

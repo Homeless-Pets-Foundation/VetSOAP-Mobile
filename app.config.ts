@@ -118,7 +118,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     name: 'Captivet',
     slug: 'vetsoap-mobile',
     scheme: 'captivet',
-    version: '1.13.7',
+    version: '1.13.9',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
@@ -190,7 +190,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         'android.permission.READ_MEDIA_IMAGES',
         'android.permission.READ_MEDIA_VIDEO',
       ],
-      versionCode: 1,
+      versionCode: 83,
     },
     web: {
       favicon: './assets/favicon.png',

@@ -977,6 +977,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     resetDurableState();
   }, [resetElapsedClock, resetDurableState]);
 
+  const exposedActiveDurableRecordingId = activeDurableRecordingId ?? durableRecordingIdRef.current;
+
   return {
     state,
     isStarting,
@@ -987,7 +989,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     getLiveStats,
     audioUri,
-    mimeType: activeDurableRecordingId ? 'audio/aac' : 'audio/x-m4a',
+    mimeType: exposedActiveDurableRecordingId ? 'audio/aac' : 'audio/x-m4a',
     getPersistableSnapshot: () => ({
       audioUri: latestAudioUriRef.current,
       duration: finalDurationRef.current > 0
@@ -995,7 +997,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         : Math.max(elapsedSecondsRef.current, getElapsedDurationSeconds(), getNativeDurationSeconds()),
       maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     }),
-    activeDurableRecordingId,
+    activeDurableRecordingId: exposedActiveDurableRecordingId,
     recoverableDurableRecordingId: null,
     committedThroughMs,
     completeFrameBytes,

@@ -12,10 +12,16 @@
  * manifests are NOT gated by this flag — only new capture + Resume->Continue.
  */
 
-let captureEnabled = false;
+const forceCapture = process.env.EXPO_PUBLIC_FORCE_DURABLE_CAPTURE === 'true';
+
+let captureEnabled = forceCapture;
 
 /** Update the cached capture flag from a server-provided value. */
 export function setDurableCaptureFlag(value: unknown): void {
+  if (forceCapture) {
+    captureEnabled = true;
+    return;
+  }
   if (typeof value === 'boolean') {
     captureEnabled = value;
   } else if (typeof value === 'string') {
@@ -30,5 +36,5 @@ export function isDurableCaptureEnabled(): boolean {
 
 /** Test-only reset. */
 export function __resetDurableCaptureFlag(): void {
-  captureEnabled = false;
+  captureEnabled = forceCapture;
 }

@@ -70,7 +70,8 @@ test('client.ts: 426 is a dedicated terminal-non-auth branch (no refresh/retry)'
 
 test('durable capture flag is server-driven, default off', async () => {
   const src = await read('src/lib/durableFlag.ts');
-  assert.match(src, /let captureEnabled = false/);
+  assert.match(src, /const forceCapture = process\.env\.EXPO_PUBLIC_FORCE_DURABLE_CAPTURE === 'true'/);
+  assert.match(src, /let captureEnabled = forceCapture/);
   assert.match(src, /export function isDurableCaptureEnabled/);
 });
 
@@ -160,6 +161,8 @@ test('record.tsx durable capture: ctx+watchdog, silent-guard peak, Continue bloc
   assert.match(src, /slot\.durable\.peakDb <= SILENT_METERING_THRESHOLD_DB/); // synthetic silent guard
   assert.match(src, /if \(slot\?\.durable\) \{[\s\S]*?Recording Complete/); // Continue blocked
   assert.match(src, /if \(durableActiveRef\.current\) return; \/\/ durable module owns this/);
+  assert.match(src, /const durableActive = !!recorder\.activeDurableRecordingId;[\s\S]*?const isActive = !durableActive &&/);
+  assert.match(src, /\[recorder\.state, recorder\.activeDurableRecordingId, interruptionPendingResume\]/);
 });
 
 test('analytics defines the durable event catalog', async () => {
@@ -218,6 +221,11 @@ test('durable free-space gate + hook start timeout are wired', async () => {
   const hook = await read('src/hooks/useAudioRecorder.ts');
   // Hook-internal durable start timeout (unwinds isStartingRef on a hung native start).
   assert.match(hook, /DURABLE_START_TIMEOUT_MS/);
+  // Expose the synchronous durable ref if React batches state oddly; otherwise
+  // record.tsx can briefly see state='recording' with activeDurableRecordingId=null
+  // and start the legacy audio-focus listener, which self-interrupts durable.
+  assert.match(hook, /const exposedActiveDurableRecordingId = activeDurableRecordingId \?\? durableRecordingIdRef\.current/);
+  assert.match(hook, /activeDurableRecordingId: exposedActiveDurableRecordingId/);
   // The native start is captured then raced against the timeout, so a LATE-
   // resolving start (after we fell back to expo) can be discarded to release the
   // mic/foreground service instead of orphaning the capture.
@@ -225,6 +233,10 @@ test('durable free-space gate + hook start timeout are wired', async () => {
   assert.match(hook, /Promise\.race\(\[\s*startPromise/);
   assert.match(hook, /durableStartTimedOut = true/);
   assert.match(hook, /if \(durableStartTimedOut\) \{[\s\S]*?durableRecorder\s*\.discard\(/);
+
+  const flag = await read('src/lib/durableFlag.ts');
+  assert.match(flag, /EXPO_PUBLIC_FORCE_DURABLE_CAPTURE/);
+  assert.match(flag, /if \(forceCapture\) \{[\s\S]*?captureEnabled = true;/);
 });
 
 test('support-staff vault preserves durable BYTES + cross-user recovered upload', async () => {

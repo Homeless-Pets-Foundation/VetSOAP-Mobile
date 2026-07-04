@@ -1097,22 +1097,19 @@ function RecordingSession() {
     };
   }, []);
 
-  // Hold the audio-focus listener while a slot is actively recording or
-  // paused — and ALSO while we're in the post-interruption pending-resume
-  // window, otherwise we'd miss the GAIN event when the interrupting
-  // source (call, alarm) releases focus and never auto-resume on
-  // declined / missed-call paths. The ref is read synchronously so we
-  // don't hit the abandon-then-re-request cycle that batched setState
-  // would force on us.
+  // Hold the legacy expo-recorder audio-focus listener while a non-durable slot
+  // is active, and also while we're in the post-interruption pending-resume
+  // window so we don't miss the GAIN event when a call/alarm releases focus.
   useEffect(() => {
-    const isActive = recorder.state === 'recording' || recorder.state === 'paused';
+    const durableActive = !!recorder.activeDurableRecordingId;
+    const isActive = !durableActive && (recorder.state === 'recording' || recorder.state === 'paused');
     const hasPendingResume = !!interruptionPendingResumeRef.current;
     if (isActive || hasPendingResume) {
       audioFocus.startMonitoring().catch(() => {});
     } else {
       audioFocus.stopMonitoring().catch(() => {});
     }
-  }, [recorder.state, interruptionPendingResume]);
+  }, [recorder.state, recorder.activeDurableRecordingId, interruptionPendingResume]);
 
   // NO periodic interval checkpoint. We deliberately never stop the live
   // recorder mid-exam. The previous "flush a durable segment every 5 min"

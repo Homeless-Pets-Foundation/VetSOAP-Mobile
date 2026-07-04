@@ -522,10 +522,14 @@ function ActiveAudioPlayer({
 
   const handleSeek = useCallback(
     (deltaSeconds: number) => {
-      if (phase !== 'ready') return;
-      playback.seekTo((currentTimeRef.current ?? 0) + deltaSeconds).catch(() => {});
+      if (phase !== 'ready' || duration <= 0) return;
+      const target = Math.min(duration, Math.max(0, (currentTimeRef.current ?? 0) + deltaSeconds));
+      setDisplayTime(target);
+      currentTimeSV.value = target;
+      currentTimeRef.current = target;
+      playback.seekTo(target).catch(() => {});
     },
-    [phase, playback, currentTimeRef]
+    [phase, duration, playback, currentTimeRef, currentTimeSV]
   );
 
   const handleSelectSegment = useCallback(

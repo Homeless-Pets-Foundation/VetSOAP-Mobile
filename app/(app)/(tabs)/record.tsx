@@ -801,6 +801,9 @@ function RecordingSession() {
       audioCaptureDoneRef.current = false;
       return () => { if (timerId) clearTimeout(timerId); };
     }
+    if (recorder.isStarting) {
+      return () => { if (timerId) clearTimeout(timerId); };
+    }
     if (manualFinishSlotIdRef.current && manualFinishSlotIdRef.current === session.recorderBoundToSlotId) {
       return () => { if (timerId) clearTimeout(timerId); };
     }
@@ -924,7 +927,7 @@ function RecordingSession() {
 
     return () => { if (timerId) clearTimeout(timerId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends only on recorder state transitions, not on session/slot refs which would cause infinite loops
-  }, [recorder.state, recorder.audioUri, recorder.duration, recorder.maxMetering, recorder.activeDurableRecordingId, saveAudio, buildPersistedSlot, setDurableRecording]);
+  }, [recorder.state, recorder.isStarting, recorder.audioUri, recorder.duration, recorder.maxMetering, recorder.activeDurableRecordingId, saveAudio, buildPersistedSlot, setDurableRecording]);
 
   // Keep the multi-patient record-first warning scoped to the current active
   // appointment. A reset or clean single-patient return should warn again later.
@@ -1296,36 +1299,37 @@ function RecordingSession() {
     }
   }, [session.activeIndex]);
 
-  // Auto-pause when swiping away from a recording slot
+  // Shared tab/swipe selection: if leaving a live recording, park it first so
+  // returning to that patient exposes Resume instead of hiding an active owner.
+  const selectPatientIndex = useCallback(
+    (index: number, opts?: { fromSwipe?: boolean }) => {
+      if (index === session.activeIndex) return;
+      Haptics.selectionAsync().catch(() => {});
+      const leavingSlotId = session.recorderBoundToSlotId;
+      if (leavingSlotId && recorder.state === 'recording') {
+        (async () => {
+          try {
+            await recorder.pause();
+            setAudioState(leavingSlotId, 'paused');
+          } catch {
+            try { await recorder.stop(); } catch {}
+          }
+        })().catch(() => {});
+      }
+      if (opts?.fromSwipe) swipeChangeRef.current = true;
+      setActiveIndex(index);
+    },
+    [session.activeIndex, session.recorderBoundToSlotId, recorder, setActiveIndex, setAudioState]
+  );
+
   const handleScrollEnd = useCallback(
     (e: { nativeEvent: { contentOffset: { x: number } } }) => {
       isScrollingRef.current = false;
       const newIndex = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
       const clampedIndex = Math.max(0, Math.min(newIndex, session.slots.length - 1));
-
-      if (clampedIndex !== session.activeIndex) {
-        // Haptic feedback on swipe between patients
-        Haptics.selectionAsync().catch(() => {});
-
-        // If leaving a recording slot, auto-pause so user can resume with one tap
-        if (session.recorderBoundToSlotId && recorder.state === 'recording') {
-          (async () => {
-            try {
-              await recorder.pause();
-              setAudioState(session.recorderBoundToSlotId!, 'paused');
-            } catch {
-              // pause() rethrew after internal cleanup — try to stop as fallback
-              try { await recorder.stop(); } catch {}
-              // The audio-capture effect will save the segment if stop succeeded
-            }
-          })().catch(() => {});
-        }
-        swipeChangeRef.current = true;
-        setActiveIndex(clampedIndex);
-      }
+      selectPatientIndex(clampedIndex, { fromSwipe: true });
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- recorder and setActiveIndex accessed via refs/stable dispatch
-    [session.activeIndex, session.slots.length, session.recorderBoundToSlotId, recorder.state, screenWidth, setAudioState]
+    [screenWidth, selectPatientIndex, session.slots.length]
   );
 
   const handleScrollBegin = useCallback(() => {
@@ -1398,6 +1402,7 @@ function RecordingSession() {
       if (startInFlightRef.current) return;
       startInFlightRef.current = true;
       (async () => {
+        let resumeDurableRecordingId: string | null = null;
         try {
           // Server-enforced min-version floor: block STARTING new capture (fresh or
           // Resume→Continue — every mic start funnels through here) on a build known
@@ -1416,27 +1421,26 @@ function RecordingSession() {
           }
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
           bindRecorder(slotId);
-          // Durable capture only for a FRESH recording (no durable/segments yet)
-          // when the server-driven flag is on and the native module is available.
-          // recorder.start(ctx) itself falls back to expo-audio on durable failure.
           const startSlot = sessionRef.current.slots.find((s) => s.id === slotId);
-          const freshDurable =
-            isDurableCaptureEnabled() &&
-            durableRecorder.isAvailable() &&
-            !!user?.id &&
-            !!startSlot &&
-            !startSlot.durable &&
-            startSlot.segments.length === 0;
-          if (freshDurable && user?.id) {
-            // Storage Policy (plan): block a new durable recording below 250 MiB
-            // free, warn below 500 MiB. Unknown free space fails open ('ok').
+          const existingDurable = startSlot?.durable ?? null;
+          if (existingDurable) {
+            if (!user?.id || !isDurableCaptureEnabled() || !durableRecorder.isAvailable() || existingDurable.recoveredAudioUri) {
+              unbindRecorder();
+              setAudioState(slotId, 'stopped');
+              Alert.alert(
+                'Recording Complete',
+                'This recording can be submitted as-is. Continuing this recording is not available on this device.',
+              );
+              return;
+            }
             const spaceGate = checkPreRecordFreeSpace();
             if (spaceGate === 'block') {
               unbindRecorder();
+              setAudioState(slotId, 'stopped');
               trackEvent({ name: 'durable_low_space_stop', props: { free_bytes: getFreeDiskBytes() ?? undefined } });
               Alert.alert(
                 'Not Enough Storage',
-                'Your device is too low on free space to start a recording. Free up space (about 250 MB) and try again.',
+                'Your device is too low on free space to continue recording. Free up space (about 250 MB) and try again.',
               );
               return;
             }
@@ -1446,19 +1450,58 @@ function RecordingSession() {
                 'Your device is low on free space. The recording may stop early if space runs out — free up space if you can.',
               );
             }
-            const recordingId = newDurableRecordingId();
-            // Write the active pointer BEFORE start (death-surviving breadcrumb),
-            // but bound the SecureStore write so a hung Keystore can't strand the
-            // start handler before the watchdog/finally — see raceDurableActiveWrite.
+            resumeDurableRecordingId = existingDurable.recordingId;
             await raceDurableActiveWrite(
-              durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
+              durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
             );
             await withDurableOpWatchdog(
-              recorder.start({ userId: user.id, slotId, recordingId }),
-              'start',
+              recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable }),
+              'resume',
             );
           } else {
-            await recorder.start();
+            // Durable capture only for a FRESH recording (no durable/segments yet)
+            // when the server-driven flag is on and the native module is available.
+            // recorder.start(ctx) itself falls back to expo-audio on durable failure.
+            const freshDurable =
+              isDurableCaptureEnabled() &&
+              durableRecorder.isAvailable() &&
+              !!user?.id &&
+              !!startSlot &&
+              !startSlot.durable &&
+              startSlot.segments.length === 0;
+            if (freshDurable && user?.id) {
+              // Storage Policy (plan): block a new durable recording below 250 MiB
+              // free, warn below 500 MiB. Unknown free space fails open ('ok').
+              const spaceGate = checkPreRecordFreeSpace();
+              if (spaceGate === 'block') {
+                unbindRecorder();
+                trackEvent({ name: 'durable_low_space_stop', props: { free_bytes: getFreeDiskBytes() ?? undefined } });
+                Alert.alert(
+                  'Not Enough Storage',
+                  'Your device is too low on free space to start a recording. Free up space (about 250 MB) and try again.',
+                );
+                return;
+              }
+              if (spaceGate === 'warn') {
+                Alert.alert(
+                  'Low Storage',
+                  'Your device is low on free space. The recording may stop early if space runs out — free up space if you can.',
+                );
+              }
+              const recordingId = newDurableRecordingId();
+              // Write the active pointer BEFORE start (death-surviving breadcrumb),
+              // but bound the SecureStore write so a hung Keystore can't strand the
+              // start handler before the watchdog/finally — see raceDurableActiveWrite.
+              await raceDurableActiveWrite(
+                durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
+              );
+              await withDurableOpWatchdog(
+                recorder.start({ userId: user.id, slotId, recordingId }),
+                'start',
+              );
+            } else {
+              await recorder.start();
+            }
           }
           if (recordFirstEnabled) {
             const slot = sessionRef.current.slots.find((s) => s.id === slotId);
@@ -1473,8 +1516,14 @@ function RecordingSession() {
           setAudioState(slotId, 'recording');
         } catch (error) {
           unbindRecorder();
+          if (resumeDurableRecordingId) {
+            durableActiveStore.clearActive(resumeDurableRecordingId).catch(() => {});
+            setAudioState(slotId, 'stopped');
+          }
           const errMsg = error instanceof Error ? error.message.toLowerCase() : '';
-          const msg = errMsg.includes('permission')
+          const msg = resumeDurableRecordingId
+            ? 'Could not continue this recording. You can submit it as-is or delete and start over.'
+            : errMsg.includes('permission')
             ? 'Microphone permission is required. Please grant access in Settings.'
             : errMsg.includes('not ready')
               ? 'The recorder is still finishing a previous recording. Please try again in a moment.'
@@ -1676,24 +1725,69 @@ function RecordingSession() {
   const handleContinueRecording = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
-      // v1: a durable recording is one continuous audio.aac for the whole
-      // appointment. Appending a second segment would require the unsafe
-      // multi-segment AAC path, so Continue/Add-More is blocked for durable
-      // (and specifically for edited durable, per the plan). Submit or stash.
-      if (slot?.durable) {
+      if (slot?.durable && (slot.uploadStatus === 'success' || slot.durable.recoveredAudioUri)) {
         Alert.alert(
           'Recording Complete',
-          'This recording is ready to submit. Adding more audio to it is not supported — submit it or use Save for Later.',
+          'This recording can be submitted as-is or deleted and started over.',
         );
         return;
       }
-      if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
-        recorder.resetWithoutDelete();
+      const beginContinue = () => {
+        if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
+          recorder.resetWithoutDelete();
+        }
+        if (slot) deleteOrphanServerRecording(slot);
+        continueRecording(slotId);
+        if (slot?.durable) startRecordingForSlot(slotId);
+      };
+      if (slot?.durable && session.recorderBoundToSlotId && session.recorderBoundToSlotId !== slotId) {
+        const boundSlot = session.slots.find((s) => s.id === session.recorderBoundToSlotId);
+        if (boundSlot && recorder.state === 'recording') {
+          Alert.alert(
+            'Stop Current Recording?',
+            `Stop recording for ${boundSlot.formData.patientName || 'the other patient'} before continuing this one?`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Stop & Continue',
+                onPress: () => {
+                  if (slot) deleteOrphanServerRecording(slot);
+                  continueRecording(slotId);
+                  enqueuePendingStart(slotId);
+                  (async () => {
+                    try {
+                      await recorder.stop();
+                    } catch {
+                      removePendingStart(slotId);
+                      setAudioState(slotId, 'stopped');
+                      Alert.alert('Recording Error', 'Failed to stop the current recording.');
+                    }
+                  })().catch(() => {});
+                },
+              },
+            ]
+          );
+          return;
+        }
+        if (boundSlot && recorder.state === 'paused') {
+          if (slot) deleteOrphanServerRecording(slot);
+          continueRecording(slotId);
+          enqueuePendingStart(slotId);
+          (async () => {
+            try {
+              await recorder.stop();
+            } catch {
+              removePendingStart(slotId);
+              setAudioState(slotId, 'stopped');
+              Alert.alert('Recording Error', 'Failed to stop the current recording.');
+            }
+          })().catch(() => {});
+          return;
+        }
       }
-      if (slot) deleteOrphanServerRecording(slot);
-      continueRecording(slotId);
+      beginContinue();
     },
-    [session.recorderBoundToSlotId, session.slots, continueRecording, recorder, deleteOrphanServerRecording]
+    [session.recorderBoundToSlotId, session.slots, continueRecording, recorder, deleteOrphanServerRecording, startRecordingForSlot, enqueuePendingStart, removePendingStart, setAudioState]
   );
 
   const handleRecordAgain = useCallback(
@@ -2864,6 +2958,20 @@ function RecordingSession() {
     ]
   );
 
+  const recordSelectedSlotUploadNull = useCallback((slotId: string, source: 'single' | 'all') => {
+    const failedSnapshot = sessionRef.current.slots.find((s) => s.id === slotId);
+    const slotIndex = sessionRef.current.slots.findIndex((s) => s.id === slotId);
+    breadcrumb('upload', 'submit_selected_slot_returned_null', {
+      source,
+      slot_index: slotIndex,
+      has_durable: !!failedSnapshot?.durable,
+      segment_count: failedSnapshot?.segments.length ?? 0,
+      audio_state: failedSnapshot?.audioState ?? 'missing',
+      has_server_draft: !!failedSnapshot?.serverDraftId,
+      has_pending_confirm: !!failedSnapshot?.pendingConfirm,
+    });
+  }, []);
+
   const handleSubmitSingle = useCallback(
     (slotId: string) => {
       const slot = sessionRef.current.slots.find((s) => s.id === slotId);
@@ -2919,6 +3027,7 @@ function RecordingSession() {
             // state and Sentry. If the failure was a transient r2_put network
             // death (RN-4 fingerprint), salvage the work into a stash instead
             // of leaving the user with an unactionable error badge.
+            recordSelectedSlotUploadNull(slotId, 'single');
             await tryAutoStashOnNetworkDeath([slotId]);
           }
         } finally {
@@ -2932,7 +3041,7 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
+    [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
   );
 
   const handleSubmitAll = useCallback(() => {
@@ -3002,6 +3111,7 @@ function RecordingSession() {
           if (!recordingId) {
             allSuccess = false;
             failedSlotIds.push(slot.id);
+            recordSelectedSlotUploadNull(slot.id, 'all');
           }
         }
 
@@ -3047,7 +3157,7 @@ function RecordingSession() {
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
-  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
+  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
     const shouldWarnRecordFirstMultiPatient =
@@ -3802,9 +3912,7 @@ function RecordingSession() {
         <PatientTabStrip
           slots={session.slots}
           activeIndex={session.activeIndex}
-          onSelectIndex={(index) => {
-            setActiveIndex(index);
-          }}
+          onSelectIndex={selectPatientIndex}
           onAddPatient={handleAddPatient}
         />
       </View>

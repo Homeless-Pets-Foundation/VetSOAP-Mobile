@@ -14,6 +14,7 @@ import { reportClientError } from '../api/telemetry';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import { isDurableCaptureEnabled } from '../lib/durableFlag';
 import { trackEvent } from '../lib/analytics';
+import type { DurableSlotRef } from '../types/multiPatient';
 
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped' | 'interrupted';
 
@@ -71,6 +72,13 @@ export interface DurableStartContext {
   recordingId: string;
 }
 
+/** Context required to append to an already-finished durable capture. */
+export interface DurableResumeContext {
+  userId: string;
+  slotId: string;
+  durable: DurableSlotRef;
+}
+
 /** Snapshot of a finished durable capture, for building the slot's durable ref. */
 export interface DurableSnapshot {
   recordingId: string;
@@ -112,6 +120,7 @@ export interface UseAudioRecorderReturn {
   /** Snapshot of a finished durable capture, or null when the expo path is used. */
   getDurableSnapshot: () => DurableSnapshot | null;
   start: (ctx?: DurableStartContext) => Promise<void>;
+  resumeDurable: (ctx: DurableResumeContext) => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
   stop: () => Promise<void>;
@@ -771,6 +780,127 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     }
   }, [finalizeDuration, freezeElapsedClock, recorder]);
 
+  const resumeDurable = useCallback(async (ctx: DurableResumeContext) => {
+    if (state !== 'idle') {
+      throw new Error(`Recorder not ready (state: ${state})`);
+    }
+    if (!durableRecorder.isAvailable()) {
+      throw new Error('Durable recorder native module is unavailable');
+    }
+    if (resumeInFlightRef.current) {
+      throw new Error('Durable resume already in progress');
+    }
+    resumeInFlightRef.current = true;
+    setIsStarting(true);
+    const seedSeconds = Math.floor(Math.max(0, ctx.durable.durationMs) / 1000);
+    let failureHandled = false;
+    const handleResumeFailure = (error: unknown) => {
+      if (failureHandled) return;
+      failureHandled = true;
+      if (durableRecordingIdRef.current !== ctx.durable.recordingId) return;
+      durableRecorder.stop({ userId: ctx.userId, recordingId: ctx.durable.recordingId }).catch(() => {});
+      trackEvent({ name: 'durable_resume_failed', props: { error_code: 'RESUME_EXISTING_FAILED' } });
+      reportClientError({
+        phase: 'recorder_resume',
+        severity: 'warning',
+        errorCode: 'DURABLE_RESUME_EXISTING_FAILED',
+        message: String(error),
+        durationSeconds: seedSeconds,
+      });
+      resetDurableState();
+      setState('stopped');
+    };
+    try {
+      const existingManifest = await durableRecorder.getManifest({
+        userId: ctx.userId,
+        recordingId: ctx.durable.recordingId,
+      });
+      if (!existingManifest) {
+        throw new Error('Durable resume: native manifest missing');
+      }
+
+      backendRef.current = 'durable';
+      durableUserIdRef.current = ctx.userId;
+      durableSlotIdRef.current = ctx.slotId;
+      durableRecordingIdRef.current = ctx.durable.recordingId;
+      durableSampleRateRef.current = existingManifest.sampleRate;
+      durableBitrateRef.current = existingManifest.bitrate;
+      durablePeakDbRef.current = Math.max(ctx.durable.peakDb, existingManifest.peakDb);
+      durableDurationMsRef.current = Math.max(ctx.durable.durationMs, existingManifest.durationMs);
+      durableLiveRef.current = {
+        meteringDb: durablePeakDbRef.current,
+        capturedDurationMs: durableDurationMsRef.current,
+      };
+      committedThroughMsRef.current = durableDurationMsRef.current;
+      lastCommitAtRef.current = null;
+      setCommittedThroughMs(durableDurationMsRef.current);
+      setCompleteFrameBytes(existingManifest.audioFile.completeFrameBytes);
+      setActiveDurableRecordingId(ctx.durable.recordingId);
+      elapsedBeforeCurrentRunMsRef.current = durableDurationMsRef.current;
+      recordingStartedAtMsRef.current = Date.now();
+      setElapsedSecondsValue(seedSeconds);
+      setFinalDuration(seedSeconds);
+      finalDurationRef.current = seedSeconds;
+      capturedDurationRef.current = seedSeconds;
+      setAudioUri(null);
+      latestAudioUriRef.current = null;
+      maxMeteringRef.current = durablePeakDbRef.current;
+      hasMeteringSampleRef.current = durablePeakDbRef.current > -160;
+      mediaResetAlertedRef.current = false;
+      hasErrorAlertedRef.current = false;
+
+      setState('recording');
+      trackEvent({
+        name: 'durable_recorder_started',
+        props: { slot_index: 0, sample_rate: existingManifest.sampleRate, bitrate: existingManifest.bitrate },
+      });
+
+      const resumePromise = durableRecorder.resume({
+        userId: ctx.userId,
+        recordingId: ctx.durable.recordingId,
+      });
+      resumePromise.then((manifest) => {
+        if (durableRecordingIdRef.current !== ctx.durable.recordingId) return;
+        durableSampleRateRef.current = manifest.sampleRate;
+        durableBitrateRef.current = manifest.bitrate;
+        durableDurationMsRef.current = manifest.durationMs;
+        durablePeakDbRef.current = Math.max(ctx.durable.peakDb, manifest.peakDb);
+        durableLiveRef.current = {
+          meteringDb: durablePeakDbRef.current,
+          capturedDurationMs: Math.max(ctx.durable.durationMs, manifest.capturedDurationMs),
+        };
+        committedThroughMsRef.current = Math.max(ctx.durable.durationMs, manifest.durationMs);
+        setCommittedThroughMs(committedThroughMsRef.current);
+        setCompleteFrameBytes(manifest.audioFile.completeFrameBytes);
+        resumeInFlightRef.current = false;
+        setIsStarting(false);
+      }).catch(handleResumeFailure);
+
+      setTimeout(() => {
+        durableRecorder.getStatus()
+          .then((status) => {
+            if (durableRecordingIdRef.current !== ctx.durable.recordingId || failureHandled) return;
+            if (status?.recordingId === ctx.durable.recordingId && status.state === 'recording') {
+              resumeInFlightRef.current = false;
+              setIsStarting(false);
+              return;
+            }
+            handleResumeFailure(new Error('durable resume status check failed'));
+          })
+          .catch(handleResumeFailure);
+      }, DURABLE_RESUME_TIMEOUT_MS);
+    } catch (error) {
+      if (__DEV__) console.error('[AudioRecorder] durable resume existing failed:', error);
+      handleResumeFailure(error);
+      throw error;
+    } finally {
+      if (failureHandled || durableRecordingIdRef.current !== ctx.durable.recordingId) {
+        resumeInFlightRef.current = false;
+        setIsStarting(false);
+      }
+    }
+  }, [resetDurableState, setElapsedSecondsValue, state]);
+
   const resume = useCallback(async () => {
     if (backendRef.current === 'durable') {
       const userId = durableUserIdRef.current;
@@ -1004,6 +1134,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     lastCommitAt: lastCommitAtRef.current,
     getDurableSnapshot,
     start,
+    resumeDurable,
     pause,
     resume,
     stop,

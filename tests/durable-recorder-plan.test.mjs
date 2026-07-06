@@ -155,11 +155,12 @@ test('AuthProvider runs the durable recovery scan in the post-setUserId one-shot
   assert.ok(resets.length >= 2, `expected >=2 durableRecoveryStore.clear(), found ${resets.length}`);
 });
 
-test('record.tsx durable capture: ctx+watchdog, silent-guard peak, Continue blocked, focus skip', async () => {
+test('record.tsx durable capture: ctx+watchdog, silent-guard peak, Continue resumes, focus skip', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
   assert.match(src, /withDurableOpWatchdog\(\s*recorder\.start\(\{ userId: user\.id, slotId, recordingId \}\)/);
   assert.match(src, /slot\.durable\.peakDb <= SILENT_METERING_THRESHOLD_DB/); // synthetic silent guard
-  assert.match(src, /if \(slot\?\.durable\) \{[\s\S]*?Recording Complete/); // Continue blocked
+  assert.doesNotMatch(src, /if \(slot\?\.durable\) \{[\s\S]*?Adding more audio to it is not supported/);
+  assert.match(src, /if \(slot\?\.durable\) startRecordingForSlot\(slotId\)/);
   assert.match(src, /if \(durableActiveRef\.current\) return; \/\/ durable module owns this/);
   assert.match(src, /const durableActive = !!recorder\.activeDurableRecordingId;[\s\S]*?const isActive = !durableActive &&/);
   assert.match(src, /\[recorder\.state, recorder\.activeDurableRecordingId, interruptionPendingResume\]/);
@@ -267,6 +268,16 @@ test('durable-only slots are submit-reachable (per-patient + Submit All)', async
   const rec = await read('app/(app)/(tabs)/record.tsx');
   assert.match(rec, /\(s\.segments\.length > 0 \|\| !!s\.durable\) &&\s*\n\s*s\.uploadStatus !== 'success'/);
   assert.match(rec, /s\.segments\.length > 0 \|\| !!s\.durable \|\| s\.audioState === 'recording'/);
+});
+
+test('Submit All records non-PHI diagnostics when a selected slot uploads no audio', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(rec, /breadcrumb\('upload', 'submit_selected_slot_returned_null'/);
+  assert.match(rec, /has_durable: !!failedSnapshot\?\.durable/);
+  assert.match(rec, /segment_count: failedSnapshot\?\.segments\.length/);
+  assert.match(rec, /audio_state: failedSnapshot\?\.audioState/);
+  assert.match(rec, /has_server_draft: !!failedSnapshot\?\.serverDraftId/);
+  assert.match(rec, /has_pending_confirm: !!failedSnapshot\?\.pendingConfirm/);
 });
 
 test('interrupted durable capture attributes committed duration (not 0)', async () => {
@@ -449,12 +460,108 @@ test('discardCurrentSession discards a finished durable slot\'s native files', a
   assert.match(rec.slice(iFn, iRelease), /if \(slot\.durable\.recoveredAudioUri\) safeDeleteFile\(slot\.durable\.recoveredAudioUri\)/);
 });
 
-test('a stopped durable slot shows Delete & Start Over, not Try Again', async () => {
+test('a stopped durable slot shows Continue Recording + Delete & Start Over, not Try Again', async () => {
   const card = await read('src/components/PatientSlotCard.tsx');
   // Durable completed slot (empty segments) gets its own controls branch and the
   // error-recovery Try Again branch explicitly excludes durable.
-  assert.match(card, /isStopped && !hasSegments && isDurableSlot && !isFinishSaving/);
+  assert.match(card, /const canContinueDurable = isDurableSlot && slot\.uploadStatus !== 'success' && !slot\.durable\?\.recoveredAudioUri/);
+  assert.match(card, /const canDiscardDurable = isDurableSlot && slot\.uploadStatus !== 'success'/);
+  const iDurable = card.indexOf('isStopped && !hasSegments && canDiscardDurable && !isFinishSaving');
+  const iTryAgain = card.indexOf('isStopped && !hasSegments && !isDurableSlot && !isFinishSaving', iDurable);
+  assert.ok(iDurable > 0 && iTryAgain > iDurable, 'durable stopped branch must exist before Try Again branch');
+  const durableBranch = card.slice(iDurable, iTryAgain);
+  assert.match(durableBranch, /Continue Recording/);
+  assert.match(durableBranch, /Delete & Start Over/);
+  assert.match(durableBranch, /\{canContinueDurable && \(/);
   assert.match(card, /isStopped && !hasSegments && !isDurableSlot && !isFinishSaving/);
+});
+
+test('a recovered durable slot can be discarded even when Continue is hidden', async () => {
+  const card = await read('src/components/PatientSlotCard.tsx');
+  const iDurable = card.indexOf('isStopped && !hasSegments && canDiscardDurable && !isFinishSaving');
+  const iTryAgain = card.indexOf('isStopped && !hasSegments && !isDurableSlot && !isFinishSaving', iDurable);
+  assert.ok(iDurable > 0 && iTryAgain > iDurable, 'durable stopped branch must exist before Try Again branch');
+  const durableBranch = card.slice(iDurable, iTryAgain);
+  const iContinueGuard = durableBranch.indexOf('{canContinueDurable && (');
+  const iDelete = durableBranch.indexOf('Delete & Start Over');
+  assert.ok(iContinueGuard > 0 && iDelete > iContinueGuard, 'delete control must not be hidden by canContinueDurable');
+});
+
+test('durable Continue re-enters the single start funnel instead of blocking', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  const iContinue = rec.indexOf('const handleContinueRecording = useCallback(');
+  const iRecordAgain = rec.indexOf('const handleRecordAgain = useCallback(', iContinue);
+  assert.ok(iContinue > 0 && iRecordAgain > iContinue, 'handleContinueRecording slice not found');
+  const body = rec.slice(iContinue, iRecordAgain);
+  assert.doesNotMatch(body, /Adding more audio to it is not supported/);
+  assert.match(body, /slot\?\.durable && \(slot\.uploadStatus === 'success' \|\| slot\.durable\.recoveredAudioUri\)/);
+  assert.match(body, /if \(slot\) deleteOrphanServerRecording\(slot\);/);
+  assert.match(body, /continueRecording\(slotId\);/);
+  assert.match(body, /startRecordingForSlot\(slotId\);/);
+});
+
+test('stopped-state capture effect does not finalize while a durable resume is starting', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  const iEffect = rec.indexOf('// Effect: capture audio URI when recorder transitions to stopped while bound to a slot');
+  const iNext = rec.indexOf('// Keep the multi-patient record-first warning', iEffect);
+  assert.ok(iEffect > 0 && iNext > iEffect, 'stopped capture effect slice not found');
+  const body = rec.slice(iEffect, iNext);
+  const iStopped = body.indexOf("if (recorder.state !== 'stopped')");
+  const iStarting = body.indexOf('if (recorder.isStarting)');
+  const iDurableFinish = body.indexOf('if (recorder.activeDurableRecordingId && session.recorderBoundToSlotId');
+  assert.ok(iStopped > 0 && iStarting > iStopped && iStarting < iDurableFinish, 'isStarting guard must run before durable stopped-finalize branch');
+  assert.match(body, /recorder\.isStarting/);
+});
+
+test('startRecordingForSlot resumes existing durable before fresh durable start', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  const iFn = rec.indexOf('const startRecordingForSlot = useCallback(');
+  const iExisting = rec.indexOf('const existingDurable = startSlot?.durable ?? null', iFn);
+  const iFresh = rec.indexOf('const freshDurable =', iFn);
+  assert.ok(iExisting > iFn && iExisting < iFresh, 'existing durable resume branch must run before fresh durable');
+  const branch = rec.slice(iExisting, iFresh);
+  assert.match(branch, /isDurableCaptureEnabled\(\)/);
+  assert.match(branch, /checkPreRecordFreeSpace\(\)/);
+  assert.match(branch, /raceDurableActiveWrite\(\s*durableActiveStore\.setActive\(existingDurable\.recordingId, slotId/);
+  assert.match(branch, /recorder\.resumeDurable\(\{ userId: user\.id, slotId, durable: existingDurable \}\)/);
+  assert.match(branch, /withDurableOpWatchdog\([\s\S]*'resume'/);
+});
+
+test('useAudioRecorder exposes resumeDurable without expo fallback and seeds existing stats', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  assert.match(hook, /export interface DurableResumeContext/);
+  assert.match(hook, /resumeDurable: \(ctx: DurableResumeContext\) => Promise<void>/);
+  const iResumeDurable = hook.indexOf('const resumeDurable = useCallback(');
+  const iResume = hook.indexOf('const resume = useCallback(', iResumeDurable);
+  assert.ok(iResumeDurable > 0 && iResume > iResumeDurable, 'resumeDurable must be a distinct hook method before pause/resume');
+  const body = hook.slice(iResumeDurable, iResume);
+  assert.match(body, /if \(state !== 'idle'\)/);
+  assert.match(body, /withDurableTimeout\(\s*durableRecorder\.getManifest\(\{\s*userId: ctx\.userId,\s*recordingId: ctx\.durable\.recordingId,\s*\}\),\s*DURABLE_RESUME_TIMEOUT_MS,\s*'durable resume manifest timed out'/);
+  assert.match(body, /withDurableTimeout\(\s*durableRecorder\.resume\(\{\s*userId: ctx\.userId,\s*recordingId: ctx\.durable\.recordingId,\s*\}\),\s*DURABLE_RESUME_TIMEOUT_MS,\s*'durable resume timed out'/);
+  assert.match(body, /durableRecorder\.stop\(\{ userId: ctx\.userId, recordingId: ctx\.durable\.recordingId \}\)\.catch/);
+  assert.match(body, /const clearResumeStarting = \(\) => \{[\s\S]*resumeInFlightRef\.current = false;[\s\S]*setIsStarting\(false\);[\s\S]*\}/);
+  assert.match(body, /handleResumeFailure[\s\S]*clearResumeStarting\(\)/);
+  assert.match(body, /if \(manifest\.state !== 'recording'\)/);
+  assert.match(body, /durableDurationMsRef\.current = Math\.max\(ctx\.durable\.durationMs, existingManifest\.durationMs\)/);
+  assert.match(body, /elapsedBeforeCurrentRunMsRef\.current = durableDurationMsRef\.current/);
+  assert.match(body, /durablePeakDbRef\.current = Math\.max\(ctx\.durable\.peakDb, existingManifest\.peakDb\)/);
+  assert.match(body, /durableRecorder\.resume[\s\S]*if \(manifest\.state !== 'recording'\)[\s\S]*setState\('recording'\)/);
+  assert.doesNotMatch(body, /durableRecorder\.getStatus\(\)/);
+  assert.doesNotMatch(body, /prepareToRecordAsync|recorder\.record\(\)|setAudioModeAsync/);
+});
+
+test('tab taps and swipes share pause-on-leave patient selection', async () => {
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(rec, /const selectPatientIndex = useCallback\(/);
+  const iSelect = rec.indexOf('const selectPatientIndex = useCallback(');
+  const iScrollBegin = rec.indexOf('const handleScrollBegin = useCallback', iSelect);
+  const selectBody = rec.slice(iSelect, iScrollBegin);
+  assert.match(selectBody, /const leavingSlotId = session\.recorderBoundToSlotId/);
+  assert.match(selectBody, /await recorder\.pause\(\)/);
+  assert.match(selectBody, /setAudioState\(leavingSlotId, 'paused'\)/);
+  assert.match(selectBody, /setActiveIndex\(index\)/);
+  assert.match(rec, /onSelectIndex=\{selectPatientIndex\}/);
+  assert.match(rec, /selectPatientIndex\(clampedIndex, \{ fromSwipe: true \}\)/);
 });
 
 test('durable-only stash failure surfaces the Save Failed alert', async () => {

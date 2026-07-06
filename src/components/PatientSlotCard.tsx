@@ -225,6 +225,8 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   // submit/upload gate must treat a durable ref as captured audio too — else a
   // durable-only slot renders no Submit card and is unsubmittable.
   const isDurableSlot = !!slot.durable;
+  const canContinueDurable = isDurableSlot && slot.uploadStatus !== 'success' && !slot.durable?.recoveredAudioUri;
+  const canDiscardDurable = isDurableSlot && slot.uploadStatus !== 'success';
   const hasCapturedAudio = hasSegments || !!slot.durable;
   const previousSegmentsDuration = slot.segments.reduce((sum, s) => sum + s.duration, 0);
   const duration = isRecorderOwner
@@ -542,13 +544,15 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Animated.View>
           )}
 
-          {/* Stopped durable recording (audio in audio.aac, empty segments): the
-              Submit card below handles upload; Continue/Edit act on segment files
-              a single-file durable capture has none of, so offer only Delete &
-              Start Over here. Without this, a durable slot falls into the error-
-              recovery "Try Again" branch and loses the discard action. */}
-          {isStopped && !hasSegments && isDurableSlot && !isFinishSaving && (
+          {/* Stopped durable recording: audio is in audio.aac, so Continue appends
+              through the durable recorder when allowed; Edit stays legacy-segment-only. */}
+          {isStopped && !hasSegments && canDiscardDurable && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
+              {canContinueDurable && (
+                <Button variant="primary" size="lg" onPress={handleContinueRecording} icon={<Plus color={colors.contentOnBrand} size={18} />}>
+                  Continue Recording
+                </Button>
+              )}
               <Pressable
                 onPress={handleRecordAgain}
                 accessibilityRole="button"

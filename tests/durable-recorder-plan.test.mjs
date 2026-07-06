@@ -536,19 +536,17 @@ test('useAudioRecorder exposes resumeDurable without expo fallback and seeds exi
   assert.ok(iResumeDurable > 0 && iResume > iResumeDurable, 'resumeDurable must be a distinct hook method before pause/resume');
   const body = hook.slice(iResumeDurable, iResume);
   assert.match(body, /if \(state !== 'idle'\)/);
-  assert.match(body, /durableRecorder\.getManifest\(\{\s*userId: ctx\.userId,\s*recordingId: ctx\.durable\.recordingId,\s*\}\)/);
-  assert.match(body, /durableRecorder\.resume\(\{\s*userId: ctx\.userId,\s*recordingId: ctx\.durable\.recordingId,\s*\}\)/);
+  assert.match(body, /withDurableTimeout\(\s*durableRecorder\.getManifest\(\{\s*userId: ctx\.userId,\s*recordingId: ctx\.durable\.recordingId,\s*\}\),\s*DURABLE_RESUME_TIMEOUT_MS,\s*'durable resume manifest timed out'/);
+  assert.match(body, /withDurableTimeout\(\s*durableRecorder\.resume\(\{\s*userId: ctx\.userId,\s*recordingId: ctx\.durable\.recordingId,\s*\}\),\s*DURABLE_RESUME_TIMEOUT_MS,\s*'durable resume timed out'/);
   assert.match(body, /durableRecorder\.stop\(\{ userId: ctx\.userId, recordingId: ctx\.durable\.recordingId \}\)\.catch/);
-  assert.match(body, /durableRecorder\.getStatus\(\)/);
   assert.match(body, /const clearResumeStarting = \(\) => \{[\s\S]*resumeInFlightRef\.current = false;[\s\S]*setIsStarting\(false\);[\s\S]*\}/);
   assert.match(body, /handleResumeFailure[\s\S]*clearResumeStarting\(\)/);
-  assert.match(body, /resumeSettled = true;[\s\S]*clearTimeout\(resumeWatchdogId\)/);
-  assert.match(body, /if \(resumeSettled \|\| failureHandled\) return;[\s\S]*durableRecorder\.getStatus\(\)/);
-  assert.match(body, /status\.state !== 'starting' &&[\s\S]*status\.state !== 'error'/);
+  assert.match(body, /if \(manifest\.state !== 'recording'\)/);
   assert.match(body, /durableDurationMsRef\.current = Math\.max\(ctx\.durable\.durationMs, existingManifest\.durationMs\)/);
   assert.match(body, /elapsedBeforeCurrentRunMsRef\.current = durableDurationMsRef\.current/);
   assert.match(body, /durablePeakDbRef\.current = Math\.max\(ctx\.durable\.peakDb, existingManifest\.peakDb\)/);
-  assert.match(body, /setState\('recording'\)[\s\S]*durableRecorder\.resume/);
+  assert.match(body, /durableRecorder\.resume[\s\S]*if \(manifest\.state !== 'recording'\)[\s\S]*setState\('recording'\)/);
+  assert.doesNotMatch(body, /durableRecorder\.getStatus\(\)/);
   assert.doesNotMatch(body, /prepareToRecordAsync|recorder\.record\(\)|setAudioModeAsync/);
 });
 

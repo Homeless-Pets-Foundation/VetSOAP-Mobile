@@ -32,14 +32,15 @@ test('dirty server draft metadata must block stale promotion on submit', async (
   assert.match(api, /metadataPayload \? \{ metadata: metadataPayload \} : \{\}/);
   assert.match(api, /const confirmed: Recording = await apiClient\.post\(`\/api\/recordings\/\$\{recordingId\}\/confirm-upload`/);
   assert.match(api, /return assertRecordingMatchesMetadataPayload\(confirmed, metadataPayload\)/);
-  assert.match(api, /function assertRecordingMatchesMetadataPayload\(recording: Recording, payload\?: RecordingPayload\): Recording/);
+  assert.match(api, /const AI_ENRICHABLE_METADATA_FIELDS = new Set/);
+  assert.match(api, /function assertRecordingMatchesMetadataPayload\([\s\S]*allowServerEnrichedBlankFields/);
   assert.match(api, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
   assert.match(api, /function isAlreadyConfirmedOrProcessing\(recording: Recording\): boolean/);
-  assert.match(api, /if \(current && isAlreadyConfirmedOrProcessing\(current\)\) \{\s*return current;\s*\}/);
+  assert.match(api, /return assertRecordingMatchesMetadataPayload\(current, metadataPayload,[\s\S]*allowServerEnrichedBlankFields: true/);
   assert.match(api, /if \(metadataPayload\) \{/);
   assert.match(api, /phaseError\(\s*'patch_draft'/);
   assert.match(api, /confirmMetadata\?: Partial<CreateRecording>/);
-  assert.match(api, /recording\.status !== 'draft'[\s\S]*phaseError\(\s*'patch_draft'/);
+  assert.match(api, /recording\.status !== 'draft' && recording\.status !== 'uploading'[\s\S]*phaseError\(\s*'patch_draft'/);
   assert.match(api, /isExistingRecording && options\?\.confirmMetadata \? \{ metadata: options\.confirmMetadata \} : \{\}/);
 
   const syncDraft = record.slice(
@@ -110,15 +111,19 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(list, /if \(ids\.length >= MAX_SUBMITTED_IDS\) break/);
   assert.match(list, /const submittedIds = useMemo\(\(\) => normalizeSubmittedIdsParam\(submittedIdsParam\), \[submittedIdsParam\]\)/);
   assert.match(list, /function recordingMatchesStatusFilter\(recording: Recording, selectedStatusFilter: StatusFilterValue\): boolean/);
+  assert.match(list, /function recordingMatchesSearch\(recording: Recording, searchQuery: string\): boolean/);
   assert.match(list, /selectedStatusFilter === 'needs_review'[\s\S]*getRecordingReviewStatus\(recording\) === 'needs_review'/);
   assert.match(list, /recordingMatchesStatusFilter\(recording, selectedStatusFilter\)/);
+  assert.match(list, /recordingMatchesSearch\(recording, debouncedSearch\)/);
   assert.match(list, /sortBy: 'submittedAt'/);
   assert.match(list, /sortRecordingsBySubmittedAt/);
   assert.match(list, /useQueries\(\{\s*queries: submittedIds\.map/);
   assert.match(list, /recordingsApi\.get\(id\)/);
   assert.match(list, /refetchOnMount: 'always' as const/);
   assert.match(list, /for \(const recording of recordings\)[\s\S]*for \(const query of submittedRecordingQueries\)/);
+  assert.match(list, /for \(const query of submittedRecordingQueries\)[\s\S]*submittedIdSet\.has\(recording\.id\)\) map\.set\(recording\.id, recording\)/);
   assert.match(list, /const pinSubmitted = \(items: Recording\[\]\): Recording\[\] =>/);
+  assert.match(list, /\}, \[debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById\]\)/);
   assert.match(list, /highlighted=\{submittedIdSet\.has\(item\.id\)\}/);
   assert.match(list, /\{submittedIds\.length\} of \{submittedIds\.length\} submitted/);
 

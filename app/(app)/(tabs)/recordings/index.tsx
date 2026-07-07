@@ -71,6 +71,14 @@ function recordingMatchesStatusFilter(recording: Recording, selectedStatusFilter
   return recording.status === selectedStatusFilter;
 }
 
+function recordingMatchesSearch(recording: Recording, searchQuery: string): boolean {
+  const query = searchQuery.trim().toLowerCase();
+  if (!query) return true;
+  return [recording.patientName, recording.clientName].some((value) =>
+    value?.toLowerCase().includes(query)
+  );
+}
+
 export default function RecordingsListScreen() {
   const router = useRouter();
   const { submittedIds: submittedIdsParam } = useLocalSearchParams<{ submittedIds?: string | string[] }>();
@@ -165,7 +173,7 @@ export default function RecordingsListScreen() {
     }
     for (const query of submittedRecordingQueries) {
       const recording = query.data;
-      if (recording?.id && !map.has(recording.id)) map.set(recording.id, recording);
+      if (recording?.id && submittedIdSet.has(recording.id)) map.set(recording.id, recording);
     }
     return map;
   }, [recordings, submittedIdSet, submittedRecordingQueries]);
@@ -276,7 +284,9 @@ export default function RecordingsListScreen() {
       const pinned = submittedIds
         .map((id) => submittedRecordingsById.get(id))
         .filter((recording): recording is Recording =>
-          !!recording && recordingMatchesStatusFilter(recording, selectedStatusFilter)
+          !!recording &&
+          recordingMatchesStatusFilter(recording, selectedStatusFilter) &&
+          recordingMatchesSearch(recording, debouncedSearch)
         );
       if (pinned.length === 0) return items;
       const rest = items.filter((recording) => !submittedIdSet.has(recording.id));
@@ -300,7 +310,7 @@ export default function RecordingsListScreen() {
       return pinSubmitted(sortRecordingsBySubmittedAt(Array.from(combined.values()), 'desc'));
     }
     return pinSubmitted(recordings);
-  }, [mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById]);
+  }, [debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById]);
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
   const handleRefresh = useCallback(() => {
     if (shouldLoadRecordings) {

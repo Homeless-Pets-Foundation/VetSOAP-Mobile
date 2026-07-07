@@ -272,6 +272,7 @@ export interface EmailDraftResult {
 type RecordingPayload = Record<string, string | boolean | null>;
 
 const createRecordingPartialSchema = createRecordingSchema.partial();
+const AI_ENRICHABLE_METADATA_FIELDS = new Set(['patientName', 'clientName', 'species', 'breed', 'appointmentType']);
 const DRAFT_NULLABLE_FIELDS = new Set<keyof CreateRecording>([
   'pimsPatientId',
   'clientName',
@@ -340,18 +341,35 @@ export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): R
   });
 }
 
-function recordingMatchesMetadataPayload(recording: Recording, payload: RecordingPayload): boolean {
+function recordingMatchesMetadataPayload(
+  recording: Recording,
+  payload: RecordingPayload,
+  opts: { allowServerEnrichedBlankFields?: boolean } = {}
+): boolean {
   const recordingData = recording as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(payload)) {
     if (!Object.prototype.hasOwnProperty.call(recordingData, key)) return false;
     const recordingValue = recordingData[key] ?? null;
+    if (
+      opts.allowServerEnrichedBlankFields &&
+      AI_ENRICHABLE_METADATA_FIELDS.has(key) &&
+      (value === null || value === '') &&
+      recordingValue !== null &&
+      recordingValue !== ''
+    ) {
+      continue;
+    }
     if (recordingValue !== value) return false;
   }
   return true;
 }
 
-function assertRecordingMatchesMetadataPayload(recording: Recording, payload?: RecordingPayload): Recording {
-  if (payload && Object.keys(payload).length > 0 && !recordingMatchesMetadataPayload(recording, payload)) {
+function assertRecordingMatchesMetadataPayload(
+  recording: Recording,
+  payload?: RecordingPayload,
+  opts: { allowServerEnrichedBlankFields?: boolean } = {}
+): Recording {
+  if (payload && Object.keys(payload).length > 0 && !recordingMatchesMetadataPayload(recording, payload, opts)) {
     phaseError(
       'patch_draft',
       'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
@@ -480,7 +498,9 @@ export const recordingsApi = {
       if (error instanceof ApiError && error.status === 409) {
         const current = await this.get(recordingId).catch(() => null);
         if (current && isAlreadyConfirmedOrProcessing(current)) {
-          return current;
+          return assertRecordingMatchesMetadataPayload(current, metadataPayload, {
+            allowServerEnrichedBlankFields: true,
+          });
         }
         if (metadataPayload) {
           phaseError(
@@ -545,7 +565,7 @@ export const recordingsApi = {
       try {
         recording = await this.get(options.existingRecordingId);
         isExistingRecording = true;
-        if (options?.confirmMetadata && recording.status !== 'draft') {
+        if (options?.confirmMetadata && recording.status !== 'draft' && recording.status !== 'uploading') {
           phaseError(
             'patch_draft',
             'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
@@ -756,7 +776,7 @@ export const recordingsApi = {
       try {
         recording = await this.get(options.existingRecordingId);
         isExistingRecording = true;
-        if (options?.confirmMetadata && recording.status !== 'draft') {
+        if (options?.confirmMetadata && recording.status !== 'draft' && recording.status !== 'uploading') {
           phaseError(
             'patch_draft',
             'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'

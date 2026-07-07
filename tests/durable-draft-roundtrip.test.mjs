@@ -108,6 +108,29 @@ test('durable pointer survives updateServerDraftId rewrite', async () => {
   assert.equal(meta.durable.recordingId, 'dr-abc123');
 });
 
+test('server draft metadata dirty bit survives local storage round-trip', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft({
+    ...durableSlot(),
+    serverDraftId: 'srv-1',
+    draftMetadataDirty: true,
+  });
+
+  let meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.serverDraftId, 'srv-1');
+  assert.equal(meta.draftMetadataDirty, true);
+
+  await draftStorage.updateServerDraftId('slot-durable-1', 'srv-1');
+  meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.draftMetadataDirty, false, 'successful server sync clears the dirty bit');
+
+  const marked = await draftStorage.markDraftMetadataDirty('slot-durable-1');
+  assert.equal(marked, true);
+  meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.draftMetadataDirty, true, 'failed sync marker persists for restart-safe submit');
+});
+
 test('listDrafts exposes durable recordingId for recovery suppression', async () => {
   const { draftStorage } = await loadDraftStorage();
   draftStorage.setUserId('userA');

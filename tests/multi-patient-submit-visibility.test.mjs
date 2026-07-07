@@ -66,6 +66,8 @@ test('Submit All uses the same metadata gate as per-slot submit outside record-f
   assert.match(record, /function slotHasRequiredSubmitFields\(slot: PatientSlot\): boolean/);
   assert.match(record, /const recordedSlotsNeedingDetails = recordFirstEnabled[\s\S]*!slotHasRequiredSubmitFields\(s\)/);
   assert.match(record, /Alert\.alert\(\s*'Add Required Details'/);
+  assert.match(record, /await draftStorage\.markDraftMetadataDirty\(slotId\)/);
+  assert.match(record, /draftMetadataDirty: draft\.draftMetadataDirty \|\| !!draft\.serverDraftId/);
   assert.match(record, /\(recordFirstEnabled \|\| slotHasRequiredSubmitFields\(s\)\) &&\s*s\.uploadStatus !== 'success'/);
   assert.match(record, /recordFirstEnabled=\{recordFirstEnabled\}/);
 
@@ -73,6 +75,9 @@ test('Submit All uses the same metadata gate as per-slot submit outside record-f
   assert.match(panel, /const canSubmitSlot = \(s: PatientSlot\) => recordFirstEnabled \|\| hasRequiredFields\(s\)/);
   assert.match(panel, /readyToUpload = slots\.filter\(\s*\(s\) => hasAudio\(s\) && canSubmitSlot\(s\)/);
   assert.match(panel, /needsDetails/);
+  assert.match(panel, /const submitBlockedByMissingDetails = needsDetails > 0/);
+  assert.match(panel, /disabled=\{isSubmitting \|\| hasActiveRecording \|\| submitBlockedByMissingDetails\}/);
+  assert.match(panel, /Add Required Details/);
 });
 
 test('Submit All routes submitted ids and recordings list pins/highlights them', async () => {
@@ -93,13 +98,16 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(list, /if \(!UUID_REGEX\.test\(id\) \|\| seen\.has\(id\)\) continue/);
   assert.match(list, /if \(ids\.length >= MAX_SUBMITTED_IDS\) break/);
   assert.match(list, /const submittedIds = useMemo\(\(\) => normalizeSubmittedIdsParam\(submittedIdsParam\), \[submittedIdsParam\]\)/);
+  assert.match(list, /function recordingMatchesStatusFilter\(recording: Recording, selectedStatusFilter: StatusFilterValue\): boolean/);
+  assert.match(list, /selectedStatusFilter === 'needs_review'[\s\S]*getRecordingReviewStatus\(recording\) === 'needs_review'/);
+  assert.match(list, /recordingMatchesStatusFilter\(recording, selectedStatusFilter\)/);
   assert.match(list, /sortBy: 'submittedAt'/);
   assert.match(list, /sortRecordingsBySubmittedAt/);
   assert.match(list, /useQueries\(\{\s*queries: submittedIds\.map/);
   assert.match(list, /recordingsApi\.get\(id\)/);
   assert.match(list, /refetchOnMount: 'always' as const/);
   assert.match(list, /for \(const recording of recordings\)[\s\S]*for \(const query of submittedRecordingQueries\)/);
-  assert.match(list, /const pinSubmitted = <T extends \{ id: string \}>/);
+  assert.match(list, /const pinSubmitted = \(items: Recording\[\]\): Recording\[\] =>/);
   assert.match(list, /highlighted=\{submittedIdSet\.has\(item\.id\)\}/);
   assert.match(list, /\{submittedIds\.length\} of \{submittedIds\.length\} submitted/);
 

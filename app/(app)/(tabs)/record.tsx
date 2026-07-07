@@ -2658,7 +2658,8 @@ function RecordingSession() {
             if (__DEV__) console.warn('[Record] syncServerDraft: draft missing on server, creating fresh', slot.serverDraftId);
           } else {
             // Keep draftMetadataDirty=true. A later Submit must either sync the
-            // latest metadata or fail closed before promotion.
+            // latest metadata or fail closed before promotion, even after restart.
+            await draftStorage.markDraftMetadataDirty(slotId);
             dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
             breadcrumb('draft', 'sync_server_draft_metadata_not_synced', {
               slot_id: slotId,
@@ -2716,7 +2717,10 @@ function RecordingSession() {
         invalidateRecordingCaches(queryClient, 'draft_changed');
       } catch (error) {
         const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
-        if (hadServerDraft) dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
+        if (hadServerDraft) {
+          await draftStorage.markDraftMetadataDirty(slotId);
+          dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
+        }
         if (isNetworkRequestFailed(error)) {
           breadcrumb('draft', 'sync_server_draft_transient_network', {
             slot_id: slotId,
@@ -3455,7 +3459,10 @@ function RecordingSession() {
           serverRecordingId: null,
           draftSlotId: draft.slotId,
           serverDraftId: draft.serverDraftId,
-          draftMetadataDirty: false,
+          // Fail closed after restart: if a local draft is attached to a server
+          // draft, submit should send current formData with confirm-upload even
+          // if an older build did not persist the dirty bit.
+          draftMetadataDirty: draft.draftMetadataDirty || !!draft.serverDraftId,
           pendingConfirm: null,
         };
         restoreSession([restoredSlot]);

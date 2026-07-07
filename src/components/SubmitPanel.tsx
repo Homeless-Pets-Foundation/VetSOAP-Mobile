@@ -39,6 +39,7 @@ export function SubmitPanel({
     : slots.filter(
         (s) => hasAudio(s) && !hasRequiredFields(s) && s.uploadStatus !== 'success'
       ).length;
+  const submitBlockedByMissingDetails = needsDetails > 0;
 
   // Only show when 2+ slots and at least 1 has a completed recording not yet uploaded
   if (slots.length < 2 || readyToUpload === 0) return null;
@@ -82,10 +83,18 @@ export function SubmitPanel({
         size="lg"
         onPress={onSubmitAll}
         loading={isSubmitting}
-        disabled={isSubmitting || hasActiveRecording}
-        accessibilityLabel={`Submit ${readyToUpload} recording${readyToUpload > 1 ? 's' : ''}`}
+        disabled={isSubmitting || hasActiveRecording || submitBlockedByMissingDetails}
+        accessibilityLabel={
+          submitBlockedByMissingDetails
+            ? 'Add required details before submitting all recordings'
+            : `Submit ${readyToUpload} recording${readyToUpload > 1 ? 's' : ''}`
+        }
       >
-        {isSubmitting ? 'Uploading...' : `Submit All Recordings (${readyToUpload})`}
+        {isSubmitting
+          ? 'Uploading...'
+          : submitBlockedByMissingDetails
+            ? 'Add Required Details'
+            : `Submit All Recordings (${readyToUpload})`}
       </Button>
     </Animated.View>
   );

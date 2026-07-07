@@ -28,6 +28,7 @@ import { EmptyState } from '../../../../src/components/ui/EmptyState';
 import { Select } from '../../../../src/components/ui/Select';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { measurePhase } from '../../../../src/lib/monitoring';
+import type { Recording } from '../../../../src/types';
 
 const PAGE_SIZE = 20;
 const MAX_SUBMITTED_IDS = 10;
@@ -59,6 +60,15 @@ function normalizeSubmittedIdsParam(submittedIdsParam: string | string[] | undef
     if (ids.length >= MAX_SUBMITTED_IDS) break;
   }
   return ids;
+}
+
+function recordingMatchesStatusFilter(recording: Recording, selectedStatusFilter: StatusFilterValue): boolean {
+  if (selectedStatusFilter === 'all') return true;
+  if (selectedStatusFilter === 'draft') return recording.status === 'draft';
+  if (selectedStatusFilter === 'needs_review') {
+    return getRecordingReviewStatus(recording) === 'needs_review';
+  }
+  return recording.status === selectedStatusFilter;
 }
 
 export default function RecordingsListScreen() {
@@ -261,11 +271,13 @@ export default function RecordingsListScreen() {
     );
   }, [draftData?.data, filteredLocalDrafts, user]);
   const displayRecordings = useMemo(() => {
-    const pinSubmitted = <T extends { id: string }>(items: T[]): T[] => {
+    const pinSubmitted = (items: Recording[]): Recording[] => {
       if (submittedIds.length === 0 || selectedStatusFilter === 'draft') return items;
       const pinned = submittedIds
-        .map((id) => submittedRecordingsById.get(id) as T | undefined)
-        .filter((recording): recording is T => !!recording);
+        .map((id) => submittedRecordingsById.get(id))
+        .filter((recording): recording is Recording =>
+          !!recording && recordingMatchesStatusFilter(recording, selectedStatusFilter)
+        );
       if (pinned.length === 0) return items;
       const rest = items.filter((recording) => !submittedIdSet.has(recording.id));
       return [...pinned, ...rest];

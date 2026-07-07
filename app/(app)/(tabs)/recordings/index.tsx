@@ -30,6 +30,8 @@ import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { measurePhase } from '../../../../src/lib/monitoring';
 
 const PAGE_SIZE = 20;
+const MAX_SUBMITTED_IDS = 10;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
 const STATUS_FILTER_OPTIONS = [
   { value: 'all', label: 'All' },
@@ -42,6 +44,22 @@ const NEEDS_REVIEW_STATUS_FILTER_OPTION = { value: 'needs_review', label: 'Needs
 type StatusFilterValue =
   | typeof STATUS_FILTER_OPTIONS[number]['value']
   | typeof NEEDS_REVIEW_STATUS_FILTER_OPTION['value'];
+
+function normalizeSubmittedIdsParam(submittedIdsParam: string | string[] | undefined): string[] {
+  const raw = Array.isArray(submittedIdsParam) ? submittedIdsParam[0] : submittedIdsParam;
+  if (!raw) return [];
+
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const value of raw.split(',')) {
+    const id = value.trim().toLowerCase();
+    if (!UUID_REGEX.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= MAX_SUBMITTED_IDS) break;
+  }
+  return ids;
+}
 
 export default function RecordingsListScreen() {
   const router = useRouter();
@@ -63,19 +81,7 @@ export default function RecordingsListScreen() {
         ? 'completed'
         : undefined;
   const reviewStatusFilter = selectedStatusFilter === 'needs_review' ? 'needs_review' : undefined;
-  const submittedIds = useMemo(() => {
-    const raw = Array.isArray(submittedIdsParam) ? submittedIdsParam[0] : submittedIdsParam;
-    if (!raw) return [];
-    const seen = new Set<string>();
-    return raw
-      .split(',')
-      .map((id) => id.trim())
-      .filter((id) => {
-        if (!id || seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      });
-  }, [submittedIdsParam]);
+  const submittedIds = useMemo(() => normalizeSubmittedIdsParam(submittedIdsParam), [submittedIdsParam]);
   const submittedIdSet = useMemo(() => new Set(submittedIds), [submittedIds]);
 
   useEffect(() => {

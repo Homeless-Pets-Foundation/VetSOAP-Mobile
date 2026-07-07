@@ -330,17 +330,23 @@ export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): R
 }
 
 function recordingMatchesMetadataPayload(recording: Recording, payload: RecordingPayload): boolean {
+  const recordingData = recording as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(payload)) {
-    if (key === 'pimsPatientId') {
-      if ((recording.pimsPatientId ?? null) !== value) return false;
-      continue;
-    }
-    if (key in recording) {
-      const recordingValue = (recording as unknown as Record<string, unknown>)[key] ?? null;
-      if (recordingValue !== value) return false;
-    }
+    if (!Object.prototype.hasOwnProperty.call(recordingData, key)) return false;
+    const recordingValue = recordingData[key] ?? null;
+    if (recordingValue !== value) return false;
   }
   return true;
+}
+
+function assertRecordingMatchesMetadataPayload(recording: Recording, payload?: RecordingPayload): Recording {
+  if (payload && Object.keys(payload).length > 0 && !recordingMatchesMetadataPayload(recording, payload)) {
+    phaseError(
+      'patch_draft',
+      'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
+    );
+  }
+  return recording;
 }
 
 function shouldFallbackSubmittedAtSort(error: unknown, params: ListRecordingsParams): boolean {
@@ -445,11 +451,12 @@ export const recordingsApi = {
     recordingIdSchema.parse(recordingId);
     const metadataPayload = opts?.metadata ? normalizeDraftMetadataPayload(opts.metadata) : undefined;
     try {
-      return await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
+      const confirmed: Recording = await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
         fileKey,
         ...(opts?.segmentKeys ? { segmentKeys: opts.segmentKeys, segmentCount: opts.segmentCount } : {}),
         ...(metadataPayload ? { metadata: metadataPayload } : {}),
       });
+      return assertRecordingMatchesMetadataPayload(confirmed, metadataPayload);
     } catch (error) {
       // 409 means the recording is already past 'uploading' state. This happens when the
       // client times out waiting for the confirm-upload response and retries — the first
@@ -461,10 +468,9 @@ export const recordingsApi = {
           if (
             current &&
             current.status !== 'uploading' &&
-            current.status !== 'failed' &&
-            recordingMatchesMetadataPayload(current, metadataPayload)
+            current.status !== 'failed'
           ) {
-            return current;
+            return assertRecordingMatchesMetadataPayload(current, metadataPayload);
           }
           phaseError(
             'patch_draft',

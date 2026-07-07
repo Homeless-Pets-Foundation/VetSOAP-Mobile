@@ -30,7 +30,11 @@ test('dirty server draft metadata must block stale promotion on submit', async (
 
   assert.match(api, /const metadataPayload = opts\?\.metadata \? normalizeDraftMetadataPayload\(opts\.metadata\) : undefined/);
   assert.match(api, /metadataPayload \? \{ metadata: metadataPayload \} : \{\}/);
-  assert.match(api, /recordingMatchesMetadataPayload\(current, metadataPayload\)/);
+  assert.match(api, /const confirmed: Recording = await apiClient\.post\(`\/api\/recordings\/\$\{recordingId\}\/confirm-upload`/);
+  assert.match(api, /return assertRecordingMatchesMetadataPayload\(confirmed, metadataPayload\)/);
+  assert.match(api, /function assertRecordingMatchesMetadataPayload\(recording: Recording, payload\?: RecordingPayload\): Recording/);
+  assert.match(api, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
+  assert.match(api, /assertRecordingMatchesMetadataPayload\(current, metadataPayload\)/);
   assert.match(api, /if \(metadataPayload\) \{/);
   assert.match(api, /phaseError\(\s*'patch_draft'/);
   assert.match(api, /confirmMetadata\?: Partial<CreateRecording>/);
@@ -43,7 +47,15 @@ test('dirty server draft metadata must block stale promotion on submit', async (
   );
   assert.match(syncDraft, /if \(outcome === 'success'\) \{/);
   assert.match(syncDraft, /sync_server_draft_metadata_not_synced/);
+  assert.match(syncDraft, /dispatch\(\{ type: 'MARK_DRAFT_METADATA_DIRTY', slotId \}\)/);
   assert.doesNotMatch(syncDraft, /outcome === 'success' \|\| outcome === 'transient_failure'/);
+  assert.match(record, /preserveDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
+  const session = await read('src/hooks/useMultiPatientSession.ts');
+  const types = await read('src/types/multiPatient.ts');
+  assert.match(types, /type: 'MARK_DRAFT_METADATA_DIRTY'; slotId: string/);
+  assert.match(types, /preserveDirty\?: boolean/);
+  assert.match(session, /case 'MARK_DRAFT_METADATA_DIRTY':/);
+  assert.match(session, /draftMetadataDirty: preserveDirty/);
   assert.match(retry, /transient_failure';\s*\/\/ retries exhausted — caller must keep local audio recoverable/);
 });
 
@@ -52,6 +64,8 @@ test('Submit All uses the same metadata gate as per-slot submit outside record-f
   const panel = await read('src/components/SubmitPanel.tsx');
 
   assert.match(record, /function slotHasRequiredSubmitFields\(slot: PatientSlot\): boolean/);
+  assert.match(record, /const recordedSlotsNeedingDetails = recordFirstEnabled[\s\S]*!slotHasRequiredSubmitFields\(s\)/);
+  assert.match(record, /Alert\.alert\(\s*'Add Required Details'/);
   assert.match(record, /\(recordFirstEnabled \|\| slotHasRequiredSubmitFields\(s\)\) &&\s*s\.uploadStatus !== 'success'/);
   assert.match(record, /recordFirstEnabled=\{recordFirstEnabled\}/);
 
@@ -73,6 +87,12 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(record, /submit_all_completed/);
 
   assert.match(list, /useLocalSearchParams<\{ submittedIds\?: string \| string\[\] \}>/);
+  assert.match(list, /const MAX_SUBMITTED_IDS = 10/);
+  assert.match(list, /const UUID_REGEX = \/\^\[0-9a-f\]\{8\}/);
+  assert.match(list, /function normalizeSubmittedIdsParam\(submittedIdsParam: string \| string\[\] \| undefined\): string\[\]/);
+  assert.match(list, /if \(!UUID_REGEX\.test\(id\) \|\| seen\.has\(id\)\) continue/);
+  assert.match(list, /if \(ids\.length >= MAX_SUBMITTED_IDS\) break/);
+  assert.match(list, /const submittedIds = useMemo\(\(\) => normalizeSubmittedIdsParam\(submittedIdsParam\), \[submittedIdsParam\]\)/);
   assert.match(list, /sortBy: 'submittedAt'/);
   assert.match(list, /sortRecordingsBySubmittedAt/);
   assert.match(list, /useQueries\(\{\s*queries: submittedIds\.map/);

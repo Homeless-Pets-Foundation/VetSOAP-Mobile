@@ -88,11 +88,12 @@ export type SessionAction =
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }
   | { type: 'DELETE_SEGMENT'; slotId: string; segmentIndex: number }
   | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] }
-  | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null }
+  | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null; preserveDirty?: boolean }
   // Attach/update the durable capture pointer on a slot (set on Finish/park of a
   // durable recording, and re-applied after Resume). Frame-derived durationMs +
   // PCM peakDb come from the durable manifest. Does NOT touch audioState/upload.
   | { type: 'SET_DURABLE_RECORDING'; slotId: string; durable: DurableSlotRef }
+  | { type: 'MARK_DRAFT_METADATA_DIRTY'; slotId: string }
   | { type: 'CLEAR_DRAFT_DIRTY'; slotId: string }
   // Re-point a slot's segments at durable draft copies after draftStorage.saveDraft
   // succeeds. Without this, slot.segments[].uri keeps pointing at recorder-temp

@@ -410,18 +410,34 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
     }
 
     case 'SET_DRAFT_IDS':
-      // A fresh draft supersedes any prior dirty flag — the server draft
-      // either didn't exist before or has been replaced.
+      // A fresh draft or successful sync supersedes any prior dirty flag. Local
+      // draft saves that keep the same server draft can preserve the flag until
+      // syncServerDraft proves the server metadata is current.
+      return {
+        ...state,
+        slots: state.slots.map((s) => {
+          if (s.id !== action.slotId) return s;
+          const preserveDirty =
+            !!action.preserveDirty &&
+            !!action.serverDraftId &&
+            action.serverDraftId === s.serverDraftId &&
+            s.draftMetadataDirty &&
+            s.uploadStatus !== 'success';
+          return {
+            ...s,
+            draftSlotId: action.draftSlotId,
+            serverDraftId: action.serverDraftId,
+            draftMetadataDirty: preserveDirty,
+          };
+        }),
+      };
+
+    case 'MARK_DRAFT_METADATA_DIRTY':
       return {
         ...state,
         slots: state.slots.map((s) =>
-          s.id === action.slotId
-            ? {
-                ...s,
-                draftSlotId: action.draftSlotId,
-                serverDraftId: action.serverDraftId,
-                draftMetadataDirty: false,
-              }
+          s.id === action.slotId && s.serverDraftId && s.uploadStatus !== 'success'
+            ? { ...s, draftMetadataDirty: true }
             : s
         ),
       };

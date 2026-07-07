@@ -2659,6 +2659,7 @@ function RecordingSession() {
           } else {
             // Keep draftMetadataDirty=true. A later Submit must either sync the
             // latest metadata or fail closed before promotion.
+            dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
             breadcrumb('draft', 'sync_server_draft_metadata_not_synced', {
               slot_id: slotId,
               outcome,
@@ -2715,6 +2716,7 @@ function RecordingSession() {
         invalidateRecordingCaches(queryClient, 'draft_changed');
       } catch (error) {
         const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
+        if (hadServerDraft) dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
         if (isNetworkRequestFailed(error)) {
           breadcrumb('draft', 'sync_server_draft_transient_network', {
             slot_id: slotId,
@@ -2819,6 +2821,7 @@ function RecordingSession() {
           slotId: slot.id,
           draftSlotId,
           serverDraftId: slot.serverDraftId ?? null,
+          preserveDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
         });
         const recoveryReason =
           pendingDraftRecoveryReasonRef.current.get(slot.id) ?? 'draft_finish';
@@ -3112,6 +3115,24 @@ function RecordingSession() {
       Alert.alert(
         'Finish Active Recordings',
         'Finish or discard all active recording segments before submitting all patients.'
+      );
+      return;
+    }
+
+    const recordedSlotsNeedingDetails = recordFirstEnabled
+      ? []
+      : sessionRef.current.slots.filter(
+          (s) =>
+            (s.segments.length > 0 || !!s.durable) &&
+            s.uploadStatus !== 'success' &&
+            !slotHasRequiredSubmitFields(s)
+        );
+    if (recordedSlotsNeedingDetails.length > 0) {
+      Alert.alert(
+        'Add Required Details',
+        `${recordedSlotsNeedingDetails.length} recorded patient${
+          recordedSlotsNeedingDetails.length > 1 ? 's need' : ' needs'
+        } required details before Submit All.`
       );
       return;
     }

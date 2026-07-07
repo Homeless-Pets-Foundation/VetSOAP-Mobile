@@ -23,6 +23,14 @@ const STORE_OPTIONS = {
 const DRAFT_CHUNK_SIZE = 1900;
 
 const BASE_DRAFTS_DIR = `${Paths.document.uri}drafts/`;
+const DRAFT_NULLABLE_FORM_FIELDS = [
+  'pimsPatientId',
+  'clientName',
+  'species',
+  'breed',
+  'appointmentType',
+  'templateId',
+] as const satisfies readonly (keyof CreateRecording)[];
 
 export interface DraftSegmentMetadata {
   uri: string;
@@ -84,6 +92,21 @@ function cloneDraftMetadata(d: DraftMetadata): DraftMetadata {
     formData: { ...d.formData },
     segments: d.segments.map((s) => ({ ...s })),
   };
+}
+
+function normalizeDraftFormDataForStorage(
+  formData: CreateRecording,
+  opts: { preserveClearedNullableFields: boolean },
+): CreateRecording {
+  if (!opts.preserveClearedNullableFields) return formData;
+
+  const normalized = { ...formData } as CreateRecording & Record<string, unknown>;
+  for (const key of DRAFT_NULLABLE_FORM_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(formData, key) && formData[key] === undefined) {
+      (normalized as Record<string, unknown>)[key] = null;
+    }
+  }
+  return normalized;
 }
 
 /**
@@ -551,7 +574,9 @@ export const draftStorage = {
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
         savedAt: new Date().toISOString(),
-        formData: slot.formData,
+        formData: normalizeDraftFormDataForStorage(slot.formData, {
+          preserveClearedNullableFields: durableDraftMetadataDirty,
+        }),
         segments: [],
         durable: slot.durable,
         audioDuration: slot.durable.durationMs / 1000,
@@ -709,7 +734,9 @@ export const draftStorage = {
       const metadata: DraftMetadata = {
         slotId: slot.id,
         savedAt: new Date().toISOString(),
-        formData: slot.formData,
+        formData: normalizeDraftFormDataForStorage(slot.formData, {
+          preserveClearedNullableFields: draftMetadataDirty,
+        }),
         segments: draftSegments,
         audioDuration: draftSegments.reduce((sum, s) => sum + s.duration, 0),
         serverDraftId: resolvedServerDraftId,

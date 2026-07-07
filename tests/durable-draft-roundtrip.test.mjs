@@ -5,6 +5,7 @@ import { loadTsModule } from './helpers/loadTs.mjs';
 
 const root = new URL('../', import.meta.url);
 const read = (p) => readFile(new URL(p, root), 'utf8');
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 function makeSecureStoreMock() {
   const store = new Map();
@@ -33,7 +34,9 @@ const fileSystemMock = {
   },
   Directory: class {
     exists = false;
-    create() {}
+    create() {
+      this.exists = true;
+    }
   },
   Paths: {
     document: { uri: 'file:///doc/' },
@@ -115,11 +118,20 @@ test('server draft metadata dirty bit survives local storage round-trip', async 
     ...durableSlot(),
     serverDraftId: 'srv-1',
     draftMetadataDirty: true,
+    formData: {
+      ...durableSlot().formData,
+      appointmentType: undefined,
+      templateId: undefined,
+    },
   });
 
   let meta = await draftStorage.getDraft('slot-durable-1');
   assert.equal(meta.serverDraftId, 'srv-1');
   assert.equal(meta.draftMetadataDirty, true);
+  assert.equal(hasOwn(meta.formData, 'appointmentType'), true);
+  assert.equal(meta.formData.appointmentType, null);
+  assert.equal(hasOwn(meta.formData, 'templateId'), true);
+  assert.equal(meta.formData.templateId, null);
 
   await draftStorage.updateServerDraftId('slot-durable-1', 'srv-1');
   meta = await draftStorage.getDraft('slot-durable-1');
@@ -129,6 +141,36 @@ test('server draft metadata dirty bit survives local storage round-trip', async 
   assert.equal(marked, true);
   meta = await draftStorage.getDraft('slot-durable-1');
   assert.equal(meta.draftMetadataDirty, true, 'failed sync marker persists for restart-safe submit');
+});
+
+test('non-durable dirty server draft preserves cleared nullable fields through JSON', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft({
+    ...durableSlot(),
+    durable: null,
+  });
+  await draftStorage.updateServerDraftId('slot-durable-1', 'srv-1');
+  await draftStorage.saveDraft({
+    ...durableSlot(),
+    durable: null,
+    draftMetadataDirty: true,
+    formData: {
+      ...durableSlot().formData,
+      clientName: undefined,
+      species: undefined,
+      appointmentType: undefined,
+      templateId: undefined,
+    },
+  });
+
+  const meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.serverDraftId, 'srv-1');
+  assert.equal(meta.draftMetadataDirty, true);
+  for (const key of ['clientName', 'species', 'appointmentType', 'templateId']) {
+    assert.equal(hasOwn(meta.formData, key), true, `${key} must survive stringify`);
+    assert.equal(meta.formData[key], null);
+  }
 });
 
 test('listDrafts exposes durable recordingId for recovery suppression', async () => {

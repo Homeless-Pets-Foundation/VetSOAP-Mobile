@@ -125,6 +125,15 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(api, /\.\.\.sanitized, sortBy: 'createdAt'/);
 });
 
+test('APK smoke script translates WSL APK paths before Windows adb install', async () => {
+  const script = await read('scripts/verify-submit-visibility-apk.sh');
+
+  assert.match(script, /INSTALL_APK_PATH="\$\{APK_PATH\}"/);
+  assert.match(script, /\[\[ "\$\{ADB_BIN\}" == \*\.exe \]\]/);
+  assert.match(script, /wslpath -w "\$\{APK_PATH\}"/);
+  assert.match(script, /adb_cmd install -r "\$\{INSTALL_APK_PATH\}"/);
+});
+
 test('submit telemetry includes PHI-free diagnostic context', async () => {
   const record = await read('app/(app)/(tabs)/record.tsx');
   const analytics = await read('src/lib/analytics.ts');

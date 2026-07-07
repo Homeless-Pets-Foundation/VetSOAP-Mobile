@@ -28,6 +28,22 @@ if [[ ! -f "${APK_PATH}" ]]; then
   exit 2
 fi
 
+INSTALL_APK_PATH="${APK_PATH}"
+if [[ "${ADB_BIN}" == *.exe ]]; then
+  if command -v wslpath >/dev/null 2>&1; then
+    INSTALL_APK_PATH="$(wslpath -w "${APK_PATH}")"
+  elif [[ "${APK_PATH}" == /mnt/* ]]; then
+    drive_path="${APK_PATH#/mnt/}"
+    drive_letter="${drive_path%%/*}"
+    drive_rest="${drive_path#*/}"
+    INSTALL_APK_PATH="${drive_letter^^}:\\${drive_rest//\//\\}"
+  else
+    echo "Windows adb.exe requires a Windows-readable APK path. Install wslpath or put APK_PATH under /mnt/<drive>." >&2
+    echo "APK path: ${APK_PATH}" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "${START_EMULATOR_AVD}" ]]; then
   if [[ ! -x "${EMULATOR_BIN}" ]]; then
     echo "Cannot start emulator; EMULATOR_BIN is not executable: ${EMULATOR_BIN}" >&2
@@ -88,6 +104,7 @@ capture_state() {
 echo "Using adb: ${ADB_BIN}"
 echo "Using device: ${ADB_SERIAL}"
 echo "Writing evidence to: ${OUT_DIR}"
+echo "Installing APK: ${INSTALL_APK_PATH}"
 
 for i in {1..90}; do
   boot="$(adb_shell "getprop sys.boot_completed" 2>/dev/null | tr -d '\r' || true)"
@@ -101,7 +118,7 @@ for i in {1..90}; do
   fi
 done
 
-adb_cmd install -r "${APK_PATH}" > "${OUT_DIR}/install.txt" 2>&1
+adb_cmd install -r "${INSTALL_APK_PATH}" > "${OUT_DIR}/install.txt" 2>&1
 adb_shell "pm dump ${PACKAGE_NAME}" > "${OUT_DIR}/package-dump.txt" 2>&1 || true
 adb_cmd logcat -c || true
 adb_shell "am force-stop ${PACKAGE_NAME}" > "${OUT_DIR}/force-stop.txt" 2>&1 || true

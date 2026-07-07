@@ -53,7 +53,7 @@ export default function HomeScreen() {
     queries: [
       {
         queryKey: ['recordings', 'recent'],
-        queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc' }),
+        queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'submittedAt', sortOrder: 'desc' }),
         enabled: !!user,
         refetchInterval: (query: { state: { data?: Awaited<ReturnType<typeof recordingsApi.list>> } }) => {
           if (!isTabFocused) return false;

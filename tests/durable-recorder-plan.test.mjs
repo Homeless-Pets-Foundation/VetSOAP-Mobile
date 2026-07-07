@@ -104,16 +104,17 @@ test('uploadSlot durable: upload only the complete-ADTS-frame prefix', async () 
   assert.match(fileOps, /export function writeFilePrefix\(sourceUri: string, destUri: string, byteCount: number\): boolean/);
 });
 
-test('uploadSlot durable: dirty metadata is patched before promoting the draft', async () => {
+test('uploadSlot durable: dirty metadata is sent with atomic draft promotion', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
-  // The durable branch flushes edited formData to the server draft before promote,
-  // mirroring the legacy segment path (finding: stale metadata promoted otherwise).
+  // The durable branch sends edited formData with confirm-upload so metadata and
+  // status commit atomically; stale metadata must not be promoted.
   const iDurableBranch = src.indexOf('if (slot.durable) {');
-  const iPatch = src.indexOf('patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData)', iDurableBranch);
+  const iConfirmMetadata = src.indexOf('const durableConfirmMetadata =', iDurableBranch);
   const iCreateWithFile = src.indexOf("'audio/aac'", iDurableBranch);
-  assert.ok(iPatch > iDurableBranch && iPatch < iCreateWithFile,
-    'durable branch must patch dirty metadata before createWithFile');
-  assert.match(src, /if \(slot\.serverDraftId && slot\.draftMetadataDirty\) \{/);
+  assert.ok(iConfirmMetadata > iDurableBranch && iConfirmMetadata < iCreateWithFile,
+    'durable branch must prepare dirty metadata before createWithFile');
+  assert.match(src, /slot\.serverDraftId && slot\.draftMetadataDirty \? slot\.formData : undefined/);
+  assert.match(src, /durableConfirmMetadata \? \{ confirmMetadata: durableConfirmMetadata \} : \{\}/);
 });
 
 test('draftStorage: durable-aware orphan/audio checks + metadata-only save', async () => {
@@ -129,13 +130,16 @@ test('draftStorage: durable-aware orphan/audio checks + metadata-only save', asy
 test('stash round-trip: durable through all 3 Rule 20 sites', async () => {
   const stashTypes = await read('src/types/stash.ts');
   assert.match(stashTypes, /durable\?: DurableSlotRef \| null/); // site 1
+  assert.match(stashTypes, /draftMetadataDirty\?: boolean/);
   const audioMgr = await read('src/lib/stashAudioManager.ts');
   // site 2 (write): the pointer is carried through, with a vault-restored
   // recoveredAudioUri re-pointed into the stash dir (see the dedicated test below).
   assert.match(audioMgr, /let stashedDurable = slot\.durable \?\? null/);
+  assert.match(audioMgr, /draftMetadataDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
   assert.match(audioMgr, /durable: stashedDurable,/);
   const useStash = await read('src/hooks/useStashedSessions.ts');
   assert.match(useStash, /const durable = slot\.durable \?\? null/); // site 3 (read)
+  assert.match(useStash, /draftMetadataDirty: !!slot\.serverDraftId && \(slot\.draftMetadataDirty === true \|\| slot\.draftMetadataDirty === undefined\)/);
 });
 
 test('vault preserves durable manifests as audio', async () => {
@@ -266,7 +270,7 @@ test('durable-only slots are submit-reachable (per-patient + Submit All)', async
   assert.match(panel, /s\.segments\.length > 0 \|\| s\.durable !== null/);
   // Submit All + post-single-submit "others remaining" both include durable slots.
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(rec, /\(s\.segments\.length > 0 \|\| !!s\.durable\) &&\s*\n\s*s\.uploadStatus !== 'success'/);
+  assert.match(rec, /\(s\.segments\.length > 0 \|\| !!s\.durable\) &&\s*\n\s*\(recordFirstEnabled \|\| slotHasRequiredSubmitFields\(s\)\) &&\s*\n\s*s\.uploadStatus !== 'success'/);
   assert.match(rec, /s\.segments\.length > 0 \|\| !!s\.durable \|\| s\.audioState === 'recording'/);
 });
 

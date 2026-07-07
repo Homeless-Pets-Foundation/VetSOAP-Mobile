@@ -118,6 +118,7 @@ export const stashAudioManager = {
             : stashedSegments.reduce((sum, s) => sum + s.duration, 0),
           serverDraftId: slot.serverDraftId ?? null,
           draftSlotId: slot.draftSlotId ?? null,
+          draftMetadataDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
           durable: stashedDurable,
         });
       }

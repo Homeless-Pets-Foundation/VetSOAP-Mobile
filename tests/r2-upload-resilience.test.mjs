@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { loadTsModule } from './helpers/loadTs.mjs';
 
 const root = new URL('../', import.meta.url);
 
@@ -48,6 +49,20 @@ test('phaseError accepts httpStatus and TaggedError carries it', async () => {
     /export function phaseError\(phase: UploadPhase, message: string, httpStatus\?: number\): never/
   );
   assert.match(src, /if \(httpStatus !== undefined\) err\.httpStatus = httpStatus;/);
+});
+
+test('tagPhase preserves an existing uploadPhase from an inner boundary', async () => {
+  const { tagPhase } = await loadTsModule('src/api/uploadRetry.ts');
+  const err = new Error('metadata mismatch');
+  err.uploadPhase = 'patch_draft';
+
+  try {
+    tagPhase(err, 'confirm');
+    assert.fail('tagPhase should throw');
+  } catch (caught) {
+    assert.equal(caught, err);
+    assert.equal(caught.uploadPhase, 'patch_draft');
+  }
 });
 
 test('both r2_put status throws propagate result.status to phaseError', async () => {
@@ -101,11 +116,16 @@ test('analytics.ts adds recording_auto_stashed event with AutoStashReason union'
 
 test('record.tsx imports isTransientUploadError from recordings module', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
-
-  assert.match(
-    src,
-    /import \{ recordingsApi, getUploadPhase, isTransientUploadError \} from '\.\.\/\.\.\/\.\.\/src\/api\/recordings';/
+  const importEnd = src.indexOf("from '../../../src/api/recordings'");
+  const importStart = src.lastIndexOf('import {', importEnd);
+  const importBlock = src.slice(
+    importStart,
+    importEnd + 40
   );
+
+  assert.match(importBlock, /recordingsApi/);
+  assert.match(importBlock, /getUploadPhase/);
+  assert.match(importBlock, /isTransientUploadError/);
 });
 
 test('record.tsx flags auto-stash eligibility on transient r2_put or create_draft network death', async () => {

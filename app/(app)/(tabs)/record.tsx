@@ -45,10 +45,20 @@ import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../src/hooks/useThemeColors';
 import { useTemplates } from '../../../src/hooks/useTemplates';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { recordingsApi, getUploadPhase, isTransientUploadError } from '../../../src/api/recordings';
+import {
+  recordingsApi,
+  getUploadPhase,
+  isTransientUploadError,
+  type RecordingDeleteReason,
+} from '../../../src/api/recordings';
 import { ApiError } from '../../../src/api/client';
 import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
-import { trackEvent, type NetworkState, type AutoStashReason } from '../../../src/lib/analytics';
+import {
+  trackEvent,
+  type NetworkState,
+  type AutoStashReason,
+  type SubmitDiagnosticsProps,
+} from '../../../src/lib/analytics';
 import { breadcrumb, captureException, captureMessage, measurePhase } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
@@ -166,6 +176,7 @@ function isExpectedSubmitApiFailure(error: unknown): boolean {
 function isRecoverableSubmitFailure(error: unknown): boolean {
   if (isExpectedSubmitApiFailure(error)) return true;
   if (isTransientUploadError(error)) return true;
+  if (getUploadPhase(error) === 'patch_draft') return true;
   const e = error as { status?: number; name?: string; message?: string } | null;
   if (typeof e?.status === 'number' && e.status >= 500) return true;
   if (e?.name === 'AbortError' || /\bAborted\b/i.test(e?.message ?? '')) return true;
@@ -382,6 +393,37 @@ class UploadCancelledByUser extends Error {
   }
 }
 
+function slotHasRequiredSubmitFields(slot: PatientSlot): boolean {
+  return (
+    slot.formData.patientName.trim().length > 0 &&
+    (slot.formData.clientName?.trim().length ?? 0) > 0 &&
+    (slot.formData.species?.trim().length ?? 0) > 0 &&
+    !!slot.formData.appointmentType
+  );
+}
+
+function slotSubmitDiagnostics(
+  slot: PatientSlot,
+  slotCount: number,
+  opts?: {
+    confirmUsedAtomicMetadataUpdate?: boolean;
+    staleDraftPromotionBlocked?: boolean;
+  }
+): SubmitDiagnosticsProps {
+  return {
+    slot_count: slotCount,
+    has_existing_server_draft: !!slot.serverDraftId,
+    has_pending_confirm: !!slot.pendingConfirm,
+    draft_metadata_dirty: !!slot.draftMetadataDirty,
+    confirm_used_atomic_metadata_update: !!opts?.confirmUsedAtomicMetadataUpdate,
+    stale_draft_promotion_blocked: !!opts?.staleDraftPromotionBlocked,
+    species_present: (slot.formData.species?.trim().length ?? 0) > 0,
+    breed_present: (slot.formData.breed?.trim().length ?? 0) > 0,
+    appointment_type_present: !!slot.formData.appointmentType,
+    client_last_name_present: (slot.formData.clientName?.trim().length ?? 0) > 0,
+  };
+}
+
 function scheduleNonUrgentWork(
   label: string,
   work: () => Promise<void>,
@@ -521,10 +563,13 @@ function RecordingSession() {
    * clearAudio, replaceAllSegments). The server also has its own cleanup for
    * abandoned "uploading" rows, so failures here are non-fatal.
    */
-  const deleteOrphanServerRecording = useCallback((slot: PatientSlot) => {
+  const deleteOrphanServerRecording = useCallback((
+    slot: PatientSlot,
+    reason: RecordingDeleteReason = 'orphan_pending_confirm'
+  ) => {
     const recordingId = slot.pendingConfirm?.recordingId;
     if (!recordingId) return;
-    recordingsApi.delete(recordingId).catch(() => {});
+    recordingsApi.delete(recordingId, { reason }).catch(() => {});
   }, []);
 
   /** Delete only the local auto-saved draft metadata/audio for a slot. */
@@ -543,10 +588,13 @@ function RecordingSession() {
    * user discards a session: the recording is no longer useful and would
    * otherwise linger as a ghost "Not Submitted" row on Home plus PHI on disk.
    */
-  const deleteSlotDraft = useCallback((slot: PatientSlot) => {
+  const deleteSlotDraft = useCallback((
+    slot: PatientSlot,
+    reason: RecordingDeleteReason = 'discard_session'
+  ) => {
     deleteLocalSlotDraft(slot);
     if (slot.serverDraftId && slot.uploadStatus !== 'success') {
-      recordingsApi.delete(slot.serverDraftId).catch(() => {});
+      recordingsApi.delete(slot.serverDraftId, { reason }).catch(() => {});
     }
   }, [deleteLocalSlotDraft]);
 
@@ -1891,10 +1939,10 @@ function RecordingSession() {
                       // (no native manifest) — delete it too, else Remove leaves it.
                       if (slot.durable.recoveredAudioUri) safeDeleteFile(slot.durable.recoveredAudioUri);
                     }
-                    deleteOrphanServerRecording(slot);
+                    deleteOrphanServerRecording(slot, 'remove_slot');
                     // Slot is about to disappear — delete its draft row + local
                     // audio so it doesn't surface as "Not Submitted" on Home.
-                    deleteSlotDraft(slot);
+                    deleteSlotDraft(slot, 'remove_slot');
                     removeSlot(slotId);
                   } catch {}
                 })().catch(() => {});
@@ -1903,8 +1951,8 @@ function RecordingSession() {
           ]
         );
       } else {
-        deleteOrphanServerRecording(slot);
-        deleteSlotDraft(slot);
+        deleteOrphanServerRecording(slot, 'remove_slot');
+        deleteSlotDraft(slot, 'remove_slot');
         removeSlot(slotId);
       }
     },
@@ -1952,13 +2000,19 @@ function RecordingSession() {
       activateKeepAwakeAsync(keepAwakeTag).catch(() => { /* best-effort */ });
       const attemptNumber = (uploadAttemptCountsRef.current.get(slot.id) ?? 0) + 1;
       uploadAttemptCountsRef.current.set(slot.id, attemptNumber);
-      const slotIndex = sessionRef.current.slots.findIndex((s) => s.id === slot.id);
+      const currentSlots = sessionRef.current.slots;
+      const slotIndex = currentSlots.findIndex((s) => s.id === slot.id);
+      const slotCount = currentSlots.length;
       const durationSeconds = Math.round(
         slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0)
       );
       const segmentCount = slot.segments.length;
       const uploadStartedAt = Date.now();
       const netState = networkStateForTelemetry();
+      const willUseAtomicMetadataUpdate = !!slot.serverDraftId && slot.draftMetadataDirty;
+      const baseSubmitDiagnostics = slotSubmitDiagnostics(slot, slotCount, {
+        confirmUsedAtomicMetadataUpdate: willUseAtomicMetadataUpdate,
+      });
 
       trackEvent({
         name: 'submit_attempted',
@@ -1969,6 +2023,7 @@ function RecordingSession() {
           recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
           attempt_number: attemptNumber,
           network_state: netState,
+          ...baseSubmitDiagnostics,
         },
       });
       breadcrumb('upload', 'submit_attempted', {
@@ -1979,6 +2034,8 @@ function RecordingSession() {
         network_state: netState,
         has_existing_draft: !!slot.serverDraftId,
         has_pending_confirm: !!slot.pendingConfirm,
+        draft_metadata_dirty: !!slot.draftMetadataDirty,
+        confirm_used_atomic_metadata_update: willUseAtomicMetadataUpdate,
       });
 
       // Auto-split state — populated by the preflight block below if any
@@ -2072,21 +2129,12 @@ function RecordingSession() {
 
           setUploadStatus(slot.id, 'uploading', { progress: 5 });
           let lastDurableProgress = 0;
-          // Promote-in-place: reuse the death-surviving server draft. If the user
-          // edited patient/client details after the draft was created, flush the
-          // edits to the server FIRST so the promoted recording does not keep
-          // stale metadata (mirrors the segment path's patchDraftMetadata logic).
+          // Promote-in-place: reuse the death-surviving server draft. Dirty
+          // metadata is sent with confirm-upload so metadata + status commit
+          // atomically; if the server cannot apply it, uploadSlot fails closed.
           let durableUseExisting = slot.serverDraftId ?? slot.serverRecordingId ?? undefined;
-          if (slot.serverDraftId && slot.draftMetadataDirty) {
-            const outcome = await patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData);
-            if (outcome === 'success') {
-              dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
-            } else if (outcome === 'draft_missing') {
-              // Draft gone server-side → drop the anchor and fresh-create.
-              durableUseExisting = slot.serverRecordingId ?? undefined;
-            }
-            // 'not_draft' + 'transient_failure' fall through: keep promoting.
-          }
+          const durableConfirmMetadata =
+            slot.serverDraftId && slot.draftMetadataDirty ? slot.formData : undefined;
           let durableResult;
           try {
             durableResult = await recordingsApi.createWithFile(
@@ -2121,6 +2169,7 @@ function RecordingSession() {
                 },
                 resume: slot.pendingConfirm ?? undefined,
                 ...(durableUseExisting ? { existingRecordingId: durableUseExisting } : {}),
+                ...(durableConfirmMetadata ? { confirmMetadata: durableConfirmMetadata } : {}),
                 audioDurationSeconds: durableDurationSeconds,
                 slotIndex,
               },
@@ -2195,6 +2244,7 @@ function RecordingSession() {
               recording_id: durableResult.id,
               attempt_number: attemptNumber,
               latency_ms: durableLatencyMs,
+              ...baseSubmitDiagnostics,
             },
           });
           uploadAttemptCountsRef.current.delete(slot.id);
@@ -2364,30 +2414,12 @@ function RecordingSession() {
         };
 
         // If we'd reuse a server draft and the user edited formData after the
-        // draft was created, flush the edits to the server. We retry transient
-        // failures and ONLY fall back to fresh-create when the draft is
-        // definitively gone (404). For any other failure mode — including
-        // retries-exhausted — we keep the draft id and promote it via
-        // existingRecordingId, even if that means the final recording carries
-        // slightly stale metadata. A duplicate "Not Submitted" row is a
-        // worse user experience than one recording with a 10-character diff
-        // in the patient name, and the server-side replacedAt backstop would
-        // then have nothing to clean up.
+        // draft was created, send those edits in confirm-upload. The server
+        // applies metadata + status in one transaction or rejects the confirm.
         let useExistingDraft = !!slot.serverDraftId;
         const serverDraftId = slot.serverDraftId;
-        if (useExistingDraft && serverDraftId && slot.draftMetadataDirty) {
-          const outcome = await patchDraftMetadataWithRetry(serverDraftId, slot.formData);
-          if (outcome === 'success') {
-            dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
-          } else if (outcome === 'draft_missing') {
-            // Server has no such draft anymore — only path forward is a
-            // fresh create. No orphan to leave behind.
-            useExistingDraft = false;
-          }
-          // 'not_draft' + 'transient_failure' both fall through: keep
-          // existingRecordingId. confirm-upload accepts either 'draft' or
-          // 'uploading' status, so a partially-promoted row is still usable.
-        }
+        const confirmMetadata =
+          useExistingDraft && serverDraftId && slot.draftMetadataDirty ? slot.formData : undefined;
 
         let result;
         if (segmentsForUpload.length === 1) {
@@ -2402,6 +2434,7 @@ function RecordingSession() {
               onR2Complete,
               resume: slot.pendingConfirm ?? undefined,
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
+              ...(confirmMetadata ? { confirmMetadata } : {}),
               audioDurationSeconds: durationSeconds,
               slotIndex,
             }
@@ -2417,6 +2450,7 @@ function RecordingSession() {
               onR2Complete,
               resume: slot.pendingConfirm ?? undefined,
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
+              ...(confirmMetadata ? { confirmMetadata } : {}),
               slotIndex,
             }
           );
@@ -2455,6 +2489,7 @@ function RecordingSession() {
             recording_id: result.id,
             attempt_number: attemptNumber,
             latency_ms: latencyMs,
+            ...baseSubmitDiagnostics,
           },
         });
         breadcrumb('upload', 'submit_succeeded', {
@@ -2499,6 +2534,13 @@ function RecordingSession() {
           (errorObj?.status ? `HTTP_${errorObj.status}` : phase.toUpperCase());
         const isRecoverable = isRecoverableSubmitFailure(error);
         const telemetrySeverity = isRecoverable ? 'warning' : 'error';
+        const failureSubmitDiagnostics =
+          phase === 'patch_draft'
+            ? slotSubmitDiagnostics(slot, slotCount, {
+                confirmUsedAtomicMetadataUpdate: willUseAtomicMetadataUpdate,
+                staleDraftPromotionBlocked: true,
+              })
+            : baseSubmitDiagnostics;
 
         trackEvent({
           name: 'submit_failed',
@@ -2512,6 +2554,7 @@ function RecordingSession() {
             error_code: errorCode,
             network_state: netState,
             latency_ms: latencyMs,
+            ...failureSubmitDiagnostics,
           },
         });
         reportClientError({
@@ -2526,6 +2569,7 @@ function RecordingSession() {
           fileSizeBytes: uploadSizeBytes || undefined,
           networkState: netState,
           attemptNumber,
+          submitContext: failureSubmitDiagnostics,
         });
         if (!isRecoverable) {
           captureException(error, {
@@ -2534,15 +2578,19 @@ function RecordingSession() {
               error_code: errorCode,
               network_state: netState,
               has_existing_draft: String(!!slot.serverDraftId),
+              draft_metadata_dirty: String(!!slot.draftMetadataDirty),
+              stale_draft_promotion_blocked: String(phase === 'patch_draft'),
             },
             extra: {
               slot_index: slotIndex,
+              slot_count: slotCount,
               attempt_number: attemptNumber,
               segment_count: segmentCount,
               duration_s: durationSeconds,
               file_size_bytes: uploadSizeBytes || undefined,
               latency_ms: latencyMs,
               recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
+              submit_context: failureSubmitDiagnostics,
             },
           });
         }
@@ -2602,16 +2650,22 @@ function RecordingSession() {
         let serverId: string | null = null;
         if (slot.serverDraftId) {
           const outcome = await patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData);
-          if (outcome === 'success' || outcome === 'transient_failure' || outcome === 'not_draft') {
-            // Keep the existing draft id. For 'transient_failure' + 'not_draft'
-            // the metadata may be stale, but the row still exists and Submit
-            // will promote it in place — strictly better than creating a
-            // duplicate. 'success' is the happy path.
+          if (outcome === 'success') {
             serverId = slot.serverDraftId;
           } else if (outcome === 'draft_missing') {
             // 404 from the server — the draft genuinely no longer exists
             // (e.g. deleted from another device). Fall through to fresh create.
             if (__DEV__) console.warn('[Record] syncServerDraft: draft missing on server, creating fresh', slot.serverDraftId);
+          } else {
+            // Keep draftMetadataDirty=true. A later Submit must either sync the
+            // latest metadata or fail closed before promotion, even after restart.
+            await draftStorage.markDraftMetadataDirty(slotId);
+            dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
+            breadcrumb('draft', 'sync_server_draft_metadata_not_synced', {
+              slot_id: slotId,
+              outcome,
+            });
+            return;
           }
 
           if (completedUploadSlotIdsRef.current.has(slotId)) {
@@ -2649,7 +2703,7 @@ function RecordingSession() {
           }
 
           if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
-            deleteRecordingWithRetry(serverId).catch(() => {});
+            deleteRecordingWithRetry(serverId, 'post_upload_local_cleanup').catch(() => {});
             if (completedUploadSlotIdsRef.current.has(slotId)) {
               draftStorage.deleteDraft(slotId).catch(() => {});
               recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
@@ -2663,6 +2717,10 @@ function RecordingSession() {
         invalidateRecordingCaches(queryClient, 'draft_changed');
       } catch (error) {
         const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
+        if (hadServerDraft) {
+          await draftStorage.markDraftMetadataDirty(slotId);
+          dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
+        }
         if (isNetworkRequestFailed(error)) {
           breadcrumb('draft', 'sync_server_draft_transient_network', {
             slot_id: slotId,
@@ -2767,6 +2825,7 @@ function RecordingSession() {
           slotId: slot.id,
           draftSlotId,
           serverDraftId: slot.serverDraftId ?? null,
+          preserveDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
         });
         const recoveryReason =
           pendingDraftRecoveryReasonRef.current.get(slot.id) ?? 'draft_finish';
@@ -3064,8 +3123,27 @@ function RecordingSession() {
       return;
     }
 
+    const recordedSlotsNeedingDetails = recordFirstEnabled
+      ? []
+      : sessionRef.current.slots.filter(
+          (s) =>
+            (s.segments.length > 0 || !!s.durable) &&
+            s.uploadStatus !== 'success' &&
+            !slotHasRequiredSubmitFields(s)
+        );
+    if (recordedSlotsNeedingDetails.length > 0) {
+      Alert.alert(
+        'Add Required Details',
+        `${recordedSlotsNeedingDetails.length} recorded patient${
+          recordedSlotsNeedingDetails.length > 1 ? 's need' : ' needs'
+        } required details before Submit All.`
+      );
+      return;
+    }
+
     const slotsToUpload = sessionRef.current.slots.filter(
       (s) => (s.segments.length > 0 || !!s.durable) &&
+        (recordFirstEnabled || slotHasRequiredSubmitFields(s)) &&
         s.uploadStatus !== 'success' &&
         s.uploadStatus !== 'uploading' &&
         !slotHasLiveRecorder(s)
@@ -3077,6 +3155,7 @@ function RecordingSession() {
     markSubmitIntent(slotIdsToUpload);
     setIsSubmittingAll(true);
     setTotalSlotsToUpload(slotsToUpload.length);
+    trackEvent({ name: 'submit_all_attempted', props: { slot_count: slotsToUpload.length } });
 
     // Track NetInfo transitions only during the active upload loop. Each
     // transition becomes a Sentry breadcrumb so a failed upload carries
@@ -3104,6 +3183,7 @@ function RecordingSession() {
       try {
         let allSuccess = true;
         const failedSlotIds: string[] = [];
+        const submittedRecordingIds: string[] = [];
         // Sequential uploads to avoid network saturation
         for (const slot of slotsToUpload) {
           setSubmittingSlotId(slot.id);
@@ -3112,8 +3192,19 @@ function RecordingSession() {
             allSuccess = false;
             failedSlotIds.push(slot.id);
             recordSelectedSlotUploadNull(slot.id, 'all');
+          } else {
+            submittedRecordingIds.push(recordingId);
           }
         }
+
+        trackEvent({
+          name: 'submit_all_completed',
+          props: {
+            slot_count: slotsToUpload.length,
+            success_count: submittedRecordingIds.length,
+            failure_count: failedSlotIds.length,
+          },
+        });
 
         Haptics.notificationAsync(
           allSuccess
@@ -3126,7 +3217,10 @@ function RecordingSession() {
         if (allSuccess) {
           releaseResumedStashIfAny();
           resetSession();
-          router.push('/recordings');
+          router.push({
+            pathname: '/recordings',
+            params: { submittedIds: submittedRecordingIds.join(',') },
+          } as never);
         } else {
           // If every failure was a transient r2_put exhaustion (network died
           // during sequential upload), auto-stash the failed slots instead of
@@ -3157,7 +3251,7 @@ function RecordingSession() {
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
-  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
+  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordFirstEnabled, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
     const shouldWarnRecordFirstMultiPatient =
@@ -3335,7 +3429,7 @@ function RecordingSession() {
                   text: 'Re-record',
                   onPress: () => {
                     if (draft.serverDraftId) {
-                      recordingsApi.delete(draft.serverDraftId).catch(() => {});
+                      recordingsApi.delete(draft.serverDraftId, { reason: 'missing_audio_rerecord' }).catch(() => {});
                     }
                     draftStorage.deleteDraft(slotId).catch(() => {});
                     recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
@@ -3365,7 +3459,10 @@ function RecordingSession() {
           serverRecordingId: null,
           draftSlotId: draft.slotId,
           serverDraftId: draft.serverDraftId,
-          draftMetadataDirty: false,
+          // Fail closed after restart: if a local draft is attached to a server
+          // draft, submit should send current formData with confirm-upload even
+          // if an older build did not persist the dirty bit.
+          draftMetadataDirty: draft.draftMetadataDirty || !!draft.serverDraftId,
           pendingConfirm: null,
         };
         restoreSession([restoredSlot]);
@@ -3477,7 +3574,7 @@ function RecordingSession() {
     let cancelled = false;
     const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async () => {
       const cleaned = await draftStorage
-        .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId), {
+        .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId, { reason: 'orphan_draft_cleanup' }), {
           // Reconcile the legacy empty-server-linked branch before deleting any
           // server row (fail-closed offline so a just-uploaded row is never lost).
           getStatus: async (serverDraftId) => {
@@ -3566,7 +3663,7 @@ function RecordingSession() {
                     for (const draft of expiredDrafts) {
                       try {
                         if (draft.serverDraftId) {
-                          await recordingsApi.delete(draft.serverDraftId).catch(() => {});
+                          await recordingsApi.delete(draft.serverDraftId, { reason: 'user_delete' }).catch(() => {});
                         }
                         await draftStorage.deleteDraft(draft.slotId);
                       } catch {
@@ -3970,6 +4067,7 @@ function RecordingSession() {
         isSubmitting={isSubmittingAll}
         onSubmitAll={handleSubmitAll}
         hasActiveRecording={hasActiveRecording}
+        recordFirstEnabled={recordFirstEnabled}
       />
 
       {/* Upload overlay */}

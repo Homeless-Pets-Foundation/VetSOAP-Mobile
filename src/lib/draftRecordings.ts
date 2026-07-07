@@ -78,14 +78,24 @@ export function draftMetadataToRecording(
     importSource: null,
     aiExtractedMetadata: null,
     needsMetadataReview: false,
+    submittedAt: null,
     createdAt: draft.savedAt,
     updatedAt: draft.savedAt,
   };
 }
 
+function getTimestampMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 function getCreatedAtMs(recording: Recording): number {
-  const createdAtMs = new Date(recording.createdAt).getTime();
-  return Number.isNaN(createdAtMs) ? 0 : createdAtMs;
+  return getTimestampMs(recording.createdAt);
+}
+
+function getSubmittedAtMs(recording: Recording): number {
+  return getTimestampMs(recording.submittedAt) || getCreatedAtMs(recording);
 }
 
 export function sortRecordingsByCreatedAt(
@@ -96,6 +106,17 @@ export function sortRecordingsByCreatedAt(
     sortOrder === 'asc'
       ? getCreatedAtMs(a) - getCreatedAtMs(b)
       : getCreatedAtMs(b) - getCreatedAtMs(a)
+  ));
+}
+
+export function sortRecordingsBySubmittedAt(
+  recordings: Recording[],
+  sortOrder: RecordingSortOrder = 'desc'
+): Recording[] {
+  return [...recordings].sort((a, b) => (
+    sortOrder === 'asc'
+      ? getSubmittedAtMs(a) - getSubmittedAtMs(b)
+      : getSubmittedAtMs(b) - getSubmittedAtMs(a)
   ));
 }
 

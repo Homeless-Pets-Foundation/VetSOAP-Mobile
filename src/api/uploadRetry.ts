@@ -19,6 +19,7 @@
 export type UploadPhase =
   | 'preflight'
   | 'silent_check'
+  | 'patch_draft'
   | 'presign'
   | 'r2_put'
   | 'confirm'
@@ -29,7 +30,8 @@ export type TaggedError = Error & { uploadPhase?: UploadPhase; httpStatus?: numb
 
 export function tagPhase(error: unknown, phase: UploadPhase): never {
   if (error instanceof Error) {
-    (error as TaggedError).uploadPhase = phase;
+    const tagged = error as TaggedError;
+    tagged.uploadPhase = tagged.uploadPhase ?? phase;
     throw error;
   }
   const wrapped = new Error(String(error ?? 'Upload failed')) as TaggedError;

@@ -142,7 +142,8 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
 
       // If the slot already has a server draft, a metadata edit makes the
       // draft's server-side formData stale. Flag it so uploadSlot knows to
-      // PATCH (or fall back to delete + fresh create) before confirming.
+      // PATCH before confirming. If PATCH cannot prove the server draft is
+      // current, submit fails closed and keeps local audio recoverable.
       const markDirtyIfHasServerDraft = (slot: PatientSlot): PatientSlot =>
         slot.serverDraftId && slot.uploadStatus !== 'success' && !slot.draftMetadataDirty
           ? { ...slot, draftMetadataDirty: true }
@@ -315,11 +316,10 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             // Stashes don't persist pendingConfirm, so restored slots always start
             // without one. Force null in case an older slot shape leaked through.
             pendingConfirm: null,
-            // Likewise the draftMetadataDirty flag is in-session only — a
-            // restored slot has never had an in-session edit after draft
-            // creation. If a serverDraftId is present, any subsequent
-            // UPDATE_FORM will set the flag correctly.
-            draftMetadataDirty: false,
+            // Preserve persisted fail-closed metadata state across local draft
+            // and stash resume. If true, submit must send current formData with
+            // confirm-upload rather than promoting stale server-draft metadata.
+            draftMetadataDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
           };
         }),
         activeIndex: 0,
@@ -409,18 +409,34 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
     }
 
     case 'SET_DRAFT_IDS':
-      // A fresh draft supersedes any prior dirty flag — the server draft
-      // either didn't exist before or has been replaced.
+      // A fresh draft or successful sync supersedes any prior dirty flag. Local
+      // draft saves that keep the same server draft can preserve the flag until
+      // syncServerDraft proves the server metadata is current.
+      return {
+        ...state,
+        slots: state.slots.map((s) => {
+          if (s.id !== action.slotId) return s;
+          const preserveDirty =
+            !!action.preserveDirty &&
+            !!action.serverDraftId &&
+            action.serverDraftId === s.serverDraftId &&
+            s.draftMetadataDirty &&
+            s.uploadStatus !== 'success';
+          return {
+            ...s,
+            draftSlotId: action.draftSlotId,
+            serverDraftId: action.serverDraftId,
+            draftMetadataDirty: preserveDirty,
+          };
+        }),
+      };
+
+    case 'MARK_DRAFT_METADATA_DIRTY':
       return {
         ...state,
         slots: state.slots.map((s) =>
-          s.id === action.slotId
-            ? {
-                ...s,
-                draftSlotId: action.draftSlotId,
-                serverDraftId: action.serverDraftId,
-                draftMetadataDirty: false,
-              }
+          s.id === action.slotId && s.serverDraftId && s.uploadStatus !== 'success'
+            ? { ...s, draftMetadataDirty: true }
             : s
         ),
       };

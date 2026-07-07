@@ -507,7 +507,7 @@ export default function RecordingDetailScreen() {
           'RECORDING_DELETE_FORBIDDEN'
         );
       }
-      await recordingsApi.delete(id);
+      await recordingsApi.delete(id, { reason: 'user_delete' });
       // If a local draft points at this server row, purge it too so the
       // "Not Submitted" card won't resurrect on next focus.
       if (draftLocalSlotId) {

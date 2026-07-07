@@ -17,6 +17,9 @@ export interface StashedSlot {
   // for forward-compat with stashes written by older clients (treat missing as null).
   serverDraftId?: string | null;
   draftSlotId?: string | null;
+  // True when the server draft may have stale metadata and submit must send
+  // current formData with confirm-upload. Optional for legacy stashes.
+  draftMetadataDirty?: boolean;
   // Durable AAC capture pointer (Rule 20 site 1 of 3). A durable slot has empty
   // `segments[]` and its audio lives only in audio.aac under the durable root;
   // `durable.recordingId` (+ codec/sampleRate/bitrate) MUST survive the stash

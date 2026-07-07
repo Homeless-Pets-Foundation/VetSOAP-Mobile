@@ -63,6 +63,9 @@ test('recording API normalizes create and draft metadata payloads before POST/PA
   assert.match(source, /export function normalizeCreateRecordingPayload/);
   assert.match(source, /export function normalizeDraftMetadataPayload/);
   assert.match(source, /payload\.patientName = typeof data\.patientName === 'string' \? data\.patientName : ''/);
+  assert.match(source, /function coerceNullClearsForDraftValidation\(data: Partial<CreateRecording>\): Partial<CreateRecording>/);
+  assert.match(source, /source\[key\] === null/);
+  assert.match(source, /createRecordingPartialSchema\.parse\(coerceNullClearsForDraftValidation\(data\)\)/);
   assert.match(source, /nullClearedOptional:\s*true/);
   assert.match(source, /payload\[key\] = null/);
   assert.match(source, /const payload = normalizeCreateRecordingPayload\(data\)/);

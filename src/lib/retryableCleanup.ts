@@ -1,4 +1,4 @@
-import { recordingsApi } from '../api/recordings';
+import { recordingsApi, type RecordingDeleteReason } from '../api/recordings';
 import { ApiError } from '../api/client';
 import type { CreateRecording } from '../types';
 
@@ -13,15 +13,19 @@ const BACKOFF_MS = [500, 2_000, 5_000];
 // short backoff so one blip doesn't leak an orphan.
 export async function deleteRecordingWithRetry(
   recordingId: string,
+  reasonOrAttempts: RecordingDeleteReason | number = 'orphan_pending_confirm',
   attempts = DEFAULT_ATTEMPTS
 ): Promise<boolean> {
-  for (let i = 0; i < attempts; i++) {
+  const reason: RecordingDeleteReason | undefined =
+    typeof reasonOrAttempts === 'number' ? undefined : reasonOrAttempts;
+  const maxAttempts = typeof reasonOrAttempts === 'number' ? reasonOrAttempts : attempts;
+  for (let i = 0; i < maxAttempts; i++) {
     try {
-      await recordingsApi.delete(recordingId);
+      await recordingsApi.delete(recordingId, reason ? { reason } : undefined);
       return true;
     } catch (err) {
       if (__DEV__) console.warn('[cleanup] delete retry', i + 1, recordingId, err);
-      if (i < attempts - 1) {
+      if (i < maxAttempts - 1) {
         const delay = BACKOFF_MS[i] ?? 5_000;
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -34,15 +38,14 @@ export type PatchDraftOutcome =
   | 'success'              // PATCH succeeded
   | 'draft_missing'        // 404 — draft no longer exists; upload must fresh-create
   | 'not_draft'            // 409 NOT_DRAFT — draft already promoted; may still be usable for upload
-  | 'transient_failure';   // retries exhausted — keep existingRecordingId and accept stale metadata
+  | 'transient_failure';   // retries exhausted — caller must keep local audio recoverable
 
 // Historically record.tsx treated any PATCH failure as "drop the draft and
 // create a fresh row," which is the root cause of the duplicate-draft-plus-
-// completed pattern: a blip during metadata sync spawned a second server
-// recording. This helper retries transient failures and classifies permanent
-// ones so callers can distinguish "draft is gone" (fresh create required)
-// from "network hiccup" (reuse draft id, carry slightly stale metadata —
-// strictly better than leaving an orphan behind).
+// completed pattern: a blip during metadata sync spawned a second server row.
+// This helper retries transient failures and classifies permanent ones so submit
+// callers can distinguish "draft is gone" (fresh create required) from "latest
+// metadata was not synced" (block promotion and let the user retry).
 export async function patchDraftMetadataWithRetry(
   recordingId: string,
   data: Partial<CreateRecording>,

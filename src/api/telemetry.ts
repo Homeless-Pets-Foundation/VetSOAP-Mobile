@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { apiClient } from './client';
-import type { ErrorPhase, NetworkState } from '../lib/analytics';
+import type { ErrorPhase, NetworkState, SubmitDiagnosticsProps } from '../lib/analytics';
 import { shouldEmit } from '../lib/rateLimitMonitoring';
 
 /**
@@ -26,6 +26,7 @@ export interface ReportClientErrorInput {
   fileSizeBytes?: number;
   networkState?: NetworkState;
   attemptNumber?: number;
+  submitContext?: SubmitDiagnosticsProps;
 }
 
 // Lazy so old dev-client APKs without the expo-application native module
@@ -74,6 +75,7 @@ export function reportClientError(input: ReportClientErrorInput): void {
     fileSizeBytes: input.fileSizeBytes,
     networkState: input.networkState,
     attemptNumber: input.attemptNumber,
+    submitContext: input.submitContext,
     appVersion: getAppVersion(),
     platform: PLATFORM,
     osVersion: OS_VERSION,

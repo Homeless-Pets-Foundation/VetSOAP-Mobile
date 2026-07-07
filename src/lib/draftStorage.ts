@@ -23,6 +23,14 @@ const STORE_OPTIONS = {
 const DRAFT_CHUNK_SIZE = 1900;
 
 const BASE_DRAFTS_DIR = `${Paths.document.uri}drafts/`;
+const DRAFT_NULLABLE_FORM_FIELDS = [
+  'pimsPatientId',
+  'clientName',
+  'species',
+  'breed',
+  'appointmentType',
+  'templateId',
+] as const satisfies readonly (keyof CreateRecording)[];
 
 export interface DraftSegmentMetadata {
   uri: string;
@@ -38,6 +46,10 @@ export interface DraftMetadata {
   audioDuration: number;
   serverDraftId: string | null;
   pendingSync: boolean;
+  // Persisted fail-closed bit: if formData was edited after serverDraftId was
+  // assigned and draft metadata sync could not prove success, submit must send
+  // metadata with confirm-upload even after app restart.
+  draftMetadataDirty: boolean;
   // Durable AAC pointer for a finished durable draft. When set, the draft's
   // audio lives in audio.aac under the durable root (NOT copied into
   // drafts/{userId}/{slotId}/), so `segments` is empty. cleanupOrphaned /
@@ -80,6 +92,21 @@ function cloneDraftMetadata(d: DraftMetadata): DraftMetadata {
     formData: { ...d.formData },
     segments: d.segments.map((s) => ({ ...s })),
   };
+}
+
+function normalizeDraftFormDataForStorage(
+  formData: CreateRecording,
+  opts: { preserveClearedNullableFields: boolean },
+): CreateRecording {
+  if (!opts.preserveClearedNullableFields) return formData;
+
+  const normalized = { ...formData } as CreateRecording & Record<string, unknown>;
+  for (const key of DRAFT_NULLABLE_FORM_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(formData, key) && formData[key] === undefined) {
+      (normalized as Record<string, unknown>)[key] = null;
+    }
+  }
+  return normalized;
 }
 
 /**
@@ -426,6 +453,7 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
         : segments.reduce((sum, segment) => sum + segment.duration, 0),
     serverDraftId: parsed.serverDraftId,
     pendingSync: parsed.pendingSync,
+    draftMetadataDirty: parsed.draftMetadataDirty === true,
     durable,
   };
 }
@@ -539,14 +567,21 @@ export const draftStorage = {
       // next Submit fresh-creates a duplicate server recording instead of
       // promoting the already-created draft). Prefer an existing local anchor.
       const resolvedServerDraftId = existingDurable?.serverDraftId ?? slot.serverDraftId ?? null;
+      const durableDraftMetadataDirty =
+        !!resolvedServerDraftId &&
+        (slot.draftMetadataDirty ||
+          (existingDurable?.serverDraftId === resolvedServerDraftId && existingDurable.draftMetadataDirty));
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
         savedAt: new Date().toISOString(),
-        formData: slot.formData,
+        formData: normalizeDraftFormDataForStorage(slot.formData, {
+          preserveClearedNullableFields: durableDraftMetadataDirty,
+        }),
         segments: [],
         durable: slot.durable,
         audioDuration: slot.durable.durationMs / 1000,
         serverDraftId: resolvedServerDraftId,
+        draftMetadataDirty: durableDraftMetadataDirty,
         // An existing local draft keeps its own pendingSync. A recovery-supplied
         // anchor means the server row already exists (no create needed) → synced;
         // no anchor at all means we still owe a server-draft create → pending.
@@ -692,15 +727,22 @@ export const draftStorage = {
       // a second SecureStore round-trip here. `updateServerDraftId` remains
       // the authoritative writer for the post-sync promotion to
       // `pendingSync: false`.
+      const resolvedServerDraftId = existing?.serverDraftId ?? null;
+      const draftMetadataDirty =
+        !!resolvedServerDraftId &&
+        (slot.draftMetadataDirty || (existing?.draftMetadataDirty ?? false));
       const metadata: DraftMetadata = {
         slotId: slot.id,
         savedAt: new Date().toISOString(),
-        formData: slot.formData,
+        formData: normalizeDraftFormDataForStorage(slot.formData, {
+          preserveClearedNullableFields: draftMetadataDirty,
+        }),
         segments: draftSegments,
         audioDuration: draftSegments.reduce((sum, s) => sum + s.duration, 0),
-        serverDraftId: existing?.serverDraftId ?? null,
-        pendingSync: existing?.serverDraftId
-          ? existing.pendingSync
+        serverDraftId: resolvedServerDraftId,
+        draftMetadataDirty,
+        pendingSync: resolvedServerDraftId
+          ? (existing?.pendingSync ?? false)
           : true,
       };
 
@@ -775,6 +817,7 @@ export const draftStorage = {
 
       metadata.serverDraftId = serverId;
       metadata.pendingSync = false;
+      metadata.draftMetadataDirty = false;
 
       await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
       invalidateDraftsCache();
@@ -804,11 +847,37 @@ export const draftStorage = {
 
       metadata.serverDraftId = null;
       metadata.pendingSync = false;
+      metadata.draftMetadataDirty = false;
 
       await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
       invalidateDraftsCache();
     } catch {
       // Best-effort
+    }
+  },
+
+  /**
+   * Persist the fail-closed metadata dirty bit for an existing server draft.
+   * Used when background PATCH cannot prove success before submit/restart.
+   */
+  async markDraftMetadataDirty(slotId: string): Promise<boolean> {
+    const userId = currentUserId;
+    if (!userId) return false;
+
+    try {
+      const metadata = await readDraftChunks(userId, slotId);
+      if (!metadata || !metadata.serverDraftId) return false;
+
+      metadata.draftMetadataDirty = true;
+      await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+      invalidateDraftsCache();
+      return true;
+    } catch (error) {
+      draftCaptureWarning('draft_mark_metadata_dirty_failed', {
+        slot_id: slotId,
+        reason: classifyDraftFailure(error),
+      });
+      return false;
     }
   },
 

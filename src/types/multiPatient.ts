@@ -65,8 +65,8 @@ export interface PatientSlot {
   serverDraftId: string | null;    // server Recording.id created on Finish (draft status)
   // True once formData has been edited after serverDraftId was assigned.
   // uploadSlot flushes the edits via PATCH /draft-metadata before confirming;
-  // on any PATCH failure it falls back to delete + fresh create so correctness
-  // holds regardless of server version.
+  // if PATCH cannot prove the server draft is current, submit fails closed
+  // before upload/confirm so local audio stays recoverable.
   draftMetadataDirty: boolean;
   pendingConfirm: PendingConfirm | null;  // resume hint captured post-R2 upload
 }
@@ -88,11 +88,12 @@ export type SessionAction =
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }
   | { type: 'DELETE_SEGMENT'; slotId: string; segmentIndex: number }
   | { type: 'REPLACE_ALL_SEGMENTS'; slotId: string; segments: AudioSegment[] }
-  | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null }
+  | { type: 'SET_DRAFT_IDS'; slotId: string; draftSlotId: string; serverDraftId: string | null; preserveDirty?: boolean }
   // Attach/update the durable capture pointer on a slot (set on Finish/park of a
   // durable recording, and re-applied after Resume). Frame-derived durationMs +
   // PCM peakDb come from the durable manifest. Does NOT touch audioState/upload.
   | { type: 'SET_DURABLE_RECORDING'; slotId: string; durable: DurableSlotRef }
+  | { type: 'MARK_DRAFT_METADATA_DIRTY'; slotId: string }
   | { type: 'CLEAR_DRAFT_DIRTY'; slotId: string }
   // Re-point a slot's segments at durable draft copies after draftStorage.saveDraft
   // succeeds. Without this, slot.segments[].uri keeps pointing at recorder-temp

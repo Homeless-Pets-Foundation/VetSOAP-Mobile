@@ -316,11 +316,10 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             // Stashes don't persist pendingConfirm, so restored slots always start
             // without one. Force null in case an older slot shape leaked through.
             pendingConfirm: null,
-            // Likewise the draftMetadataDirty flag is in-session only — a
-            // restored slot has never had an in-session edit after draft
-            // creation. If a serverDraftId is present, any subsequent
-            // UPDATE_FORM will set the flag correctly.
-            draftMetadataDirty: false,
+            // Preserve persisted fail-closed metadata state across local draft
+            // and stash resume. If true, submit must send current formData with
+            // confirm-upload rather than promoting stale server-draft metadata.
+            draftMetadataDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
           };
         }),
         activeIndex: 0,

@@ -130,13 +130,16 @@ test('draftStorage: durable-aware orphan/audio checks + metadata-only save', asy
 test('stash round-trip: durable through all 3 Rule 20 sites', async () => {
   const stashTypes = await read('src/types/stash.ts');
   assert.match(stashTypes, /durable\?: DurableSlotRef \| null/); // site 1
+  assert.match(stashTypes, /draftMetadataDirty\?: boolean/);
   const audioMgr = await read('src/lib/stashAudioManager.ts');
   // site 2 (write): the pointer is carried through, with a vault-restored
   // recoveredAudioUri re-pointed into the stash dir (see the dedicated test below).
   assert.match(audioMgr, /let stashedDurable = slot\.durable \?\? null/);
+  assert.match(audioMgr, /draftMetadataDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
   assert.match(audioMgr, /durable: stashedDurable,/);
   const useStash = await read('src/hooks/useStashedSessions.ts');
   assert.match(useStash, /const durable = slot\.durable \?\? null/); // site 3 (read)
+  assert.match(useStash, /draftMetadataDirty: !!slot\.serverDraftId && \(slot\.draftMetadataDirty === true \|\| slot\.draftMetadataDirty === undefined\)/);
 });
 
 test('vault preserves durable manifests as audio', async () => {

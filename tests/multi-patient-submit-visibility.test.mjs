@@ -34,7 +34,8 @@ test('dirty server draft metadata must block stale promotion on submit', async (
   assert.match(api, /return assertRecordingMatchesMetadataPayload\(confirmed, metadataPayload\)/);
   assert.match(api, /function assertRecordingMatchesMetadataPayload\(recording: Recording, payload\?: RecordingPayload\): Recording/);
   assert.match(api, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
-  assert.match(api, /assertRecordingMatchesMetadataPayload\(current, metadataPayload\)/);
+  assert.match(api, /function isAlreadyConfirmedOrProcessing\(recording: Recording\): boolean/);
+  assert.match(api, /if \(current && isAlreadyConfirmedOrProcessing\(current\)\) \{\s*return current;\s*\}/);
   assert.match(api, /if \(metadataPayload\) \{/);
   assert.match(api, /phaseError\(\s*'patch_draft'/);
   assert.match(api, /confirmMetadata\?: Partial<CreateRecording>/);
@@ -55,8 +56,17 @@ test('dirty server draft metadata must block stale promotion on submit', async (
   assert.match(types, /type: 'MARK_DRAFT_METADATA_DIRTY'; slotId: string/);
   assert.match(types, /preserveDirty\?: boolean/);
   assert.match(session, /case 'MARK_DRAFT_METADATA_DIRTY':/);
+  assert.match(session, /draftMetadataDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
   assert.match(session, /draftMetadataDirty: preserveDirty/);
   assert.match(retry, /transient_failure';\s*\/\/ retries exhausted — caller must keep local audio recoverable/);
+
+  const stashTypes = await read('src/types/stash.ts');
+  const stashAudio = await read('src/lib/stashAudioManager.ts');
+  const useStash = await read('src/hooks/useStashedSessions.ts');
+  assert.match(stashTypes, /draftMetadataDirty\?: boolean/);
+  assert.match(stashAudio, /draftMetadataDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
+  assert.match(useStash, /draftMetadataDirty\?: boolean/);
+  assert.match(useStash, /draftMetadataDirty: !!slot\.serverDraftId && \(slot\.draftMetadataDirty === true \|\| slot\.draftMetadataDirty === undefined\)/);
 });
 
 test('Submit All uses the same metadata gate as per-slot submit outside record-first', async () => {
@@ -76,6 +86,7 @@ test('Submit All uses the same metadata gate as per-slot submit outside record-f
   assert.match(panel, /readyToUpload = slots\.filter\(\s*\(s\) => hasAudio\(s\) && canSubmitSlot\(s\)/);
   assert.match(panel, /needsDetails/);
   assert.match(panel, /const submitBlockedByMissingDetails = needsDetails > 0/);
+  assert.match(panel, /readyToUpload === 0 && needsDetails === 0/);
   assert.match(panel, /disabled=\{isSubmitting \|\| hasActiveRecording \|\| submitBlockedByMissingDetails\}/);
   assert.match(panel, /Add Required Details/);
 });

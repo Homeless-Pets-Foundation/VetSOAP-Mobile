@@ -41,8 +41,9 @@ export function SubmitPanel({
       ).length;
   const submitBlockedByMissingDetails = needsDetails > 0;
 
-  // Only show when 2+ slots and at least 1 has a completed recording not yet uploaded
-  if (slots.length < 2 || readyToUpload === 0) return null;
+  // Show for 2+ slots when there is either something ready to submit or a
+  // recorded slot that needs details before submission.
+  if (slots.length < 2 || (readyToUpload === 0 && needsDetails === 0)) return null;
 
   const skipped = slots.length - recorded;
 

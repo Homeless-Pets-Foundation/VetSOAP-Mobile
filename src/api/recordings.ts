@@ -320,8 +320,19 @@ export function normalizeCreateRecordingPayload(data: CreateRecording): Recordin
   return normalizeValidatedRecordingPayload(validated, { includePatientName: true });
 }
 
+function coerceNullClearsForDraftValidation(data: Partial<CreateRecording>): Partial<CreateRecording> {
+  const validationInput = { ...data } as Partial<CreateRecording> & Record<string, unknown>;
+  const source = data as Record<string, unknown>;
+  for (const key of DRAFT_NULLABLE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] === null) {
+      validationInput[key] = undefined;
+    }
+  }
+  return validationInput;
+}
+
 export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): RecordingPayload {
-  const validated = createRecordingPartialSchema.parse(data);
+  const validated = createRecordingPartialSchema.parse(coerceNullClearsForDraftValidation(data));
   return normalizeValidatedRecordingPayload(validated, {
     includePatientName: Object.prototype.hasOwnProperty.call(data, 'patientName'),
     nullClearedOptional: true,
@@ -347,6 +358,10 @@ function assertRecordingMatchesMetadataPayload(recording: Recording, payload?: R
     );
   }
   return recording;
+}
+
+function isAlreadyConfirmedOrProcessing(recording: Recording): boolean {
+  return recording.status !== 'draft' && recording.status !== 'uploading' && recording.status !== 'failed';
 }
 
 function shouldFallbackSubmittedAtSort(error: unknown, params: ListRecordingsParams): boolean {
@@ -464,21 +479,14 @@ export const recordingsApi = {
       // so the caller can poll normally rather than showing a spurious error.
       if (error instanceof ApiError && error.status === 409) {
         const current = await this.get(recordingId).catch(() => null);
+        if (current && isAlreadyConfirmedOrProcessing(current)) {
+          return current;
+        }
         if (metadataPayload) {
-          if (
-            current &&
-            current.status !== 'uploading' &&
-            current.status !== 'failed'
-          ) {
-            return assertRecordingMatchesMetadataPayload(current, metadataPayload);
-          }
           phaseError(
             'patch_draft',
             'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
           );
-        }
-        if (current && current.status !== 'uploading' && current.status !== 'failed') {
-          return current;
         }
       }
       throw error;

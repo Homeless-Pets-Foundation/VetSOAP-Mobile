@@ -46,6 +46,89 @@ function currentFieldValue(recording: Recording, field: RecordingMetadataField):
   return typeof raw === 'string' ? raw.trim() : '';
 }
 
+function normalizedReason(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const reason = (value as { reason?: unknown }).reason;
+    return typeof reason === 'string' ? reason : '';
+  }
+  return '';
+}
+
+function extractedConflictValue(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate =
+    (value as { suggestedValue?: unknown }).suggestedValue ??
+    (value as { value?: unknown }).value;
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
+}
+
+function hasConflictReason(recording: Recording, field: RecordingMetadataField): boolean {
+  const meta = recording.aiExtractedMetadata as
+    | {
+        dropReasons?: unknown;
+        conflicts?: unknown;
+      }
+    | null
+    | undefined;
+  const isConflict = (value: unknown) => normalizedReason(value) === 'conflicts_with_existing';
+
+  if (Array.isArray(meta?.dropReasons)) {
+    if (meta.dropReasons.some((item) =>
+      item &&
+      typeof item === 'object' &&
+      (item as { field?: unknown }).field === field &&
+      isConflict(item)
+    )) {
+      return true;
+    }
+  } else if (meta?.dropReasons && typeof meta.dropReasons === 'object') {
+    if (isConflict((meta.dropReasons as Record<string, unknown>)[field])) {
+      return true;
+    }
+  }
+
+  return Array.isArray(meta?.conflicts) && meta.conflicts.some((item) =>
+    item &&
+    typeof item === 'object' &&
+    (item as { field?: unknown }).field === field &&
+    (normalizedReason(item) === '' || isConflict(item))
+  );
+}
+
+function conflictSuggestedValue(recording: Recording, field: RecordingMetadataField): string | null {
+  const meta = recording.aiExtractedMetadata as
+    | {
+        dropReasons?: unknown;
+        conflicts?: unknown;
+      }
+    | null
+    | undefined;
+
+  if (Array.isArray(meta?.dropReasons)) {
+    for (const item of meta.dropReasons) {
+      if (item && typeof item === 'object' && (item as { field?: unknown }).field === field) {
+        const value = extractedConflictValue(item);
+        if (value) return value;
+      }
+    }
+  } else if (meta?.dropReasons && typeof meta.dropReasons === 'object') {
+    const value = extractedConflictValue((meta.dropReasons as Record<string, unknown>)[field]);
+    if (value) return value;
+  }
+
+  if (Array.isArray(meta?.conflicts)) {
+    for (const item of meta.conflicts) {
+      if (item && typeof item === 'object' && (item as { field?: unknown }).field === field) {
+        const value = extractedConflictValue(item);
+        if (value) return value;
+      }
+    }
+  }
+
+  return null;
+}
+
 function appliedFieldList(recording: Recording): RecordingMetadataField[] {
   const applied = recording.aiExtractedMetadata?.appliedFields;
   return Array.isArray(applied) ? applied : [];
@@ -140,6 +223,8 @@ export function zeroFillErrorCode(recording: Recording): 'null_extraction' | 'ze
 export interface MetadataSuggestion {
   field: RecordingMetadataField;
   value: string;
+  conflict?: boolean;
+  currentValue?: string;
 }
 
 /**
@@ -149,17 +234,28 @@ export interface MetadataSuggestion {
  * extracted value is non-empty.
  */
 export function computeSuggestionFields(recording: Recording): MetadataSuggestion[] {
-  const fields = recording.aiExtractedMetadata?.fields;
-  if (!fields) return [];
+  const meta = recording.aiExtractedMetadata;
+  if (!meta) return [];
+  const fields = meta.fields ?? {};
   const appliedSet = new Set(appliedFieldList(recording));
   const suggestions: MetadataSuggestion[] = [];
   for (const field of METADATA_FIELDS) {
     if (appliedSet.has(field)) continue;
-    if (currentFieldValue(recording, field) !== '') continue;
-    const value = fields[field]?.value;
-    if (typeof value === 'string' && value.trim().length > 0) {
-      suggestions.push({ field, value: value.trim() });
+    const currentValue = currentFieldValue(recording, field);
+    const extractedValue = fields[field]?.value;
+    const value =
+      typeof extractedValue === 'string' && extractedValue.trim().length > 0
+        ? extractedValue.trim()
+        : conflictSuggestedValue(recording, field);
+    if (!value) continue;
+
+    if (currentValue !== '') {
+      if (hasConflictReason(recording, field) && currentValue !== value) {
+        suggestions.push({ field, value, conflict: true, currentValue });
+      }
+      continue;
     }
+    suggestions.push({ field, value });
   }
   return suggestions;
 }

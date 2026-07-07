@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Alert, View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
 import { Search, Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
 import {
   mergeDraftRecordings,
-  sortRecordingsByCreatedAt,
+  sortRecordingsBySubmittedAt,
 } from '../../../../src/lib/draftRecordings';
 import {
   canRecordAppointments,
@@ -45,6 +45,7 @@ type StatusFilterValue =
 
 export default function RecordingsListScreen() {
   const router = useRouter();
+  const { submittedIds: submittedIdsParam } = useLocalSearchParams<{ submittedIds?: string | string[] }>();
   const user = useAuthUser();
   const colors = useThemeColors();
   const { iconSm, iconLg } = useResponsive();
@@ -62,6 +63,20 @@ export default function RecordingsListScreen() {
         ? 'completed'
         : undefined;
   const reviewStatusFilter = selectedStatusFilter === 'needs_review' ? 'needs_review' : undefined;
+  const submittedIds = useMemo(() => {
+    const raw = Array.isArray(submittedIdsParam) ? submittedIdsParam[0] : submittedIdsParam;
+    if (!raw) return [];
+    const seen = new Set<string>();
+    return raw
+      .split(',')
+      .map((id) => id.trim())
+      .filter((id) => {
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+  }, [submittedIdsParam]);
+  const submittedIdSet = useMemo(() => new Set(submittedIds), [submittedIds]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -82,13 +97,13 @@ export default function RecordingsListScreen() {
     isFetchingNextPage,
     isStale,
   } = useInfiniteQuery({
-    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', reviewStatusFilter ?? 'any', 'desc'],
+    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', reviewStatusFilter ?? 'any', 'submittedAt-desc'],
     queryFn: ({ pageParam = 1 }) =>
       recordingsApi.list({
         search: debouncedSearch || undefined,
         page: pageParam,
         limit: PAGE_SIZE,
-        sortBy: 'createdAt',
+        sortBy: 'submittedAt',
         sortOrder: 'desc',
         ...(serverStatusFilter ? { status: serverStatusFilter } : {}),
         ...(reviewStatusFilter ? { reviewStatus: reviewStatusFilter } : {}),
@@ -113,9 +128,31 @@ export default function RecordingsListScreen() {
   });
 
   const recordings = useMemo(
-    () => sortRecordingsByCreatedAt(data?.pages.flatMap((page) => page.data) ?? [], 'desc'),
+    () => sortRecordingsBySubmittedAt(data?.pages.flatMap((page) => page.data) ?? [], 'desc'),
     [data]
   );
+  const submittedRecordingQueries = useQueries({
+    queries: submittedIds.map((id) => ({
+      queryKey: ['recording', id],
+      queryFn: () => recordingsApi.get(id),
+      enabled: !!user && submittedIds.length > 0,
+      staleTime: 0,
+      refetchOnMount: 'always' as const,
+    })),
+  });
+  const submittedRecordingsById = useMemo(() => {
+    const map = new Map<string, (typeof recordings)[number]>();
+    for (const recording of recordings) {
+      if (submittedIdSet.has(recording.id) && !map.has(recording.id)) {
+        map.set(recording.id, recording);
+      }
+    }
+    for (const query of submittedRecordingQueries) {
+      const recording = query.data;
+      if (recording?.id && !map.has(recording.id)) map.set(recording.id, recording);
+    }
+    return map;
+  }, [recordings, submittedIdSet, submittedRecordingQueries]);
   const hasReviewStatusInLoadedRecordings = useMemo(
     () => recordings.some((recording) => getRecordingReviewStatus(recording) !== null),
     [recordings]
@@ -218,9 +255,19 @@ export default function RecordingsListScreen() {
     );
   }, [draftData?.data, filteredLocalDrafts, user]);
   const displayRecordings = useMemo(() => {
+    const pinSubmitted = <T extends { id: string }>(items: T[]): T[] => {
+      if (submittedIds.length === 0 || selectedStatusFilter === 'draft') return items;
+      const pinned = submittedIds
+        .map((id) => submittedRecordingsById.get(id) as T | undefined)
+        .filter((recording): recording is T => !!recording);
+      if (pinned.length === 0) return items;
+      const rest = items.filter((recording) => !submittedIdSet.has(recording.id));
+      return [...pinned, ...rest];
+    };
+
     if (selectedStatusFilter === 'draft') return mergedDrafts;
     if (selectedStatusFilter === 'needs_review') {
-      return recordings.filter((recording) => getRecordingReviewStatus(recording) === 'needs_review');
+      return pinSubmitted(recordings.filter((recording) => getRecordingReviewStatus(recording) === 'needs_review'));
     }
     if (selectedStatusFilter === 'all') {
       const combined = new Map<string, (typeof recordings)[number]>();
@@ -232,10 +279,10 @@ export default function RecordingsListScreen() {
         combined.set(recording.id, recording);
       }
 
-      return sortRecordingsByCreatedAt(Array.from(combined.values()), 'desc');
+      return pinSubmitted(sortRecordingsBySubmittedAt(Array.from(combined.values()), 'desc'));
     }
-    return recordings;
-  }, [mergedDrafts, recordings, selectedStatusFilter]);
+    return pinSubmitted(recordings);
+  }, [mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById]);
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
   const handleRefresh = useCallback(() => {
     if (shouldLoadRecordings) {
@@ -372,7 +419,11 @@ export default function RecordingsListScreen() {
         data={displayRecordings}
         keyExtractor={keyExtractor}
         renderItem={({ item }) => (
-          <RecordingCard recording={item} localDraftSlotId={draftResumeMap[item.id]} />
+          <RecordingCard
+            recording={item}
+            localDraftSlotId={draftResumeMap[item.id]}
+            highlighted={submittedIdSet.has(item.id)}
+          />
         )}
         contentContainerStyle={FLATLIST_CONTENT_STYLE}
         refreshControl={<RefreshControl refreshing={isListRefetching} onRefresh={handleRefresh} />}
@@ -386,6 +437,21 @@ export default function RecordingsListScreen() {
           shouldLoadRecordings && isFetchingNextPage ? (
             <View className="py-4 items-center">
               <ActivityIndicator size="small" color={colors.brand500} />
+            </View>
+          ) : null
+        }
+        ListHeaderComponent={
+          submittedIds.length > 0 && selectedStatusFilter !== 'draft' ? (
+            <View
+              className="mb-3 p-3 rounded-lg bg-brand-50 border border-brand-200 dark:bg-surface-sunken"
+              accessibilityRole="summary"
+            >
+              <Text className="text-body-sm font-semibold text-brand-700 dark:text-brand-500">
+                {submittedIds.length} of {submittedIds.length} submitted
+              </Text>
+              <Text className="text-caption text-content-tertiary mt-1">
+                IDs {submittedIds.map((id) => id.slice(0, 8)).join(', ')}
+              </Text>
             </View>
           ) : null
         }

@@ -188,19 +188,30 @@ export function MetadataReviewCard({
                 <Text className="text-caption text-content-tertiary font-medium uppercase mb-1.5">
                   {METADATA_REVIEW_COPY.suggestionsTitle}
                 </Text>
-                {suggestions.map(({ field, value }) => (
+                {suggestions.map(({ field, value, conflict, currentValue }) => (
                   <Pressable
                     key={field}
                     onPress={() => applySuggestion(field, value)}
                     accessibilityRole="button"
-                    accessibilityLabel={`Add ${FIELD_LABELS[field]}: ${value}`}
+                    accessibilityLabel={
+                      conflict
+                        ? `Review ${FIELD_LABELS[field]} conflict. Current ${currentValue}. AI suggests ${value}`
+                        : `Add ${FIELD_LABELS[field]}: ${value}`
+                    }
                     className="flex-row items-center mb-1.5 py-1"
                   >
                     <Plus color={colors.brand500} size={12} style={{ marginRight: 6 }} />
-                    <Text className="text-body-sm text-content-secondary flex-1" numberOfLines={2}>
-                      <Text className="font-semibold">{FIELD_LABELS[field]}: </Text>
-                      {value}
-                    </Text>
+                    <View className="flex-1">
+                      <Text className="text-body-sm text-content-secondary" numberOfLines={2}>
+                        <Text className="font-semibold">{FIELD_LABELS[field]}: </Text>
+                        {value}
+                      </Text>
+                      {conflict && currentValue ? (
+                        <Text className="text-caption text-content-tertiary mt-0.5" numberOfLines={2}>
+                          {METADATA_REVIEW_COPY.conflictCurrent}: {currentValue} · {METADATA_REVIEW_COPY.conflictSuggested}: {value}
+                        </Text>
+                      ) : null}
+                    </View>
                   </Pressable>
                 ))}
               </View>

@@ -65,8 +65,8 @@ export interface PatientSlot {
   serverDraftId: string | null;    // server Recording.id created on Finish (draft status)
   // True once formData has been edited after serverDraftId was assigned.
   // uploadSlot flushes the edits via PATCH /draft-metadata before confirming;
-  // on any PATCH failure it falls back to delete + fresh create so correctness
-  // holds regardless of server version.
+  // if PATCH cannot prove the server draft is current, submit fails closed
+  // before upload/confirm so local audio stays recoverable.
   draftMetadataDirty: boolean;
   pendingConfirm: PendingConfirm | null;  // resume hint captured post-R2 upload
 }

@@ -265,6 +265,8 @@ export const METADATA_REVIEW_COPY = {
     "Captivet couldn't read the patient details from this recording. Add them here.",
   addDetails: 'Add Details',
   suggestionsTitle: 'Captivet found these — tap to add',
+  conflictCurrent: 'Current',
+  conflictSuggested: 'AI suggests',
   editTitle: 'Patient details',
   editBody: 'Edit patient details or add a PIMS Patient ID.',
   sheetTitle: 'Patient Details',

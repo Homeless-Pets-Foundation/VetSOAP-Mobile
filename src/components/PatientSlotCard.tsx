@@ -334,7 +334,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   return (
     <ScrollView
       style={{ width }}
-      contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 120 }}
+      contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: totalSlots > 1 ? 24 : 80 }}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
     >

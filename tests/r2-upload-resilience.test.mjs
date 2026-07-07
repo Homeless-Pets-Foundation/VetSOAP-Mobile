@@ -101,11 +101,16 @@ test('analytics.ts adds recording_auto_stashed event with AutoStashReason union'
 
 test('record.tsx imports isTransientUploadError from recordings module', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
-
-  assert.match(
-    src,
-    /import \{ recordingsApi, getUploadPhase, isTransientUploadError \} from '\.\.\/\.\.\/\.\.\/src\/api\/recordings';/
+  const importEnd = src.indexOf("from '../../../src/api/recordings'");
+  const importStart = src.lastIndexOf('import {', importEnd);
+  const importBlock = src.slice(
+    importStart,
+    importEnd + 40
   );
+
+  assert.match(importBlock, /recordingsApi/);
+  assert.match(importBlock, /getUploadPhase/);
+  assert.match(importBlock, /isTransientUploadError/);
 });
 
 test('record.tsx flags auto-stash eligibility on transient r2_put or create_draft network death', async () => {

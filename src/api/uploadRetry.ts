@@ -19,6 +19,7 @@
 export type UploadPhase =
   | 'preflight'
   | 'silent_check'
+  | 'patch_draft'
   | 'presign'
   | 'r2_put'
   | 'confirm'

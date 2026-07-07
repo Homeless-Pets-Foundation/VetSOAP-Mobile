@@ -142,7 +142,8 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
 
       // If the slot already has a server draft, a metadata edit makes the
       // draft's server-side formData stale. Flag it so uploadSlot knows to
-      // PATCH (or fall back to delete + fresh create) before confirming.
+      // PATCH before confirming. If PATCH cannot prove the server draft is
+      // current, submit fails closed and keeps local audio recoverable.
       const markDirtyIfHasServerDraft = (slot: PatientSlot): PatientSlot =>
         slot.serverDraftId && slot.uploadStatus !== 'success' && !slot.draftMetadataDirty
           ? { ...slot, draftMetadataDirty: true }

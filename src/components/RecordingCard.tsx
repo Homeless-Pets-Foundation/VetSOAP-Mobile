@@ -18,6 +18,7 @@ import { useThemeColors } from '../hooks/useThemeColors';
 interface RecordingCardProps {
   recording: Recording;
   localDraftSlotId?: string;
+  highlighted?: boolean;
 }
 
 function DraftLocationChip({ isOnDevice }: { isOnDevice: boolean }) {
@@ -58,7 +59,11 @@ function AiLabeledChip() {
   );
 }
 
-export const RecordingCard = React.memo(function RecordingCard({ recording, localDraftSlotId }: RecordingCardProps) {
+export const RecordingCard = React.memo(function RecordingCard({
+  recording,
+  localDraftSlotId,
+  highlighted = false,
+}: RecordingCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const colors = useThemeColors();
@@ -134,7 +139,7 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
       }}
       accessibilityRole="button"
       accessibilityLabel={`Recording from ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
-      className="card mb-2"
+      className={`card mb-2 ${highlighted ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}`}
       style={({ pressed }) => ({ opacity: pressed ? 0.96 : 1 })}
     >
       <View className="flex-row justify-between items-center">
@@ -227,5 +232,6 @@ export const RecordingCard = React.memo(function RecordingCard({ recording, loca
   (prev.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) ===
     (next.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) &&
   prev.recording.needsMetadataReview === next.recording.needsMetadataReview &&
-  prev.localDraftSlotId === next.localDraftSlotId
+  prev.localDraftSlotId === next.localDraftSlotId &&
+  prev.highlighted === next.highlighted
 );

@@ -77,6 +77,7 @@ export interface Recording {
   importSource: 'google_drive' | null;
   aiExtractedMetadata?: AiExtractedMetadata | null;
   needsMetadataReview?: boolean;
+  submittedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -108,11 +109,29 @@ export interface AiExtractedMetadataField {
   confidence?: number;
 }
 
+export interface AiMetadataDropReason {
+  field: RecordingMetadataField;
+  reason: string;
+  currentValue?: string | null;
+  suggestedValue?: string | null;
+  value?: string | null;
+}
+
+export interface AiMetadataConflict {
+  field: RecordingMetadataField;
+  reason?: string;
+  currentValue?: string | null;
+  suggestedValue?: string | null;
+  value?: string | null;
+}
+
 export interface AiExtractedMetadata {
   extractedAt?: string;
   model?: string;
   fields?: Partial<Record<RecordingMetadataField, AiExtractedMetadataField>>;
   appliedFields?: RecordingMetadataField[];
+  dropReasons?: AiMetadataDropReason[] | Partial<Record<RecordingMetadataField, string | AiMetadataDropReason>>;
+  conflicts?: AiMetadataConflict[];
   multiplePatientsDetected?: boolean;
   review?: MetadataReviewState;
   reviewedBy?: string | null;

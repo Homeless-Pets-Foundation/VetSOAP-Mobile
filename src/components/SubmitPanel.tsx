@@ -9,18 +9,36 @@ interface SubmitPanelProps {
   isSubmitting: boolean;
   onSubmitAll: () => void;
   hasActiveRecording: boolean;
+  recordFirstEnabled?: boolean;
 }
 
-export function SubmitPanel({ slots, isSubmitting, onSubmitAll, hasActiveRecording }: SubmitPanelProps) {
+export function SubmitPanel({
+  slots,
+  isSubmitting,
+  onSubmitAll,
+  hasActiveRecording,
+  recordFirstEnabled = false,
+}: SubmitPanelProps) {
   // A durable slot has empty segments (audio in audio.aac) but is a real,
   // submittable recording — count it as recorded/ready or Submit All hides for
   // durable-only sessions and durable slots are silently skipped.
   const hasAudio = (s: PatientSlot) => s.segments.length > 0 || s.durable !== null;
+  const hasRequiredFields = (s: PatientSlot) =>
+    s.formData.patientName.trim().length > 0 &&
+    (s.formData.clientName?.trim().length ?? 0) > 0 &&
+    (s.formData.species?.trim().length ?? 0) > 0 &&
+    !!s.formData.appointmentType;
+  const canSubmitSlot = (s: PatientSlot) => recordFirstEnabled || hasRequiredFields(s);
   const recorded = slots.filter(hasAudio).length;
   const uploaded = slots.filter((s) => s.uploadStatus === 'success').length;
   const readyToUpload = slots.filter(
-    (s) => hasAudio(s) && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
+    (s) => hasAudio(s) && canSubmitSlot(s) && s.uploadStatus !== 'success' && s.uploadStatus !== 'uploading'
   ).length;
+  const needsDetails = recordFirstEnabled
+    ? 0
+    : slots.filter(
+        (s) => hasAudio(s) && !hasRequiredFields(s) && s.uploadStatus !== 'success'
+      ).length;
 
   // Only show when 2+ slots and at least 1 has a completed recording not yet uploaded
   if (slots.length < 2 || readyToUpload === 0) return null;
@@ -44,6 +62,12 @@ export function SubmitPanel({ slots, isSubmitting, onSubmitAll, hasActiveRecordi
       {skipped > 0 && (
         <Text className="text-caption text-status-warning mb-2">
           {skipped} patient{skipped > 1 ? 's have' : ' has'} no recording — will be skipped
+        </Text>
+      )}
+
+      {needsDetails > 0 && (
+        <Text className="text-caption text-status-warning mb-2">
+          {needsDetails} recorded patient{needsDetails > 1 ? 's need' : ' needs'} required details before submit
         </Text>
       )}
 

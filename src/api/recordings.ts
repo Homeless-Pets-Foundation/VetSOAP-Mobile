@@ -44,6 +44,15 @@ import {
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
 
+export type RecordingDeleteReason =
+  | 'user_delete'
+  | 'discard_session'
+  | 'remove_slot'
+  | 'orphan_pending_confirm'
+  | 'missing_audio_rerecord'
+  | 'orphan_draft_cleanup'
+  | 'post_upload_local_cleanup';
+
 /**
  * Expected bitrate range for a healthy recording. Outside this window we
  * emit `audio_bitrate_anomaly` so device-specific encoder glitches (e.g.
@@ -320,13 +329,42 @@ export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): R
   });
 }
 
+function recordingMatchesMetadataPayload(recording: Recording, payload: RecordingPayload): boolean {
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === 'pimsPatientId') {
+      if ((recording.pimsPatientId ?? null) !== value) return false;
+      continue;
+    }
+    if (key in recording) {
+      const recordingValue = (recording as unknown as Record<string, unknown>)[key] ?? null;
+      if (recordingValue !== value) return false;
+    }
+  }
+  return true;
+}
+
+function shouldFallbackSubmittedAtSort(error: unknown, params: ListRecordingsParams): boolean {
+  return error instanceof ApiError && error.status === 400 && params.sortBy === 'submittedAt';
+}
+
 export const recordingsApi = {
   async list(params: ListRecordingsParams = {}): Promise<PaginatedResponse<Recording>> {
     const sanitized = { ...params } as Record<string, string | number | undefined>;
     if (params.search) {
       sanitized.search = searchQuerySchema.parse(params.search);
     }
-    return apiClient.get('/api/recordings', sanitized);
+    try {
+      return await apiClient.get('/api/recordings', sanitized);
+    } catch (error) {
+      // Compatibility for APKs installed before the matching backend deploy.
+      // The new server supports `sortBy=submittedAt`; older servers reject the
+      // enum with 400. Retry with createdAt so Recent Recordings and the list do
+      // not hard-fail while submitted-id pinning still proves the post-submit rows.
+      if (shouldFallbackSubmittedAtSort(error, params)) {
+        return apiClient.get('/api/recordings', { ...sanitized, sortBy: 'createdAt' });
+      }
+      throw error;
+    }
   },
 
   async get(id: string): Promise<Recording> {
@@ -349,9 +387,12 @@ export const recordingsApi = {
     return apiClient.post('/api/recordings', { ...payload, isDraft: options?.isDraft ?? false }, idempotencyKey);
   },
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, opts?: { reason?: RecordingDeleteReason }): Promise<void> {
     recordingIdSchema.parse(id);
-    return apiClient.delete(`/api/recordings/${id}`);
+    return apiClient.delete(
+      `/api/recordings/${id}`,
+      opts?.reason ? { reason: opts.reason } : undefined
+    );
   },
 
   /**
@@ -399,13 +440,15 @@ export const recordingsApi = {
   async confirmUpload(
     recordingId: string,
     fileKey: string,
-    opts?: { segmentKeys?: string[]; segmentCount?: number }
+    opts?: { segmentKeys?: string[]; segmentCount?: number; metadata?: Partial<CreateRecording> }
   ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
+    const metadataPayload = opts?.metadata ? normalizeDraftMetadataPayload(opts.metadata) : undefined;
     try {
       return await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
         fileKey,
         ...(opts?.segmentKeys ? { segmentKeys: opts.segmentKeys, segmentCount: opts.segmentCount } : {}),
+        ...(metadataPayload ? { metadata: metadataPayload } : {}),
       });
     } catch (error) {
       // 409 means the recording is already past 'uploading' state. This happens when the
@@ -414,6 +457,20 @@ export const recordingsApi = {
       // so the caller can poll normally rather than showing a spurious error.
       if (error instanceof ApiError && error.status === 409) {
         const current = await this.get(recordingId).catch(() => null);
+        if (metadataPayload) {
+          if (
+            current &&
+            current.status !== 'uploading' &&
+            current.status !== 'failed' &&
+            recordingMatchesMetadataPayload(current, metadataPayload)
+          ) {
+            return current;
+          }
+          phaseError(
+            'patch_draft',
+            'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
+          );
+        }
         if (current && current.status !== 'uploading' && current.status !== 'failed') {
           return current;
         }
@@ -439,6 +496,7 @@ export const recordingsApi = {
       onR2Complete?: (hint: PendingConfirm) => void;
       resume?: PendingConfirm;
       existingRecordingId?: string;
+      confirmMetadata?: Partial<CreateRecording>;
       audioDurationSeconds?: number;
       slotIndex?: number;
       // Explicit upload filename. Durable AAC passes 'recording.aac'; without it
@@ -456,7 +514,10 @@ export const recordingsApi = {
     // Retry path: R2 already holds the file; just re-run confirm.
     if (options?.resume) {
       const { recordingId, fileKey, segmentKeys, segmentCount } = options.resume;
-      return this.confirmUpload(recordingId, fileKey, segmentKeys ? { segmentKeys, segmentCount } : undefined);
+      return this.confirmUpload(recordingId, fileKey, {
+        ...(segmentKeys ? { segmentKeys, segmentCount } : {}),
+        ...(options.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
+      });
     }
 
     // Step 1: Create recording record (validates data via this.create) or use existing draft
@@ -470,7 +531,14 @@ export const recordingsApi = {
       try {
         recording = await this.get(options.existingRecordingId);
         isExistingRecording = true;
+        if (options?.confirmMetadata && recording.status !== 'draft') {
+          phaseError(
+            'patch_draft',
+            'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
+          );
+        }
       } catch (e) {
+        if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
         if (e instanceof ApiError && e.status === 404) {
           if (__DEV__) console.warn('[upload] existing draft missing, creating fresh');
           try {
@@ -615,7 +683,9 @@ export const recordingsApi = {
       // Step 4: Confirm upload and trigger processing
       let confirmed: Recording;
       try {
-        confirmed = await this.confirmUpload(recording.id, fileKey);
+        confirmed = await this.confirmUpload(recording.id, fileKey, {
+          ...(isExistingRecording && options?.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
+        });
       } catch (e) { tagPhase(e, 'confirm'); }
       return confirmed;
     } catch (error) {
@@ -624,7 +694,7 @@ export const recordingsApi = {
       // in "uploading" state so the user can retry.
       // Also, never delete if using an existing recording ID (draft) — let the user retry later.
       if (!r2UploadComplete && !isExistingRecording) {
-        await this.delete(recording.id).catch(() => {});
+        await this.delete(recording.id, { reason: 'orphan_pending_confirm' }).catch(() => {});
       }
       throw error;
     }
@@ -649,13 +719,17 @@ export const recordingsApi = {
       onR2Complete?: (hint: PendingConfirm) => void;
       resume?: PendingConfirm;
       existingRecordingId?: string;
+      confirmMetadata?: Partial<CreateRecording>;
       slotIndex?: number;
     }
   ): Promise<Recording> {
     // Retry path: all segments already on R2, just re-run confirm.
     if (options?.resume) {
       const { recordingId, fileKey, segmentKeys, segmentCount } = options.resume;
-      return this.confirmUpload(recordingId, fileKey, segmentKeys ? { segmentKeys, segmentCount } : undefined);
+      return this.confirmUpload(recordingId, fileKey, {
+        ...(segmentKeys ? { segmentKeys, segmentCount } : {}),
+        ...(options.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
+      });
     }
 
     // Use provided draft recording ID or create a new one. If the server row
@@ -668,7 +742,14 @@ export const recordingsApi = {
       try {
         recording = await this.get(options.existingRecordingId);
         isExistingRecording = true;
+        if (options?.confirmMetadata && recording.status !== 'draft') {
+          phaseError(
+            'patch_draft',
+            'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
+          );
+        }
       } catch (e) {
+        if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
         if (e instanceof ApiError && e.status === 404) {
           if (__DEV__) console.warn('[upload] existing draft missing, creating fresh');
           try {
@@ -860,6 +941,7 @@ export const recordingsApi = {
         confirmed = await this.confirmUpload(recording.id, confirmedKeys[0], {
           segmentKeys: confirmedKeys,
           segmentCount: confirmedKeys.length,
+          ...(isExistingRecording && options?.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
         });
       } catch (e) { tagPhase(e, 'confirm'); }
       return confirmed;
@@ -867,7 +949,7 @@ export const recordingsApi = {
       // Only delete if R2 upload didn't complete and it's a new recording (not a draft).
       // Never delete existing draft recordings — let the user retry later.
       if (!r2UploadComplete && !isExistingRecording) {
-        await this.delete(recording.id).catch(() => {});
+        await this.delete(recording.id, { reason: 'orphan_pending_confirm' }).catch(() => {});
       }
       // Enrich the error message for partial multi-segment failures, preserving
       // the phase tag so uploadSlot can still classify correctly.

@@ -32,6 +32,10 @@ async function loadTsModule(path) {
 
 const OBS = await loadTsModule('src/lib/recordFirstObservability.ts');
 
+function plain(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 /**
  * Minimal Recording factory. The observability helpers only read status,
  * aiExtractedMetadata, needsMetadataReview, and the five metadata field values.
@@ -212,6 +216,60 @@ test('B6: suggestions = extracted − applied, blank-only, with non-empty value'
   assert.equal(suggestions[0].value, 'Labrador');
 });
 
+test('B6: conflict suggestions can surface a filled field without auto-overwriting it', () => {
+  const rec = makeRecording({
+    species: 'Canine',
+    aiExtractedMetadata: {
+      appliedFields: [],
+      fields: {
+        species: { value: 'Feline' },
+      },
+      dropReasons: [
+        { field: 'species', reason: 'conflicts_with_existing' },
+      ],
+    },
+  });
+  const suggestions = OBS.computeSuggestionFields(rec);
+  assert.deepEqual(plain(suggestions), [
+    { field: 'species', value: 'Feline', conflict: true, currentValue: 'Canine' },
+  ]);
+});
+
+test('B6: filled fields still do not suggest without an explicit conflict reason', () => {
+  const rec = makeRecording({
+    species: 'Canine',
+    aiExtractedMetadata: {
+      appliedFields: [],
+      fields: {
+        species: { value: 'Feline' },
+      },
+      dropReasons: [
+        { field: 'species', reason: 'already_filled' },
+      ],
+    },
+  });
+  assert.deepEqual(plain(OBS.computeSuggestionFields(rec)), []);
+});
+
+test('B6: conflict suggestions tolerate object/drop-only server shapes', () => {
+  const rec = makeRecording({
+    species: 'Canine',
+    aiExtractedMetadata: {
+      appliedFields: [],
+      dropReasons: {
+        species: {
+          field: 'species',
+          reason: 'conflicts_with_existing',
+          suggestedValue: 'Feline',
+        },
+      },
+    },
+  });
+  assert.deepEqual(plain(OBS.computeSuggestionFields(rec)), [
+    { field: 'species', value: 'Feline', conflict: true, currentValue: 'Canine' },
+  ]);
+});
+
 test('B6: tapping a suggestion applies its value (helper exposes value)', () => {
   const rec = makeRecording({
     aiExtractedMetadata: {
@@ -267,6 +325,8 @@ test('WIRING: MetadataReviewCard uses suggestion + empty-state helpers', async (
   assert.match(card, /computeSuggestionFields/);
   assert.match(card, /shouldShowNoExtractionEmptyState/);
   assert.match(card, /applySuggestion/);
+  assert.match(card, /conflictCurrent/);
+  assert.match(card, /conflictSuggested/);
   assert.match(card, /addBodyNoExtraction/);
 });
 

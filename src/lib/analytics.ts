@@ -65,6 +65,19 @@ const PLATFORM = Platform.OS;
 // Every event name + property shape the app can emit. If it's not here, it
 // doesn't get sent. Keep this small and PHI-free.
 
+export type SubmitDiagnosticsProps = {
+  slot_count: number;
+  has_existing_server_draft: boolean;
+  has_pending_confirm: boolean;
+  draft_metadata_dirty: boolean;
+  confirm_used_atomic_metadata_update: boolean;
+  stale_draft_promotion_blocked: boolean;
+  species_present: boolean;
+  breed_present: boolean;
+  appointment_type_present: boolean;
+  client_last_name_present: boolean;
+};
+
 export type AnalyticsEvent =
   // Session + auth
   | { name: 'session_start'; props: { cold_start_ms?: number } }
@@ -91,9 +104,9 @@ export type AnalyticsEvent =
   | { name: 'audio_silence_check_inconclusive'; props: { slot_index: number; duration_s: number; segment_count: number; reason: SilenceCheckInconclusiveReason } }
   | { name: 'silent_check_bypassed'; props: { slot_index: number; duration_s: number; segment_count: number; reason: SilenceCheckSilentReason } }
   // Submit
-  | { name: 'submit_attempted'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; network_state: NetworkState } }
-  | { name: 'submit_succeeded'; props: { slot_index: number; segment_count: number; duration_s: number; size_bytes: number; recording_id: string; attempt_number: number; latency_ms: number } }
-  | { name: 'submit_failed'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; error_phase: ErrorPhase; error_code: string; network_state: NetworkState; latency_ms: number } }
+  | { name: 'submit_attempted'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; network_state: NetworkState } & SubmitDiagnosticsProps }
+  | { name: 'submit_succeeded'; props: { slot_index: number; segment_count: number; duration_s: number; size_bytes: number; recording_id: string; attempt_number: number; latency_ms: number } & SubmitDiagnosticsProps }
+  | { name: 'submit_failed'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; error_phase: ErrorPhase; error_code: string; network_state: NetworkState; latency_ms: number } & SubmitDiagnosticsProps }
   | { name: 'submit_all_attempted'; props: { slot_count: number } }
   | { name: 'submit_all_completed'; props: { slot_count: number; success_count: number; failure_count: number } }
   // Stash + draft

@@ -11,7 +11,7 @@ import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Mic, ChevronRight, FileText, Settings, ShieldAlert, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuthUser } from '../../../src/hooks/useAuth';
+import { useAuthDeviceRegistration, useAuthUser } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../src/hooks/useThemeColors';
 import { useDeviceCapacity } from '../../../src/hooks/useDeviceCapacity';
@@ -45,6 +45,8 @@ export default function HomeScreen() {
   const ctaScale = useSharedValue(1);
   const isTabFocused = useIsFocused();
   const { capacity } = useDeviceCapacity();
+  const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
+  const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
 
   // Parallel fetch — useQueries fires both requests at once instead of letting
   // React Query serialize independent useQuery calls. Saves 100-300 ms on cold
@@ -54,7 +56,7 @@ export default function HomeScreen() {
       {
         queryKey: ['recordings', 'recent'],
         queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'submittedAt', sortOrder: 'desc' }),
-        enabled: !!user,
+        enabled: canLoadServerData,
         refetchInterval: (query: { state: { data?: Awaited<ReturnType<typeof recordingsApi.list>> } }) => {
           if (!isTabFocused) return false;
           const allRecordings = query.state.data?.data;
@@ -67,7 +69,7 @@ export default function HomeScreen() {
       {
         queryKey: ['recordings', 'drafts', 'recent'],
         queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc', status: 'draft' as const }),
-        enabled: !!user,
+        enabled: canLoadServerData,
       },
     ],
   });
@@ -98,7 +100,7 @@ export default function HomeScreen() {
     screen: 'home',
     source: 'recordings',
     retryKey: 'recent',
-    enabled: !!user,
+    enabled: canLoadServerData,
     isError,
     error,
     hasData: !!data,
@@ -108,7 +110,7 @@ export default function HomeScreen() {
     screen: 'home',
     source: 'drafts',
     retryKey: 'recent-drafts',
-    enabled: !!user,
+    enabled: canLoadServerData,
     isError: isDraftError,
     error: draftError,
     hasData: !!draftData,
@@ -126,7 +128,7 @@ export default function HomeScreen() {
   const { data: recentPatient } = useQuery({
     queryKey: ['patient', recentPatientId],
     queryFn: () => patientsApi.get(recentPatientId!),
-    enabled: !!user && !!recentPatientId,
+    enabled: canLoadServerData && !!recentPatientId,
     staleTime: 5 * 60 * 1000,
   });
   const recentPatientSummary = recentPatient?.aiHistorySummary?.trim() ?? '';
@@ -150,10 +152,12 @@ export default function HomeScreen() {
   }));
 
   const handleRefresh = useCallback(() => {
-    refetch().catch(() => {});
-    refetchDrafts().catch(() => {});
+    if (canLoadServerData) {
+      refetch().catch(() => {});
+      refetchDrafts().catch(() => {});
+    }
     refreshLocalDrafts({ forceReconcile: true });
-  }, [refetch, refetchDrafts, refreshLocalDrafts]);
+  }, [canLoadServerData, refetch, refetchDrafts, refreshLocalDrafts]);
 
   const handleRecordPress = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
@@ -168,26 +172,27 @@ export default function HomeScreen() {
 
   const handleFocusRefresh = useCallback(() => {
     const staleServerSourceCount =
-      Number(recordingsQuery.isStale) +
-      Number(draftsQuery.isStale);
+      Number(canLoadServerData && recordingsQuery.isStale) +
+      Number(canLoadServerData && draftsQuery.isStale);
     const localDraftsStale = areLocalDraftsStaleRef.current;
     measurePhase('home_focus_refresh', {
-      recordings_stale: recordingsQuery.isStale,
-      server_drafts_stale: draftsQuery.isStale,
+      recordings_stale: canLoadServerData && recordingsQuery.isStale,
+      server_drafts_stale: canLoadServerData && draftsQuery.isStale,
       local_drafts_stale: localDraftsStale,
       local_drafts_refreshed: true,
       skipped: false,
       count: staleServerSourceCount + 1,
     }, () => {
-      if (recordingsQuery.isStale) {
+      if (canLoadServerData && recordingsQuery.isStale) {
         refetch().catch(() => {});
       }
-      if (draftsQuery.isStale) {
+      if (canLoadServerData && draftsQuery.isStale) {
         refetchDrafts().catch(() => {});
       }
       refreshLocalDrafts();
     });
   }, [
+    canLoadServerData,
     draftsQuery.isStale,
     recordingsQuery.isStale,
     refetch,
@@ -413,7 +418,7 @@ export default function HomeScreen() {
               </Text>
             ) : null}
             <View className="mt-3">
-              <Button variant="secondary" size="sm" onPress={() => { refetch().catch(() => {}); }}>
+              <Button variant="secondary" size="sm" onPress={handleRefresh}>
                 Retry
               </Button>
             </View>

@@ -5,7 +5,7 @@ import { recordingsApi } from '../api/recordings';
 import { buildDraftResumeMap } from '../lib/draftRecordings';
 import { draftStorage, type DraftMetadata, type ServerDraftPresence } from '../lib/draftStorage';
 import { measurePhase } from '../lib/monitoring';
-import { useAuthUser } from './useAuth';
+import { useAuthDeviceRegistration, useAuthUser } from './useAuth';
 
 const LOCAL_DRAFTS_STALE_MS = 60_000;
 const RECONCILE_INTERVAL_MS = 5 * 60_000;
@@ -96,8 +96,10 @@ export interface UseLocalDraftRecordingsResult {
 
 export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
   const user = useAuthUser();
+  const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
   const queryClient = useQueryClient();
   const userId = user?.id ?? null;
+  const canReconcileServerDrafts = !!userId && !deviceRegistrationPending && !deviceRegistrationBlock;
 
   const query = useQuery({
     queryKey: ['local-drafts', userId],
@@ -106,7 +108,9 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
     gcTime: 10 * 60_000,
     queryFn: async () => {
       if (!userId) return [] as DraftMetadata[];
-      await reconcileMissingServerDrafts(userId, false);
+      if (canReconcileServerDrafts) {
+        await reconcileMissingServerDrafts(userId, false);
+      }
       return measurePhase('local_draft_list', { source: 'query' }, () => draftStorage.listDrafts());
     },
   });
@@ -122,7 +126,9 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
         'local_draft_refresh',
         { force_reconcile: forceReconcile },
         async () => {
-          await reconcileMissingServerDrafts(userId, forceReconcile);
+          if (canReconcileServerDrafts) {
+            await reconcileMissingServerDrafts(userId, forceReconcile);
+          }
           await queryClient.invalidateQueries({
             queryKey: ['local-drafts', userId],
             refetchType: 'active',
@@ -130,7 +136,7 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
         }
       ).catch(() => {});
     },
-    [queryClient, userId]
+    [canReconcileServerDrafts, queryClient, userId]
   );
 
   return {

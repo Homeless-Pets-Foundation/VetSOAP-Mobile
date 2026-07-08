@@ -171,11 +171,13 @@ function isExpectedSubmitApiFailure(error: unknown): boolean {
 //     via reportClientError so the server team keeps visibility)
 //   - transient network death: matched by isTransientUploadError (also drives
 //     auto-stash for retry below)
+//   - silent_check: user declined the explicit Upload Anyway confirmation
 //   - aborts: request timeout / cancel (AbortError), which the transient regex
 //     does not match (Sentry REACT-NATIVE-W)
 function isRecoverableSubmitFailure(error: unknown): boolean {
   if (isExpectedSubmitApiFailure(error)) return true;
   if (isTransientUploadError(error)) return true;
+  if (getUploadPhase(error) === 'silent_check') return true;
   if (getUploadPhase(error) === 'patch_draft') return true;
   const e = error as { status?: number; name?: string; message?: string } | null;
   if (typeof e?.status === 'number' && e.status >= 500) return true;

@@ -172,8 +172,6 @@ interface AuthContextType {
   signOut: (options?: SignOutOptions) => Promise<void>;
   /** Set when device registration is blocked by the per-user device cap. */
   deviceRegistrationBlock: DeviceRegistrationBlock | null;
-  /** User dismissed the modal manually (e.g. backdrop tap). */
-  dismissDeviceRegistrationBlock: () => void;
   /** Retry register after the user revoked one of their devices. */
   retryDeviceRegistration: () => Promise<boolean>;
   /**
@@ -224,7 +222,6 @@ export const AuthContext = createContext<AuthContextType>({
   signInWithApple: async () => ({ error: null }),
   signOut: async () => {},
   deviceRegistrationBlock: null,
-  dismissDeviceRegistrationBlock: () => {},
   retryDeviceRegistration: async () => false,
   deviceRegistrationPending: false,
   isPasswordRecovery: false,
@@ -271,7 +268,6 @@ export type AuthActionsContextType = Pick<
 export type AuthDeviceRegistrationContextType = Pick<
   AuthContextType,
   | 'deviceRegistrationBlock'
-  | 'dismissDeviceRegistrationBlock'
   | 'retryDeviceRegistration'
   | 'deviceRegistrationPending'
 >;
@@ -318,7 +314,6 @@ export const AuthActionsContext = createContext<AuthActionsContextType>({
 
 export const AuthDeviceRegistrationContext = createContext<AuthDeviceRegistrationContextType>({
   deviceRegistrationBlock: null,
-  dismissDeviceRegistrationBlock: () => {},
   retryDeviceRegistration: async () => false,
   deviceRegistrationPending: false,
 });
@@ -904,10 +899,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     registerDeviceInFlightRef.current = promise;
     return promise;
   }, [handleMfaRequiredResponse]);
-
-  const dismissDeviceRegistrationBlock = useCallback(() => {
-    setDeviceRegistrationBlock(null);
-  }, []);
 
   const retryDeviceRegistration = useCallback(
     () => registerDevice(),
@@ -1960,12 +1951,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const authDeviceRegistrationValue = useMemo<AuthDeviceRegistrationContextType>(() => ({
     deviceRegistrationBlock,
-    dismissDeviceRegistrationBlock,
     retryDeviceRegistration,
     deviceRegistrationPending,
   }), [
     deviceRegistrationBlock,
-    dismissDeviceRegistrationBlock,
     retryDeviceRegistration,
     deviceRegistrationPending,
   ]);
@@ -2015,7 +2004,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     signInWithApple,
     signOut: handleSignOut,
     deviceRegistrationBlock,
-    dismissDeviceRegistrationBlock,
     retryDeviceRegistration,
     deviceRegistrationPending,
     isPasswordRecovery,
@@ -2049,7 +2037,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     signInWithApple,
     handleSignOut,
     deviceRegistrationBlock,
-    dismissDeviceRegistrationBlock,
     retryDeviceRegistration,
     deviceRegistrationPending,
     isPasswordRecovery,

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { Modal, View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
-import { ShieldAlert, Smartphone, Tablet, Monitor, X } from 'lucide-react-native';
+import { ShieldAlert, Smartphone, Tablet, Monitor } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuthDeviceRegistration } from '../hooks/useAuth';
 import { useResponsive } from '../hooks/useResponsive';
@@ -62,7 +62,6 @@ function formatRelativeTime(isoDate: string): string {
 export function DeviceLimitModal() {
   const {
     deviceRegistrationBlock,
-    dismissDeviceRegistrationBlock,
     retryDeviceRegistration,
   } = useAuthDeviceRegistration();
   const { iconMd, iconSm } = useResponsive();
@@ -165,20 +164,13 @@ export function DeviceLimitModal() {
     );
   };
 
-  // Don't let the user dismiss mid-operation — we'd leave a stale modal state
-  // if the revoke + retry landed after dismissal. The system back gesture
-  // (Android) routes through onRequestClose so we guard it too.
-  const handleDismiss = () => {
-    if (isBusy) return;
-    dismissDeviceRegistrationBlock();
-  };
-
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={handleDismiss}
+      // Hard block: this device cannot use server APIs until registration succeeds.
+      onRequestClose={() => {}}
     >
       <View
         className="flex-1 bg-scrim justify-center items-center p-5"
@@ -203,16 +195,6 @@ export function DeviceLimitModal() {
                   : `Remove one device to register this one.`}
               </Text>
             </View>
-            <Pressable
-              onPress={handleDismiss}
-              disabled={isBusy}
-              accessibilityRole="button"
-              accessibilityLabel="Dismiss"
-              hitSlop={8}
-              className="ml-2"
-            >
-              <X color={isBusy ? colors.borderStrong : colors.contentTertiary} size={iconSm} />
-            </Pressable>
           </View>
 
           {/* Device list */}

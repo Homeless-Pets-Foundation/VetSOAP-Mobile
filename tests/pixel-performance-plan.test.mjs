@@ -51,6 +51,8 @@ test('Pixel performance plan keeps root diagnostics and named phase timing wired
   assert.match(monitoring, /export function measurePhase/);
   assert.match(monitoring, /breadcrumb\('performance', 'phase_complete'/);
   assert.match(monitoring, /captureMessage\(`slow_phase_\$\{name\}`/);
+  assert.match(monitoring, /fingerprint: \[message\]/);
+  assert.match(monitoring, /if \(durationMs >= 5000\)/);
   assert.match(monitoring, /duration_bucket: bucketDuration\(durationMs\)/);
 
   assert.match(rootLayout, /rootBoundaryDiagnostics/);
@@ -144,6 +146,8 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.doesNotMatch(recordsFocusRefresh, /\bareLocalDraftsStale\b/);
 
   assert.match(localDrafts, /queryKey: \['local-drafts', userId\]/);
+  assert.match(localDrafts, /useAuthDeviceRegistration/);
+  assert.match(localDrafts, /const canReconcileServerDrafts = !!userId && !deviceRegistrationPending && !deviceRegistrationBlock/);
   assert.match(localDrafts, /const RECONCILE_INTERVAL_MS = 5 \* 60_000/);
   assert.match(localDrafts, /const RECONCILE_CONCURRENCY = 3/);
   assert.match(localDrafts, /runBounded\(/);

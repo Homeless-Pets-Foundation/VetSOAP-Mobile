@@ -20,6 +20,8 @@ test('Records and Home auto-retry only retryable initial list load failures', as
 
   for (const source of [records, home]) {
     assert.match(source, /useRetryableInitialLoadError/);
+    assert.match(source, /useAuthDeviceRegistration/);
+    assert.match(source, /const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock/);
     assert.match(source, /source: 'recordings'/);
     assert.match(source, /source: 'drafts'/);
   }

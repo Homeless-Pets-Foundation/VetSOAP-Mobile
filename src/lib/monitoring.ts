@@ -300,7 +300,7 @@ export function captureMessage(
       if (gate.suppressedPriorWindow > 0) {
         (extra as Record<string, unknown>).suppressed_prior_window = gate.suppressedPriorWindow;
       }
-      Sentry.captureMessage(message, { level, tags: context?.tags, extra });
+      Sentry.captureMessage(message, { level, fingerprint: [message], tags: context?.tags, extra });
     } catch {
       // swallow
     }
@@ -309,6 +309,7 @@ export function captureMessage(
   try {
     Sentry.captureMessage(message, {
       level,
+      fingerprint: [message],
       tags: context?.tags,
       extra: context?.extra,
     });
@@ -386,7 +387,7 @@ export function measurePhase<T>(
       count: sanitizedTags.count,
     });
 
-    if (durationMs >= 1000) {
+    if (durationMs >= 5000) {
       captureMessage(`slow_phase_${name}`, 'warning', {
         tags: sanitizedTags,
         extra: { duration_ms: durationMs },

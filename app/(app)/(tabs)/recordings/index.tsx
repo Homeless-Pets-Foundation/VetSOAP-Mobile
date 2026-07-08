@@ -16,7 +16,7 @@ import {
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
   RECORD_APPOINTMENT_PERMISSION_TITLE,
 } from '../../../../src/lib/recordingPermissions';
-import { useAuthUser } from '../../../../src/hooks/useAuth';
+import { useAuthDeviceRegistration, useAuthUser } from '../../../../src/hooks/useAuth';
 import { useLocalDraftRecordings } from '../../../../src/hooks/useLocalDraftRecordings';
 import { useRetryableInitialLoadError } from '../../../../src/hooks/useRetryableInitialLoadError';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
@@ -90,8 +90,10 @@ export default function RecordingsListScreen() {
   const [isFocused, setIsFocused] = useState(false);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
   const isTabFocused = useIsFocused();
-  const shouldLoadRecordings = !!user && selectedStatusFilter !== 'draft';
-  const shouldLoadDrafts = !!user && (selectedStatusFilter === 'all' || selectedStatusFilter === 'draft');
+  const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
+  const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
+  const shouldLoadRecordings = canLoadServerData && selectedStatusFilter !== 'draft';
+  const shouldLoadDrafts = canLoadServerData && (selectedStatusFilter === 'all' || selectedStatusFilter === 'draft');
   const serverStatusFilter =
     selectedStatusFilter === 'failed' || selectedStatusFilter === 'completed'
       ? selectedStatusFilter
@@ -159,7 +161,7 @@ export default function RecordingsListScreen() {
     queries: submittedIds.map((id) => ({
       queryKey: ['recording', id],
       queryFn: () => recordingsApi.get(id),
-      enabled: !!user && submittedIds.length > 0,
+      enabled: canLoadServerData && submittedIds.length > 0,
       staleTime: 0,
       refetchOnMount: 'always' as const,
     })),

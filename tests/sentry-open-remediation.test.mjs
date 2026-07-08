@@ -102,6 +102,7 @@ test('recoverable submit failures (expected + server 5xx + transient + abort) ar
   assert.match(src, /function isRecoverableSubmitFailure\(error: unknown\): boolean/);
   assert.match(src, /if \(isExpectedSubmitApiFailure\(error\)\) return true;/);
   assert.match(src, /if \(isTransientUploadError\(error\)\) return true;/);
+  assert.match(src, /if \(getUploadPhase\(error\) === 'silent_check'\) return true;/);
   assert.match(src, /e\?\.status === 'number' && e\.status >= 500/);
   assert.match(src, /e\?\.name === 'AbortError' \|\| \/\\bAborted\\b\/i\.test/);
 

@@ -906,7 +906,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [handleMfaRequiredResponse]);
 
   const dismissDeviceRegistrationBlock = useCallback(() => {
-    setDeviceRegistrationBlock(null);
+    // DEVICE_LIMIT_REACHED means this device still has no server session row.
+    // Keep the block state until registerDevice succeeds or sign-out clears it;
+    // server-query gates depend on this staying truthy.
   }, []);
 
   const retryDeviceRegistration = useCallback(

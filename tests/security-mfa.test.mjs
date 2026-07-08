@@ -132,13 +132,13 @@ test('mobile auth provider applies profile when device registration needs recove
   );
 });
 
-test('device-limit dismiss keeps registration block for server-query gating', async () => {
+test('device-limit has no dismiss action that can clear server-query gating', async () => {
   const provider = await read('src/auth/AuthProvider.tsx');
-  const dismissStart = provider.indexOf('const dismissDeviceRegistrationBlock = useCallback');
-  assert.ok(dismissStart > -1, 'dismissDeviceRegistrationBlock should exist');
-  const dismissBody = provider.slice(dismissStart, provider.indexOf('const retryDeviceRegistration', dismissStart));
+  const modal = await read('src/components/DeviceLimitModal.tsx');
 
-  assert.doesNotMatch(dismissBody, /setDeviceRegistrationBlock\(null\)/);
+  assert.doesNotMatch(provider, /dismissDeviceRegistrationBlock/);
+  assert.match(modal, /onRequestClose=\{\(\) => \{\}\}/);
+  assert.doesNotMatch(modal, /dismissDeviceRegistrationBlock/);
 });
 
 test('recording retry keeps detail data visible and lets MFA redirect own MFA errors', async () => {

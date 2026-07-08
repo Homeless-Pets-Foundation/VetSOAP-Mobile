@@ -418,7 +418,7 @@ export default function HomeScreen() {
               </Text>
             ) : null}
             <View className="mt-3">
-              <Button variant="secondary" size="sm" onPress={() => { refetch().catch(() => {}); }}>
+              <Button variant="secondary" size="sm" onPress={handleRefresh}>
                 Retry
               </Button>
             </View>

@@ -30,4 +30,5 @@ test('Records and Home auto-retry only retryable initial list load failures', as
   assert.match(records, /retryKey: recordingsRetryKey/);
   assert.match(home, /screen: 'home'/);
   assert.match(home, /retryKey: 'recent'/);
+  assert.match(home, /<Button variant="secondary" size="sm" onPress=\{handleRefresh\}>/);
 });

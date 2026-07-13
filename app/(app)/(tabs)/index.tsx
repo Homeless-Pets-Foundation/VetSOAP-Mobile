@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { Alert, View, Text, Pressable } from 'react-native';
+import { Alert, View, Text, Pressable, Image } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -41,7 +41,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const user = useAuthUser();
   const colors = useThemeColors();
-  const { iconMd, iconLg } = useResponsive();
+  const { scale, iconMd, iconLg } = useResponsive();
   const ctaScale = useSharedValue(1);
   const isTabFocused = useIsFocused();
   const { capacity } = useDeviceCapacity();
@@ -205,30 +205,38 @@ export default function HomeScreen() {
   return (
     <ScreenContainer refreshing={isRefetching} onRefresh={handleRefresh}>
       {/* Header */}
-      <View className="mb-6 flex-row items-start justify-between">
-        <View className="flex-1">
-          <Text
-            className="text-display font-bold text-content-primary"
-            accessibilityRole="header"
+      <View className="mb-6">
+        <View className="mb-3 flex-row items-center justify-between">
+          <Image
+            source={require('../../../assets/logo-wordmark.png')}
+            style={{ width: Math.min(scale(132), 168), aspectRatio: 600 / 139 }}
+            resizeMode="contain"
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel="Captivet"
+          />
+          <Pressable
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+              router.push('/settings');
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+            className="p-2 -mr-2"
+            hitSlop={8}
           >
-            Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
-          </Text>
-          <Text className="text-body text-content-tertiary mt-1">
-            Record appointments and generate SOAP notes
-          </Text>
+            <Settings color={colors.contentTertiary} size={iconMd} />
+          </Pressable>
         </View>
-        <Pressable
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-            router.push('/settings');
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Settings"
-          className="p-2 -mr-2 mt-0.5"
-          hitSlop={8}
+        <Text
+          className="text-display font-bold text-content-primary"
+          accessibilityRole="header"
         >
-          <Settings color={colors.contentTertiary} size={iconMd} />
-        </Pressable>
+          Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
+        </Text>
+        <Text className="text-body text-content-tertiary mt-1">
+          Record appointments and generate SOAP notes
+        </Text>
       </View>
 
       {/* Durable crash-recovery banner (renders only when recordings recovered) */}

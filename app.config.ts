@@ -2,6 +2,7 @@ import { ExpoConfig, ConfigContext } from 'expo/config';
 
 const IS_DEV = process.env.APP_VARIANT === 'development';
 const IS_PRODUCTION = process.env.APP_VARIANT === 'production';
+const IS_LOCAL_TEST = process.env.APP_VARIANT === 'local-test';
 const IS_IOS_EAS_BUILD = process.env.EAS_BUILD_PLATFORM === 'ios';
 
 function requireGoogleIosBuildConfig(): void {
@@ -27,6 +28,21 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const plugins: ExpoConfig['plugins'] = [
     'expo-router',
     'expo-asset',
+    [
+      'expo-splash-screen',
+      {
+        backgroundColor: '#ffffff',
+        image: './assets/logo-wordmark@3x.png',
+        // iOS can render the requested near-2x wordmark directly. Android 12+
+        // masks splash icons to a 192dp circle, so keep the native wordmark
+        // within that safe zone; SplashGate expands it to 320dp after handoff.
+        imageWidth: 320,
+        resizeMode: 'contain',
+        android: {
+          imageWidth: 184,
+        },
+      },
+    ],
     // Build-time font embed (variable Inter). Synchronous availability, no
     // runtime useFonts/splash-gate (rules 1/24). The plugin needs explicit
     // .ttf paths — it does not expand globs. Family registers as "Inter";
@@ -115,21 +131,16 @@ export default ({ config }: ConfigContext): ExpoConfig => {
 
   return {
     ...config,
-    name: 'Captivet',
+    name: IS_LOCAL_TEST ? 'Captivet Local' : 'Captivet',
     slug: 'vetsoap-mobile',
-    scheme: 'captivet',
+    scheme: IS_LOCAL_TEST ? 'captivet-local' : 'captivet',
     version: '1.13.10',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
-    splash: {
-      image: './assets/splash-icon.png',
-      resizeMode: 'contain',
-      backgroundColor: '#ffffff',
-    },
     ios: {
       supportsTablet: true,
-      bundleIdentifier: 'com.captivet.mobile',
+      bundleIdentifier: IS_LOCAL_TEST ? 'com.captivet.mobile.local' : 'com.captivet.mobile',
       usesAppleSignIn: true,
       infoPlist: {
         NSMicrophoneUsageDescription:
@@ -153,7 +164,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       },
     },
     android: {
-      package: 'com.captivet.mobile',
+      // Local release APKs install beside the Play-signed app so testing never
+      // requires uninstalling production or wiping its recordings/session.
+      package: IS_LOCAL_TEST ? 'com.captivet.mobile.local' : 'com.captivet.mobile',
       adaptiveIcon: {
         backgroundColor: '#0d8775',
         foregroundImage: './assets/android-icon-foreground.png',
@@ -201,7 +214,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         projectId: 'ec4f66b0-2608-4d2a-82dd-8cc9bcfd0e23',
       },
       router: {},
-      isProduction: IS_PRODUCTION,
+      isProduction: IS_PRODUCTION || IS_LOCAL_TEST,
     },
     experiments: {
       typedRoutes: true,

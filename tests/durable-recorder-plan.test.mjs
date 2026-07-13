@@ -20,6 +20,14 @@ test('native module: package + config + no-throw lazy bridge', async () => {
   assert.match(index, /export async function listRecoverableSessions/);
 });
 
+test('audio-focus bridge cannot crash Record route when native module is absent', async () => {
+  const index = await read('modules/captivet-audio-focus/index.ts');
+  assert.match(index, /requireOptionalNativeModule/);
+  assert.match(index, /function getNativeModule/);
+  assert.doesNotMatch(index, /import \{ requireNativeModule/);
+  assert.match(index, /if \(!nativeModule\) return/);
+});
+
 test('Android module declares a microphone foreground service', async () => {
   const manifest = await read('modules/captivet-durable-recorder/android/src/main/AndroidManifest.xml');
   assert.match(manifest, /foregroundServiceType="microphone"/);

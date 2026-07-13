@@ -8,6 +8,12 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
+async function readPngDimensions(path) {
+  const png = await readFile(new URL(path, root));
+  assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG');
+  return [png.readUInt32BE(16), png.readUInt32BE(20)];
+}
+
 test('processing stepper is extracted and uses warmth plus paw steps', async () => {
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
   const stepper = await read('src/components/ProcessingStepper.tsx');
@@ -46,6 +52,61 @@ test('home shows recent patient AI summary from existing patient API', async () 
   assert.match(home, /aiHistorySummary/);
   assert.match(home, /Recent patient/);
   assert.match(home, /Read more/);
+});
+
+test('home keeps Captivet branding above its personalized greeting', async () => {
+  const home = await read('app/(app)/(tabs)/index.tsx');
+  const brandIndex = home.indexOf("source={require('../../../assets/logo-wordmark.png')}");
+  const greetingIndex = home.indexOf('Welcome{user?.fullName');
+
+  assert.notEqual(brandIndex, -1, 'home should render the Captivet wordmark');
+  assert.notEqual(greetingIndex, -1, 'home should keep the personalized greeting');
+  assert.ok(brandIndex < greetingIndex, 'brand row should appear above the greeting');
+  assert.match(home, /accessibilityLabel="Captivet"/);
+  assert.match(home, /Math\.min\(scale\(132\), 168\)/);
+  assert.match(home, /router\.push\('\/settings'\)/);
+});
+
+test('wordmark density assets match the largest 320dp runtime treatment', async () => {
+  const generator = await read('scripts/generate-icons.mjs');
+
+  assert.deepEqual(await readPngDimensions('assets/logo-wordmark.png'), [320, 74]);
+  assert.deepEqual(await readPngDimensions('assets/logo-wordmark@2x.png'), [640, 149]);
+  assert.deepEqual(await readPngDimensions('assets/logo-wordmark@3x.png'), [960, 223]);
+  assert.match(generator, /const w1x = 320/);
+  assert.match(generator, /const w2x = 640/);
+  assert.match(generator, /const w3x = 960/);
+});
+
+test('startup branding expands to near-2x without exceeding the Android splash safe zone', async () => {
+  const config = await read('app.config.ts');
+  const rootLayout = await read('app/_layout.tsx');
+
+  assert.match(config, /'expo-splash-screen'/);
+  assert.match(config, /image: '\.\/assets\/logo-wordmark@3x\.png'/);
+  assert.match(config, /imageWidth: 320/);
+  assert.match(config, /android: \{\s*imageWidth: 184/);
+  assert.doesNotMatch(config, /^\s+splash:\s*\{/m);
+
+  assert.match(rootLayout, /LOADING_WORDMARK_MAX_WIDTH = 320/);
+  assert.match(rootLayout, /ANDROID_SPLASH_HANDOFF_MS = 520/);
+  assert.match(rootLayout, /Math\.min\(width \* 0\.72, LOADING_WORDMARK_MAX_WIDTH\)/);
+  assert.match(rootLayout, /SplashScreen\.setOptions\(\{ duration: 0, fade: false \}\)/);
+  assert.match(rootLayout, /SplashScreen\.hide\(\)/);
+  assert.doesNotMatch(rootLayout, /Animated\.Image/);
+  assert.match(rootLayout, /setMinimumDisplayComplete\(true\)/);
+  assert.match(rootLayout, /\(!isLoading && minimumDisplayComplete\)/);
+  assert.match(rootLayout, /const style = isLoading \? 'dark'/);
+});
+
+test('local Android testing installs beside the Play-signed production app', async () => {
+  const config = await read('app.config.ts');
+
+  assert.match(config, /IS_LOCAL_TEST = process\.env\.APP_VARIANT === 'local-test'/);
+  assert.match(config, /name: IS_LOCAL_TEST \? 'Captivet Local' : 'Captivet'/);
+  assert.match(config, /scheme: IS_LOCAL_TEST \? 'captivet-local' : 'captivet'/);
+  assert.match(config, /package: IS_LOCAL_TEST \? 'com\.captivet\.mobile\.local' : 'com\.captivet\.mobile'/);
+  assert.match(config, /isProduction: IS_PRODUCTION \|\| IS_LOCAL_TEST/);
 });
 
 test('theme preference has dark vars, root hydration, and active settings selector', async () => {

@@ -210,6 +210,12 @@ async function loadDraftStorage(state) {
     './durableAudio/tombstone': {
       durableTombstone: { has: async () => false },
     },
+    './pendingConfirm': {
+      clonePendingConfirm: (value) => value ? structuredClone(value) : null,
+    },
+    './uploadIntent': {
+      normalizeUploadIntentId: (value, slotId) => value || `legacy:${slotId}`,
+    },
   });
   return { draftStorage: mod.draftStorage, ...store };
 }
@@ -234,6 +240,24 @@ test('draftStorage: second listDrafts is served from cache with zero SecureStore
   const second = await draftStorage.listDrafts();
   assert.equal(second.length, 1);
   assert.equal(counters.reads, readsAfterFirst, 'warm listDrafts must not touch SecureStore');
+});
+
+test('draftStorage: audio edits clear stale confirmation hints and retain a rotated intent', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft({
+    ...makeSlot('slot-intent'),
+    uploadIntentId: 'intent-before-edit',
+    pendingConfirm: { recordingId: 'old-recording', fileKey: 'old-key' },
+  });
+  await draftStorage.saveDraft({
+    ...makeSlot('slot-intent'),
+    uploadIntentId: 'intent-after-start-over',
+    pendingConfirm: null,
+  });
+  const saved = await draftStorage.getDraft('slot-intent');
+  assert.equal(saved.pendingConfirm, null);
+  assert.equal(saved.uploadIntentId, 'intent-after-start-over');
 });
 
 test('draftStorage: every write path invalidates the cache', async () => {

@@ -2,6 +2,7 @@ import { useReducer, useCallback } from 'react';
 import type { CreateRecording } from '../types';
 import type { PatientSlot, SessionAction, SessionState, AudioSegment, DurableSlotRef } from '../types/multiPatient';
 import { isValidDurableId } from '../lib/durableAudio/paths';
+import { createUploadIntentId, normalizeUploadIntentId } from '../lib/uploadIntent';
 
 /** Validate that a segment URI is a local file path (not a remote URL). */
 function isLocalFileUri(uri: string): boolean {
@@ -51,8 +52,10 @@ let slotCounter = 0;
 
 function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSlot {
   slotCounter += 1;
+  const id = `slot-${Date.now()}-${slotCounter}`;
   return {
-    id: `slot-${Date.now()}-${slotCounter}`,
+    id,
+    uploadIntentId: createUploadIntentId(),
     formData: {
       pimsPatientId: '',
       patientName: '',
@@ -119,38 +122,16 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
       };
 
     case 'UPDATE_FORM': {
-      // Editing metadata on a slot with a pendingConfirm hint invalidates it:
-      // the server record the hint points to was committed via create(data)
-      // with the OLD formData, and the retry path in createWithFile /
-      // createWithSegments short-circuits to confirmUpload without re-sending
-      // formData. Drop the hint and reset the upload state so the next submit
-      // creates a fresh server record with the edited data. Callers are
-      // expected to best-effort delete the orphaned server record before
-      // dispatching. Slots already at uploadStatus 'success' are untouched —
-      // once committed, metadata edits don't retroactively change the record.
-      const invalidateIfPending = (slot: PatientSlot): PatientSlot =>
-        slot.pendingConfirm && slot.uploadStatus !== 'success'
-          ? {
-              ...slot,
-              pendingConfirm: null,
-              uploadStatus: 'pending',
-              uploadProgress: 0,
-              uploadError: null,
-              serverRecordingId: null,
-            }
-          : slot;
-
       // If the slot already has a server draft, a metadata edit makes the
-      // draft's server-side formData stale. Flag it so uploadSlot knows to
-      // PATCH before confirming. If PATCH cannot prove the server draft is
-      // current, submit fails closed and keeps local audio recoverable.
+      // server snapshot stale. Preparation/confirmation applies the complete
+      // current snapshot atomically; keep any complete pending-confirm hint so
+      // a response interruption remains confirmation-only recoverable.
       const markDirtyIfHasServerDraft = (slot: PatientSlot): PatientSlot =>
         slot.serverDraftId && slot.uploadStatus !== 'success' && !slot.draftMetadataDirty
           ? { ...slot, draftMetadataDirty: true }
           : slot;
 
-      const applyInvariants = (slot: PatientSlot) =>
-        markDirtyIfHasServerDraft(invalidateIfPending(slot));
+      const applyInvariants = markDirtyIfHasServerDraft;
 
       // clientName propagates to all slots
       if (action.field === 'clientName') {
@@ -220,16 +201,16 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, segments: [], durable: null, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
+            ? { ...slot, uploadIntentId: createUploadIntentId(), segments: [], durable: null, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
             : slot
         ),
       };
 
     case 'CONTINUE_RECORDING':
       // Adding a new segment invalidates any pendingConfirm hint — the server
-      // recording the hint points to covers only the old segment(s). Drop it so
-      // the next submit creates a fresh recording with the full segment list.
-      // Caller deletes the orphan server record before dispatching.
+      // manifest covers only the old segment(s). Keep the stable intent and
+      // canonical server row; the next preparation replaces the reusable
+      // uncommitted manifest with the complete segment list.
       return {
         ...state,
         slots: state.slots.map((slot) =>
@@ -284,6 +265,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           }
           return {
             ...slot,
+            uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
             uploadStatus: action.status,
             uploadProgress: action.progress ?? slot.uploadProgress,
             uploadError: action.error ?? slot.uploadError,
@@ -313,9 +295,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             audioUri: validSegments.length > 0 ? validSegments[validSegments.length - 1].uri : null,
             // A restored durable or segment recording is finished/parked.
             audioState: durable || validSegments.length > 0 ? 'stopped' : (slot.audioState ?? 'idle'),
-            // Stashes don't persist pendingConfirm, so restored slots always start
-            // without one. Force null in case an older slot shape leaked through.
-            pendingConfirm: null,
+            pendingConfirm: slot.pendingConfirm ?? null,
             // Preserve persisted fail-closed metadata state across local draft
             // and stash resume. If true, submit must send current formData with
             // confirm-upload rather than promoting stale server-draft metadata.
@@ -346,6 +326,11 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             segments: newSegments,
             audioDuration: newDuration,
             audioUri: newSegments.length > 0 ? newSegments[newSegments.length - 1].uri : null,
+            uploadStatus: 'pending',
+            uploadProgress: 0,
+            uploadError: null,
+            serverRecordingId: null,
+            pendingConfirm: null,
           };
         }),
       };
@@ -372,8 +357,8 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             };
           }
           const newDuration = newSegments.reduce((sum, s) => sum + s.duration, 0);
-          // Segment set changed — the old pendingConfirm no longer matches. Clear it.
-          // Caller best-effort-deletes the orphan server record before dispatching.
+          // Segment set changed — the old pendingConfirm no longer matches.
+          // Keep the stable intent/server draft so preparation reuses the row.
           return {
             ...slot,
             segments: newSegments,

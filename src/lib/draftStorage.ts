@@ -7,10 +7,12 @@ import {
   safeDeleteDirectory,
   ensureDirectory,
 } from './fileOps';
-import type { PatientSlot, AudioSegment, DurableSlotRef } from '../types/multiPatient';
+import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '../types/multiPatient';
 import type { CreateRecording } from '../types/index';
 import { isValidDurableId } from './durableAudio/paths';
 import { durableTombstone } from './durableAudio/tombstone';
+import { clonePendingConfirm } from './pendingConfirm';
+import { normalizeUploadIntentId } from './uploadIntent';
 
 const STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
@@ -40,6 +42,7 @@ export interface DraftSegmentMetadata {
 
 export interface DraftMetadata {
   slotId: string;
+  uploadIntentId: string;
   savedAt: string;
   formData: CreateRecording;
   segments: DraftSegmentMetadata[];
@@ -50,6 +53,7 @@ export interface DraftMetadata {
   // assigned and draft metadata sync could not prove success, submit must send
   // metadata with confirm-upload even after app restart.
   draftMetadataDirty: boolean;
+  pendingConfirm: PendingConfirm | null;
   // Durable AAC pointer for a finished durable draft. When set, the draft's
   // audio lives in audio.aac under the durable root (NOT copied into
   // drafts/{userId}/{slotId}/), so `segments` is empty. cleanupOrphaned /
@@ -91,6 +95,7 @@ function cloneDraftMetadata(d: DraftMetadata): DraftMetadata {
     ...d,
     formData: { ...d.formData },
     segments: d.segments.map((s) => ({ ...s })),
+    pendingConfirm: clonePendingConfirm(d.pendingConfirm),
   };
 }
 
@@ -444,6 +449,7 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
 
   return {
     slotId: parsed.slotId,
+    uploadIntentId: normalizeUploadIntentId(parsed.uploadIntentId, parsed.slotId),
     savedAt: parsed.savedAt,
     formData: parsed.formData as CreateRecording,
     segments,
@@ -454,6 +460,7 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
     serverDraftId: parsed.serverDraftId,
     pendingSync: parsed.pendingSync,
     draftMetadataDirty: parsed.draftMetadataDirty === true,
+    pendingConfirm: clonePendingConfirm(parsed.pendingConfirm),
     durable,
   };
 }
@@ -573,6 +580,10 @@ export const draftStorage = {
           (existingDurable?.serverDraftId === resolvedServerDraftId && existingDurable.draftMetadataDirty));
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
+        uploadIntentId: normalizeUploadIntentId(
+          slot.uploadIntentId ?? existingDurable?.uploadIntentId,
+          slot.id,
+        ),
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: durableDraftMetadataDirty,
@@ -582,6 +593,9 @@ export const draftStorage = {
         audioDuration: slot.durable.durationMs / 1000,
         serverDraftId: resolvedServerDraftId,
         draftMetadataDirty: durableDraftMetadataDirty,
+        // Null is an intentional invalidation after continue/edit. Never
+        // resurrect an older on-disk hint whose manifest no longer matches.
+        pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
         // An existing local draft keeps its own pendingSync. A recovery-supplied
         // anchor means the server row already exists (no create needed) → synced;
         // no anchor at all means we still owe a server-draft create → pending.
@@ -733,6 +747,10 @@ export const draftStorage = {
         (slot.draftMetadataDirty || (existing?.draftMetadataDirty ?? false));
       const metadata: DraftMetadata = {
         slotId: slot.id,
+        uploadIntentId: normalizeUploadIntentId(
+          slot.uploadIntentId ?? existing?.uploadIntentId,
+          slot.id,
+        ),
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: draftMetadataDirty,
@@ -741,6 +759,7 @@ export const draftStorage = {
         audioDuration: draftSegments.reduce((sum, s) => sum + s.duration, 0),
         serverDraftId: resolvedServerDraftId,
         draftMetadataDirty,
+        pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
         pendingSync: resolvedServerDraftId
           ? (existing?.pendingSync ?? false)
           : true,
@@ -826,6 +845,34 @@ export const draftStorage = {
       // has a draft row → next Submit creates a duplicate (rule 24). Surface
       // the silent SecureStore failure mode so it's visible in Sentry.
       draftCaptureWarning('draft_update_server_id_failed', {
+        slot_id: slotId,
+        reason: classifyDraftFailure(error),
+      });
+    }
+  },
+
+  /** Persist a complete post-PUT confirmation hint before confirmation. */
+  async updatePendingConfirm(
+    slotId: string,
+    pendingConfirm: PendingConfirm | null,
+    serverDraftId?: string,
+  ): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+    try {
+      const metadata = await readDraftChunks(userId, slotId);
+      if (!metadata) return;
+      const normalized = clonePendingConfirm(pendingConfirm);
+      if (pendingConfirm && !normalized) return;
+      metadata.pendingConfirm = normalized;
+      if (serverDraftId) {
+        metadata.serverDraftId = serverDraftId;
+        metadata.pendingSync = false;
+      }
+      await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+      invalidateDraftsCache();
+    } catch (error) {
+      draftCaptureWarning('draft_pending_confirm_write_failed', {
         slot_id: slotId,
         reason: classifyDraftFailure(error),
       });

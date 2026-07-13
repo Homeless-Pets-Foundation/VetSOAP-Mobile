@@ -15,6 +15,8 @@
  */
 import { Platform } from 'react-native';
 import type { EventSubscription } from 'expo-modules-core';
+import type { PendingConfirm } from '../../src/types/multiPatient';
+import { validatePendingConfirm } from '../../src/lib/pendingConfirm';
 
 import type {
   DurableRecorderState,
@@ -79,6 +81,7 @@ type NativeDurableRecorder = {
   getLiveStats(): DurableLiveStats | null;
   /** Persist serverRecordingId into the manifest atomically (temp+rename). */
   setServerRecordingId(input: { userId: string; recordingId: string; serverRecordingId: string }): Promise<void>;
+  setPendingConfirm?(input: { userId: string; recordingId: string; pendingConfirmJson: string | null }): Promise<void>;
   /** Atomically mark the manifest uploaded + confirmedUploadAt. */
   markUploaded(input: { userId: string; recordingId: string; confirmedUploadAt: string }): Promise<void>;
   addListener(eventName: string, listener: (event: unknown) => void): EventSubscription;
@@ -180,6 +183,24 @@ export async function markUploaded(input: {
   confirmedUploadAt: string;
 }): Promise<void> {
   return requireModule().markUploaded(input);
+}
+
+export async function setPendingConfirm(input: {
+  userId: string;
+  recordingId: string;
+  pendingConfirm: PendingConfirm | null;
+}): Promise<void> {
+  const mod = getNativeModule();
+  // Older dev clients do not expose this method. The server intent and local
+  // draft remain the recovery backstops, so absence is a deliberate no-op.
+  if (!mod || typeof mod.setPendingConfirm !== 'function') return;
+  const pending = input.pendingConfirm ? validatePendingConfirm(input.pendingConfirm) : null;
+  if (input.pendingConfirm && !pending) return;
+  return mod.setPendingConfirm({
+    userId: input.userId,
+    recordingId: input.recordingId,
+    pendingConfirmJson: pending ? JSON.stringify(pending) : null,
+  });
 }
 
 // --- Read/recovery ops: degrade to null/[] when unavailable (no throw) ---

@@ -26,6 +26,9 @@ export const UPLOAD_OVERLAY_COPY = {
   phaseProcessing: 'Processing…',
 } as const;
 
+export const STALE_RECORDING_UPLOAD_COPY =
+  "We couldn't finish the upload. The recording is still saved on this device. Check your connection and try again.";
+
 export const SILENT_CHECK_COPY = {
   title: 'Recording sounds silent',
   body:

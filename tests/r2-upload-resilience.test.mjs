@@ -65,19 +65,14 @@ test('tagPhase preserves an existing uploadPhase from an inner boundary', async 
   }
 });
 
-test('both r2_put status throws propagate result.status to phaseError', async () => {
+test('unified r2_put status handling propagates result.status to phaseError', async () => {
   const src = await read('src/api/recordings.ts');
 
-  // Single-file upload path
   assert.match(
     src,
-    /phaseError\(\s*'r2_put',\s*`Upload to storage failed \(HTTP \$\{result\?\.status \?\? 'unknown'\}\)\. Please try again\.`,\s*result\?\.status\s*\)/
+    /phaseError\('r2_put', `Upload to storage failed \(HTTP \$\{result\?\.status \?\? 'unknown'\}\)\.`, result\?\.status\)/
   );
-  // Multi-segment upload path
-  assert.match(
-    src,
-    /phaseError\(\s*'r2_put',\s*`Upload of segment \$\{i \+ 1\} failed \(HTTP \$\{result\?\.status \?\? 'unknown'\}\)\. Please try again\.`,\s*result\?\.status\s*\)/
-  );
+  assert.match(src, /runWithConcurrency\(files\.length, SEGMENT_UPLOAD_CONCURRENCY, uploadOne\)/);
 });
 
 test('uploadOnceWithRetry re-presigns once on stale 401/403, never beyond attempt 1', async () => {

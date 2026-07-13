@@ -9,6 +9,7 @@ import { measurePhase } from '../lib/monitoring';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 import { canRecordAppointments } from '../lib/recordingPermissions';
 import { useAuthUser } from './useAuth';
+import { durableUploadIdempotencyKey, slotUploadIdempotencyKey } from '../lib/uploadIntent';
 
 const FAILURE_BACKOFF_MS = 2 * 60_000;
 
@@ -41,14 +42,17 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
         if (durableRecordingId) {
           const created = await recordingsApi.create(draft.formData, {
             isDraft: true,
-            idempotencyKey: `durable-${durableRecordingId}`,
+            idempotencyKey: durableUploadIdempotencyKey(durableRecordingId),
           });
           await durableRecorder
             .setServerRecordingId({ userId, recordingId: durableRecordingId, serverRecordingId: created.id })
             .catch(() => {});
           return created;
         }
-        return recordingsApi.create(draft.formData, { isDraft: true });
+        return recordingsApi.create(draft.formData, {
+          isDraft: true,
+          idempotencyKey: slotUploadIdempotencyKey(draft.uploadIntentId),
+        });
       });
       if (result.failed > 0) {
         lastFailedAtByUser.set(userId, Date.now());

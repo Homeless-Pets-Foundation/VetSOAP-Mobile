@@ -42,6 +42,7 @@ struct DurableManifest: Codable {
   var confirmedUploadAt: String?
   var edited: Bool?
   var anchorsPending: Bool?
+  var pendingConfirmJson: String? = nil
 
   static let schemaVersionValue = 3
   static let containerValue = "adts"
@@ -83,6 +84,7 @@ struct DurableManifest: Codable {
     if let confirmedUploadAt = confirmedUploadAt { dict["confirmedUploadAt"] = confirmedUploadAt }
     if let edited = edited { dict["edited"] = edited }
     if let anchorsPending = anchorsPending { dict["anchorsPending"] = anchorsPending }
+    if let pendingConfirmJson = pendingConfirmJson { dict["pendingConfirmJson"] = pendingConfirmJson }
     return dict
   }
 

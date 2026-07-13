@@ -10,6 +10,8 @@
  * must never block recovery (plan: On-Disk Durability).
  */
 import { isValidDurableId } from './paths';
+import type { PendingConfirm } from '../../types/multiPatient';
+import { validatePendingConfirm } from '../pendingConfirm';
 
 export const MANIFEST_SCHEMA_VERSION = 3 as const;
 
@@ -78,6 +80,8 @@ export interface DurableRecordingManifest {
   confirmedUploadAt?: string; // SOLE confirmed-upload signal
   edited?: boolean; // durable source is the edited audio.aac
   anchorsPending?: boolean; // transient: edit intent written, anchors not finalized
+  pendingConfirm?: PendingConfirm; // complete post-PUT hint; never contains a URL
+  pendingConfirmJson?: string; // native on-disk representation, hydrated by JS
 }
 
 export type ManifestValidation =
@@ -146,6 +150,19 @@ export function validateManifestObject(
   if (!isLocalUri(af.uri)) return { ok: false, reason: 'non_local_uri' };
   if (!isFiniteNonNeg(af.committedBytes)) return { ok: false, reason: 'invalid_committed_bytes' };
   if (!isFiniteNonNeg(af.completeFrameBytes)) return { ok: false, reason: 'invalid_complete_frame_bytes' };
+
+  if (m.pendingConfirmJson !== undefined && typeof m.pendingConfirmJson !== 'string') {
+    return { ok: false, reason: 'invalid_pending_confirm_json' };
+  }
+  if (typeof m.pendingConfirmJson === 'string') {
+    try {
+      const pending = validatePendingConfirm(JSON.parse(m.pendingConfirmJson));
+      if (!pending) return { ok: false, reason: 'invalid_pending_confirm' };
+      m.pendingConfirm = pending;
+    } catch {
+      return { ok: false, reason: 'invalid_pending_confirm' };
+    }
+  }
 
   return { ok: true, manifest: m as unknown as DurableRecordingManifest };
 }

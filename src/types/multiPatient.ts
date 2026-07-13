@@ -19,6 +19,25 @@ export interface PendingConfirm {
   // uploads these are omitted and `fileKey` is sufficient.
   segmentKeys?: string[];
   segmentCount?: number;
+  metadata?: PendingConfirmMetadata;
+  files?: PendingConfirmFile[];
+}
+
+export interface PendingConfirmFile {
+  fileName: string;
+  contentType: string;
+  fileSizeBytes: number;
+}
+
+export interface PendingConfirmMetadata {
+  patientName: string;
+  clientName: string | null;
+  species: string | null;
+  breed: string | null;
+  appointmentType: string | null;
+  templateId: string | null;
+  foreignLanguage: boolean;
+  pimsPatientId: string | null;
 }
 
 /**
@@ -48,6 +67,7 @@ export interface DurableSlotRef {
 
 export interface PatientSlot {
   id: string;
+  uploadIntentId: string;
   formData: CreateRecording;
   audioState: 'idle' | 'recording' | 'paused' | 'stopped';
   segments: AudioSegment[];

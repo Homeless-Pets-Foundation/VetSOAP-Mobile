@@ -9,6 +9,8 @@ import { getSecureRandomHex } from '../lib/random';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import type { StashedSession } from '../types/stash';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
+import { normalizeUploadIntentId } from '../lib/uploadIntent';
+import { clonePendingConfirm } from '../lib/pendingConfirm';
 
 function generateId(): string {
   // expo-crypto primary; global crypto fallback. No Math.random fallback:
@@ -304,7 +306,7 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
 
       const convertToPatientSlots = (
-        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; durable?: PatientSlot['durable'] }[]
+        stashedSlots: { id: string; uploadIntentId?: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; pendingConfirm?: PatientSlot['pendingConfirm']; durable?: PatientSlot['durable'] }[]
       ): PatientSlot[] => {
         return stashedSlots.map((slot) => {
           // Rule 20 read site (3 of 3): restore the durable pointer so Resume of a
@@ -313,6 +315,7 @@ export function useStashedSessions(userId: string | null) {
           const hasAudio = slot.segments.length > 0 || durable !== null;
           return {
             id: slot.id,
+            uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
             formData: { ...slot.formData },
             audioState: hasAudio ? ('stopped' as const) : ('idle' as const),
             segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration, peakMetering: s.peakMetering })),
@@ -326,7 +329,7 @@ export function useStashedSessions(userId: string | null) {
             draftSlotId: slot.draftSlotId ?? null,
             serverDraftId: slot.serverDraftId ?? null,
             draftMetadataDirty: !!slot.serverDraftId && (slot.draftMetadataDirty === true || slot.draftMetadataDirty === undefined),
-            pendingConfirm: null,
+            pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
           };
         });
       };

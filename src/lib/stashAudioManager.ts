@@ -8,6 +8,8 @@ import {
 } from './fileOps';
 import type { PatientSlot } from '../types/multiPatient';
 import type { StashedSlot, StashedSession } from '../types/stash';
+import { clonePendingConfirm } from './pendingConfirm';
+import { normalizeUploadIntentId } from './uploadIntent';
 
 const BASE_STASH_DIR = `${Paths.document.uri}stashed-audio/`;
 
@@ -111,6 +113,7 @@ export const stashAudioManager = {
         }
         stashedSlots.push({
           id: slot.id,
+          uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
           formData: { ...slot.formData },
           segments: stashedSegments,
           audioDuration: stashedDurable
@@ -119,6 +122,7 @@ export const stashAudioManager = {
           serverDraftId: slot.serverDraftId ?? null,
           draftSlotId: slot.draftSlotId ?? null,
           draftMetadataDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
+          pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
           durable: stashedDurable,
         });
       }

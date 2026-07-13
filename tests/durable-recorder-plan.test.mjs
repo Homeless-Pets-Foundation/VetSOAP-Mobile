@@ -48,11 +48,12 @@ test('recordings.createWithFile: explicit/derived filename, not hardcoded m4a', 
   assert.match(src, /function deriveUploadFileName/);
   assert.match(src, /options\?\.fileName \?\? deriveUploadFileName/);
   assert.match(src, /'audio\/aac': 'aac'/);
-  // create() accepts a deterministic idempotency key; onRecordingCreated fires
-  // BEFORE the R2 PUT to anchor serverRecordingId.
+  // create() accepts a deterministic idempotency key; preparation is awaited
+  // BEFORE the R2 PUT so the canonical server id can be persisted.
   assert.match(src, /idempotencyKey\?: string/);
   assert.match(src, /options\?\.idempotencyKey \?\? generateIdempotencyKey\(\)/);
-  assert.match(src, /onRecordingCreated\?/);
+  assert.match(src, /onRecordingPrepared\?/);
+  assert.match(src, /await invokePreparedCallback\(options\.onRecordingPrepared/);
 });
 
 test('client.ts: 426 is a dedicated terminal-non-auth branch (no refresh/retry)', async () => {
@@ -79,7 +80,7 @@ test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone',
   const src = await read('app/(app)/(tabs)/record.tsx');
   // Upload the truncated complete-frame prefix (durableUploadUri), NOT the raw file.
   assert.match(src, /createWithFile\(\s*slot\.formData,\s*durableUploadUri,\s*'audio\/aac'/);
-  assert.match(src, /idempotencyKey: `durable-\$\{durable\.recordingId\}`/);
+  assert.match(src, /idempotencyKey: durableUploadIdempotencyKey\(durable\.recordingId\)/);
   assert.match(src, /setServerRecordingId\(\{ userId: uid, recordingId: durable\.recordingId/);
   // markUploaded appears before deleteDraft which appears before purgeAfterUpload.
   const iMark = src.indexOf('.markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt');
@@ -127,17 +128,16 @@ test('recording controls cannot mutate a slot while its upload owns the audio', 
   assert.match(card, /canContinueDurable = isDurableSlot && !isUploading/);
 });
 
-test('uploadSlot durable: dirty metadata is sent with atomic draft promotion', async () => {
+test('uploadSlot durable: preparation sends the complete current metadata snapshot', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
-  // The durable branch sends edited formData with confirm-upload so metadata and
-  // status commit atomically; stale metadata must not be promoted.
+  const api = await read('src/api/recordings.ts');
   const iDurableBranch = src.indexOf('if (slot.durable) {');
-  const iConfirmMetadata = src.indexOf('const durableConfirmMetadata =', iDurableBranch);
   const iCreateWithFile = src.indexOf("'audio/aac'", iDurableBranch);
-  assert.ok(iConfirmMetadata > iDurableBranch && iConfirmMetadata < iCreateWithFile,
-    'durable branch must prepare dirty metadata before createWithFile');
-  assert.match(src, /slot\.serverDraftId && slot\.draftMetadataDirty \? slot\.formData : undefined/);
-  assert.match(src, /durableConfirmMetadata \? \{ confirmMetadata: durableConfirmMetadata \} : \{\}/);
+  assert.ok(iCreateWithFile > iDurableBranch);
+  assert.match(src, /metadataDirty: !!slot\.draftMetadataDirty/);
+  assert.match(api, /const metadata = completeUploadMetadata\(data\)/);
+  assert.match(api, /requestPreparation\(existingRecordingId, idempotencyKey, metadata, descriptors\)/);
+  assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata\)/);
 });
 
 test('draftStorage: durable-aware orphan/audio checks + metadata-only save', async () => {
@@ -522,7 +522,11 @@ test('durable Continue re-enters the single start funnel instead of blocking', a
   const body = rec.slice(iContinue, iRecordAgain);
   assert.doesNotMatch(body, /Adding more audio to it is not supported/);
   assert.match(body, /slot\?\.durable && \(slot\.uploadStatus === 'success' \|\| slot\.durable\.recoveredAudioUri\)/);
-  assert.match(body, /if \(slot\) deleteOrphanServerRecording\(slot\);/);
+  assert.doesNotMatch(
+    body,
+    /deleteOrphanServerRecording\(slot\)/,
+    'continuation must retain the stable intent and reusable canonical server row'
+  );
   assert.match(body, /continueRecording\(slotId\);/);
   assert.match(body, /startRecordingForSlot\(slotId\);/);
 });
@@ -766,10 +770,10 @@ test('durable offline draft-create uses a deterministic idempotency anchor', asy
   assert.match(store, /createFn: \(draft: DraftMetadata\) => Promise<\{ id: string \}>/);
   assert.match(store, /const created = await createFn\(draft\);/);
   const pending = await read('src/hooks/usePendingDraftSync.ts');
-  assert.match(pending, /idempotencyKey: `durable-\$\{durableRecordingId\}`/);
+  assert.match(pending, /idempotencyKey: durableUploadIdempotencyKey\(durableRecordingId\)/);
   assert.match(pending, /setServerRecordingId\(\{ userId, recordingId: durableRecordingId, serverRecordingId: created\.id \}\)/);
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(rec, /idempotencyKey: `durable-\$\{durableRecordingId\}`/);
+  assert.match(rec, /idempotencyKey: durableUploadIdempotencyKey\(durableRecordingId\)/);
 });
 
 test('durable active-pointer write is bounded so a hung Keystore cannot strand start', async () => {

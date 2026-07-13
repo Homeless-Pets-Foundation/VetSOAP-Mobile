@@ -15,6 +15,7 @@ import type { CreateRecording, User } from '../types';
 import type { StashedSession, StashedSlot } from '../types/stash';
 import type { PatientSlot, AudioSegment, DurableSlotRef } from '../types/multiPatient';
 import { isValidDurableId } from './durableAudio/paths';
+import { normalizeUploadIntentId } from './uploadIntent';
 
 const CHUNK_SIZE = 1900;
 const MAX_RECOVERY_ITEMS = 50;
@@ -56,6 +57,7 @@ export interface RecoverySegment {
 
 export interface RecoverySlot {
   id: string;
+  uploadIntentId?: string;
   formData: CreateRecording | null;
   segments: RecoverySegment[];
   audioDuration: number;
@@ -289,6 +291,7 @@ async function buildItemFromSlots(
     source: RecoverySourceFields;
     slots: {
       id: string;
+      uploadIntentId?: string;
       formData: CreateRecording | null;
       segments: { uri: string; duration?: number; peakMetering?: number }[];
       audioDuration?: number;
@@ -355,6 +358,7 @@ async function buildItemFromSlots(
     if (recoveredSegments.length === 0 && !durableForSlot) continue;
     recoveredSlots.push({
       id: slot.id,
+      uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
       formData: slot.formData ? { ...slot.formData } : null,
       segments: recoveredSegments,
       durable: durableForSlot,
@@ -494,6 +498,7 @@ async function addItems(itemsToAdd: RecoveryItem[]): Promise<AddItemsResult> {
 function draftToBuildSlot(draft: DraftMetadata) {
   return {
     id: draft.slotId,
+    uploadIntentId: draft.uploadIntentId,
     formData: draft.formData,
     segments: draft.segments,
     audioDuration: draft.audioDuration,
@@ -506,6 +511,7 @@ function draftToBuildSlot(draft: DraftMetadata) {
 function stashedSlotToBuildSlot(slot: StashedSlot) {
   return {
     id: slot.id,
+    uploadIntentId: slot.uploadIntentId,
     formData: slot.formData,
     segments: slot.segments,
     audioDuration: slot.audioDuration,
@@ -592,6 +598,7 @@ function makeRestoredSlot(slot: RecoverySlot, formData: CreateRecording, index: 
   const durable = slot.durable ?? null;
   return {
     id: slotId,
+    uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
     formData,
     audioState: 'stopped',
     segments,

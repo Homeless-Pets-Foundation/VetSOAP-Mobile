@@ -1,10 +1,17 @@
 import React, { useState } from 'react';
 import { View, Text, Alert, SafeAreaView } from 'react-native';
+import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../src/auth/supabase';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
 import { emailSchema } from '../../src/lib/validation';
+
+function getPasswordResetRedirect(): string {
+  const configuredScheme = Constants.expoConfig?.scheme;
+  const scheme = Array.isArray(configuredScheme) ? configuredScheme[0] : configuredScheme;
+  return `${scheme || 'captivet'}://reset-password`;
+}
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -26,7 +33,7 @@ export default function ForgotPasswordScreen() {
     setIsLoading(true);
     try {
       await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: 'captivet://reset-password',
+        redirectTo: getPasswordResetRedirect(),
       });
       setEmailSent(true);
     } catch (err) {

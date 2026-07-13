@@ -101,12 +101,18 @@ test('startup branding expands to near-2x without exceeding the Android splash s
 
 test('local Android testing installs beside the Play-signed production app', async () => {
   const config = await read('app.config.ts');
+  const forgotPassword = await read('app/(auth)/forgot-password.tsx');
 
   assert.match(config, /IS_LOCAL_TEST = process\.env\.APP_VARIANT === 'local-test'/);
   assert.match(config, /name: IS_LOCAL_TEST \? 'Captivet Local' : 'Captivet'/);
   assert.match(config, /scheme: IS_LOCAL_TEST \? 'captivet-local' : 'captivet'/);
   assert.match(config, /package: IS_LOCAL_TEST \? 'com\.captivet\.mobile\.local' : 'com\.captivet\.mobile'/);
   assert.match(config, /isProduction: IS_PRODUCTION \|\| IS_LOCAL_TEST/);
+
+  assert.match(forgotPassword, /Constants\.expoConfig\?\.scheme/);
+  assert.match(forgotPassword, /Array\.isArray\(configuredScheme\)/);
+  assert.match(forgotPassword, /redirectTo: getPasswordResetRedirect\(\)/);
+  assert.doesNotMatch(forgotPassword, /redirectTo: 'captivet:\/\/reset-password'/);
 });
 
 test('theme preference has dark vars, root hydration, and active settings selector', async () => {

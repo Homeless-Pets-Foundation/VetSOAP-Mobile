@@ -91,17 +91,40 @@ test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone',
   assert.match(src, /if \(slot\.durable\) \{/);
 });
 
-test('uploadSlot durable: upload only the complete-ADTS-frame prefix', async () => {
+test('uploadSlot durable: freeze the complete-ADTS-frame prefix before upload', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
-  // Truncate to completeFrameBytes only when the file is longer (torn crash tail).
+  // Always snapshot completeFrameBytes for a native manifest. Even when the
+  // anchor equals the observed size, the live recorder source can grow between
+  // preflight and the native PUT; the temp prefix must remain immutable.
   assert.match(src, /const completeFrameBytes = manifest\?\.audioFile\.completeFrameBytes \?\? 0/);
-  assert.match(src, /completeFrameBytes > 0 && completeFrameBytes < durableSizeBytes/);
+  assert.match(src, /if \(hasNativeManifest\) \{/);
+  assert.match(src, /completeFrameBytes <= 0 \|\| completeFrameBytes > durableSizeBytes/);
   assert.match(src, /writeFilePrefix\(durableUri, tempUri, completeFrameBytes\)/);
+  assert.match(src, /breadcrumb\('upload', 'durable_snapshot_created'/);
+  assert.doesNotMatch(src, /completeFrameBytes > 0 && completeFrameBytes < durableSizeBytes/);
   // The temp prefix is cleaned up on both success and failure.
   assert.match(src, /if \(durablePrefixTempUri\) safeDeleteFile\(durablePrefixTempUri\)/);
   // fileOps exposes the streaming prefix copy.
   const fileOps = await read('src/lib/fileOps.ts');
   assert.match(fileOps, /export function writeFilePrefix\(sourceUri: string, destUri: string, byteCount: number\): boolean/);
+});
+
+test('recording controls cannot mutate a slot while its upload owns the audio', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  assert.match(src, /const isSlotUploadActive = useCallback/);
+  assert.match(src, /uploadingSlotIdsRef\.current\.has\(slotId\)/);
+  assert.match(src, /function showUploadInProgressAlert\(\): void/);
+  for (const handler of ['handleStart', 'handleContinueRecording', 'handleRecordAgain', 'handleRemove', 'handleEditRecording']) {
+    const start = src.indexOf(`const ${handler} = useCallback`);
+    assert.ok(start > -1, `${handler} must exist`);
+    assert.match(src.slice(start, start + 900), /isSlotUploadActive\(slotId\)/);
+  }
+
+  assert.match(card, /const isUploading = slot\.uploadStatus === 'uploading'/);
+  assert.match(card, /audioState === 'idle' && !isUploading/);
+  assert.match(card, /canContinueDurable = isDurableSlot && !isUploading/);
 });
 
 test('uploadSlot durable: dirty metadata is sent with atomic draft promotion', async () => {
@@ -468,7 +491,7 @@ test('a stopped durable slot shows Continue Recording + Delete & Start Over, not
   const card = await read('src/components/PatientSlotCard.tsx');
   // Durable completed slot (empty segments) gets its own controls branch and the
   // error-recovery Try Again branch explicitly excludes durable.
-  assert.match(card, /const canContinueDurable = isDurableSlot && slot\.uploadStatus !== 'success' && !slot\.durable\?\.recoveredAudioUri/);
+  assert.match(card, /const canContinueDurable = isDurableSlot && !isUploading && slot\.uploadStatus !== 'success' && !slot\.durable\?\.recoveredAudioUri/);
   assert.match(card, /const canDiscardDurable = isDurableSlot && slot\.uploadStatus !== 'success'/);
   const iDurable = card.indexOf('isStopped && !hasSegments && canDiscardDurable && !isFinishSaving');
   const iTryAgain = card.indexOf('isStopped && !hasSegments && !isDurableSlot && !isFinishSaving', iDurable);

@@ -220,12 +220,13 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const isRecording = audioState === 'recording';
   const isPaused = audioState === 'paused';
   const isStopped = audioState === 'stopped';
+  const isUploading = slot.uploadStatus === 'uploading';
   const hasSegments = slot.segments.length > 0;
   // A durable recording has empty `segments` (audio lives in audio.aac), so any
   // submit/upload gate must treat a durable ref as captured audio too — else a
   // durable-only slot renders no Submit card and is unsubmittable.
   const isDurableSlot = !!slot.durable;
-  const canContinueDurable = isDurableSlot && slot.uploadStatus !== 'success' && !slot.durable?.recoveredAudioUri;
+  const canContinueDurable = isDurableSlot && !isUploading && slot.uploadStatus !== 'success' && !slot.durable?.recoveredAudioUri;
   const canDiscardDurable = isDurableSlot && slot.uploadStatus !== 'success';
   const hasCapturedAudio = hasSegments || !!slot.durable;
   const previousSegmentsDuration = slot.segments.reduce((sum, s) => sum + s.duration, 0);
@@ -257,7 +258,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     : '';
 
   // Allow recording when idle (even with existing segments — for continuation)
-  const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !recorder.isStarting && !isFinishSaving;
+  const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !isUploading && !recorder.isStarting && !isFinishSaving;
   const showSubmitCard = (recordFirstEnabled || hasRequiredFields) && hasCapturedAudio && slot.uploadStatus !== 'success';
   const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading' && !isFinishSaving;
   const patientForm = (
@@ -517,14 +518,15 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
           {isStopped && hasSegments && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
-              <Button variant="primary" size="lg" onPress={handleContinueRecording} icon={<Plus color={colors.contentOnBrand} size={18} />}>
+              <Button variant="primary" size="lg" onPress={handleContinueRecording} disabled={isUploading} icon={<Plus color={colors.contentOnBrand} size={18} />}>
                 Continue Recording
               </Button>
-              <Button variant="secondary" onPress={handleEditRecording} icon={<Scissors color={colors.contentPrimary} size={16} />}>
+              <Button variant="secondary" onPress={handleEditRecording} disabled={isUploading} icon={<Scissors color={colors.contentPrimary} size={16} />}>
                 Edit Recording
               </Button>
               <Pressable
                 onPress={handleRecordAgain}
+                disabled={isUploading}
                 accessibilityRole="button"
                 accessibilityLabel="Delete recording and start over"
                 className="min-h-[44px] justify-center items-center"
@@ -555,6 +557,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               )}
               <Pressable
                 onPress={handleRecordAgain}
+                disabled={isUploading}
                 accessibilityRole="button"
                 accessibilityLabel="Delete recording and start over"
                 className="min-h-[44px] justify-center items-center"

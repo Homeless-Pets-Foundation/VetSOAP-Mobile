@@ -153,3 +153,28 @@ test('audio-session interruption on pause/resume is a warning breadcrumb, not a 
     /captureException\(error, \{ tags: \{ component: 'useAudioRecorder', phase: 'recorder_(resume|pause)' \} \}\)/
   );
 });
+
+test('missing audio-focus native module cannot crash route loading', async () => {
+  const src = await read('modules/captivet-audio-focus/index.ts');
+
+  assert.doesNotMatch(src, /import \{ requireNativeModule/);
+  assert.match(src, /function getNativeModule\(\): NativeModule \| null/);
+  assert.match(src, /requireOptionalNativeModule/);
+  assert.match(src, /catch \{\s*cachedModule = null;\s*\}/);
+  assert.match(src, /if \(!nativeModule\) return;/);
+});
+
+test('device registration treats transport loss as recoverable monitoring context', async () => {
+  const src = await read('src/auth/AuthProvider.tsx');
+
+  assert.match(src, /function classifyDeviceRegistrationError\(error: unknown\): string/);
+  assert.match(src, /error\.name === 'AbortError'/);
+  assert.match(src, /Network request failed\|Failed to fetch\|NetworkError\|Request timeout/);
+  assert.match(src, /const errorCode = classifyDeviceRegistrationError\(error\);/);
+
+  const catchStart = src.indexOf('const errorCode = classifyDeviceRegistrationError(error);');
+  assert.ok(catchStart > -1, 'registerDevice catch must classify the error');
+  const catchBody = src.slice(catchStart, catchStart + 700);
+  assert.match(catchBody, /if \(errorCode === 'exception'\) \{\s*captureException\(error/);
+  assert.match(catchBody, /else \{\s*breadcrumb\('auth', 'device_registration_failed'/);
+});

@@ -328,10 +328,11 @@ test('record start is gated by the server min-version floor', async () => {
 
 test('recovered durable draft preserves the death-surviving server anchor', async () => {
   const draft = await read('src/lib/draftStorage.ts');
-  // saveDraft falls back to slot.serverDraftId when no local draft exists yet.
-  assert.match(draft, /const resolvedServerDraftId = existingDurable\?\.serverDraftId \?\? slot\.serverDraftId \?\? null/);
+  // saveDraft falls back to slot.serverDraftId when no local draft exists yet,
+  // while a rotated audio intent is allowed to clear an obsolete disk anchor.
+  assert.match(draft, /const resolvedServerDraftId = durableIntentRotated[\s\S]*existingDurable\?\.serverDraftId \?\? slot\.serverDraftId \?\? null/);
   assert.match(draft, /serverDraftId: resolvedServerDraftId/);
-  assert.match(draft, /pendingSync: existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/);
+  assert.match(draft, /pendingSync: !durableIntentRotated && existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/);
 });
 
 test('native self-heal scan returns confirmed-uploaded-but-not-purged manifests', async () => {

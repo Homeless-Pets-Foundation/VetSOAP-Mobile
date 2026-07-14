@@ -175,7 +175,7 @@ test('stashStorage: cached reads hand out fresh objects, not shared references',
 
 // ─── draftStorage ────────────────────────────────────────────────────
 
-async function loadDraftStorage(state) {
+async function loadDraftStorage(state, opts = {}) {
   const store = makeSecureStore(state);
   const fileSystemMock = {
     File: class {
@@ -199,7 +199,7 @@ async function loadDraftStorage(state) {
       async moveAsync() {},
     },
     './fileOps': {
-      fileExists: () => true,
+      fileExists: opts.fileExists ?? (() => true),
       safeDeleteFile: () => {},
       safeDeleteDirectory: () => {},
       ensureDirectory: () => true,
@@ -250,6 +250,7 @@ test('draftStorage: audio edits clear stale confirmation hints and retain a rota
     uploadIntentId: 'intent-before-edit',
     pendingConfirm: { recordingId: 'old-recording', fileKey: 'old-key' },
   });
+  await draftStorage.updateServerDraftId('slot-intent', 'server-before-edit');
   await draftStorage.saveDraft({
     ...makeSlot('slot-intent'),
     uploadIntentId: 'intent-after-start-over',
@@ -258,6 +259,28 @@ test('draftStorage: audio edits clear stale confirmation hints and retain a rota
   const saved = await draftStorage.getDraft('slot-intent');
   assert.equal(saved.pendingConfirm, null);
   assert.equal(saved.uploadIntentId, 'intent-after-start-over');
+  assert.equal(saved.serverDraftId, null);
+  assert.equal(saved.pendingSync, true);
+});
+
+test('draftStorage: orphan cleanup preserves missing audio with pending confirmation proof', async () => {
+  let filesPresent = true;
+  let serverDeletes = 0;
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: () => filesPresent,
+  });
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot-confirm-only'));
+  await draftStorage.updatePendingConfirm('slot-confirm-only', {
+    recordingId: '11111111-1111-4111-8111-111111111111',
+    fileKey: 'recordings/22222222-2222-4222-8222-222222222222/11111111-1111-4111-8111-111111111111.m4a',
+  }, '11111111-1111-4111-8111-111111111111');
+  filesPresent = false;
+
+  const cleaned = await draftStorage.cleanupOrphaned(async () => { serverDeletes++; });
+  assert.equal(cleaned, 0);
+  assert.equal(serverDeletes, 0);
+  assert.ok(await draftStorage.getDraft('slot-confirm-only'));
 });
 
 test('draftStorage: every write path invalidates the cache', async () => {

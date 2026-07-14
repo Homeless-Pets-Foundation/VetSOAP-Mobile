@@ -567,23 +567,33 @@ export const draftStorage = {
     // recordings use durableActiveStore, never saveDraft.)
     if (slot.durable) {
       const existingDurable = await readDraftChunks(userId, slot.id);
+      const durableUploadIntentId = normalizeUploadIntentId(
+        slot.uploadIntentId ?? existingDurable?.uploadIntentId,
+        slot.id,
+      );
+      const durableIntentRotated =
+        !!existingDurable &&
+        durableUploadIntentId !== normalizeUploadIntentId(existingDurable.uploadIntentId, slot.id);
       // Preserve the server draft/recording anchor across this save. On crash
       // recovery a manifest can carry a serverRecordingId (set pre-death) with NO
       // prior local draft, so `existingDurable` is null — fall back to the slot's
       // serverDraftId so the death-surviving anchor is not dropped (otherwise the
       // next Submit fresh-creates a duplicate server recording instead of
       // promoting the already-created draft). Prefer an existing local anchor.
-      const resolvedServerDraftId = existingDurable?.serverDraftId ?? slot.serverDraftId ?? null;
+      // A changed upload intent means audio changed after R2 accepted the old
+      // bytes. A null slot anchor must clear, not resurrect, the stale disk ID.
+      const resolvedServerDraftId = durableIntentRotated
+        ? (slot.serverDraftId ?? null)
+        : (existingDurable?.serverDraftId ?? slot.serverDraftId ?? null);
       const durableDraftMetadataDirty =
         !!resolvedServerDraftId &&
         (slot.draftMetadataDirty ||
-          (existingDurable?.serverDraftId === resolvedServerDraftId && existingDurable.draftMetadataDirty));
+          (!durableIntentRotated &&
+            existingDurable?.serverDraftId === resolvedServerDraftId &&
+            existingDurable.draftMetadataDirty));
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
-        uploadIntentId: normalizeUploadIntentId(
-          slot.uploadIntentId ?? existingDurable?.uploadIntentId,
-          slot.id,
-        ),
+        uploadIntentId: durableUploadIntentId,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: durableDraftMetadataDirty,
@@ -599,7 +609,7 @@ export const draftStorage = {
         // An existing local draft keeps its own pendingSync. A recovery-supplied
         // anchor means the server row already exists (no create needed) → synced;
         // no anchor at all means we still owe a server-draft create → pending.
-        pendingSync: existingDurable?.serverDraftId
+        pendingSync: !durableIntentRotated && existingDurable?.serverDraftId
           ? existingDurable.pendingSync
           : !resolvedServerDraftId,
       };
@@ -741,16 +751,22 @@ export const draftStorage = {
       // a second SecureStore round-trip here. `updateServerDraftId` remains
       // the authoritative writer for the post-sync promotion to
       // `pendingSync: false`.
-      const resolvedServerDraftId = existing?.serverDraftId ?? null;
+      const uploadIntentId = normalizeUploadIntentId(
+        slot.uploadIntentId ?? existing?.uploadIntentId,
+        slot.id,
+      );
+      const uploadIntentRotated =
+        !!existing &&
+        uploadIntentId !== normalizeUploadIntentId(existing.uploadIntentId, slot.id);
+      const resolvedServerDraftId = uploadIntentRotated
+        ? (slot.serverDraftId ?? null)
+        : (existing?.serverDraftId ?? slot.serverDraftId ?? null);
       const draftMetadataDirty =
         !!resolvedServerDraftId &&
-        (slot.draftMetadataDirty || (existing?.draftMetadataDirty ?? false));
+        (slot.draftMetadataDirty || (!uploadIntentRotated && (existing?.draftMetadataDirty ?? false)));
       const metadata: DraftMetadata = {
         slotId: slot.id,
-        uploadIntentId: normalizeUploadIntentId(
-          slot.uploadIntentId ?? existing?.uploadIntentId,
-          slot.id,
-        ),
+        uploadIntentId,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: draftMetadataDirty,
@@ -761,7 +777,7 @@ export const draftStorage = {
         draftMetadataDirty,
         pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
         pendingSync: resolvedServerDraftId
-          ? (existing?.pendingSync ?? false)
+          ? (uploadIntentRotated ? false : (existing?.pendingSync ?? false))
           : true,
       };
 
@@ -1186,6 +1202,10 @@ export const draftStorage = {
     try {
       const drafts = await this.listDrafts();
       for (const draft of drafts) {
+        // Missing local audio is not an orphan after R2 has accepted the bytes.
+        // Keep the proof so loadDraft can finish the server commit.
+        if (clonePendingConfirm(draft.pendingConfirm)) continue;
+
         const durableId =
           draft.durable && isValidDurableId(draft.durable.recordingId)
             ? draft.durable.recordingId

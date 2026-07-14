@@ -120,6 +120,11 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
     const end = reducer.indexOf("case '", start + 6);
     assert.match(reducer.slice(start, end === -1 ? undefined : end), /invalidatePendingConfirmForAudioChange/);
   }
+
+  const draftStorage = await read('src/lib/draftStorage.ts');
+  assert.match(draftStorage, /uploadIntentRotated[\s\S]*slot\.serverDraftId \?\? null/);
+  assert.match(draftStorage, /durableIntentRotated[\s\S]*slot\.serverDraftId \?\? null/);
+  assert.match(draftStorage, /if \(clonePendingConfirm\(draft\.pendingConfirm\)\) continue/);
 });
 
 test('upload orchestration preserves ordering, persistence, fallback, and bounded recovery contracts', async () => {
@@ -155,6 +160,9 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(record, /await draftStorage\.updatePendingConfirm/);
   assert.match(record, /recordingsApi\.confirmPendingUpload/);
   assert.match(record, /if \(slot\.pendingConfirm\)/);
+  assert.match(record, /hasCompleteLocalAudio/);
+  assert.match(record, /if \(!hasCompleteLocalAudio\)/);
+  assert.match(record, /resume: slot\.pendingConfirm \?\? undefined/);
   const loadDraft = record.slice(
     record.indexOf('const loadDraft = useCallback('),
     record.indexOf('const { draftSlotId } = useLocalSearchParams'),

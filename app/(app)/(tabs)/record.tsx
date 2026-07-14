@@ -2062,10 +2062,10 @@ function RecordingSession() {
       let uploadSizeBytes = 0;
 
       try {
-        // R2 already accepted the bytes, so recovery must be able to confirm
-        // without touching local audio. The file may have been removed by the
-        // OS or be unavailable after restart; re-uploading is both unnecessary
-        // and risks creating a duplicate server recording.
+        // Prefer the file-backed recovery engine while a complete local copy is
+        // still available. It confirms first, but can perform the single allowed
+        // prepare + PUT restart if the hinted server row was deleted. Reserve
+        // confirmation-only recovery for the case where R2 is the sole copy.
         if (slot.pendingConfirm) {
           const uid = user?.id;
           const durable = slot.durable;
@@ -2076,90 +2076,110 @@ function RecordingSession() {
           const nativeManifest = durable && uid
             ? await durableRecorder.getManifest({ userId: uid, recordingId: durable.recordingId }).catch(() => null)
             : null;
-          const onClearPendingConfirm = async () => {
-            setUploadStatus(slot.id, 'uploading', { pendingConfirm: null });
-            await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
-            if (durable && uid && nativeManifest) {
-              await durableRecorder.setPendingConfirm({
-                userId: uid,
-                recordingId: durable.recordingId,
-                pendingConfirm: null,
-              });
+          let hasCompleteLocalAudio = false;
+          if (durable) {
+            const durableUri = nativeManifest?.audioFile.uri ?? durable.recoveredAudioUri ?? null;
+            if (durableUri) {
+              const info = await getInfoAsync(durableUri).catch(() => ({ exists: false, size: 0 }));
+              hasCompleteLocalAudio = info.exists && (info.size ?? 0) > 0;
             }
-          };
-          setUploadStatus(slot.id, 'uploading', { progress: 95 });
-          const result = await recordingsApi.confirmPendingUpload(
-            slot.formData,
-            slot.pendingConfirm,
-            {
-              idempotencyKey: durable
-                ? durableUploadIdempotencyKey(durable.recordingId)
-                : slotUploadIdempotencyKey(normalizeUploadIntentId(slot.uploadIntentId, slot.id)),
-              onClearPendingConfirm,
-              mode: durable ? 'durable' : 'standard',
-              slotIndex,
-            },
-          );
-
-          completedUploadSlotIdsRef.current.add(slot.id);
-          setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: result.id });
-          recordSubmitAttempt(result.id);
-
-          if (durable && uid) {
-            const confirmedAt = new Date().toISOString();
-            if (nativeManifest) {
-              await durableRecorder
-                .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
-                .catch(() => {});
-            }
-            const confirmDraftGone = async (): Promise<boolean> => {
-              try {
-                await draftStorage.deleteDraft(slot.id);
-                await recoveryIntent.clearForDraftSlot(slot.id);
-              } catch {
-                return false;
-              }
-              return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
-            };
-            let draftDeleted = await confirmDraftGone();
-            if (!draftDeleted) draftDeleted = await confirmDraftGone();
-            if (draftDeleted) {
-              if (nativeManifest) {
-                await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
-              } else if (durable.recoveredAudioUri) {
-                safeDeleteFile(durable.recoveredAudioUri);
+          } else if (slot.segments.length > 0) {
+            hasCompleteLocalAudio = true;
+            for (const segment of slot.segments) {
+              const info = await getInfoAsync(segment.uri).catch(() => ({ exists: false, size: 0 }));
+              if (!info.exists || !(info.size ?? 0)) {
+                hasCompleteLocalAudio = false;
+                break;
               }
             }
-            await durableTombstone.add(durable.recordingId).catch(() => {});
-            durableRecoveryStore.remove(durable.recordingId);
-            trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: result.id } });
-          } else {
-            slot.segments.forEach((segment) => safeDeleteFile(segment.uri));
-            draftStorage.deleteDraft(slot.id).catch(() => {});
-            recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
           }
 
-          const latencyMs = Date.now() - uploadStartedAt;
-          trackEvent({
-            name: 'submit_succeeded',
-            props: {
+          if (!hasCompleteLocalAudio) {
+            const onClearPendingConfirm = async () => {
+              setUploadStatus(slot.id, 'uploading', { pendingConfirm: null });
+              await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
+              if (durable && uid && nativeManifest) {
+                await durableRecorder.setPendingConfirm({
+                  userId: uid,
+                  recordingId: durable.recordingId,
+                  pendingConfirm: null,
+                });
+              }
+            };
+            setUploadStatus(slot.id, 'uploading', { progress: 95 });
+            const result = await recordingsApi.confirmPendingUpload(
+              slot.formData,
+              slot.pendingConfirm,
+              {
+                idempotencyKey: durable
+                  ? durableUploadIdempotencyKey(durable.recordingId)
+                  : slotUploadIdempotencyKey(normalizeUploadIntentId(slot.uploadIntentId, slot.id)),
+                onClearPendingConfirm,
+                mode: durable ? 'durable' : 'standard',
+                slotIndex,
+              },
+            );
+
+            completedUploadSlotIdsRef.current.add(slot.id);
+            setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: result.id });
+            recordSubmitAttempt(result.id);
+
+            if (durable && uid) {
+              const confirmedAt = new Date().toISOString();
+              if (nativeManifest) {
+                await durableRecorder
+                  .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
+                  .catch(() => {});
+              }
+              const confirmDraftGone = async (): Promise<boolean> => {
+                try {
+                  await draftStorage.deleteDraft(slot.id);
+                  await recoveryIntent.clearForDraftSlot(slot.id);
+                } catch {
+                  return false;
+                }
+                return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
+              };
+              let draftDeleted = await confirmDraftGone();
+              if (!draftDeleted) draftDeleted = await confirmDraftGone();
+              if (draftDeleted) {
+                if (nativeManifest) {
+                  await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
+                } else if (durable.recoveredAudioUri) {
+                  safeDeleteFile(durable.recoveredAudioUri);
+                }
+              }
+              await durableTombstone.add(durable.recordingId).catch(() => {});
+              durableRecoveryStore.remove(durable.recordingId);
+              trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: result.id } });
+            } else {
+              slot.segments.forEach((segment) => safeDeleteFile(segment.uri));
+              draftStorage.deleteDraft(slot.id).catch(() => {});
+              recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+            }
+
+            const latencyMs = Date.now() - uploadStartedAt;
+            trackEvent({
+              name: 'submit_succeeded',
+              props: {
+                slot_index: slotIndex,
+                segment_count: segmentCount,
+                duration_s: durationSeconds,
+                size_bytes: 0,
+                recording_id: result.id,
+                attempt_number: attemptNumber,
+                latency_ms: latencyMs,
+                ...baseSubmitDiagnostics,
+              },
+            });
+            breadcrumb('upload', 'pending_confirm_recovered', {
               slot_index: slotIndex,
-              segment_count: segmentCount,
-              duration_s: durationSeconds,
-              size_bytes: 0,
-              recording_id: result.id,
               attempt_number: attemptNumber,
               latency_ms: latencyMs,
-              ...baseSubmitDiagnostics,
-            },
-          });
-          breadcrumb('upload', 'pending_confirm_recovered', {
-            slot_index: slotIndex,
-            attempt_number: attemptNumber,
-            latency_ms: latencyMs,
-          });
-          uploadAttemptCountsRef.current.delete(slot.id);
-          return result.id;
+            });
+            uploadAttemptCountsRef.current.delete(slot.id);
+            return result.id;
+          }
         }
 
         // ── Durable AAC upload (single audio.aac, no segments[], bypass split) ──

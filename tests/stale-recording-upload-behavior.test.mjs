@@ -526,6 +526,43 @@ test('hung pending-hint persistence is bounded and a late write is cleared after
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
+test('a stale signature on the final normal attempt still PUTs once to the refreshed URL', async () => {
+  let uploadCalls = 0;
+  let prepareCalls = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        prepareCalls++;
+        return prepared(1);
+      }
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    upload: async () => {
+      uploadCalls++;
+      if (uploadCalls <= 2) throw new Error('Network request failed');
+      if (uploadCalls === 3) return { status: 403 };
+      return { status: 200 };
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    { idempotencyKey: 'intent' },
+  );
+  assert.equal(result.id, recordingId);
+  assert.equal(prepareCalls, 2);
+  assert.equal(uploadCalls, 4);
+  assert.deepEqual(
+    harness.events.map((event) => event[0]),
+    ['post', 'put', 'put', 'put', 'post', 'put', 'post'],
+  );
+});
+
 test('legacy fallback deletes a row it created when upload fails before confirmation proof', async () => {
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),

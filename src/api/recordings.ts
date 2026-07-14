@@ -692,8 +692,14 @@ async function putPreparedFiles(
     const file = files[index];
     let attempt = 0;
     let urlEntry = uploads[index];
-    while (attempt < MAX_R2_ATTEMPTS) {
+    // A stale signature refresh earns exactly one PUT against the fresh URL,
+    // even when transient failures already consumed the normal attempt budget.
+    // Otherwise a final-attempt 401/403 can refresh and fall out of the loop as
+    // a false success without ever sending bytes to the new URL.
+    let refreshedUrlAttemptPending = false;
+    while (attempt < MAX_R2_ATTEMPTS || refreshedUrlAttemptPending) {
       attempt++;
+      refreshedUrlAttemptPending = false;
       sentBytes[index] = 0;
       let task: ActiveUploadTask | null = null;
       try {
@@ -738,6 +744,7 @@ async function putPreparedFiles(
           const next = await refresh();
           if (next.outcome !== 'prepared') return;
           urlEntry = next.uploads![index];
+          refreshedUrlAttemptPending = true;
           continue;
         }
         if (!isTransientUploadError(error) || attempt >= MAX_R2_ATTEMPTS) throw error;

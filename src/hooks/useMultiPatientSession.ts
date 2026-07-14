@@ -1,5 +1,6 @@
 import { useReducer, useCallback } from 'react';
 import type { CreateRecording } from '../types';
+import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot, SessionAction, SessionState, AudioSegment, DurableSlotRef } from '../types/multiPatient';
 import { isValidDurableId } from '../lib/durableAudio/paths';
 import { createUploadIntentId, normalizeUploadIntentId } from '../lib/uploadIntent';
@@ -626,11 +627,11 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
   }, []);
 
   const hasUnsavedRecordings = state.slots.some(
-    (s) => s.segments.length > 0 || s.durable !== null || s.audioState === 'recording' || s.audioState === 'paused'
+    (s) => slotHasRecoverableAudio(s) || s.audioState === 'recording' || s.audioState === 'paused'
   );
 
   const completedUnuploadedCount = state.slots.filter(
-    (s) => (s.segments.length > 0 || s.durable !== null) && s.uploadStatus !== 'success'
+    (s) => slotHasRecoverableAudio(s) && s.uploadStatus !== 'success'
   ).length;
 
   return {

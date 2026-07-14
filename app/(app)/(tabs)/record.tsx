@@ -86,6 +86,7 @@ import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
 import { UploadOverlay } from '../../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
+import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
 
@@ -1201,7 +1202,7 @@ function RecordingSession() {
       // durable audio recovers, but with no form data) — durable finish must get
       // the same restart protection as segment recordings.
       const slotsToPersist = sessionRef.current.slots.filter(
-        (slot) => (slot.segments.length > 0 || !!slot.durable) && slot.uploadStatus !== 'success'
+        (slot) => slotHasRecoverableAudio(slot) && slot.uploadStatus !== 'success'
       );
 
       await Promise.all(
@@ -1298,11 +1299,7 @@ function RecordingSession() {
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
-    (s) => (s.segments.length > 0 && s.uploadStatus !== 'success') ||
-            // A durable slot has empty segments (audio in audio.aac); count it as
-            // unsaved whenever it hasn't uploaded, or the leave guard would let a
-            // finished-but-unsubmitted durable recording slip away without warning.
-            (!!s.durable && s.uploadStatus !== 'success') ||
+    (s) => (slotHasRecoverableAudio(s) && s.uploadStatus !== 'success') ||
             s.audioState === 'recording' || s.audioState === 'paused'
   ).length;
 
@@ -1913,7 +1910,7 @@ function RecordingSession() {
         return;
       }
 
-      const hasRecording = slot.segments.length > 0 || !!slot.durable || isSlotActivelyRecording(slot);
+      const hasRecording = slotHasRecoverableAudio(slot) || isSlotActivelyRecording(slot);
 
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
@@ -3271,7 +3268,7 @@ function RecordingSession() {
             // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
             const otherSlotsWithRecordings = sessionRef.current.slots.some(
               (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
-                (s.segments.length > 0 || !!s.durable || s.audioState === 'recording' || s.audioState === 'paused')
+                (slotHasRecoverableAudio(s) || s.audioState === 'recording' || s.audioState === 'paused')
             );
 
             if (otherSlotsWithRecordings) {
@@ -3330,7 +3327,7 @@ function RecordingSession() {
       ? []
       : sessionRef.current.slots.filter(
           (s) =>
-            (s.segments.length > 0 || !!s.durable) &&
+            slotHasRecoverableAudio(s) &&
             s.uploadStatus !== 'success' &&
             !slotHasRequiredSubmitFields(s)
         );
@@ -3345,7 +3342,7 @@ function RecordingSession() {
     }
 
     const slotsToUpload = sessionRef.current.slots.filter(
-      (s) => (s.segments.length > 0 || !!s.durable) &&
+      (s) => slotHasRecoverableAudio(s) &&
         (recordFirstEnabled || slotHasRequiredSubmitFields(s)) &&
         s.uploadStatus !== 'success' &&
         s.uploadStatus !== 'uploading' &&
@@ -3525,7 +3522,7 @@ function RecordingSession() {
           // Include durable slots (empty segments, audio in audio.aac) — otherwise
           // a durable-only session that fails to stash (max stashes, SecureStore
           // write fail) shows no feedback and the user thinks it saved.
-          const hasRecordings = postFlushSession.slots.some((s) => s.segments.length > 0 || !!s.durable);
+          const hasRecordings = postFlushSession.slots.some(slotHasRecoverableAudio);
           if (hasRecordings) {
             Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
           }
@@ -3722,10 +3719,7 @@ function RecordingSession() {
     // let the preserve list keep their rows intact.
     const trulyUnsaved = currentSlots.some(
       (s) =>
-        (s.segments.length > 0 && !s.draftSlotId && s.uploadStatus !== 'success') ||
-        // Durable slot (empty segments): count as unsaved whenever not uploaded so
-        // loading another draft can't silently reset an unsubmitted durable slot.
-        (!!s.durable && s.uploadStatus !== 'success') ||
+        (slotHasRecoverableAudio(s) && !s.draftSlotId && s.uploadStatus !== 'success') ||
         s.audioState === 'recording' ||
         s.audioState === 'paused'
     );

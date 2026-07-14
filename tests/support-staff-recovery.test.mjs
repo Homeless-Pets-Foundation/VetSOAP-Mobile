@@ -387,6 +387,11 @@ test('recovery vault preserves and restores validated pending-confirm proof with
     role: 'admin',
     organizationId: 'org-1',
   };
+  const veterinarian = {
+    id: 'vet-user',
+    role: 'veterinarian',
+    organizationId: 'org-1',
+  };
   const proof = makePendingConfirm();
   drafts.current = [{
     ...makeDraft('proof-only'),
@@ -400,12 +405,42 @@ test('recovery vault preserves and restores validated pending-confirm proof with
   assert.equal(preserved.recoverableCount, 1);
   const [item] = await supportStaffRecoveryVault.listItemsForUser(privilegedUser);
   assert.equal(item.slots[0].pendingConfirm.recordingId, proof.recordingId);
+  assert.equal((await supportStaffRecoveryVault.listItemsForUser(veterinarian)).length, 0);
 
   const restored = await supportStaffRecoveryVault.restoreItemToCurrentUserDrafts(privilegedUser, item.id);
   assert.equal(restored.length, 1);
   assert.equal(savedDraftSlots[0].segments.length, 0);
   assert.equal(savedDraftSlots[0].pendingConfirm.recordingId, proof.recordingId);
   assert.equal(savedDraftSlots[0].serverDraftId, proof.recordingId);
+});
+
+test('veterinarian recovery strips cross-user proof and re-uploads a complete vault copy', async () => {
+  const { supportStaffRecoveryVault, drafts, files, savedDraftSlots } = await loadRecoveryVaultForTest();
+  const sourceUser = {
+    id: 'support-user',
+    email: 'csr@example.com',
+    fullName: 'Support User',
+    role: 'support_staff',
+    organizationId: 'org-1',
+  };
+  const veterinarian = {
+    id: 'vet-user',
+    role: 'veterinarian',
+    organizationId: 'org-1',
+  };
+  const draft = { ...makeDraft('vet-copy'), pendingConfirm: makePendingConfirm() };
+  drafts.current = [draft];
+  files.add(draft.segments[0].uri);
+
+  const preserved = await supportStaffRecoveryVault.preserveScopedUserRecordings(sourceUser);
+  assert.equal(preserved.ok, true);
+  const [item] = await supportStaffRecoveryVault.listItemsForUser(veterinarian);
+  assert.ok(item);
+  const restored = await supportStaffRecoveryVault.restoreItemToCurrentUserDrafts(veterinarian, item.id);
+  assert.equal(restored.length, 1);
+  assert.equal(savedDraftSlots[0].segments.length, 1);
+  assert.equal(savedDraftSlots[0].pendingConfirm, null);
+  assert.equal(savedDraftSlots[0].serverDraftId, null);
 });
 
 test('restore is same-org, all-or-nothing, keeps only proof-backed server state, and consumes recovery copy', async () => {
@@ -421,6 +456,7 @@ test('restore is same-org, all-or-nothing, keeps only proof-backed server state,
   assert.match(vault, /serverRecordingId: null/);
   assert.match(vault, /serverDraftId: pendingConfirm\?\.recordingId \?\? null/);
   assert.match(vault, /pendingConfirm: clonePendingConfirm\(slot\.pendingConfirm\)/);
+  assert.match(vault, /reuseSourceUpload \? clonePendingConfirm\(slot\.pendingConfirm\) : null/);
 });
 
 test('settings and recovery screens use scoped recovery APIs and expose destructive fallback only on preserve failure', async () => {

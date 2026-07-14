@@ -91,6 +91,17 @@ export interface PatientSlot {
   pendingConfirm: PendingConfirm | null;  // resume hint captured post-R2 upload
 }
 
+/**
+ * True when a slot can still complete submission. A pending-confirm proof is
+ * captured audio for workflow purposes because R2 already owns the bytes even
+ * if every local file has disappeared.
+ */
+export function slotHasRecoverableAudio(
+  slot: Pick<PatientSlot, 'segments' | 'durable' | 'pendingConfirm'>,
+): boolean {
+  return slot.segments.length > 0 || slot.durable !== null || slot.pendingConfirm !== null;
+}
+
 export type SessionAction =
   | { type: 'ADD_SLOT'; defaultTemplateId?: string }
   | { type: 'REMOVE_SLOT'; slotId: string }

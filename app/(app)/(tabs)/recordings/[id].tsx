@@ -35,6 +35,7 @@ import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { stashStorage } from '../../../../src/lib/stashStorage';
 import { fileExists, safeDeleteFile } from '../../../../src/lib/fileOps';
 import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
+import { clonePendingConfirm } from '../../../../src/lib/pendingConfirm';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
 import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
@@ -422,7 +423,8 @@ export default function RecordingDetailScreen() {
         // isDraftResumable). Without this the durable "Not Submitted" card opens
         // a dead-end detail view instead of resuming into Record.
         const durableResumable = !!match?.durable && isValidDurableId(match.durable.recordingId);
-        if (match && (durableResumable || (match.segments.length > 0 && match.segments.every((s) => fileExists(s.uri))))) {
+        const confirmationResumable = !!clonePendingConfirm(match?.pendingConfirm);
+        if (match && (confirmationResumable || durableResumable || (match.segments.length > 0 && match.segments.every((s) => fileExists(s.uri))))) {
           setDraftLocalSlotId(match.slotId);
         } else {
           setDraftLocalSlotId(null);

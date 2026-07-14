@@ -233,9 +233,11 @@ test('durable-blind read gates are durable-aware (CRITICAL reachability sweep)',
   const auth = await read('src/auth/AuthProvider.tsx');
   assert.match(auth, /durableIntentAlive/);
   assert.match(auth, /draft\.segments\.length > 0 \|\| durableIntentAlive/);
-  // SubmitPanel counts durable-only slots or Submit All hides for durable sessions.
+  // SubmitPanel uses the shared reachability predicate so durable-only and
+  // pending-confirm-only slots cannot disappear from Submit All.
   const panel = await read('src/components/SubmitPanel.tsx');
-  assert.match(panel, /s\.segments\.length > 0 \|\| s\.durable !== null/);
+  assert.match(panel, /import \{ slotHasRecoverableAudio \} from '\.\.\/types\/multiPatient'/);
+  assert.match(panel, /const hasAudio = \(s: PatientSlot\) => slotHasRecoverableAudio\(s\)/);
   // Stash orphan recovery keeps a durable-only stash dir.
   const stashMgr = await read('src/lib/stashAudioManager.ts');
   assert.match(stashMgr, /s\.segments\.length > 0 \|\| s\.durable != null/);
@@ -286,15 +288,15 @@ test('support-staff vault preserves durable BYTES + cross-user recovered upload'
 test('durable-only slots are submit-reachable (per-patient + Submit All)', async () => {
   // PatientSlotCard: the Submit card must show for a durable slot with empty segments.
   const card = await read('src/components/PatientSlotCard.tsx');
-  assert.match(card, /const hasCapturedAudio = hasSegments \|\| !!slot\.durable/);
+  assert.match(card, /const hasCapturedAudio = slotHasRecoverableAudio\(slot\)/);
   assert.match(card, /showSubmitCard = \(recordFirstEnabled \|\| hasRequiredFields\) && hasCapturedAudio/);
-  // SubmitPanel already counts durable audio.
+  // SubmitPanel already counts all recoverable audio.
   const panel = await read('src/components/SubmitPanel.tsx');
-  assert.match(panel, /s\.segments\.length > 0 \|\| s\.durable !== null/);
+  assert.match(panel, /const hasAudio = \(s: PatientSlot\) => slotHasRecoverableAudio\(s\)/);
   // Submit All + post-single-submit "others remaining" both include durable slots.
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(rec, /\(s\.segments\.length > 0 \|\| !!s\.durable\) &&\s*\n\s*\(recordFirstEnabled \|\| slotHasRequiredSubmitFields\(s\)\) &&\s*\n\s*s\.uploadStatus !== 'success'/);
-  assert.match(rec, /s\.segments\.length > 0 \|\| !!s\.durable \|\| s\.audioState === 'recording'/);
+  assert.match(rec, /slotHasRecoverableAudio\(s\) &&\s*\n\s*\(recordFirstEnabled \|\| slotHasRequiredSubmitFields\(s\)\) &&\s*\n\s*s\.uploadStatus !== 'success'/);
+  assert.match(rec, /slotHasRecoverableAudio\(s\) \|\| s\.audioState === 'recording' \|\| s\.audioState === 'paused'/);
 });
 
 test('Submit All records non-PHI diagnostics when a selected slot uploads no audio', async () => {
@@ -448,10 +450,10 @@ test('discarding a live durable capture discards its native files before reset',
 
 test('durable slots are counted in the unsaved leave/reset guards', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  // Both unsavedCount (leave guard) and trulyUnsaved (draft-load reset) count a
-  // durable slot that has not uploaded (empty segments would otherwise skip it).
-  const matches = rec.match(/\(!!s\.durable && s\.uploadStatus !== 'success'\)/g) || [];
-  assert.ok(matches.length >= 2, 'both unsaved predicates must include durable');
+  // Both unsavedCount (leave guard) and trulyUnsaved (draft-load reset) use the
+  // shared predicate, which covers durable and pending-confirm-only slots.
+  assert.match(rec, /const unsavedCount = session\.slots\.filter\([\s\S]*?slotHasRecoverableAudio\(s\) && s\.uploadStatus !== 'success'/);
+  assert.match(rec, /const trulyUnsaved = currentSlots\.some\([\s\S]*?slotHasRecoverableAudio\(s\) && !s\.draftSlotId && s\.uploadStatus !== 'success'/);
 });
 
 test('deleteDraft removes a recovered durable AAC but not shared native audio', async () => {
@@ -495,19 +497,19 @@ test('a stopped durable slot shows Continue Recording + Delete & Start Over, not
   assert.match(card, /const canContinueDurable = isDurableSlot && !isUploading && slot\.uploadStatus !== 'success' && !slot\.durable\?\.recoveredAudioUri/);
   assert.match(card, /const canDiscardDurable = isDurableSlot && slot\.uploadStatus !== 'success'/);
   const iDurable = card.indexOf('isStopped && !hasSegments && canDiscardDurable && !isFinishSaving');
-  const iTryAgain = card.indexOf('isStopped && !hasSegments && !isDurableSlot && !isFinishSaving', iDurable);
+  const iTryAgain = card.indexOf('isStopped && !hasSegments && !isDurableSlot && !hasPendingConfirm && !isFinishSaving', iDurable);
   assert.ok(iDurable > 0 && iTryAgain > iDurable, 'durable stopped branch must exist before Try Again branch');
   const durableBranch = card.slice(iDurable, iTryAgain);
   assert.match(durableBranch, /Continue Recording/);
   assert.match(durableBranch, /Delete & Start Over/);
   assert.match(durableBranch, /\{canContinueDurable && \(/);
-  assert.match(card, /isStopped && !hasSegments && !isDurableSlot && !isFinishSaving/);
+  assert.match(card, /isStopped && !hasSegments && !isDurableSlot && !hasPendingConfirm && !isFinishSaving/);
 });
 
 test('a recovered durable slot can be discarded even when Continue is hidden', async () => {
   const card = await read('src/components/PatientSlotCard.tsx');
   const iDurable = card.indexOf('isStopped && !hasSegments && canDiscardDurable && !isFinishSaving');
-  const iTryAgain = card.indexOf('isStopped && !hasSegments && !isDurableSlot && !isFinishSaving', iDurable);
+  const iTryAgain = card.indexOf('isStopped && !hasSegments && !isDurableSlot && !hasPendingConfirm && !isFinishSaving', iDurable);
   assert.ok(iDurable > 0 && iTryAgain > iDurable, 'durable stopped branch must exist before Try Again branch');
   const durableBranch = card.slice(iDurable, iTryAgain);
   const iContinueGuard = durableBranch.indexOf('{canContinueDurable && (');
@@ -598,9 +600,9 @@ test('tab taps and swipes share pause-on-leave patient selection', async () => {
 
 test('durable-only stash failure surfaces the Save Failed alert', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  // hasRecordings (the Save Failed gate) counts durable slots, or a durable-only
-  // stash failure would be silent.
-  assert.match(rec, /const hasRecordings = postFlushSession\.slots\.some\(\(s\) => s\.segments\.length > 0 \|\| !!s\.durable\)/);
+  // hasRecordings (the Save Failed gate) counts every recoverable slot, or a
+  // durable/proof-only stash failure would be silent.
+  assert.match(rec, /const hasRecordings = postFlushSession\.slots\.some\(slotHasRecoverableAudio\)/);
 });
 
 test('post-upload deleteDraft is verified + retried; loadDraft blocks a tombstoned durable resume', async () => {
@@ -818,7 +820,7 @@ test('background persister includes finished durable slots', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
   const iPersist = rec.indexOf('const slotsToPersist = sessionRef.current.slots.filter(');
   const body = rec.slice(iPersist, iPersist + 200);
-  assert.match(body, /\(slot\.segments\.length > 0 \|\| !!slot\.durable\) && slot\.uploadStatus !== 'success'/);
+  assert.match(body, /slotHasRecoverableAudio\(slot\) && slot\.uploadStatus !== 'success'/);
 });
 
 test('detail-page durable delete spares stash-shared audio and fails CLOSED', async () => {

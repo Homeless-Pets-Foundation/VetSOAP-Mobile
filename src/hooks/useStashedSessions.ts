@@ -8,6 +8,7 @@ import { safeDeleteFile } from '../lib/fileOps';
 import { getSecureRandomHex } from '../lib/random';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import type { StashedSession } from '../types/stash';
+import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
 import { normalizeUploadIntentId } from '../lib/uploadIntent';
 import { clonePendingConfirm } from '../lib/pendingConfirm';
@@ -151,8 +152,8 @@ export function useStashedSessions(userId: string | null) {
         // Durable slots have empty `segments` (audio is in audio.aac under the
         // durable root) — count them as audio so a pure-durable session stashes.
         const preStashSegmentCount = slotsToStash.reduce((sum, s) => sum + s.segments.length, 0);
-        const hasDurableAudio = slotsToStash.some((s) => s.durable !== null);
-        if (preStashSegmentCount === 0 && !hasDurableAudio) {
+        const hasRecoverableAudio = slotsToStash.some(slotHasRecoverableAudio);
+        if (preStashSegmentCount === 0 && !hasRecoverableAudio) {
           if (__DEV__) console.error('[Stash] no audio in any slot — aborting to prevent data loss');
           return false;
         }
@@ -312,7 +313,8 @@ export function useStashedSessions(userId: string | null) {
           // Rule 20 read site (3 of 3): restore the durable pointer so Resume of a
           // parked durable recording re-references audio.aac instead of orphaning it.
           const durable = slot.durable ?? null;
-          const hasAudio = slot.segments.length > 0 || durable !== null;
+          const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
+          const hasAudio = slot.segments.length > 0 || durable !== null || pendingConfirm !== null;
           return {
             id: slot.id,
             uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
@@ -329,7 +331,7 @@ export function useStashedSessions(userId: string | null) {
             draftSlotId: slot.draftSlotId ?? null,
             serverDraftId: slot.serverDraftId ?? null,
             draftMetadataDirty: !!slot.serverDraftId && (slot.draftMetadataDirty === true || slot.draftMetadataDirty === undefined),
-            pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
+            pendingConfirm,
           };
         });
       };

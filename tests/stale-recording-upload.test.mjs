@@ -101,6 +101,22 @@ test('pending-confirm validation accepts minimal native proof and strips PHI fie
   assert.equal(validatePendingConfirm(proof).recordingId, recordingId);
 });
 
+test('pending-confirm-only slots count as recoverable captured audio', async () => {
+  const { slotHasRecoverableAudio } = await loadPure('src/types/multiPatient.ts');
+  const empty = { segments: [], durable: null, pendingConfirm: null };
+  assert.equal(slotHasRecoverableAudio(empty), false);
+  assert.equal(
+    slotHasRecoverableAudio({
+      ...empty,
+      pendingConfirm: {
+        recordingId,
+        fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+      },
+    }),
+    true,
+  );
+});
+
 test('stable upload intents rotate when audio changes after R2 completion', async () => {
   const { normalizeUploadIntentId, slotUploadIdempotencyKey, durableUploadIdempotencyKey } = await loadPure('src/lib/uploadIntent.ts');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');
@@ -183,6 +199,14 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.doesNotMatch(continuation, /slot\?\.durable && slot\.pendingConfirm/);
   assert.match(record, /type: 'SET_PENDING_CONFIRM', slotId: slot\.id, pendingConfirm: null/);
   assert.doesNotMatch(record, /setUploadStatus\(slot\.id, 'uploading', \{ pendingConfirm: null \}\)/);
+  assert.match(record, /slotHasRecoverableAudio\(s\)/);
+  const card = await read('src/components/PatientSlotCard.tsx');
+  const panel = await read('src/components/SubmitPanel.tsx');
+  const stashes = await read('src/hooks/useStashedSessions.ts');
+  assert.match(card, /const hasCapturedAudio = slotHasRecoverableAudio\(slot\)/);
+  assert.match(card, /!hasPendingConfirm && !isFinishSaving/);
+  assert.match(panel, /slotHasRecoverableAudio\(s\)/);
+  assert.match(stashes, /pendingConfirm !== null/);
   const draftSync = record.slice(
     record.indexOf('const syncServerDraft = useCallback('),
     record.indexOf('const scheduleDraftSync = useCallback('),

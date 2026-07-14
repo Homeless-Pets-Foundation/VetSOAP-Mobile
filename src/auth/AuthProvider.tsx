@@ -23,6 +23,7 @@ import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { draftStorage } from '../lib/draftStorage';
 import { recoveryIntent } from '../lib/recoveryIntent';
+import { clonePendingConfirm } from '../lib/pendingConfirm';
 import { isValidDurableId } from '../lib/durableAudio/paths';
 import { durableTombstone } from '../lib/durableAudio/tombstone';
 import { durableActiveStore } from '../lib/durableAudio/activeStore';
@@ -687,7 +688,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // durable pointer is still a live resume target, so don't clear its
           // RECOVERY_INTENT as "stale".
           const durableIntentAlive = !!draft?.durable && isValidDurableId(draft.durable.recordingId);
-          if (draft && (draft.segments.length > 0 || durableIntentAlive)) {
+          if (draft && (draft.segments.length > 0 || durableIntentAlive || !!clonePendingConfirm(draft.pendingConfirm))) {
             setRecoveryDraftSlotId(intent.draftSlotId);
             breadcrumb('auth', 'local_recovery_intent_ready', {
               reason: intent.reason,

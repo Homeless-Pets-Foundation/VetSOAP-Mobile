@@ -446,6 +446,35 @@ function itemVisibleToUser(item: RecoveryItem, user: RecoveryUser): boolean {
   );
 }
 
+function pendingConfirmFileCount(pendingConfirm: PendingConfirm): number {
+  return pendingConfirm.segmentKeys?.length ?? pendingConfirm.files?.length ?? 1;
+}
+
+/**
+ * A veterinarian cannot operate on another user's server upload intent. They
+ * may restore by creating their own row only when the vault holds a complete
+ * local copy of every uploaded file represented by the proof.
+ */
+function vaultSlotHasCompleteLocalAudio(slot: RecoverySlot): boolean {
+  if (vaultSlotHasDurableAudio(slot.durable)) return true;
+  const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
+  if (!pendingConfirm) {
+    return slot.segments.length > 0 && slot.segments.every((segment) => fileExists(segment.uri));
+  }
+  return (
+    slot.segments.length === pendingConfirmFileCount(pendingConfirm) &&
+    slot.segments.every((segment) => fileExists(segment.uri))
+  );
+}
+
+function itemRestorableByUser(item: RecoveryItem, user: RecoveryUser): boolean {
+  if (!itemVisibleToUser(item, user) || !itemIsRecoverable(item)) return false;
+  if (user.role === 'owner' || user.role === 'admin') return true;
+  return item.slots.every(
+    (slot) => !clonePendingConfirm(slot.pendingConfirm) || vaultSlotHasCompleteLocalAudio(slot),
+  );
+}
+
 async function readValidItemsAndPrune(): Promise<RecoveryItem[]> {
   const items = await readItems();
   const validItems = items.filter(itemIsRecoverable);
@@ -602,7 +631,12 @@ async function buildStashItemsForSource(
   return { items, recoverableCount, failedCount };
 }
 
-function makeRestoredSlot(slot: RecoverySlot, formData: CreateRecording, index: number): PatientSlot {
+function makeRestoredSlot(
+  slot: RecoverySlot,
+  formData: CreateRecording,
+  index: number,
+  reuseSourceUpload: boolean,
+): PatientSlot {
   const segments: AudioSegment[] = slot.segments.map((segment) => ({
     uri: segment.uri,
     duration: segment.duration,
@@ -610,7 +644,9 @@ function makeRestoredSlot(slot: RecoverySlot, formData: CreateRecording, index: 
   }));
   const slotId = makeId(`recovered-${index + 1}`);
   const durable = slot.durable ?? null;
-  const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
+  // Owner/admin server routes may finish an organization member's upload.
+  // Veterinarians must re-upload the complete vault copy under their own row.
+  const pendingConfirm = reuseSourceUpload ? clonePendingConfirm(slot.pendingConfirm) : null;
   return {
     id: slotId,
     uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
@@ -638,7 +674,7 @@ export const supportStaffRecoveryVault = {
   async listItemsForUser(user: RecoveryUser | null | undefined): Promise<RecoveryItem[]> {
     if (!canUseRecovery(user)) return [];
     const items = await readValidItemsAndPrune();
-    return items.filter((item) => itemVisibleToUser(item, user));
+    return items.filter((item) => itemRestorableByUser(item, user));
   },
 
   async countItemsForUser(user: RecoveryUser | null | undefined): Promise<number> {
@@ -731,7 +767,8 @@ export const supportStaffRecoveryVault = {
 
     const items = await readValidItemsAndPrune();
     const item = items.find((candidate) => candidate.id === itemId);
-    if (!item || !itemVisibleToUser(item, user)) return [];
+    if (!item || !itemRestorableByUser(item, user)) return [];
+    const reuseSourceUpload = user.role === 'owner' || user.role === 'admin';
 
     const slotsToRestore = item.slots.map((slot) => {
       const formData = slot.formData ?? formDataBySlotId[slot.id];
@@ -748,7 +785,7 @@ export const supportStaffRecoveryVault = {
       for (let i = 0; i < slotsToRestore.length; i++) {
         const entry = slotsToRestore[i];
         if (!entry) continue;
-        let restoredSlot = makeRestoredSlot(entry.slot, entry.formData, i);
+        let restoredSlot = makeRestoredSlot(entry.slot, entry.formData, i, reuseSourceUpload);
         // Durable restore: the recovered audio.aac lives under the vault item dir,
         // which deleteItem() (below) removes — and saveDraft does NOT copy durable
         // bytes (metadata-only). Move the bytes into a stable current-user home and

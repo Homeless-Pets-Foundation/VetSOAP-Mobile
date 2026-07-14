@@ -38,6 +38,7 @@ internal data class DurableManifest(
   var confirmedUploadAt: String? = null,
   var edited: Boolean? = null,
   var anchorsPending: Boolean? = null,
+  var pendingConfirmJson: String? = null,
 ) {
   /** Convert to the JS-facing map Expo serializes for the bridge. */
   fun toMap(): Map<String, Any?> {
@@ -71,6 +72,7 @@ internal data class DurableManifest(
     confirmedUploadAt?.let { m["confirmedUploadAt"] = it }
     edited?.let { m["edited"] = it }
     anchorsPending?.let { m["anchorsPending"] = it }
+    pendingConfirmJson?.let { m["pendingConfirmJson"] = it }
     return m
   }
 
@@ -104,6 +106,7 @@ internal data class DurableManifest(
     confirmedUploadAt?.let { o.put("confirmedUploadAt", it) }
     edited?.let { o.put("edited", it) }
     anchorsPending?.let { o.put("anchorsPending", it) }
+    pendingConfirmJson?.let { o.put("pendingConfirmJson", it) }
     return o.toString()
   }
 
@@ -137,6 +140,7 @@ internal data class DurableManifest(
         confirmedUploadAt = if (o.has("confirmedUploadAt")) o.optString("confirmedUploadAt") else null,
         edited = if (o.has("edited")) o.optBoolean("edited") else null,
         anchorsPending = if (o.has("anchorsPending")) o.optBoolean("anchorsPending") else null,
+        pendingConfirmJson = if (o.has("pendingConfirmJson")) o.optString("pendingConfirmJson") else null,
       )
     }.getOrNull()
 

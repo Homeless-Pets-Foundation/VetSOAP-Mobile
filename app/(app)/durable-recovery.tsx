@@ -13,6 +13,7 @@ import { draftStorage } from '../../src/lib/draftStorage';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import type { DurableRecordingManifest } from '../../src/lib/durableAudio/manifest';
 import type { PatientSlot } from '../../src/types/multiPatient';
+import { normalizeUploadIntentId } from '../../src/lib/uploadIntent';
 import type { CreateRecording } from '../../src/types';
 import { Button } from '../../src/components/ui/Button';
 import { Card } from '../../src/components/ui/Card';
@@ -62,6 +63,7 @@ function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
   const slotId = m.recordingId;
   return {
     id: slotId,
+    uploadIntentId: normalizeUploadIntentId(undefined, slotId),
     formData: { ...BLANK_FORM },
     audioState: 'stopped',
     segments: [],

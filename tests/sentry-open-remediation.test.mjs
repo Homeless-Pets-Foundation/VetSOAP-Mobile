@@ -117,7 +117,11 @@ test('recoverable submit failures (expected + server 5xx + transient + abort) ar
   // reportClientError telemetry must still fire for every failure (server-500
   // visibility), only captureException is gated on isRecoverable.
   assert.match(telemetryBody, /reportClientError\(\{/);
-  assert.match(telemetryBody, /if \(!isRecoverable\) \{\s*captureException\(error,/);
+  assert.match(
+    telemetryBody,
+    /if \(!isRecoverable\) \{[\s\S]*?captureException\(new Error\(`recording_submit_failed:\$\{phase\}:\$\{errorCode\}`\),/
+  );
+  assert.doesNotMatch(telemetryBody, /captureException\(error,/);
 });
 
 test('default-template SecureStore key uses an expo-secure-store-legal separator', async () => {

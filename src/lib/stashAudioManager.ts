@@ -8,6 +8,8 @@ import {
 } from './fileOps';
 import type { PatientSlot } from '../types/multiPatient';
 import type { StashedSlot, StashedSession } from '../types/stash';
+import { clonePendingConfirm } from './pendingConfirm';
+import { normalizeUploadIntentId } from './uploadIntent';
 
 const BASE_STASH_DIR = `${Paths.document.uri}stashed-audio/`;
 
@@ -111,6 +113,7 @@ export const stashAudioManager = {
         }
         stashedSlots.push({
           id: slot.id,
+          uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
           formData: { ...slot.formData },
           segments: stashedSegments,
           audioDuration: stashedDurable
@@ -119,6 +122,7 @@ export const stashAudioManager = {
           serverDraftId: slot.serverDraftId ?? null,
           draftSlotId: slot.draftSlotId ?? null,
           draftMetadataDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
+          pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
           durable: stashedDurable,
         });
       }
@@ -157,11 +161,14 @@ export const stashAudioManager = {
     const validSlots: StashedSlot[] = [];
 
     for (const slot of slots) {
+      const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
       const validSegments: { uri: string; duration: number; peakMetering?: number }[] = [];
       for (const segment of slot.segments) {
         if (fileExists(segment.uri)) {
           validSegments.push(segment);
-        } else {
+        } else if (!pendingConfirm) {
+          // Once R2 accepted the bytes, confirmation proof makes the local
+          // audio optional. Do not classify that slot as missing/re-recordable.
           missingCount++;
         }
       }
@@ -173,12 +180,13 @@ export const stashAudioManager = {
       // by the durable module, so its recordingId pointer is kept as-is.
       const durableStale =
         !!slot.durable?.recoveredAudioUri && !fileExists(slot.durable.recoveredAudioUri);
-      if (durableStale) missingCount++;
+      if (durableStale && !pendingConfirm) missingCount++;
       const keptDurable = durableStale ? null : slot.durable;
 
       // Keep slots even if they have no segments (they still have form data)
       validSlots.push({
         ...slot,
+        pendingConfirm,
         segments: validSegments,
         durable: keptDurable,
         // A retained durable pointer holds the authoritative duration in
@@ -319,8 +327,10 @@ export const stashAudioManager = {
           // A durable stash slot has no copied segment files (audio.aac lives in
           // the durable root); treat a durable pointer as audio so orphan
           // recovery never deletes a durable-only stash's metadata dir.
-          const hasAudio = validSlots.some((s) => s.segments.length > 0 || s.durable != null);
-          if (hasAudio) {
+          const hasRecoverablePayload = validSlots.some(
+            (s) => s.segments.length > 0 || s.durable != null || !!clonePendingConfirm(s.pendingConfirm)
+          );
+          if (hasRecoverablePayload) {
             recovered.push({ ...manifest, slots: validSlots });
             continue;
           }

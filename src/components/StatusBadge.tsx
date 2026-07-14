@@ -20,6 +20,7 @@ const STATUS_CONFIG: Record<RecordingStatus, { label: string; variant: BadgeVari
   transcribing: { label: 'Transcribing', variant: 'warning', inProgress: true },
   transcribed: { label: 'Transcribed', variant: 'warning' },
   generating: { label: 'Generating', variant: 'success', inProgress: true },
+  retry_scheduled: { label: 'Retry Scheduled', variant: 'warning', inProgress: true },
   completed: { label: 'Completed', variant: 'success' },
   failed: { label: 'Failed', variant: 'danger' },
   pending_metadata: { label: 'Awaiting Details', variant: 'warning' },

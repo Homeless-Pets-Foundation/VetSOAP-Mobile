@@ -20,6 +20,7 @@ import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { Toggle } from './ui/Toggle';
+import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot } from '../types/multiPatient';
 import type { CreateRecording, Template } from '../types';
 import type { UseAudioRecorderReturn } from '../hooks/useAudioRecorder';
@@ -226,9 +227,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   // submit/upload gate must treat a durable ref as captured audio too — else a
   // durable-only slot renders no Submit card and is unsubmittable.
   const isDurableSlot = !!slot.durable;
+  const hasPendingConfirm = !!slot.pendingConfirm;
   const canContinueDurable = isDurableSlot && !isUploading && slot.uploadStatus !== 'success' && !slot.durable?.recoveredAudioUri;
   const canDiscardDurable = isDurableSlot && slot.uploadStatus !== 'success';
-  const hasCapturedAudio = hasSegments || !!slot.durable;
+  const hasCapturedAudio = slotHasRecoverableAudio(slot);
   const previousSegmentsDuration = slot.segments.reduce((sum, s) => sum + s.duration, 0);
   const duration = isRecorderOwner
     ? previousSegmentsDuration + recorder.duration
@@ -510,7 +512,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           )}
 
           {/* Stopped with captured audio (segments OR durable): continue, edit, discard */}
-          {isStopped && (hasSegments || isDurableSlot) && isFinishSaving && (
+          {isStopped && hasCapturedAudio && isFinishSaving && (
             <Text className="text-body-sm text-content-tertiary text-center" accessibilityLiveRegion="polite">
               Saving recording...
             </Text>
@@ -577,15 +579,41 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             </Animated.View>
           )}
 
+          {/* Confirmation proof is the only remaining copy: allow submit or
+              explicit discard, but never offer Continue/Try Again (which would
+              destroy the proof before it commits). */}
+          {isStopped && !hasSegments && !isDurableSlot && hasPendingConfirm && !isFinishSaving && (
+            <Animated.View entering={FadeIn.duration(200)}>
+              <Pressable
+                onPress={handleRecordAgain}
+                disabled={isUploading}
+                accessibilityRole="button"
+                accessibilityLabel="Delete recording and start over"
+                className="min-h-[44px] justify-center items-center"
+              >
+                <View className="flex-row items-center gap-1.5">
+                  <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
+                  <Text
+                    className="text-body-sm text-content-tertiary"
+                    allowFontScaling={false}
+                    style={{ flexShrink: 0, paddingRight: 2 }}
+                  >
+                    {'Delete & Start Over '}
+                  </Text>
+                </View>
+              </Pressable>
+            </Animated.View>
+          )}
+
           {/* Stopped with no segments and NOT durable (native error recovery) */}
-          {isStopped && !hasSegments && !isDurableSlot && !isFinishSaving && (
+          {isStopped && !hasSegments && !isDurableSlot && !hasPendingConfirm && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)}>
               <Button variant="primary" onPress={handleContinueRecording}>Try Again</Button>
             </Animated.View>
           )}
         </View>
 
-        {isStopped && (hasSegments || isDurableSlot) && !isRecorderOwner && !isFinishSaving && (
+        {isStopped && hasCapturedAudio && !isRecorderOwner && !isFinishSaving && (
           <Text className="text-caption text-content-tertiary mt-2" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             Processing usually takes 1-2 minutes.
           </Text>

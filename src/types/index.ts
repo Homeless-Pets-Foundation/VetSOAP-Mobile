@@ -5,6 +5,7 @@ export type RecordingStatus =
   | 'transcribing'
   | 'transcribed'
   | 'generating'
+  | 'retry_scheduled'
   | 'completed'
   | 'failed'
   | 'pending_metadata';

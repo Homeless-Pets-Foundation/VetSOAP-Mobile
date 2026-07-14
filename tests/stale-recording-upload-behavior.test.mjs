@@ -496,9 +496,62 @@ test('hung prepared-anchor persistence is bounded before storage upload', async 
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
+test('a late prepared-anchor write is cleaned after canonical confirmation', async () => {
+  let releaseAnchor;
+  const clearReasons = [];
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: () => new Promise((resolve) => { releaseAnchor = resolve; }),
+      onClearPendingConfirm: async (reason) => { clearReasons.push(reason); },
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(clearReasons, []);
+  releaseAnchor();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(clearReasons, ['committed_late_anchor']);
+});
+
+test('hung stale-proof clearing is bounded before retry preparation', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      resume: { recordingId, fileKey: 'https://invalid.example.test/audio.m4a' },
+      onClearPendingConfirm: () => new Promise(() => {}),
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
 test('hung pending-hint persistence is bounded and a late write is cleared after confirmation', async () => {
   let releaseHint;
-  let clears = 0;
+  const clearReasons = [];
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),
     post: async (path) => {
@@ -515,14 +568,14 @@ test('hung pending-hint persistence is bounded and a late write is cleared after
     {
       idempotencyKey: 'intent',
       onR2Complete: () => new Promise((resolve) => { releaseHint = resolve; }),
-      onClearPendingConfirm: async () => { clears++; },
+      onClearPendingConfirm: async (reason) => { clearReasons.push(reason); },
     },
   );
   assert.equal(result.id, recordingId);
-  assert.equal(clears, 0);
+  assert.deepEqual(clearReasons, []);
   releaseHint();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(clears, 1);
+  assert.deepEqual(clearReasons, ['committed_late_hint']);
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
@@ -561,6 +614,37 @@ test('a stale signature on the final normal attempt still PUTs once to the refre
     harness.events.map((event) => event[0]),
     ['post', 'put', 'put', 'put', 'post', 'put', 'post'],
   );
+});
+
+test('a refreshed URL rejected with 403 fails after one refresh instead of looping', async () => {
+  let uploadCalls = 0;
+  let prepareCalls = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        prepareCalls++;
+        return prepared(1);
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+    upload: async () => {
+      uploadCalls++;
+      return { status: 403 };
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(
+      metadata,
+      'file:///one.m4a',
+      'audio/x-m4a',
+      { idempotencyKey: 'intent' },
+    ),
+    /refreshed upload URL was rejected/i,
+  );
+  assert.equal(prepareCalls, 2);
+  assert.equal(uploadCalls, 2);
 });
 
 test('legacy fallback deletes a row it created when upload fails before confirmation proof', async () => {

@@ -639,6 +639,7 @@ export const draftStorage = {
     // potentially wipe. The fileExists check must run BEFORE any copy
     // attempt — once copies start, dest paths may get partially overwritten.
     const existing = await readDraftChunks(userId, slot.id);
+    const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
     const priorValidSave =
       !!existing &&
       existing.segments.length > 0 &&
@@ -653,7 +654,9 @@ export const draftStorage = {
       const dirReady = ensureDirectory(dir);
       if (!dirReady) {
         emitDraftSegmentCopyFailed(slot.segments.length, 0, true, [], priorValidSave);
-        throw new Error(`Draft storage: failed to create draft directory (${slot.segments.length} segments)`);
+        if (!pendingConfirm) {
+          throw new Error(`Draft storage: failed to create draft directory (${slot.segments.length} segments)`);
+        }
       }
 
       // Capture free disk once so it lands in the eventual all-failed throw's
@@ -672,54 +675,56 @@ export const draftStorage = {
       // silently absorbed into an empty draft entry.
       const draftSegments: DraftSegmentMetadata[] = [];
       const failureReasons: string[] = [];
-      for (let i = 0; i < slot.segments.length; i++) {
-        const segment = slot.segments[i];
-        if (!fileExists(segment.uri)) {
-          failureReasons.push('source_missing');
-          continue;
-        }
-
-        const destUri = `${dir}seg_${i}.m4a`;
-        try {
-          if (sameFileUri(segment.uri, destUri)) {
-            draftSegments.push({
-              uri: destUri,
-              duration: segment.duration,
-              peakMetering:
-                typeof segment.peakMetering === 'number'
-                  ? segment.peakMetering
-                  : undefined,
-            });
+      if (dirReady) {
+        for (let i = 0; i < slot.segments.length; i++) {
+          const segment = slot.segments[i];
+          if (!fileExists(segment.uri)) {
+            failureReasons.push('source_missing');
             continue;
           }
-          if (!(await copyFileReplacing(segment.uri, destUri))) {
+
+          const destUri = `${dir}seg_${i}.m4a`;
+          try {
+            if (sameFileUri(segment.uri, destUri)) {
+              draftSegments.push({
+                uri: destUri,
+                duration: segment.duration,
+                peakMetering:
+                  typeof segment.peakMetering === 'number'
+                    ? segment.peakMetering
+                    : undefined,
+              });
+              continue;
+            }
+            if (!(await copyFileReplacing(segment.uri, destUri))) {
+              failureReasons.push('dest_missing_after_copy');
+              continue;
+            }
+          } catch (err) {
+            // Pin the underlying error into the reason tag so the next RN-8
+            // event tells us which errno (ENOSPC / EPERM / …) is firing.
+            // Scrub `file://` paths defensively — same pattern as
+            // src/api/telemetry.ts:reportClientError.
+            const raw = err instanceof Error ? err.message : String(err);
+            const short = raw.replace(/file:\/\/\S+/g, '<path>').slice(0, 80);
+            failureReasons.push(`copy_threw:${short}`);
+            continue;
+          }
+
+          if (!fileExists(destUri)) {
             failureReasons.push('dest_missing_after_copy');
             continue;
           }
-        } catch (err) {
-          // Pin the underlying error into the reason tag so the next RN-8
-          // event tells us which errno (ENOSPC / EPERM / …) is firing.
-          // Scrub `file://` paths defensively — same pattern as
-          // src/api/telemetry.ts:reportClientError.
-          const raw = err instanceof Error ? err.message : String(err);
-          const short = raw.replace(/file:\/\/\S+/g, '<path>').slice(0, 80);
-          failureReasons.push(`copy_threw:${short}`);
-          continue;
-        }
 
-        if (!fileExists(destUri)) {
-          failureReasons.push('dest_missing_after_copy');
-          continue;
+          draftSegments.push({
+            uri: destUri,
+            duration: segment.duration,
+            peakMetering:
+              typeof segment.peakMetering === 'number'
+                ? segment.peakMetering
+                : undefined,
+          });
         }
-
-        draftSegments.push({
-          uri: destUri,
-          duration: segment.duration,
-          peakMetering:
-            typeof segment.peakMetering === 'number'
-              ? segment.peakMetering
-              : undefined,
-        });
       }
 
       // Emit telemetry whenever any segment failed to copy — even on partial
@@ -737,7 +742,7 @@ export const draftStorage = {
       // Refuse to persist a metadata row with zero usable segments when the
       // input had segments. The autoSaveDraft caller catches this and skips
       // the Phase 2 server-sync, preventing the "Not on this device" orphan.
-      if (slot.segments.length > 0 && draftSegments.length === 0) {
+      if (slot.segments.length > 0 && draftSegments.length === 0 && !pendingConfirm) {
         throw new Error(
           `Draft storage: all ${slot.segments.length} segment copies failed (${failureReasons.join(',')}) freeDiskMb=${freeDiskMb}`,
         );
@@ -772,10 +777,12 @@ export const draftStorage = {
           preserveClearedNullableFields: draftMetadataDirty,
         }),
         segments: draftSegments,
-        audioDuration: draftSegments.reduce((sum, s) => sum + s.duration, 0),
+        audioDuration: draftSegments.length > 0
+          ? draftSegments.reduce((sum, s) => sum + s.duration, 0)
+          : slot.audioDuration,
         serverDraftId: resolvedServerDraftId,
         draftMetadataDirty,
-        pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
+        pendingConfirm,
         pendingSync: resolvedServerDraftId
           ? (uploadIntentRotated ? false : (existing?.pendingSync ?? false))
           : true,

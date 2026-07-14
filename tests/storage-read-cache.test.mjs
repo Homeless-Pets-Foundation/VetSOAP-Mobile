@@ -283,6 +283,30 @@ test('draftStorage: orphan cleanup preserves missing audio with pending confirma
   assert.ok(await draftStorage.getDraft('slot-confirm-only'));
 });
 
+test('draftStorage: proof-only save persists metadata when every segment copy is missing', async () => {
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: () => false,
+  });
+  draftStorage.setUserId('userA');
+  const proof = {
+    recordingId: '11111111-1111-4111-8111-111111111111',
+    fileKey: 'recordings/22222222-2222-4222-8222-222222222222/11111111-1111-4111-8111-111111111111.m4a',
+  };
+
+  const saved = await draftStorage.saveDraft({
+    ...makeSlot('slot-proof-save'),
+    audioDuration: 5,
+    serverDraftId: proof.recordingId,
+    pendingConfirm: proof,
+  });
+
+  assert.equal(saved.promotedSegments.length, 0);
+  const draft = await draftStorage.getDraft('slot-proof-save');
+  assert.equal(draft.segments.length, 0);
+  assert.equal(draft.audioDuration, 5);
+  assert.equal(draft.pendingConfirm.recordingId, proof.recordingId);
+});
+
 test('draftStorage: every write path invalidates the cache', async () => {
   const { draftStorage } = await loadDraftStorage();
   draftStorage.setUserId('userA');

@@ -2326,9 +2326,27 @@ function RecordingSession() {
                     });
                   }
                 },
-                onClearPendingConfirm: async () => {
+                onClearPendingConfirm: async (reason) => {
+                  const draftSlotId = slot.draftSlotId ?? slot.id;
+                  const committedLateWrite =
+                    reason === 'committed_late_anchor' || reason === 'committed_late_hint';
                   dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
-                  await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
+                  if (committedLateWrite) {
+                    // Delete the resurrected metadata first. Calling another
+                    // SecureStore rewrite before deletion could hang on the same
+                    // Keystore failure and prevent the repair from ever running.
+                    await draftStorage.deleteDraft(draftSlotId);
+                    await recoveryIntent.clearForDraftSlot(draftSlotId);
+                    if (hasNativeManifest) {
+                      await durableRecorder.setPendingConfirm({
+                        userId: uid,
+                        recordingId: durable.recordingId,
+                        pendingConfirm: null,
+                      });
+                    }
+                    return;
+                  }
+                  await draftStorage.updatePendingConfirm(draftSlotId, null);
                   if (hasNativeManifest) {
                     await durableRecorder.setPendingConfirm({
                       userId: uid,
@@ -2586,9 +2604,17 @@ function RecordingSession() {
           dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
         };
 
-        const onClearPendingConfirm = async () => {
+        const onClearPendingConfirm = async (reason?: string) => {
+          const draftSlotId = slot.draftSlotId ?? slot.id;
+          const committedLateWrite =
+            reason === 'committed_late_anchor' || reason === 'committed_late_hint';
           dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
-          await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
+          if (committedLateWrite) {
+            await draftStorage.deleteDraft(draftSlotId);
+            await recoveryIntent.clearForDraftSlot(draftSlotId);
+            return;
+          }
+          await draftStorage.updatePendingConfirm(draftSlotId, null);
         };
 
         // If we'd reuse a server draft and the user edited formData after the
@@ -3979,6 +4005,13 @@ function RecordingSession() {
       const slot = session.slots.find((s) => s.id === slotId);
       if (isSlotUploadActive(slotId)) {
         showUploadInProgressAlert();
+        return;
+      }
+      if (slot?.pendingConfirm) {
+        Alert.alert(
+          'Finish Submission First',
+          'This recording has already been uploaded and is waiting for confirmation. Submit it again to finish, or choose Delete & Start Over before editing.',
+        );
         return;
       }
       // v1: the waveform editor operates on legacy m4a segments. A durable AAC

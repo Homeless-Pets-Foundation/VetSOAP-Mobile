@@ -152,6 +152,10 @@ export function useStashedSessions(userId: string | null) {
         // Durable slots have empty `segments` (audio is in audio.aac under the
         // durable root) — count them as audio so a pure-durable session stashes.
         const preStashSegmentCount = slotsToStash.reduce((sum, s) => sum + s.segments.length, 0);
+        const requiredPreStashSegmentCount = slotsToStash.reduce(
+          (sum, slot) => sum + (clonePendingConfirm(slot.pendingConfirm) ? 0 : slot.segments.length),
+          0,
+        );
         const hasRecoverableAudio = slotsToStash.some(slotHasRecoverableAudio);
         if (preStashSegmentCount === 0 && !hasRecoverableAudio) {
           if (__DEV__) console.error('[Stash] no audio in any slot — aborting to prevent data loss');
@@ -174,10 +178,16 @@ export function useStashedSessions(userId: string | null) {
           (sum, s) => sum + s.segments.length,
           0
         );
+        const sourceSlotsById = new Map(slotsToStash.map((slot) => [slot.id, slot]));
+        const copiedRequiredSegments = stashedSlots.reduce((sum, stashedSlot) => {
+          const sourceSlot = sourceSlotsById.get(stashedSlot.id);
+          return sum + (clonePendingConfirm(sourceSlot?.pendingConfirm) ? 0 : stashedSlot.segments.length);
+        }, 0);
 
-        // Require every segment to copy successfully before we commit the stash.
-        // Otherwise keep the active session intact and discard the temporary copy.
-        if (totalSegments !== preStashSegmentCount) {
+        // Require every segment that is still the authoritative audio copy to
+        // move successfully. Once pending-confirm proof exists, R2 owns those
+        // bytes and missing local segment files must not block a proof-only stash.
+        if (copiedRequiredSegments !== requiredPreStashSegmentCount) {
           await stashAudioManager.deleteStashedAudio(sessionId);
           return false;
         }

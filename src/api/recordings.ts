@@ -396,7 +396,7 @@ interface ResilientUploadOptions {
   onUploadProgress?: (event: UploadProgressEvent) => void;
   onR2Complete?: (hint: PendingConfirm) => void | Promise<void>;
   onRecordingPrepared?: (recordingId: string) => void | Promise<void>;
-  onClearPendingConfirm?: () => void | Promise<void>;
+  onClearPendingConfirm?: (reason?: PendingConfirmClearReason) => void | Promise<void>;
   resume?: PendingConfirm;
   existingRecordingId?: string;
   idempotencyKey?: string;
@@ -405,6 +405,12 @@ interface ResilientUploadOptions {
   slotIndex?: number;
   mode?: 'durable' | 'standard';
 }
+
+type PendingConfirmClearReason =
+  | 'canonical_change'
+  | 'invalid_resume'
+  | 'committed_late_hint'
+  | 'committed_late_anchor';
 
 function completeUploadMetadata(data: CreateRecording): PendingConfirmMetadata {
   const validated = createRecordingSchema.parse(data);
@@ -557,8 +563,8 @@ async function postConfirm(
 async function invokePreparedCallback(
   callback: ResilientUploadOptions['onRecordingPrepared'],
   recordingId: string,
-): Promise<void> {
-  if (!callback) return;
+): Promise<{ settled: Promise<void>; timedOut: boolean }> {
+  if (!callback) return { settled: Promise.resolve(), timedOut: false };
   const settled = Promise.resolve()
     .then(() => callback(recordingId))
     .then(
@@ -576,17 +582,34 @@ async function invokePreparedCallback(
       RECORDING_ANCHOR_PERSIST_TIMEOUT_MS,
       'Timed out while saving upload identity.',
     );
+    return { settled, timedOut: false };
   } catch {
     breadcrumb('upload', 'recording_anchor_write_timeout', { stage: 'prepared' });
+    return { settled, timedOut: true };
   }
 }
 
-async function invokeClearHint(callback: ResilientUploadOptions['onClearPendingConfirm']): Promise<void> {
+async function invokeClearHint(
+  callback: ResilientUploadOptions['onClearPendingConfirm'],
+  reason: PendingConfirmClearReason,
+): Promise<void> {
   if (!callback) return;
+  const settled = Promise.resolve()
+    .then(() => callback(reason))
+    .then(
+      () => undefined,
+      () => {
+        breadcrumb('upload', 'pending_confirm_clear_failed', { stage: reason });
+      },
+    );
   try {
-    await callback();
+    await withTimeout(
+      settled,
+      PENDING_CONFIRM_PERSIST_TIMEOUT_MS,
+      'Timed out while clearing upload recovery state.',
+    );
   } catch {
-    breadcrumb('upload', 'pending_confirm_clear_failed', { stage: 'canonical_change' });
+    breadcrumb('upload', 'pending_confirm_clear_timeout', { stage: reason });
   }
 }
 
@@ -697,6 +720,7 @@ async function putPreparedFiles(
     // Otherwise a final-attempt 401/403 can refresh and fall out of the loop as
     // a false success without ever sending bytes to the new URL.
     let refreshedUrlAttemptPending = false;
+    let usingRefreshedUrl = false;
     while (attempt < MAX_R2_ATTEMPTS || refreshedUrlAttemptPending) {
       attempt++;
       refreshedUrlAttemptPending = false;
@@ -741,9 +765,13 @@ async function putPreparedFiles(
         if (already) return;
         if (refreshFailure) throw refreshFailure;
         if (isStalePresignError(error)) {
+          if (usingRefreshedUrl) {
+            phaseError('r2_put', 'The refreshed upload URL was rejected. Please try again.');
+          }
           const next = await refresh();
           if (next.outcome !== 'prepared') return;
           urlEntry = next.uploads![index];
+          usingRefreshedUrl = true;
           refreshedUrlAttemptPending = true;
           continue;
         }
@@ -773,6 +801,7 @@ async function legacyUpload(
   metadata: PendingConfirmMetadata,
   options: ResilientUploadOptions,
   idempotencyKey: string,
+  persistPrepared: (recordingId: string) => Promise<void>,
 ): Promise<{ recording: Recording; hint: PendingConfirm; replacedMissingRecordingId: boolean }> {
   let recording: Recording | undefined;
   let replacedMissingRecordingId = false;
@@ -805,7 +834,7 @@ async function legacyUpload(
   }
   if (!recording) phaseError('create_draft', 'The server did not return a recording.');
   const canonicalRecording = recording;
-  await invokePreparedCallback(options.onRecordingPrepared, canonicalRecording.id);
+  await persistPrepared(canonicalRecording.id);
 
   const keys = new Array(files.length) as string[];
   const sent = new Array(files.length).fill(0) as number[];
@@ -883,6 +912,20 @@ async function executeResilientUpload(
   const validResume = options.resume ? validatePendingConfirm(options.resume) : null;
   let staleRestartUsed = false;
   let qualityReported = false;
+  const timedOutPreparedWrites: Promise<void>[] = [];
+
+  const persistPrepared = async (recordingId: string): Promise<void> => {
+    const persistence = await invokePreparedCallback(options.onRecordingPrepared, recordingId);
+    if (persistence.timedOut) timedOutPreparedWrites.push(persistence.settled);
+  };
+
+  const scheduleCommittedLateWriteCleanup = (): void => {
+    for (const settled of timedOutPreparedWrites.splice(0)) {
+      settled
+        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_anchor'))
+        .catch(() => {});
+    }
+  };
 
   const staleFailure = (error: unknown): never => {
     if (error instanceof Error) {
@@ -914,7 +957,7 @@ async function executeResilientUpload(
       prepared = await requestPreparation(existingRecordingId, idempotencyKey, metadata, descriptors);
     } catch (error) {
       if (!isRouteLevelPrepare404(error)) throw error;
-      const legacy = await legacyUpload(data, files, metadata, options, idempotencyKey);
+      const legacy = await legacyUpload(data, files, metadata, options, idempotencyKey, persistPrepared);
       if (legacy.replacedMissingRecordingId) staleRestartUsed = true;
       return persistHintAndConfirm(legacy.hint, true);
     }
@@ -924,9 +967,9 @@ async function executeResilientUpload(
     // Recursive preparation after an observed canonical change may report the
     // same replacement again, so assignment is intentionally idempotent.
     if (prepared.replacedMissingRecordingId) staleRestartUsed = true;
-    await invokePreparedCallback(options.onRecordingPrepared, prepared.recording.id);
+    await persistPrepared(prepared.recording.id);
     if (validResume && validResume.recordingId !== prepared.recording.id) {
-      await invokeClearHint(options.onClearPendingConfirm);
+      await invokeClearHint(options.onClearPendingConfirm, 'canonical_change');
     }
     if (prepared.outcome !== 'prepared') return prepared.recording;
     let uploaded: Awaited<ReturnType<typeof putPreparedFiles>> | null = null;
@@ -945,7 +988,7 @@ async function executeResilientUpload(
         staleFailure(error);
       }
       staleRestartUsed = true;
-      await invokeClearHint(options.onClearPendingConfirm);
+      await invokeClearHint(options.onClearPendingConfirm, 'canonical_change');
       try {
         return await prepareAndUpload(prepared.recording.id);
       } catch (restartError) {
@@ -986,7 +1029,7 @@ async function executeResilientUpload(
         staleFailure(error);
       }
       staleRestartUsed = true;
-      await invokeClearHint(options.onClearPendingConfirm);
+      await invokeClearHint(options.onClearPendingConfirm, 'canonical_change');
       try {
         const result = await prepareAndUpload(hint.recordingId);
         trackStaleRecovery('probe', 'replacement_succeeded', inputFiles.length, mode);
@@ -1024,7 +1067,7 @@ async function executeResilientUpload(
     }
     if (!proof) staleFailure(new Error('The server did not return upload proof.'));
     const verifiedProof = proof!;
-    await invokePreparedCallback(options.onRecordingPrepared, verifiedProof.recording.id);
+    await persistPrepared(verifiedProof.recording.id);
     if (verifiedProof.outcome === 'already_uploaded' || verifiedProof.outcome === 'already_processed') {
       trackStaleRecovery('probe', 'proof_succeeded', inputFiles.length, mode);
       return verifiedProof.recording;
@@ -1042,15 +1085,20 @@ async function executeResilientUpload(
       // A late SecureStore/native write must not resurrect recovery state after
       // the server has confirmed the upload and the UI has cleaned the draft.
       persistence.settled
-        .then(() => invokeClearHint(options.onClearPendingConfirm))
+        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_hint'))
         .catch(() => {});
     }
     return result;
   };
 
-  if (options.resume && !validResume) await invokeClearHint(options.onClearPendingConfirm);
-  if (validResume) return confirmWithRecovery(validResume, false);
-  return prepareAndUpload(options.existingRecordingId);
+  if (options.resume && !validResume) {
+    await invokeClearHint(options.onClearPendingConfirm, 'invalid_resume');
+  }
+  const result = validResume
+    ? await confirmWithRecovery(validResume, false)
+    : await prepareAndUpload(options.existingRecordingId);
+  scheduleCommittedLateWriteCleanup();
+  return result;
 }
 
 export const recordingsApi = {

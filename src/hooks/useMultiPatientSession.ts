@@ -413,6 +413,10 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) => {
           if (slot.id !== action.slotId) return slot;
+          // R2 may already have accepted the original bytes. Editing while the
+          // confirm proof is pending could create a second server recording if
+          // the first confirmation committed but its response was lost.
+          if (slot.pendingConfirm) return slot;
           const newDuration = validatedSegments.reduce((sum, s) => sum + s.duration, 0);
           return {
             ...slot,

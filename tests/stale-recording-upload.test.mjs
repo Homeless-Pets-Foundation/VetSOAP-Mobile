@@ -149,6 +149,7 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
 test('upload orchestration preserves ordering, persistence, fallback, and bounded recovery contracts', async () => {
   const api = await read('src/api/recordings.ts');
   const record = await read('app/(app)/(tabs)/record.tsx');
+  const reducer = await read('src/hooks/useMultiPatientSession.ts');
   const strings = await read('src/constants/strings.ts');
 
   const execute = api.slice(api.indexOf('async function executeResilientUpload'), api.indexOf('export const recordingsApi'));
@@ -162,7 +163,10 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(api, /RECORDING_ANCHOR_PERSIST_TIMEOUT_MS/);
   assert.match(api, /recording_anchor_write_timeout/);
   assert.match(api, /pending_confirm_write_timeout/);
+  assert.match(api, /pending_confirm_clear_timeout/);
   assert.match(api, /persistence\.settled[\s\S]*invokeClearHint/);
+  assert.match(api, /committed_late_anchor/);
+  assert.match(api, /if \(usingRefreshedUrl\)/);
   assert.match(api, /error instanceof ApiError && error\.status === 409/);
   assert.match(api, /isRouteLevelPrepare404\(error\)/);
   assert.match(api, /if \(!isRouteLevelPrepare404\(error\)\) throw error/);
@@ -198,7 +202,11 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(continuation, /slot\?\.pendingConfirm/);
   assert.doesNotMatch(continuation, /slot\?\.durable && slot\.pendingConfirm/);
   assert.match(record, /type: 'SET_PENDING_CONFIRM', slotId: slot\.id, pendingConfirm: null/);
+  assert.match(record, /reason === 'committed_late_anchor' \|\| reason === 'committed_late_hint'/);
+  assert.match(record, /await draftStorage\.deleteDraft\(draftSlotId\)/);
   assert.doesNotMatch(record, /setUploadStatus\(slot\.id, 'uploading', \{ pendingConfirm: null \}\)/);
+  assert.match(record, /if \(slot\?\.pendingConfirm\) \{[\s\S]*?'Finish Submission First'/);
+  assert.match(reducer, /case 'REPLACE_ALL_SEGMENTS':[\s\S]*?if \(slot\.pendingConfirm\) return slot/);
   assert.match(record, /slotHasRecoverableAudio\(s\)/);
   const card = await read('src/components/PatientSlotCard.tsx');
   const panel = await read('src/components/SubmitPanel.tsx');
@@ -207,6 +215,8 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(card, /!hasPendingConfirm && !isFinishSaving/);
   assert.match(panel, /slotHasRecoverableAudio\(s\)/);
   assert.match(stashes, /pendingConfirm !== null/);
+  assert.match(stashes, /requiredPreStashSegmentCount/);
+  assert.match(stashes, /clonePendingConfirm\(sourceSlot\?\.pendingConfirm\) \? 0 : stashedSlot\.segments\.length/);
   const draftSync = record.slice(
     record.indexOf('const syncServerDraft = useCallback('),
     record.indexOf('const scheduleDraftSync = useCallback('),

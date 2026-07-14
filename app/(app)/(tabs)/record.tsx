@@ -36,6 +36,7 @@ import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
 import { isValidDurableId } from '../../../src/lib/durableAudio/paths';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
+import { validatePendingConfirm } from '../../../src/lib/pendingConfirm';
 import { getSecureRandomHex } from '../../../src/lib/random';
 import {
   durableUploadIdempotencyKey,
@@ -1775,6 +1776,13 @@ function RecordingSession() {
         showUploadInProgressAlert();
         return;
       }
+      if (slot?.durable && slot.pendingConfirm) {
+        Alert.alert(
+          'Finish Submission First',
+          'This recording has already reached secure storage. Retry Submit or delete it and start over before adding more audio.',
+        );
+        return;
+      }
       if (slot?.durable && (slot.uploadStatus === 'success' || slot.durable.recoveredAudioUri)) {
         Alert.alert(
           'Recording Complete',
@@ -1987,7 +1995,7 @@ function RecordingSession() {
         showRecordPermissionAlert();
         return null;
       }
-      if ((slot.segments.length === 0 && !slot.durable) || slot.uploadStatus === 'uploading') return null;
+      if ((slot.segments.length === 0 && !slot.durable && !slot.pendingConfirm) || slot.uploadStatus === 'uploading') return null;
       if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
       // Synchronous ref guard — prevents a second concurrent upload of the same slot
       // during the window between button tap and React state update disabling the button.
@@ -2054,6 +2062,106 @@ function RecordingSession() {
       let uploadSizeBytes = 0;
 
       try {
+        // R2 already accepted the bytes, so recovery must be able to confirm
+        // without touching local audio. The file may have been removed by the
+        // OS or be unavailable after restart; re-uploading is both unnecessary
+        // and risks creating a duplicate server recording.
+        if (slot.pendingConfirm) {
+          const uid = user?.id;
+          const durable = slot.durable;
+          if (durable && !uid) {
+            showRecordPermissionAlert();
+            return null;
+          }
+          const nativeManifest = durable && uid
+            ? await durableRecorder.getManifest({ userId: uid, recordingId: durable.recordingId }).catch(() => null)
+            : null;
+          const onClearPendingConfirm = async () => {
+            setUploadStatus(slot.id, 'uploading', { pendingConfirm: null });
+            await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
+            if (durable && uid && nativeManifest) {
+              await durableRecorder.setPendingConfirm({
+                userId: uid,
+                recordingId: durable.recordingId,
+                pendingConfirm: null,
+              });
+            }
+          };
+          setUploadStatus(slot.id, 'uploading', { progress: 95 });
+          const result = await recordingsApi.confirmPendingUpload(
+            slot.formData,
+            slot.pendingConfirm,
+            {
+              idempotencyKey: durable
+                ? durableUploadIdempotencyKey(durable.recordingId)
+                : slotUploadIdempotencyKey(normalizeUploadIntentId(slot.uploadIntentId, slot.id)),
+              onClearPendingConfirm,
+              mode: durable ? 'durable' : 'standard',
+              slotIndex,
+            },
+          );
+
+          completedUploadSlotIdsRef.current.add(slot.id);
+          setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: result.id });
+          recordSubmitAttempt(result.id);
+
+          if (durable && uid) {
+            const confirmedAt = new Date().toISOString();
+            if (nativeManifest) {
+              await durableRecorder
+                .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
+                .catch(() => {});
+            }
+            const confirmDraftGone = async (): Promise<boolean> => {
+              try {
+                await draftStorage.deleteDraft(slot.id);
+                await recoveryIntent.clearForDraftSlot(slot.id);
+              } catch {
+                return false;
+              }
+              return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
+            };
+            let draftDeleted = await confirmDraftGone();
+            if (!draftDeleted) draftDeleted = await confirmDraftGone();
+            if (draftDeleted) {
+              if (nativeManifest) {
+                await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
+              } else if (durable.recoveredAudioUri) {
+                safeDeleteFile(durable.recoveredAudioUri);
+              }
+            }
+            await durableTombstone.add(durable.recordingId).catch(() => {});
+            durableRecoveryStore.remove(durable.recordingId);
+            trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: result.id } });
+          } else {
+            slot.segments.forEach((segment) => safeDeleteFile(segment.uri));
+            draftStorage.deleteDraft(slot.id).catch(() => {});
+            recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+          }
+
+          const latencyMs = Date.now() - uploadStartedAt;
+          trackEvent({
+            name: 'submit_succeeded',
+            props: {
+              slot_index: slotIndex,
+              segment_count: segmentCount,
+              duration_s: durationSeconds,
+              size_bytes: 0,
+              recording_id: result.id,
+              attempt_number: attemptNumber,
+              latency_ms: latencyMs,
+              ...baseSubmitDiagnostics,
+            },
+          });
+          breadcrumb('upload', 'pending_confirm_recovered', {
+            slot_index: slotIndex,
+            attempt_number: attemptNumber,
+            latency_ms: latencyMs,
+          });
+          uploadAttemptCountsRef.current.delete(slot.id);
+          return result.id;
+        }
+
         // ── Durable AAC upload (single audio.aac, no segments[], bypass split) ──
         if (slot.durable) {
           const durable = slot.durable;
@@ -3487,9 +3595,19 @@ function RecordingSession() {
             return;
           }
         }
-        // Validate all segment files still exist
-        for (const seg of draft.segments) {
-          if (!fileExists(seg.uri)) {
+        let restoredPendingConfirm = validatePendingConfirm(draft.pendingConfirm);
+        if (!restoredPendingConfirm && draft.durable && user?.id) {
+          const nativeManifest = await durableRecorder.getManifest({
+            userId: user.id,
+            recordingId: draft.durable.recordingId,
+          }).catch(() => null);
+          restoredPendingConfirm = validatePendingConfirm(nativeManifest?.pendingConfirm);
+        }
+        // Once R2 has accepted the bytes, confirmation no longer depends on a
+        // local file. Only prompt to re-record when there is no valid proof.
+        if (!restoredPendingConfirm) {
+          for (const seg of draft.segments) {
+            if (fileExists(seg.uri)) continue;
             Alert.alert(
               'Audio Not Found',
               'The recording audio was not found on this device. Would you like to start a new recording with the same patient details pre-filled?',
@@ -3513,15 +3631,7 @@ function RecordingSession() {
             return;
           }
         }
-        let restoredPendingConfirm = draft.pendingConfirm;
-        if (!restoredPendingConfirm && draft.durable && user?.id) {
-          const nativeManifest = await durableRecorder.getManifest({
-            userId: user.id,
-            recordingId: draft.durable.recordingId,
-          }).catch(() => null);
-          restoredPendingConfirm = nativeManifest?.pendingConfirm ?? null;
-        }
-        // All files present — restore into session
+        // Local files are present or R2 proof is sufficient — restore session.
         const restoredSlot: PatientSlot = {
           id: draft.slotId,
           uploadIntentId: normalizeUploadIntentId(draft.uploadIntentId, draft.slotId),

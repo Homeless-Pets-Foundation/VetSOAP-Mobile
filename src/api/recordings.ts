@@ -48,6 +48,7 @@ import {
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
+const PENDING_CONFIRM_PERSIST_TIMEOUT_MS = 3_000;
 
 export type RecordingDeleteReason =
   | 'user_delete'
@@ -532,6 +533,19 @@ async function postConfirm(
       metadata,
     });
   } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      let current: Recording;
+      try {
+        current = await apiClient.get(`/api/recordings/${recordingId}`);
+      } catch (probeError) {
+        tagPhase(probeError, 'confirm');
+      }
+      if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
+        return assertRecordingMatchesMetadataPayload(current, metadataAsPayload(metadata), {
+          allowServerEnrichedBlankFields: true,
+        });
+      }
+    }
     tagPhase(error, 'confirm');
   }
   return assertRecordingMatchesMetadataPayload(confirmed, metadataAsPayload(metadata), {
@@ -563,14 +577,28 @@ async function invokeClearHint(callback: ResilientUploadOptions['onClearPendingC
 async function invokeHintCallback(
   callback: ResilientUploadOptions['onR2Complete'],
   hint: PendingConfirm,
-): Promise<void> {
-  if (!callback) return;
+): Promise<{ settled: Promise<void>; timedOut: boolean }> {
+  if (!callback) return { settled: Promise.resolve(), timedOut: false };
+  const settled = Promise.resolve()
+    .then(() => callback(hint))
+    .then(
+      () => undefined,
+      () => {
+        // The persistent server intent and deterministic object keys remain the
+        // correctness backstop, so a local hint write must not block confirmation.
+        breadcrumb('upload', 'pending_confirm_write_failed', { stage: 'post_put' });
+      },
+    );
   try {
-    await callback(hint);
+    await withTimeout(
+      settled,
+      PENDING_CONFIRM_PERSIST_TIMEOUT_MS,
+      'Timed out while saving upload recovery state.',
+    );
+    return { settled, timedOut: false };
   } catch {
-    // The persistent server intent and deterministic object keys remain the
-    // correctness backstop, so a local hint write must not block confirmation.
-    breadcrumb('upload', 'pending_confirm_write_failed', { stage: 'post_put' });
+    breadcrumb('upload', 'pending_confirm_write_timeout', { stage: 'post_put' });
+    return { settled, timedOut: true };
   }
 }
 
@@ -725,6 +753,7 @@ async function legacyUpload(
 ): Promise<{ recording: Recording; hint: PendingConfirm; replacedMissingRecordingId: boolean }> {
   let recording: Recording | undefined;
   let replacedMissingRecordingId = false;
+  let createdForLegacyUpload = false;
   if (options.existingRecordingId) {
     try {
       if (options.metadataDirty) {
@@ -746,6 +775,7 @@ async function legacyUpload(
         ...normalizeCreateRecordingPayload(data),
         isDraft: false,
       }, idempotencyKey);
+      createdForLegacyUpload = true;
     } catch (error) {
       tagPhase(error, 'create_draft');
     }
@@ -796,7 +826,16 @@ async function legacyUpload(
       }
     }, { segmentIndex: index });
   };
-  await runWithConcurrency(files.length, SEGMENT_UPLOAD_CONCURRENCY, uploadOne);
+  try {
+    await runWithConcurrency(files.length, SEGMENT_UPLOAD_CONCURRENCY, uploadOne);
+  } catch (error) {
+    if (createdForLegacyUpload) {
+      await apiClient
+        .delete(`/api/recordings/${canonicalRecording.id}`, { reason: 'orphan_pending_confirm' })
+        .catch(() => {});
+    }
+    throw error;
+  }
   const hint: PendingConfirm = {
     recordingId: canonicalRecording.id,
     fileKey: keys[0],
@@ -804,7 +843,6 @@ async function legacyUpload(
     metadata,
     files: preparationFiles(files),
   };
-  await invokeHintCallback(options.onR2Complete, hint);
   return { recording: canonicalRecording, hint, replacedMissingRecordingId };
 }
 
@@ -855,7 +893,7 @@ async function executeResilientUpload(
       if (!isRouteLevelPrepare404(error)) throw error;
       const legacy = await legacyUpload(data, files, metadata, options, idempotencyKey);
       if (legacy.replacedMissingRecordingId) staleRestartUsed = true;
-      return confirmWithRecovery(legacy.hint, true);
+      return persistHintAndConfirm(legacy.hint, true);
     }
     // A stale supplied ID resolved here is the submit action's one allowed
     // replacement. If this canonical row also disappears later in the same
@@ -901,8 +939,7 @@ async function executeResilientUpload(
       metadata,
       files: descriptors,
     };
-    await invokeHintCallback(options.onR2Complete, hint);
-    return confirmWithRecovery(hint, false);
+    return persistHintAndConfirm(hint, false);
   };
 
   const confirmWithRecovery = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
@@ -973,6 +1010,19 @@ async function executeResilientUpload(
     const error = new Error(STALE_RECORDING_UPLOAD_COPY) as TaggedError;
     error.uploadPhase = 'confirm';
     throw error;
+  };
+
+  const persistHintAndConfirm = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
+    const persistence = await invokeHintCallback(options.onR2Complete, hint);
+    const result = await confirmWithRecovery(hint, legacy);
+    if (persistence.timedOut) {
+      // A late SecureStore/native write must not resurrect recovery state after
+      // the server has confirmed the upload and the UI has cleaned the draft.
+      persistence.settled
+        .then(() => invokeClearHint(options.onClearPendingConfirm))
+        .catch(() => {});
+    }
+    return result;
   };
 
   if (options.resume && !validResume) await invokeClearHint(options.onClearPendingConfirm);
@@ -1085,6 +1135,19 @@ export const recordingsApi = {
         ...(metadata ? { metadata } : {}),
       });
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        let current: Recording;
+        try {
+          current = await apiClient.get(`/api/recordings/${recordingId}`);
+        } catch (probeError) {
+          tagPhase(probeError, 'confirm');
+        }
+        if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
+          return assertRecordingMatchesMetadataPayload(current, metadata, {
+            allowServerEnrichedBlankFields: true,
+          });
+        }
+      }
       tagPhase(error, 'confirm');
     }
     return assertRecordingMatchesMetadataPayload(recording, metadata, {
@@ -1135,6 +1198,14 @@ export const recordingsApi = {
       fileSizeBytes: 0,
     }));
     return executeResilientUpload(data, files, options ?? {});
+  },
+
+  async confirmPendingUpload(
+    data: CreateRecording,
+    hint: PendingConfirm,
+    options: Omit<ResilientUploadOptions, 'resume'>,
+  ): Promise<Recording> {
+    return executeResilientUpload(data, [], { ...options, resume: hint });
   },
 
   async retry(id: string): Promise<Recording> {

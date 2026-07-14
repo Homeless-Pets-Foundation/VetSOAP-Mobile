@@ -34,7 +34,6 @@ function keyPattern(organizationId: string, recordingId: string, index: number, 
 export function validatePreparedUploadEnvelope(
   raw: unknown,
   expectedFileCount: number,
-  nowMs = Date.now(),
 ): PrepareUploadResponse {
   if (!raw || typeof raw !== 'object') throw new Error('invalid_response');
   const value = raw as Partial<PrepareUploadResponse>;
@@ -69,7 +68,11 @@ export function validatePreparedUploadEnvelope(
       !upload || upload.index !== index || typeof upload.uploadUrl !== 'string' || upload.uploadUrl.length === 0 ||
       typeof upload.fileKey !== 'string' ||
       !keyPattern(value.recording.organizationId, value.recording.id, index, expectedFileCount).test(upload.fileKey) ||
-      typeof upload.expiresAt !== 'string' || !Number.isFinite(Date.parse(upload.expiresAt)) || Date.parse(upload.expiresAt) <= nowMs
+      // The tablet clock is not authoritative. R2 evaluates the signed URL
+      // against server time; a locally-expired URL will return 401/403 and the
+      // upload retry path requests a fresh preparation. Reject only malformed
+      // timestamps here so a clock set ahead cannot block every upload.
+      typeof upload.expiresAt !== 'string' || !Number.isFinite(Date.parse(upload.expiresAt))
     ) throw new Error('invalid_upload_manifest');
     if (keys.has(upload.fileKey)) throw new Error('duplicate_file_key');
     keys.add(upload.fileKey);

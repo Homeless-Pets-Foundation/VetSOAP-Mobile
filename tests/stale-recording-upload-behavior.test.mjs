@@ -34,7 +34,9 @@ async function loadHarness({
   getInfoAsync,
   post,
   get = async () => { throw new Error('unexpected GET'); },
+  del = async () => {},
   upload = async () => ({ status: 200 }),
+  setTimeoutImpl = setTimeout,
 }) {
   const events = [];
   const preparation = await loadPure('src/api/uploadPreparation.ts');
@@ -50,7 +52,10 @@ async function loadHarness({
       return get(...args);
     },
     patch: async () => { throw new Error('unexpected PATCH'); },
-    delete: async () => {},
+    delete: async (...args) => {
+      events.push(['delete', args[0], args[1]]);
+      return del(...args);
+    },
   };
   const source = await read('src/api/recordings.ts');
   const compiled = ts.transpileModule(source, {
@@ -107,7 +112,7 @@ async function loadHarness({
     JSON,
     Math,
     Promise,
-    setTimeout,
+    setTimeout: setTimeoutImpl,
     clearTimeout,
     AbortController,
   });
@@ -203,6 +208,29 @@ test('a complete confirmation hint resumes without reading a missing local file'
   assert.equal(result.id, recordingId);
   assert.equal(fileReads, 0);
   assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
+});
+
+test('confirm 409 probes and returns an already-committed recording without local audio', async () => {
+  let fileReads = 0;
+  const completed = { ...recording, status: 'completed' };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => completed,
+  });
+  const result = await harness.recordingsApi.confirmPendingUpload(metadata, hint, {
+    idempotencyKey: 'intent',
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
 });
 
 test('only an untyped route-level prepare 404 enters the legacy compatibility flow', async () => {
@@ -443,6 +471,62 @@ test('anchor and pending-hint persistence failures do not block canonical upload
   );
   assert.equal(result.id, recordingId);
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('hung pending-hint persistence is bounded and a late write is cleared after confirmation', async () => {
+  let releaseHint;
+  let clears = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onR2Complete: () => new Promise((resolve) => { releaseHint = resolve; }),
+      onClearPendingConfirm: async () => { clears++; },
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.equal(clears, 0);
+  releaseHint();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(clears, 1);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('legacy fallback deletes a row it created when upload fails before confirmation proof', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) throw new ApiError('route absent', 404);
+      if (path === '/api/recordings') return { ...recording, status: 'uploading' };
+      if (path.endsWith('/upload-url')) return {
+        uploadUrl: 'https://upload.example.test/legacy',
+        fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+      };
+      throw new Error(`unexpected POST ${path}`);
+    },
+    upload: async () => { throw new Error('permanent storage failure'); },
+  });
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent',
+    }),
+    /permanent storage failure/,
+  );
+  const deletion = harness.events.find((event) => event[0] === 'delete');
+  assert.equal(deletion?.[1], `/api/recordings/${recordingId}`);
+  assert.equal(deletion?.[2]?.reason, 'orphan_pending_confirm');
+  assert.equal(harness.events.some((event) => event[1]?.endsWith?.('/confirm-upload')), false);
 });
 
 test('typed preparation failures and partial PUT failure stop without fallback, hint, or confirm', async () => {

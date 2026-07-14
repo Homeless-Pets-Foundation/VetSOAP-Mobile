@@ -81,6 +81,23 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
   };
 }
 
+/**
+ * Audio mutations after a completed R2 PUT must start a new server intent.
+ * The prior confirm may have succeeded even if the client saw an error; keeping
+ * its identity or server row could make preparation return the old recording as
+ * already processed without uploading the new audio.
+ */
+function invalidatePendingConfirmForAudioChange(slot: PatientSlot): Partial<PatientSlot> {
+  if (!slot.pendingConfirm) return { pendingConfirm: null };
+  return {
+    uploadIntentId: createUploadIntentId(),
+    pendingConfirm: null,
+    serverDraftId: null,
+    serverRecordingId: null,
+    draftMetadataDirty: false,
+  };
+}
+
 function sessionReducer(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
     case 'ADD_SLOT': {
@@ -181,6 +198,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           ];
           return {
             ...slot,
+            ...invalidatePendingConfirmForAudioChange(slot),
             segments: newSegments,
             audioUri: action.audioUri,
             audioDuration: newSegments.reduce((sum, s) => sum + s.duration, 0),
@@ -207,15 +225,20 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
       };
 
     case 'CONTINUE_RECORDING':
-      // Adding a new segment invalidates any pendingConfirm hint — the server
-      // manifest covers only the old segment(s). Keep the stable intent and
-      // canonical server row; the next preparation replaces the reusable
-      // uncommitted manifest with the complete segment list.
+      // Adding a new segment invalidates any pendingConfirm hint. If bytes had
+      // already reached R2, rotate away from the possibly-confirmed server row.
       return {
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, pendingConfirm: null }
+            ? {
+                ...slot,
+                ...invalidatePendingConfirmForAudioChange(slot),
+                audioState: 'idle',
+                uploadStatus: 'pending',
+                uploadProgress: 0,
+                uploadError: null,
+              }
             : slot
         ),
       };
@@ -323,6 +346,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           const newDuration = newSegments.reduce((sum, s) => sum + s.duration, 0);
           return {
             ...slot,
+            ...invalidatePendingConfirmForAudioChange(slot),
             segments: newSegments,
             audioDuration: newDuration,
             audioUri: newSegments.length > 0 ? newSegments[newSegments.length - 1].uri : null,
@@ -345,6 +369,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           if (newSegments.length === 0) {
             return {
               ...slot,
+              ...invalidatePendingConfirmForAudioChange(slot),
               segments: [],
               audioUri: null,
               audioDuration: 0,
@@ -353,18 +378,16 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
               uploadProgress: 0,
               uploadError: null,
               serverRecordingId: null,
-              pendingConfirm: null,
             };
           }
           const newDuration = newSegments.reduce((sum, s) => sum + s.duration, 0);
-          // Segment set changed — the old pendingConfirm no longer matches.
-          // Keep the stable intent/server draft so preparation reuses the row.
+          // Segment set changed — rotate if the old bytes reached R2.
           return {
             ...slot,
+            ...invalidatePendingConfirmForAudioChange(slot),
             segments: newSegments,
             audioDuration: newDuration,
             audioUri: newSegments[newSegments.length - 1].uri,
-            pendingConfirm: null,
           };
         }),
       };
@@ -379,6 +402,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           const newDuration = validatedSegments.reduce((sum, s) => sum + s.duration, 0);
           return {
             ...slot,
+            ...invalidatePendingConfirmForAudioChange(slot),
             segments: validatedSegments,
             audioDuration: newDuration,
             audioUri: validatedSegments.length > 0 ? validatedSegments[validatedSegments.length - 1].uri : null,
@@ -387,7 +411,6 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             uploadProgress: 0,
             uploadError: null,
             serverRecordingId: null,
-            pendingConfirm: null,
           };
         }),
       };

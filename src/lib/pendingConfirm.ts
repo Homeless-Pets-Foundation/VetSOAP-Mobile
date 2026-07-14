@@ -120,3 +120,25 @@ export function clonePendingConfirm(value: PendingConfirm | null | undefined): P
     files: value.files ? value.files.map((file) => ({ ...file })) : undefined,
   });
 }
+
+/**
+ * Native durable manifests are plain files beside the audio, not SecureStore.
+ * Persist only the non-PHI proof required to retry confirmation. Patient/client
+ * metadata and file descriptors remain in the encrypted local draft.
+ */
+export function toNativePendingConfirmProof(
+  value: PendingConfirm | null | undefined,
+): PendingConfirm | null {
+  const normalized = validatePendingConfirm(value);
+  if (!normalized) return null;
+  return {
+    recordingId: normalized.recordingId,
+    fileKey: normalized.fileKey,
+    ...(normalized.segmentKeys
+      ? {
+          segmentKeys: [...normalized.segmentKeys],
+          segmentCount: normalized.segmentCount,
+        }
+      : {}),
+  };
+}

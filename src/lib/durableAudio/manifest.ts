@@ -11,7 +11,7 @@
  */
 import { isValidDurableId } from './paths';
 import type { PendingConfirm } from '../../types/multiPatient';
-import { validatePendingConfirm } from '../pendingConfirm';
+import { toNativePendingConfirmProof } from '../pendingConfirm';
 
 export const MANIFEST_SCHEMA_VERSION = 3 as const;
 
@@ -156,7 +156,7 @@ export function validateManifestObject(
   }
   if (typeof m.pendingConfirmJson === 'string') {
     try {
-      const pending = validatePendingConfirm(JSON.parse(m.pendingConfirmJson));
+      const pending = toNativePendingConfirmProof(JSON.parse(m.pendingConfirmJson));
       if (!pending) return { ok: false, reason: 'invalid_pending_confirm' };
       m.pendingConfirm = pending;
     } catch {

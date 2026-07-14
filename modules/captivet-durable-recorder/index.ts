@@ -16,7 +16,10 @@
 import { Platform } from 'react-native';
 import type { EventSubscription } from 'expo-modules-core';
 import type { PendingConfirm } from '../../src/types/multiPatient';
-import { validatePendingConfirm } from '../../src/lib/pendingConfirm';
+import {
+  toNativePendingConfirmProof,
+  validatePendingConfirm,
+} from '../../src/lib/pendingConfirm';
 
 import type {
   DurableRecorderState,
@@ -194,7 +197,7 @@ export async function setPendingConfirm(input: {
   // Older dev clients do not expose this method. The server intent and local
   // draft remain the recovery backstops, so absence is a deliberate no-op.
   if (!mod || typeof mod.setPendingConfirm !== 'function') return;
-  const pending = input.pendingConfirm ? validatePendingConfirm(input.pendingConfirm) : null;
+  const pending = input.pendingConfirm ? toNativePendingConfirmProof(input.pendingConfirm) : null;
   if (input.pendingConfirm && !pending) return;
   return mod.setPendingConfirm({
     userId: input.userId,
@@ -203,12 +206,51 @@ export async function setPendingConfirm(input: {
   });
 }
 
+function hydratePendingConfirm(
+  mod: NativeDurableRecorder,
+  manifest: DurableRecordingManifest | null,
+): DurableRecordingManifest | null {
+  if (!manifest) return null;
+  let parsed = manifest.pendingConfirm
+    ? validatePendingConfirm(manifest.pendingConfirm)
+    : null;
+  if (!parsed && typeof manifest.pendingConfirmJson === 'string') {
+    try {
+      parsed = validatePendingConfirm(JSON.parse(manifest.pendingConfirmJson));
+    } catch {
+      parsed = null;
+    }
+  }
+  const proof = toNativePendingConfirmProof(parsed);
+  const proofJson = proof ? JSON.stringify(proof) : null;
+
+  // Scrub metadata/files written by the first implementation. This migration
+  // is deliberately best-effort and never blocks manifest recovery.
+  if (
+    typeof manifest.pendingConfirmJson === 'string' &&
+    manifest.pendingConfirmJson !== proofJson &&
+    typeof mod.setPendingConfirm === 'function'
+  ) {
+    mod.setPendingConfirm({
+      userId: manifest.userId,
+      recordingId: manifest.recordingId,
+      pendingConfirmJson: proofJson,
+    }).catch(() => {});
+  }
+
+  return {
+    ...manifest,
+    pendingConfirm: proof ?? undefined,
+    pendingConfirmJson: proofJson ?? undefined,
+  };
+}
+
 // --- Read/recovery ops: degrade to null/[] when unavailable (no throw) ---
 
 export async function getStatus(): Promise<DurableRecordingManifest | null> {
   const mod = getNativeModule();
   if (!mod) return null;
-  return mod.getStatus();
+  return hydratePendingConfirm(mod, await mod.getStatus());
 }
 
 export async function getManifest(input: {
@@ -217,13 +259,17 @@ export async function getManifest(input: {
 }): Promise<DurableRecordingManifest | null> {
   const mod = getNativeModule();
   if (!mod) return null;
-  return mod.getManifest(input);
+  return hydratePendingConfirm(mod, await mod.getManifest(input));
 }
 
 export async function listRecoverableSessions(userId: string): Promise<DurableRecordingManifest[]> {
   const mod = getNativeModule();
   if (!mod) return [];
-  return mod.listRecoverableSessions(userId);
+  const manifests = await mod.listRecoverableSessions(userId);
+  return manifests.flatMap((manifest) => {
+    const hydrated = hydratePendingConfirm(mod, manifest);
+    return hydrated ? [hydrated] : [];
+  });
 }
 
 export function getLiveStats(): DurableLiveStats | null {

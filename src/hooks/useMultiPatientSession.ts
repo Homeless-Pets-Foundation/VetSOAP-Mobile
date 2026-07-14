@@ -298,6 +298,19 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         }),
       };
 
+    case 'SET_PENDING_CONFIRM':
+      // Hint persistence may settle after the server confirmation and success
+      // UI update. Mutate only the proof so late cleanup cannot regress a
+      // completed slot back to `uploading`.
+      return {
+        ...state,
+        slots: state.slots.map((slot) =>
+          slot.id === action.slotId
+            ? { ...slot, pendingConfirm: action.pendingConfirm }
+            : slot
+        ),
+      };
+
     case 'RESET_SESSION':
       return createInitialState(action.defaultTemplateId);
 

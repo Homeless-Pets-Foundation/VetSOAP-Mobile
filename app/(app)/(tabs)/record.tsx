@@ -1776,7 +1776,7 @@ function RecordingSession() {
         showUploadInProgressAlert();
         return;
       }
-      if (slot?.durable && slot.pendingConfirm) {
+      if (slot?.pendingConfirm) {
         Alert.alert(
           'Finish Submission First',
           'This recording has already reached secure storage. Retry Submit or delete it and start over before adding more audio.',
@@ -2096,7 +2096,7 @@ function RecordingSession() {
 
           if (!hasCompleteLocalAudio) {
             const onClearPendingConfirm = async () => {
-              setUploadStatus(slot.id, 'uploading', { pendingConfirm: null });
+              dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
               await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
               if (durable && uid && nativeManifest) {
                 await durableRecorder.setPendingConfirm({
@@ -2330,7 +2330,7 @@ function RecordingSession() {
                   }
                 },
                 onClearPendingConfirm: async () => {
-                  setUploadStatus(slot.id, 'uploading', { pendingConfirm: null });
+                  dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
                   await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
                   if (hasNativeManifest) {
                     await durableRecorder.setPendingConfirm({
@@ -2590,7 +2590,7 @@ function RecordingSession() {
         };
 
         const onClearPendingConfirm = async () => {
-          setUploadStatus(slot.id, 'uploading', { pendingConfirm: null });
+          dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
           await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
         };
 
@@ -2793,8 +2793,8 @@ function RecordingSession() {
           error_code: errorCode,
           attempt_number: attemptNumber,
         });
-        // Signal auto-stash eligibility to the submit handler. Two phases
-        // qualify, both characterized by a dead network mid-submit that the
+        // Signal auto-stash eligibility to the submit handler. Three phases
+        // qualify, all characterized by a dead network mid-submit that the
         // user can recover from by re-submitting once online:
         //   - r2_put: transient exhaustion after all 3 retries (Sentry
         //     REACT-NATIVE-4 fingerprint).
@@ -2802,6 +2802,8 @@ function RecordingSession() {
         //     POSTing the draft row or validating an existing serverDraftId
         //     (Sentry REACT-NATIVE-C fingerprint, multi-patient Submit-All on
         //     offline tablet).
+        //   - prepare: the atomic prepare-upload request itself failed before
+        //     any storage PUT. The stable intent makes a later retry safe.
         // presign / preflight / silence / confirm failures stay excluded —
         // those represent local-file / metering / server-side state problems
         // that won't resolve just by stashing and retrying when back online.
@@ -2810,6 +2812,8 @@ function RecordingSession() {
             autoStashableFailuresRef.current.set(slot.id, 'r2_put_dead_network');
           } else if (phase === 'create_draft') {
             autoStashableFailuresRef.current.set(slot.id, 'create_draft_dead_network');
+          } else if (phase === 'prepare') {
+            autoStashableFailuresRef.current.set(slot.id, 'prepare_dead_network');
           }
         }
         return null;

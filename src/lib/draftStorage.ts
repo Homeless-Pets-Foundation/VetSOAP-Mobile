@@ -1076,6 +1076,10 @@ export const draftStorage = {
 
   /** True if this draft still has at least one segment audio file on disk. */
   async draftHasLocalAudio(meta: DraftMetadata): Promise<boolean> {
+    // The caller uses this as a recoverability predicate for sign-out warnings.
+    // Once R2 accepted the bytes, valid confirmation proof is enough even if
+    // no local audio remains.
+    if (clonePendingConfirm(meta.pendingConfirm)) return true;
     // A durable draft has empty segments but its audio lives in audio.aac under
     // the durable root. Treat a valid, non-purged durable pointer as local audio
     // so the orphan sweep / "Not Submitted" loader don't mistake it for a

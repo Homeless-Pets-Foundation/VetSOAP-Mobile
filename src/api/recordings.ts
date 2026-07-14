@@ -49,6 +49,7 @@ import {
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
 const PENDING_CONFIRM_PERSIST_TIMEOUT_MS = 3_000;
+const RECORDING_ANCHOR_PERSIST_TIMEOUT_MS = 3_000;
 
 export type RecordingDeleteReason =
   | 'user_delete'
@@ -558,10 +559,25 @@ async function invokePreparedCallback(
   recordingId: string,
 ): Promise<void> {
   if (!callback) return;
+  const settled = Promise.resolve()
+    .then(() => callback(recordingId))
+    .then(
+      () => undefined,
+      () => {
+        // The server-side idempotency intent remains authoritative. A local
+        // SecureStore/native bridge failure must not strand the upload before
+        // the R2 PUT, and the callback stays handled if it rejects later.
+        breadcrumb('upload', 'recording_anchor_write_failed', { stage: 'prepared' });
+      },
+    );
   try {
-    await callback(recordingId);
+    await withTimeout(
+      settled,
+      RECORDING_ANCHOR_PERSIST_TIMEOUT_MS,
+      'Timed out while saving upload identity.',
+    );
   } catch {
-    breadcrumb('upload', 'recording_anchor_write_failed', { stage: 'prepared' });
+    breadcrumb('upload', 'recording_anchor_write_timeout', { stage: 'prepared' });
   }
 }
 

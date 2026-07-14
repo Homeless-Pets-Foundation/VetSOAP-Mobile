@@ -125,6 +125,9 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
   assert.match(draftStorage, /uploadIntentRotated[\s\S]*slot\.serverDraftId \?\? null/);
   assert.match(draftStorage, /durableIntentRotated[\s\S]*slot\.serverDraftId \?\? null/);
   assert.match(draftStorage, /if \(clonePendingConfirm\(draft\.pendingConfirm\)\) continue/);
+  const stashAudio = await read('src/lib/stashAudioManager.ts');
+  assert.match(stashAudio, /else if \(!pendingConfirm\)/);
+  assert.match(stashAudio, /s\.segments\.length > 0 \|\| s\.durable != null \|\| !!clonePendingConfirm\(s\.pendingConfirm\)/);
 });
 
 test('upload orchestration preserves ordering, persistence, fallback, and bounded recovery contracts', async () => {
@@ -140,6 +143,8 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(api, /await invokePreparedCallback\(options\.onRecordingPrepared/);
   assert.match(api, /await invokeHintCallback\(options\.onR2Complete, hint\)/);
   assert.match(api, /PENDING_CONFIRM_PERSIST_TIMEOUT_MS/);
+  assert.match(api, /RECORDING_ANCHOR_PERSIST_TIMEOUT_MS/);
+  assert.match(api, /recording_anchor_write_timeout/);
   assert.match(api, /pending_confirm_write_timeout/);
   assert.match(api, /persistence\.settled[\s\S]*invokeClearHint/);
   assert.match(api, /error instanceof ApiError && error\.status === 409/);
@@ -174,7 +179,10 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     record.indexOf('const handleRecordAgain = useCallback('),
   );
   assert.doesNotMatch(continuation, /deleteOrphanServerRecording/);
-  assert.match(continuation, /slot\?\.durable && slot\.pendingConfirm/);
+  assert.match(continuation, /slot\?\.pendingConfirm/);
+  assert.doesNotMatch(continuation, /slot\?\.durable && slot\.pendingConfirm/);
+  assert.match(record, /type: 'SET_PENDING_CONFIRM', slotId: slot\.id, pendingConfirm: null/);
+  assert.doesNotMatch(record, /setUploadStatus\(slot\.id, 'uploading', \{ pendingConfirm: null \}\)/);
   const draftSync = record.slice(
     record.indexOf('const syncServerDraft = useCallback('),
     record.indexOf('const scheduleDraftSync = useCallback('),

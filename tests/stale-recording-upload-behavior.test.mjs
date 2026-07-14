@@ -473,6 +473,29 @@ test('anchor and pending-hint persistence failures do not block canonical upload
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
+test('hung prepared-anchor persistence is bounded before storage upload', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: () => new Promise(() => {}),
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
 test('hung pending-hint persistence is bounded and a late write is cleared after confirmation', async () => {
   let releaseHint;
   let clears = 0;

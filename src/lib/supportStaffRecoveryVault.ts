@@ -13,9 +13,10 @@ import { secureStorage } from './secureStorage';
 import { captureMessage } from './monitoring';
 import type { CreateRecording, User } from '../types';
 import type { StashedSession, StashedSlot } from '../types/stash';
-import type { PatientSlot, AudioSegment, DurableSlotRef } from '../types/multiPatient';
+import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '../types/multiPatient';
 import { isValidDurableId } from './durableAudio/paths';
 import { normalizeUploadIntentId } from './uploadIntent';
+import { clonePendingConfirm } from './pendingConfirm';
 
 const CHUNK_SIZE = 1900;
 const MAX_RECOVERY_ITEMS = 50;
@@ -64,9 +65,12 @@ export interface RecoverySlot {
   sourceDraftSlotId?: string | null;
   sourceServerDraftId?: string | null;
   // Durable AAC pointer preserved into the vault. A durable item has empty
-  // `segments` and references audio.aac via this pointer; itemHasAudio + the
+  // `segments` and references audio.aac via this pointer; itemIsRecoverable + the
   // vault builders must treat a valid non-purged durable manifest as audio.
   durable?: DurableSlotRef | null;
+  // Server-confirmation proof is independently recoverable after R2 accepted
+  // the bytes, even when the source audio has already disappeared locally.
+  pendingConfirm?: PendingConfirm | null;
 }
 
 export interface RecoveryItem {
@@ -298,6 +302,7 @@ async function buildItemFromSlots(
       sourceDraftSlotId?: string | null;
       sourceServerDraftId?: string | null;
       durable?: DurableSlotRef | null;
+      pendingConfirm?: PendingConfirm | null;
     }[];
   }
 ): Promise<RecoveryItem | null> {
@@ -316,6 +321,7 @@ async function buildItemFromSlots(
   let copiedDurable = 0;
 
   for (const slot of params.slots) {
+    const pendingConfirmForSlot = clonePendingConfirm(slot.pendingConfirm);
     const recoveredSegments: RecoverySegment[] = [];
     for (const segment of slot.segments) {
       if (!fileExists(segment.uri)) continue;
@@ -355,13 +361,14 @@ async function buildItemFromSlots(
         });
       }
     }
-    if (recoveredSegments.length === 0 && !durableForSlot) continue;
+    if (recoveredSegments.length === 0 && !durableForSlot && !pendingConfirmForSlot) continue;
     recoveredSlots.push({
       id: slot.id,
       uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
       formData: slot.formData ? { ...slot.formData } : null,
       segments: recoveredSegments,
       durable: durableForSlot,
+      pendingConfirm: pendingConfirmForSlot,
       audioDuration: durableForSlot
         ? durableForSlot.durationMs / 1000
         : slot.audioDuration ?? recoveredSegments.reduce((sum, s) => sum + s.duration, 0),
@@ -419,10 +426,12 @@ function vaultSlotHasDurableAudio(durable: DurableSlotRef | null | undefined): b
   );
 }
 
-function itemHasAudio(item: RecoveryItem): boolean {
+function itemIsRecoverable(item: RecoveryItem): boolean {
   return item.slots.some(
     (slot) =>
-      slot.segments.some((segment) => fileExists(segment.uri)) || vaultSlotHasDurableAudio(slot.durable),
+      slot.segments.some((segment) => fileExists(segment.uri)) ||
+      vaultSlotHasDurableAudio(slot.durable) ||
+      !!clonePendingConfirm(slot.pendingConfirm),
   );
 }
 
@@ -439,10 +448,10 @@ function itemVisibleToUser(item: RecoveryItem, user: RecoveryUser): boolean {
 
 async function readValidItemsAndPrune(): Promise<RecoveryItem[]> {
   const items = await readItems();
-  const validItems = items.filter(itemHasAudio);
+  const validItems = items.filter(itemIsRecoverable);
   if (validItems.length !== items.length) {
     items
-      .filter((item) => !itemHasAudio(item))
+      .filter((item) => !itemIsRecoverable(item))
       .forEach((item) => safeDeleteDirectory(recoveryDir(item.id)));
     await saveItems(validItems).catch(() => false);
   }
@@ -505,6 +514,7 @@ function draftToBuildSlot(draft: DraftMetadata) {
     sourceDraftSlotId: draft.slotId,
     sourceServerDraftId: draft.serverDraftId,
     durable: draft.durable ?? null,
+    pendingConfirm: clonePendingConfirm(draft.pendingConfirm),
   };
 }
 
@@ -518,6 +528,7 @@ function stashedSlotToBuildSlot(slot: StashedSlot) {
     sourceDraftSlotId: slot.draftSlotId ?? null,
     sourceServerDraftId: slot.serverDraftId ?? null,
     durable: slot.durable ?? null,
+    pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
   };
 }
 
@@ -537,7 +548,8 @@ async function buildDraftItemsForSource(
   for (const draft of drafts) {
     if (
       !draft.segments.some((segment) => fileExists(segment.uri)) &&
-      !buildSlotHasDurable(draft.durable)
+      !buildSlotHasDurable(draft.durable) &&
+      !clonePendingConfirm(draft.pendingConfirm)
     )
       continue;
     recoverableCount++;
@@ -568,7 +580,9 @@ async function buildStashItemsForSource(
   for (const stash of stashes) {
     const slots = stash.slots.filter(
       (slot) =>
-        slot.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(slot.durable),
+        slot.segments.some((segment) => fileExists(segment.uri)) ||
+        buildSlotHasDurable(slot.durable) ||
+        !!clonePendingConfirm(slot.pendingConfirm)
     );
     if (slots.length === 0) continue;
     recoverableCount++;
@@ -596,6 +610,7 @@ function makeRestoredSlot(slot: RecoverySlot, formData: CreateRecording, index: 
   }));
   const slotId = makeId(`recovered-${index + 1}`);
   const durable = slot.durable ?? null;
+  const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
   return {
     id: slotId,
     uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
@@ -610,9 +625,12 @@ function makeRestoredSlot(slot: RecoverySlot, formData: CreateRecording, index: 
     uploadError: null,
     serverRecordingId: null,
     draftSlotId: null,
-    serverDraftId: null,
+    // Proof identifies the exact server row whose R2 object must be confirmed.
+    // Keep it as the draft anchor so background sync cannot create a duplicate
+    // row before the restored user taps Submit.
+    serverDraftId: pendingConfirm?.recordingId ?? null,
     draftMetadataDirty: false,
-    pendingConfirm: null,
+    pendingConfirm,
   };
 }
 
@@ -633,11 +651,16 @@ export const supportStaffRecoveryVault = {
       const stashes = await stashStorage.getStashedSessions();
       const draftCount = drafts.filter(
         (draft) =>
-          draft.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(draft.durable)
+          draft.segments.some((segment) => fileExists(segment.uri)) ||
+          buildSlotHasDurable(draft.durable) ||
+          !!clonePendingConfirm(draft.pendingConfirm)
       ).length;
       const stashCount = stashes.filter((stash) =>
         stash.slots.some(
-          (slot) => slot.segments.some((segment) => fileExists(segment.uri)) || buildSlotHasDurable(slot.durable)
+          (slot) =>
+            slot.segments.some((segment) => fileExists(segment.uri)) ||
+            buildSlotHasDurable(slot.durable) ||
+            !!clonePendingConfirm(slot.pendingConfirm)
         )
       ).length;
       return draftCount + stashCount;

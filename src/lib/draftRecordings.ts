@@ -2,6 +2,7 @@ import type { Recording } from '../types';
 import type { DraftMetadata } from './draftStorage';
 import { fileExists } from './fileOps';
 import { isValidDurableId } from './durableAudio/paths';
+import { clonePendingConfirm } from './pendingConfirm';
 
 const LOCAL_DRAFT_PREFIX = 'local-draft:';
 type RecordingSortOrder = 'asc' | 'desc';
@@ -11,6 +12,9 @@ export function getLocalDraftRecordingId(slotId: string): string {
 }
 
 export function isDraftResumable(draft: DraftMetadata): boolean {
+  // A valid post-PUT confirmation proof is sufficient to finish submission;
+  // the local audio may already be gone and must not hide this draft.
+  if (clonePendingConfirm(draft.pendingConfirm)) return true;
   // Durable draft: audio lives in audio.aac (segments[] is empty), so a valid
   // durable pointer IS local audio. A confirmed-uploaded+purged durable draft
   // is deleted before its tombstone is written (record.tsx / self-heal), so a

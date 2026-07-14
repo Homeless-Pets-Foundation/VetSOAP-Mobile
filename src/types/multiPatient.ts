@@ -103,6 +103,7 @@ export type SessionAction =
   | { type: 'BIND_RECORDER'; slotId: string }
   | { type: 'UNBIND_RECORDER' }
   | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null; pendingConfirm?: PendingConfirm | null }
+  | { type: 'SET_PENDING_CONFIRM'; slotId: string; pendingConfirm: PendingConfirm | null }
   | { type: 'RESET_SESSION'; defaultTemplateId?: string }
   | { type: 'RESTORE_SESSION'; slots: PatientSlot[] }
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }

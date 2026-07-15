@@ -118,20 +118,19 @@ async function generateWordmarks() {
   const meta = await sharp(trimmed).metadata();
   const aspect = meta.width / meta.height;
 
-  // 3x: ~1800w (based on 600 * 3)
-  const w3x = 1800;
+  // Match the largest 320dp runtime treatment (login screen) at each density.
+  // Keeping these to rendered size avoids decoding oversized bitmaps on Android.
+  const w3x = 960;
   const h3x = Math.round(w3x / aspect);
   await sharp(trimmed).resize(w3x, h3x).toFile(path.join(ASSETS, 'logo-wordmark@3x.png'));
   console.log(`  logo-wordmark@3x.png (${w3x}x${h3x})`);
 
-  // 2x: ~1200w
-  const w2x = 1200;
+  const w2x = 640;
   const h2x = Math.round(w2x / aspect);
   await sharp(trimmed).resize(w2x, h2x).toFile(path.join(ASSETS, 'logo-wordmark@2x.png'));
   console.log(`  logo-wordmark@2x.png (${w2x}x${h2x})`);
 
-  // 1x: ~600w
-  const w1x = 600;
+  const w1x = 320;
   const h1x = Math.round(w1x / aspect);
   await sharp(trimmed).resize(w1x, h1x).toFile(path.join(ASSETS, 'logo-wordmark.png'));
   console.log(`  logo-wordmark.png (${w1x}x${h1x})`);

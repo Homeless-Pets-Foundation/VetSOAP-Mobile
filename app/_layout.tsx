@@ -1,5 +1,15 @@
 import React, { useEffect } from 'react';
-import { View, Text, TextInput, Pressable, Alert, AppState, Platform } from 'react-native';
+import {
+  Image,
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  Alert,
+  AppState,
+  Platform,
+  useWindowDimensions,
+} from 'react-native';
 import { Stack, usePathname, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import * as SplashScreen from 'expo-splash-screen';
@@ -55,6 +65,9 @@ try {
 const COLD_START_AT = Date.now();
 let _coldStartReported = false;
 
+const LOADING_WORDMARK_MAX_WIDTH = 320;
+const ANDROID_SPLASH_HANDOFF_MS = 520;
+
 type AppStateCoarse = 'active' | 'background' | 'inactive' | 'unknown';
 function coarseAppState(state: string): AppStateCoarse {
   if (state === 'active' || state === 'background' || state === 'inactive') return state;
@@ -98,6 +111,9 @@ initMonitoring();
 // Without this the first React frame is the bare auth-loading spinner, so
 // users see a splash→spinner→content double transition on every cold start.
 try {
+  if (Platform.OS === 'android') {
+    SplashScreen.setOptions({ duration: 0, fade: false });
+  }
   SplashScreen.preventAutoHideAsync().catch(() => {});
 } catch {
   // noop — splash auto-hides, worst case is the old double transition (rule 1)
@@ -183,6 +199,31 @@ class ErrorBoundary extends React.Component<
 
 function SplashGate() {
   const { isLoading } = useAuthReadiness();
+  const { width } = useWindowDimensions();
+  const [minimumDisplayComplete, setMinimumDisplayComplete] = React.useState(false);
+  const wordmarkWidth = Math.min(width * 0.72, LOADING_WORDMARK_MAX_WIDTH);
+
+  // Android 12+ constrains the native splash icon to a 192dp circular safe
+  // zone. Hand off without a native fade, then hold a single near-2x React
+  // wordmark without clipping either end of the brand name.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    try {
+      SplashScreen.hide();
+    } catch {
+      // noop — the React handoff remains visible even if native hide fails
+    }
+
+    // A restored SecureStore session can resolve before the first React frame.
+    // Keep the expanded wordmark visible briefly so the requested near-2x
+    // treatment is perceptible instead of flashing past between native splash
+    // and Home. This is a fixed visual handoff, not an unbounded loading gate.
+    const timeout = setTimeout(() => {
+      setMinimumDisplayComplete(true);
+    }, ANDROID_SPLASH_HANDOFF_MS);
+    return () => clearTimeout(timeout);
+  }, []);
 
   useEffect(() => {
     if (!isLoading) {
@@ -200,7 +241,37 @@ function SplashGate() {
     return () => clearTimeout(timeout);
   }, []);
 
-  return null;
+  if (Platform.OS !== 'android' || (!isLoading && minimumDisplayComplete)) return null;
+
+  return (
+    <View
+      accessibilityViewIsModal
+      style={{
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        zIndex: 1000,
+        elevation: 1000,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#ffffff',
+      }}
+    >
+      <Image
+        source={require('../assets/logo-wordmark.png')}
+        resizeMode="contain"
+        accessible
+        accessibilityRole="image"
+        accessibilityLabel="Captivet"
+        style={{
+          width: wordmarkWidth,
+          aspectRatio: 600 / 139,
+        }}
+      />
+    </View>
+  );
 }
 
 function RootDiagnosticsReporter() {
@@ -269,8 +340,10 @@ function ThemePreferenceHydrator() {
 
 function ThemedStatusBar() {
   const { colorScheme } = useColorScheme();
+  const { isLoading } = useAuthReadiness();
   const colors = useThemeColors();
-  const style = colorScheme === 'dark' ? 'light' : 'dark';
+  // The native and React loading layers are white on both themes.
+  const style = isLoading ? 'dark' : colorScheme === 'dark' ? 'light' : 'dark';
 
   return (
     <StatusBar

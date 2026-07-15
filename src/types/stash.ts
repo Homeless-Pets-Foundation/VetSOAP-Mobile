@@ -1,5 +1,5 @@
 import type { CreateRecording } from './index';
-import type { DurableSlotRef } from './multiPatient';
+import type { DurableSlotRef, PendingConfirm } from './multiPatient';
 
 export interface StashedSegment {
   uri: string; // documentDirectory path after move
@@ -9,6 +9,7 @@ export interface StashedSegment {
 
 export interface StashedSlot {
   id: string;
+  uploadIntentId?: string;
   formData: CreateRecording;
   segments: StashedSegment[];
   audioDuration: number; // sum of all segment durations
@@ -20,6 +21,7 @@ export interface StashedSlot {
   // True when the server draft may have stale metadata and submit must send
   // current formData with confirm-upload. Optional for legacy stashes.
   draftMetadataDirty?: boolean;
+  pendingConfirm?: PendingConfirm | null;
   // Durable AAC capture pointer (Rule 20 site 1 of 3). A durable slot has empty
   // `segments[]` and its audio lives only in audio.aac under the durable root;
   // `durable.recordingId` (+ codec/sampleRate/bitrate) MUST survive the stash

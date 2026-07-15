@@ -19,6 +19,25 @@ export interface PendingConfirm {
   // uploads these are omitted and `fileKey` is sufficient.
   segmentKeys?: string[];
   segmentCount?: number;
+  metadata?: PendingConfirmMetadata;
+  files?: PendingConfirmFile[];
+}
+
+export interface PendingConfirmFile {
+  fileName: string;
+  contentType: string;
+  fileSizeBytes: number;
+}
+
+export interface PendingConfirmMetadata {
+  patientName: string;
+  clientName: string | null;
+  species: string | null;
+  breed: string | null;
+  appointmentType: string | null;
+  templateId: string | null;
+  foreignLanguage: boolean;
+  pimsPatientId: string | null;
 }
 
 /**
@@ -48,6 +67,7 @@ export interface DurableSlotRef {
 
 export interface PatientSlot {
   id: string;
+  uploadIntentId: string;
   formData: CreateRecording;
   audioState: 'idle' | 'recording' | 'paused' | 'stopped';
   segments: AudioSegment[];
@@ -71,6 +91,17 @@ export interface PatientSlot {
   pendingConfirm: PendingConfirm | null;  // resume hint captured post-R2 upload
 }
 
+/**
+ * True when a slot can still complete submission. A pending-confirm proof is
+ * captured audio for workflow purposes because R2 already owns the bytes even
+ * if every local file has disappeared.
+ */
+export function slotHasRecoverableAudio(
+  slot: Pick<PatientSlot, 'segments' | 'durable' | 'pendingConfirm'>,
+): boolean {
+  return slot.segments.length > 0 || slot.durable !== null || slot.pendingConfirm !== null;
+}
+
 export type SessionAction =
   | { type: 'ADD_SLOT'; defaultTemplateId?: string }
   | { type: 'REMOVE_SLOT'; slotId: string }
@@ -83,6 +114,7 @@ export type SessionAction =
   | { type: 'BIND_RECORDER'; slotId: string }
   | { type: 'UNBIND_RECORDER' }
   | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null; pendingConfirm?: PendingConfirm | null }
+  | { type: 'SET_PENDING_CONFIRM'; slotId: string; pendingConfirm: PendingConfirm | null }
   | { type: 'RESET_SESSION'; defaultTemplateId?: string }
   | { type: 'RESTORE_SESSION'; slots: PatientSlot[] }
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }

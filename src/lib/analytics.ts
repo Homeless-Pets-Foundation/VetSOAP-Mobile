@@ -107,6 +107,7 @@ export type AnalyticsEvent =
   | { name: 'submit_attempted'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; network_state: NetworkState } & SubmitDiagnosticsProps }
   | { name: 'submit_succeeded'; props: { slot_index: number; segment_count: number; duration_s: number; size_bytes: number; recording_id: string; attempt_number: number; latency_ms: number } & SubmitDiagnosticsProps }
   | { name: 'submit_failed'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; error_phase: ErrorPhase; error_code: string; network_state: NetworkState; latency_ms: number } & SubmitDiagnosticsProps }
+  | { name: 'upload_stale_recording_recovery'; props: { stage: string; outcome: string; attempt: 1; segment_count: number; mode: 'durable' | 'standard' } }
   | { name: 'submit_all_attempted'; props: { slot_count: number } }
   | { name: 'submit_all_completed'; props: { slot_count: number; success_count: number; failure_count: number } }
   // Stash + draft
@@ -203,7 +204,10 @@ export type RefreshTrigger = 'recovery' | 'foreground' | 'on_auth_state' | 'devi
 
 export type FailureReason = 'secure_store' | 'fs' | 'quota' | 'network' | 'other';
 
-export type AutoStashReason = 'r2_put_dead_network' | 'create_draft_dead_network';
+export type AutoStashReason =
+  | 'r2_put_dead_network'
+  | 'create_draft_dead_network'
+  | 'prepare_dead_network';
 
 export type SilenceCheckInconclusiveReason = 'missing_metering_long_recording' | 'ffmpeg_timeout' | 'ffmpeg_error';
 
@@ -231,6 +235,8 @@ export type ErrorPhase =
   | 'confirm'
   | 'create_draft'
   | 'patch_draft'
+  | 'prepare'
+  | 'probe'
   | 'delete_draft'
   | 'stash_write'
   | 'stash_read'

@@ -23,6 +23,7 @@ import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
 import { draftStorage } from '../lib/draftStorage';
 import { recoveryIntent } from '../lib/recoveryIntent';
+import { clonePendingConfirm } from '../lib/pendingConfirm';
 import { isValidDurableId } from '../lib/durableAudio/paths';
 import { durableTombstone } from '../lib/durableAudio/tombstone';
 import { durableActiveStore } from '../lib/durableAudio/activeStore';
@@ -62,6 +63,28 @@ function classifyAuthError(error: { name?: string; message?: string; status?: nu
   if (error.status === 429) return 'rate_limited';
   if (error.status && error.status >= 500) return 'server_error';
   return 'other';
+}
+
+/**
+ * Device registration is retried by the existing pending-registration UI.
+ * Transport failures are expected when a clinic tablet sleeps, changes Wi-Fi,
+ * or resumes after Android reaps the old fetch socket; keep those as a
+ * low-cardinality breadcrumb instead of reporting a caught network error as an
+ * application defect (Sentry REACT-NATIVE-C).
+ */
+function classifyDeviceRegistrationError(error: unknown): string {
+  if (error instanceof ApiError) {
+    return error.code ?? `http_${error.status}`;
+  }
+  if (error instanceof Error) {
+    if (
+      error.name === 'AbortError' ||
+      /Network request failed|Failed to fetch|NetworkError|Request timeout|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|Unable to resolve host/i.test(error.message)
+    ) {
+      return 'network';
+    }
+  }
+  return 'exception';
 }
 
 /**
@@ -665,7 +688,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // durable pointer is still a live resume target, so don't clear its
           // RECOVERY_INTENT as "stale".
           const durableIntentAlive = !!draft?.durable && isValidDurableId(draft.durable.recordingId);
-          if (draft && (draft.segments.length > 0 || durableIntentAlive)) {
+          if (draft && (draft.segments.length > 0 || durableIntentAlive || !!clonePendingConfirm(draft.pendingConfirm))) {
             setRecoveryDraftSlotId(intent.draftSlotId);
             breadcrumb('auth', 'local_recovery_intent_ready', {
               reason: intent.reason,
@@ -862,12 +885,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           throw error;
         }
         if (__DEV__) console.log('[Auth] device registration failed:', error);
-        const errorCode =
-          error instanceof ApiError
-            ? error.code ?? `http_${error.status}`
-            : 'exception';
+        const errorCode = classifyDeviceRegistrationError(error);
         trackEvent({ name: 'device_registration_failed', props: { error_code: errorCode } });
-        if (!(error instanceof ApiError) || errorCode === 'exception') {
+        if (errorCode === 'exception') {
           captureException(error, { tags: { op: 'register_device' } });
         } else {
           breadcrumb('auth', 'device_registration_failed', { error_code: errorCode });

@@ -515,6 +515,21 @@ final class DurableRecorderEngine: NSObject {
     }
   }
 
+  func setPendingConfirm(userId: String, recordingId: String, pendingConfirmJson: String?) throws {
+    guard DurablePaths.isValidId(userId), DurablePaths.isValidId(recordingId) else {
+      throw fail(.invalidId, "invalid ids", recordingId)
+    }
+    if let value = pendingConfirmJson {
+      guard value.utf8.count <= 16 * 1024,
+            (try? JSONSerialization.jsonObject(with: Data(value.utf8))) is [String: Any] else {
+        throw fail(.invalidId, "invalid pendingConfirmJson", recordingId)
+      }
+    }
+    try mutateManifestAtomically(userId: userId, recordingId: recordingId) { manifest in
+      manifest.pendingConfirmJson = pendingConfirmJson
+    }
+  }
+
   func markUploaded(userId: String, recordingId: String, confirmedUploadAt: String) throws {
     guard DurablePaths.isValidId(userId), DurablePaths.isValidId(recordingId) else {
       throw fail(.invalidId, "invalid ids", recordingId)

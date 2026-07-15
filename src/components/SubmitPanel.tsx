@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { Button } from './ui/Button';
+import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot } from '../types/multiPatient';
 
 interface SubmitPanelProps {
@@ -22,7 +23,7 @@ export function SubmitPanel({
   // A durable slot has empty segments (audio in audio.aac) but is a real,
   // submittable recording — count it as recorded/ready or Submit All hides for
   // durable-only sessions and durable slots are silently skipped.
-  const hasAudio = (s: PatientSlot) => s.segments.length > 0 || s.durable !== null;
+  const hasAudio = (s: PatientSlot) => slotHasRecoverableAudio(s);
   const hasRequiredFields = (s: PatientSlot) =>
     s.formData.patientName.trim().length > 0 &&
     (s.formData.clientName?.trim().length ?? 0) > 0 &&

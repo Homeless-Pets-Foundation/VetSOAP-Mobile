@@ -10,8 +10,31 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
+async function loadPure(path) {
+  const source = await read(path);
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      strict: true,
+    },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, {
+    module,
+    exports: module.exports,
+    require: () => ({}),
+    Error,
+    Date,
+    Set,
+    JSON,
+  });
+  return module.exports;
+}
+
 async function loadRecoveryVaultForTest() {
   const source = await read('src/lib/supportStaffRecoveryVault.ts');
+  const pendingConfirm = await loadPure('src/lib/pendingConfirm.ts');
   const compiled = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -26,6 +49,7 @@ async function loadRecoveryVaultForTest() {
   const drafts = { current: [] };
   const stashes = { current: [] };
   const messages = [];
+  const savedDraftSlots = [];
 
   class MockFile {
     constructor(uri) {
@@ -86,7 +110,10 @@ async function loadRecoveryVaultForTest() {
     './draftStorage': {
       draftStorage: {
         listDrafts: async () => drafts.current,
-        saveDraft: async (slot) => ({ draftSlotId: slot.id, promotedSegments: slot.segments }),
+        saveDraft: async (slot) => {
+          savedDraftSlots.push(slot);
+          return { draftSlotId: slot.id, promotedSegments: slot.segments };
+        },
         deleteDraft: async () => {},
       },
     },
@@ -134,6 +161,10 @@ async function loadRecoveryVaultForTest() {
     './durableAudio/paths': {
       isValidDurableId: (id) => typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id),
     },
+    './uploadIntent': {
+      normalizeUploadIntentId: (value, slotId) => value || `legacy:${slotId}`,
+    },
+    './pendingConfirm': pendingConfirm,
   };
 
   const module = { exports: {} };
@@ -153,6 +184,7 @@ async function loadRecoveryVaultForTest() {
     files,
     copyFailures,
     messages,
+    savedDraftSlots,
   };
 }
 
@@ -172,6 +204,15 @@ function makeDraft(slotId) {
     audioDuration: 10,
     serverDraftId: null,
     pendingSync: false,
+  };
+}
+
+function makePendingConfirm() {
+  const recordingId = '11111111-1111-4111-8111-111111111111';
+  const organizationId = '22222222-2222-4222-8222-222222222222';
+  return {
+    recordingId,
+    fileKey: `recordings/${organizationId}/${recordingId}.m4a`,
   };
 }
 
@@ -242,7 +283,7 @@ test('preservation returns structured results and dedupes only against valid rec
   assert.match(vault, /async function readValidItemsAndPrune\(\)/);
   assert.match(vault, /let expectedSegments = 0/);
   assert.match(vault, /copiedSegments < expectedSegments/);
-  assert.match(vault, /const validItems = items\.filter\(itemHasAudio\)/);
+  assert.match(vault, /const validItems = items\.filter\(itemIsRecoverable\)/);
   assert.match(vault, /const existing = await readValidItemsAndPrune\(\)/);
   assert.match(vault, /existing\.length \+ deduped\.length > MAX_RECOVERY_ITEMS/);
   assert.match(vault, /const duplicateItems = itemsToAdd\.filter/);
@@ -332,7 +373,77 @@ test('recovery vault reports copy failures and keeps delete scoped to the curren
   assert.equal(await supportStaffRecoveryVault.countItemsForUser(sameOrgUser), 0);
 });
 
-test('restore is same-org, all-or-nothing, strips server draft state, and consumes recovery copy', async () => {
+test('recovery vault preserves and restores validated pending-confirm proof without local audio', async () => {
+  const { supportStaffRecoveryVault, drafts, savedDraftSlots } = await loadRecoveryVaultForTest();
+  const sourceUser = {
+    id: 'support-user',
+    email: 'csr@example.com',
+    fullName: 'Support User',
+    role: 'support_staff',
+    organizationId: 'org-1',
+  };
+  const privilegedUser = {
+    id: 'admin-user',
+    role: 'admin',
+    organizationId: 'org-1',
+  };
+  const veterinarian = {
+    id: 'vet-user',
+    role: 'veterinarian',
+    organizationId: 'org-1',
+  };
+  const proof = makePendingConfirm();
+  drafts.current = [{
+    ...makeDraft('proof-only'),
+    segments: [],
+    audioDuration: 0,
+    pendingConfirm: proof,
+  }];
+
+  const preserved = await supportStaffRecoveryVault.preserveScopedUserRecordings(sourceUser);
+  assert.equal(preserved.ok, true);
+  assert.equal(preserved.recoverableCount, 1);
+  const [item] = await supportStaffRecoveryVault.listItemsForUser(privilegedUser);
+  assert.equal(item.slots[0].pendingConfirm.recordingId, proof.recordingId);
+  assert.equal((await supportStaffRecoveryVault.listItemsForUser(veterinarian)).length, 0);
+
+  const restored = await supportStaffRecoveryVault.restoreItemToCurrentUserDrafts(privilegedUser, item.id);
+  assert.equal(restored.length, 1);
+  assert.equal(savedDraftSlots[0].segments.length, 0);
+  assert.equal(savedDraftSlots[0].pendingConfirm.recordingId, proof.recordingId);
+  assert.equal(savedDraftSlots[0].serverDraftId, proof.recordingId);
+});
+
+test('veterinarian recovery strips cross-user proof and re-uploads a complete vault copy', async () => {
+  const { supportStaffRecoveryVault, drafts, files, savedDraftSlots } = await loadRecoveryVaultForTest();
+  const sourceUser = {
+    id: 'support-user',
+    email: 'csr@example.com',
+    fullName: 'Support User',
+    role: 'support_staff',
+    organizationId: 'org-1',
+  };
+  const veterinarian = {
+    id: 'vet-user',
+    role: 'veterinarian',
+    organizationId: 'org-1',
+  };
+  const draft = { ...makeDraft('vet-copy'), pendingConfirm: makePendingConfirm() };
+  drafts.current = [draft];
+  files.add(draft.segments[0].uri);
+
+  const preserved = await supportStaffRecoveryVault.preserveScopedUserRecordings(sourceUser);
+  assert.equal(preserved.ok, true);
+  const [item] = await supportStaffRecoveryVault.listItemsForUser(veterinarian);
+  assert.ok(item);
+  const restored = await supportStaffRecoveryVault.restoreItemToCurrentUserDrafts(veterinarian, item.id);
+  assert.equal(restored.length, 1);
+  assert.equal(savedDraftSlots[0].segments.length, 1);
+  assert.equal(savedDraftSlots[0].pendingConfirm, null);
+  assert.equal(savedDraftSlots[0].serverDraftId, null);
+});
+
+test('restore is same-org, all-or-nothing, keeps only proof-backed server state, and consumes recovery copy', async () => {
   const vault = await read('src/lib/supportStaffRecoveryVault.ts');
 
   assert.match(vault, /restoreItemToCurrentUserDrafts\(\s*user: RecoveryUser/);
@@ -343,8 +454,9 @@ test('restore is same-org, all-or-nothing, strips server draft state, and consum
   assert.match(vault, /deleteItem\(user: RecoveryUser \| null \| undefined, itemId: string\): Promise<boolean>/);
   assert.match(vault, /if \(!item \|\| !itemVisibleToUser\(item, user\)\) return false/);
   assert.match(vault, /serverRecordingId: null/);
-  assert.match(vault, /serverDraftId: null/);
-  assert.match(vault, /pendingConfirm: null/);
+  assert.match(vault, /serverDraftId: pendingConfirm\?\.recordingId \?\? null/);
+  assert.match(vault, /pendingConfirm: clonePendingConfirm\(slot\.pendingConfirm\)/);
+  assert.match(vault, /reuseSourceUpload \? clonePendingConfirm\(slot\.pendingConfirm\) : null/);
 });
 
 test('settings and recovery screens use scoped recovery APIs and expose destructive fallback only on preserve failure', async () => {

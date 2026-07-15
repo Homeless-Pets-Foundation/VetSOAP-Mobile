@@ -1,0 +1,791 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import ts from 'typescript';
+import vm from 'node:vm';
+
+const root = new URL('../', import.meta.url);
+const read = (path) => readFile(new URL(path, root), 'utf8');
+
+async function loadPure(path) {
+  const source = await read(path);
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, {
+    module, exports: module.exports, require: () => ({}), Error, Date, Set, JSON, Math,
+  });
+  return module.exports;
+}
+
+class ApiError extends Error {
+  constructor(message, status, isRetryable = false, details, code) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.isRetryable = isRetryable;
+    this.details = details;
+    this.code = code;
+  }
+}
+
+async function loadHarness({
+  getInfoAsync,
+  post,
+  get = async () => { throw new Error('unexpected GET'); },
+  del = async () => {},
+  upload = async () => ({ status: 200 }),
+  setTimeoutImpl = setTimeout,
+}) {
+  const events = [];
+  const preparation = await loadPure('src/api/uploadPreparation.ts');
+  const pending = await loadPure('src/lib/pendingConfirm.ts');
+  const retry = await loadPure('src/api/uploadRetry.ts');
+  const apiClient = {
+    post: async (...args) => {
+      events.push(['post', args[0]]);
+      return post(...args);
+    },
+    get: async (...args) => {
+      events.push(['get', args[0]]);
+      return get(...args);
+    },
+    patch: async () => { throw new Error('unexpected PATCH'); },
+    delete: async (...args) => {
+      events.push(['delete', args[0], args[1]]);
+      return del(...args);
+    },
+  };
+  const source = await read('src/api/recordings.ts');
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  const identitySchema = {
+    parse: (value) => value,
+    partial() { return this; },
+  };
+  const require = (specifier) => {
+    const modules = {
+      'expo-file-system/legacy': {
+        getInfoAsync,
+        FileSystemUploadType: { BINARY_CONTENT: 0 },
+        createUploadTask: (url) => {
+          events.push(['put', url]);
+          return {
+            uploadAsync: async () => upload(url),
+            cancelAsync: async () => {},
+          };
+        },
+      },
+      './client': { apiClient, ApiError },
+      '../lib/validation': {
+        recordingIdSchema: identitySchema,
+        recordingTaskIdSchema: identitySchema,
+        createRecordingSchema: identitySchema,
+        createRecordingPartialSchema: identitySchema,
+        searchQuerySchema: identitySchema,
+      },
+      '../lib/aiModels': { normalizeOrgAiModels: (value) => value },
+      '../lib/sslPinning': { validateUploadUrl: () => {} },
+      '../lib/recordingTasks': { unwrapTaskList: (value) => value },
+      '../lib/random': { getIdempotencyUuid: () => 'generated-key' },
+      '../lib/pendingConfirm': pending,
+      '../lib/analytics': { trackEvent: () => {} },
+      '../lib/monitoring': { breadcrumb: () => {} },
+      '../lib/networkWait': { waitForNetworkOnline: async () => {} },
+      '../constants/strings': { STALE_RECORDING_UPLOAD_COPY: 'saved locally' },
+      './uploadPreparation': preparation,
+      './uploadRetry': retry,
+    };
+    if (!(specifier in modules)) throw new Error(`unexpected module ${specifier}`);
+    return modules[specifier];
+  };
+  vm.runInNewContext(compiled, {
+    module,
+    exports: module.exports,
+    require,
+    Error,
+    Date,
+    Set,
+    JSON,
+    Math,
+    Promise,
+    setTimeout: setTimeoutImpl,
+    clearTimeout,
+    AbortController,
+  });
+  return { recordingsApi: module.exports.recordingsApi, events };
+}
+
+const recordingId = '11111111-1111-4111-8111-111111111111';
+const orgId = '22222222-2222-4222-8222-222222222222';
+const metadata = {
+  patientName: 'Patient', clientName: null, species: null, breed: null,
+  appointmentType: null, templateId: null, foreignLanguage: false, pimsPatientId: null,
+};
+const recording = { id: recordingId, organizationId: orgId, status: 'uploaded', ...metadata };
+const prepared = (count) => ({
+  outcome: 'prepared',
+  recording: { ...recording, status: 'uploading' },
+  replacedMissingRecordingId: false,
+  warnings: [],
+  uploads: Array.from({ length: count }, (_, index) => ({
+    index,
+    uploadUrl: `https://upload.example.test/${index}`,
+    fileKey: count === 1
+      ? `recordings/${orgId}/${recordingId}.m4a`
+      : `recordings/${orgId}/${recordingId}_segment_${index}.m4a`,
+    expiresAt: '2035-01-01T00:00:00.000Z',
+  })),
+});
+
+test('missing local audio fails preflight before preparation, create, presign, or PUT', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: false }),
+    post: async () => { throw new Error('server mutation must not run'); },
+  });
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///missing.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent',
+    }),
+    /Failed to read audio segment/,
+  );
+  assert.deepEqual(harness.events, []);
+});
+
+test('prepared multi-file upload anchors first, PUTs exact ordered keys, persists hint, then confirms', async () => {
+  const callbackEvents = [];
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path, body) => {
+      if (path.endsWith('/prepare-upload')) return prepared(2);
+      if (path.endsWith('/confirm-upload')) {
+        assert.deepEqual(Array.from(body.segmentKeys), prepared(2).uploads.map((entry) => entry.fileKey));
+        return recording;
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+  const result = await harness.recordingsApi.createWithSegments(
+    metadata,
+    [{ uri: 'file:///one.m4a', duration: 1 }, { uri: 'file:///two.m4a', duration: 1 }],
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: async () => callbackEvents.push('anchored'),
+      onR2Complete: async (hint) => {
+        callbackEvents.push('hint');
+        assert.deepEqual(Array.from(hint.segmentKeys), prepared(2).uploads.map((entry) => entry.fileKey));
+      },
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(callbackEvents, ['anchored', 'hint']);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'put', 'post']);
+});
+
+test('a complete confirmation hint resumes without reading a missing local file', async () => {
+  let fileReads = 0;
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata,
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 128 }],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+  const result = await harness.recordingsApi.createWithFile(metadata, 'file:///gone.m4a', 'audio/x-m4a', {
+    idempotencyKey: 'intent',
+    resume: hint,
+  });
+  assert.equal(result.id, recordingId);
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
+});
+
+test('confirm 409 probes and returns an already-committed recording without local audio', async () => {
+  let fileReads = 0;
+  const completed = { ...recording, status: 'completed' };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => completed,
+  });
+  const result = await harness.recordingsApi.confirmPendingUpload(metadata, hint, {
+    idempotencyKey: 'intent',
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
+test('only an untyped route-level prepare 404 enters the legacy compatibility flow', async () => {
+  let prepareCalls = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        prepareCalls++;
+        throw new ApiError('not found', 404);
+      }
+      if (path === '/api/recordings') return { ...recording, status: 'uploading' };
+      if (path.endsWith('/upload-url')) return {
+        uploadUrl: 'https://upload.example.test/legacy',
+        fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+        warnings: [],
+      };
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+  await harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+    idempotencyKey: 'intent',
+  });
+  assert.equal(prepareCalls, 1);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post', 'post', 'put', 'post']);
+
+  const typed = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async () => { throw new ApiError('typed', 404, false, undefined, 'INVALID_UPLOAD_PREPARATION'); },
+  });
+  await assert.rejects(
+    typed.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent',
+    }),
+    (error) => error instanceof ApiError && error.code === 'INVALID_UPLOAD_PREPARATION',
+  );
+  assert.equal(typed.events.length, 1);
+});
+
+test('confirm 404 plus a missing row refuses re-upload when local audio is gone', async () => {
+  let fileReads = 0;
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata,
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 128 }],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('missing', 404);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => { throw new ApiError('missing', 404); },
+  });
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///gone.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent',
+      resume: hint,
+    }),
+    /saved locally/,
+  );
+  assert.equal(fileReads, 1);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
+test('a stale manifested URL refreshes through preparation and preserves the exact key', async () => {
+  let preparationCalls = 0;
+  let uploadCalls = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        preparationCalls++;
+        return prepared(1);
+      }
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    upload: async () => (++uploadCalls === 1 ? { status: 403 } : { status: 200 }),
+  });
+
+  await harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+    idempotencyKey: 'intent',
+  });
+  assert.equal(preparationCalls, 2);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post', 'put', 'post']);
+  assert.equal(harness.events[1][1], harness.events[3][1]);
+});
+
+test('confirm recovery retries only confirmation for draft/uploading probes', async () => {
+  let confirmCalls = 0;
+  let fileReads = 0;
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata,
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 128 }],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) {
+        confirmCalls++;
+        if (confirmCalls === 1) throw new ApiError('missing', 404);
+        return recording;
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => ({ ...recording, status: 'uploading' }),
+  });
+
+  await harness.recordingsApi.createWithFile(metadata, 'file:///gone.m4a', 'audio/x-m4a', {
+    idempotencyKey: 'intent',
+    resume: hint,
+  });
+  assert.equal(confirmCalls, 2);
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get', 'post']);
+});
+
+test('a later-state probe requires preparation proof and never trusts GET alone', async () => {
+  let fileReads = 0;
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata,
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 128 }],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('missing', 404);
+      if (path.endsWith('/prepare-upload')) {
+        return {
+          outcome: 'already_uploaded',
+          recording,
+          replacedMissingRecordingId: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => ({ ...recording, status: 'uploaded' }),
+  });
+
+  const result = await harness.recordingsApi.createWithFile(metadata, 'file:///gone.m4a', 'audio/x-m4a', {
+    idempotencyKey: 'intent',
+    resume: hint,
+  });
+  assert.equal(result.id, recordingId);
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get', 'post']);
+});
+
+test('already-uploaded preparation anchors the canonical row without PUT or confirm', async () => {
+  const callbacks = [];
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        return {
+          outcome: 'already_uploaded',
+          recording,
+          replacedMissingRecordingId: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: async (id) => callbacks.push(['anchor', id]),
+      onR2Complete: async () => callbacks.push(['hint']),
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(callbacks, [['anchor', recordingId]]);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
+});
+
+test('already-processed preparation anchors the canonical row without PUT or confirm', async () => {
+  const completed = { ...recording, status: 'completed', soapNoteId: 'soap-1' };
+  const callbacks = [];
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        return {
+          outcome: 'already_processed',
+          recording: completed,
+          replacedMissingRecordingId: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: async (id) => callbacks.push(['anchor', id]),
+      onR2Complete: async () => callbacks.push(['hint']),
+    },
+  );
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(callbacks, [['anchor', recordingId]]);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
+});
+
+test('anchor and pending-hint persistence failures do not block canonical upload confirmation', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: async () => { throw new Error('local anchor unavailable'); },
+      onR2Complete: async () => { throw new Error('local hint unavailable'); },
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('hung prepared-anchor persistence is bounded before storage upload', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: () => new Promise(() => {}),
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('a late prepared-anchor write is cleaned after canonical confirmation', async () => {
+  let releaseAnchor;
+  const clearReasons = [];
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onRecordingPrepared: () => new Promise((resolve) => { releaseAnchor = resolve; }),
+      onClearPendingConfirm: async (reason) => { clearReasons.push(reason); },
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(clearReasons, []);
+  releaseAnchor();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(clearReasons, ['committed_late_anchor']);
+});
+
+test('hung stale-proof clearing is bounded before retry preparation', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      resume: { recordingId, fileKey: 'https://invalid.example.test/audio.m4a' },
+      onClearPendingConfirm: () => new Promise(() => {}),
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('hung pending-hint persistence is bounded and a late write is cleared after confirmation', async () => {
+  let releaseHint;
+  const clearReasons = [];
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent',
+      onR2Complete: () => new Promise((resolve) => { releaseHint = resolve; }),
+      onClearPendingConfirm: async (reason) => { clearReasons.push(reason); },
+    },
+  );
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(clearReasons, []);
+  releaseHint();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(clearReasons, ['committed_late_hint']);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('a stale signature on the final normal attempt still PUTs once to the refreshed URL', async () => {
+  let uploadCalls = 0;
+  let prepareCalls = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        prepareCalls++;
+        return prepared(1);
+      }
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    upload: async () => {
+      uploadCalls++;
+      if (uploadCalls <= 2) throw new Error('Network request failed');
+      if (uploadCalls === 3) return { status: 403 };
+      return { status: 200 };
+    },
+    setTimeoutImpl: (callback, ms, ...args) => setTimeout(callback, Math.min(ms, 5), ...args),
+  });
+
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    { idempotencyKey: 'intent' },
+  );
+  assert.equal(result.id, recordingId);
+  assert.equal(prepareCalls, 2);
+  assert.equal(uploadCalls, 4);
+  assert.deepEqual(
+    harness.events.map((event) => event[0]),
+    ['post', 'put', 'put', 'put', 'post', 'put', 'post'],
+  );
+});
+
+test('a refreshed URL rejected with 403 fails after one refresh instead of looping', async () => {
+  let uploadCalls = 0;
+  let prepareCalls = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        prepareCalls++;
+        return prepared(1);
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+    upload: async () => {
+      uploadCalls++;
+      return { status: 403 };
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(
+      metadata,
+      'file:///one.m4a',
+      'audio/x-m4a',
+      { idempotencyKey: 'intent' },
+    ),
+    /refreshed upload URL was rejected/i,
+  );
+  assert.equal(prepareCalls, 2);
+  assert.equal(uploadCalls, 2);
+});
+
+test('legacy fallback deletes a row it created when upload fails before confirmation proof', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) throw new ApiError('route absent', 404);
+      if (path === '/api/recordings') return { ...recording, status: 'uploading' };
+      if (path.endsWith('/upload-url')) return {
+        uploadUrl: 'https://upload.example.test/legacy',
+        fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+      };
+      throw new Error(`unexpected POST ${path}`);
+    },
+    upload: async () => { throw new Error('permanent storage failure'); },
+  });
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent',
+    }),
+    /permanent storage failure/,
+  );
+  const deletion = harness.events.find((event) => event[0] === 'delete');
+  assert.equal(deletion?.[1], `/api/recordings/${recordingId}`);
+  assert.equal(deletion?.[2]?.reason, 'orphan_pending_confirm');
+  assert.equal(harness.events.some((event) => event[1]?.endsWith?.('/confirm-upload')), false);
+});
+
+test('typed preparation failures and partial PUT failure stop without fallback, hint, or confirm', async () => {
+  for (const status of [400, 409, 503]) {
+    const typed = await loadHarness({
+      getInfoAsync: async () => ({ exists: true, size: 128 }),
+      post: async () => { throw new ApiError('typed preparation failure', status, false, undefined, 'UPLOAD_INTENT_CONFLICT'); },
+    });
+    await assert.rejects(
+      typed.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+        idempotencyKey: 'intent',
+      }),
+      (error) => error instanceof ApiError && error.status === status,
+    );
+    assert.deepEqual(typed.events.map((event) => event[0]), ['post']);
+  }
+
+  let hints = 0;
+  const partial = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(2);
+      throw new Error(`confirm must not run after partial upload: ${path}`);
+    },
+    upload: async (url) => {
+      if (url.endsWith('/1')) throw new Error('permanent storage failure');
+      return { status: 200 };
+    },
+  });
+  await assert.rejects(
+    partial.recordingsApi.createWithSegments(
+      metadata,
+      [{ uri: 'file:///one.m4a', duration: 1 }, { uri: 'file:///two.m4a', duration: 1 }],
+      'audio/x-m4a',
+      { idempotencyKey: 'intent', onR2Complete: async () => { hints++; } },
+    ),
+    /permanent storage failure/,
+  );
+  assert.equal(hints, 0);
+  assert.equal(partial.events.filter((event) => event[0] === 'post').length, 1);
+});
+
+test('a second missing-row confirmation stops at the one-replacement cap', async () => {
+  const replacementId = '33333333-3333-4333-8333-333333333333';
+  let confirmCalls = 0;
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata,
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 128 }],
+  };
+  const replacement = {
+    ...prepared(1),
+    recording: { ...recording, id: replacementId, status: 'uploading' },
+    replacedMissingRecordingId: true,
+    uploads: [{
+      ...prepared(1).uploads[0],
+      fileKey: `recordings/${orgId}/${replacementId}.m4a`,
+    }],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) {
+        confirmCalls++;
+        throw new ApiError('missing', 404);
+      }
+      if (path.endsWith('/prepare-upload')) return replacement;
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => { throw new ApiError('missing', 404); },
+  });
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent',
+      resume: hint,
+    }),
+    /saved locally/,
+  );
+  assert.equal(confirmCalls, 2);
+  assert.equal(harness.events.filter((event) => event[0] === 'put').length, 1);
+});
+
+test('an initial stale-ID preparation replacement consumes the one-replacement cap', async () => {
+  const replacementId = '33333333-3333-4333-8333-333333333333';
+  let preparationCalls = 0;
+  const replacement = {
+    ...prepared(1),
+    recording: { ...recording, id: replacementId, status: 'uploading' },
+    replacedMissingRecordingId: true,
+    uploads: [{
+      ...prepared(1).uploads[0],
+      fileKey: `recordings/${orgId}/${replacementId}.m4a`,
+    }],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        preparationCalls++;
+        return replacement;
+      }
+      if (path.endsWith('/confirm-upload')) throw new ApiError('missing', 404);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => { throw new ApiError('missing', 404); },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent',
+      existingRecordingId: recordingId,
+    }),
+    /saved locally/,
+  );
+  assert.equal(preparationCalls, 1);
+  assert.equal(harness.events.filter((event) => event[0] === 'put').length, 1);
+});

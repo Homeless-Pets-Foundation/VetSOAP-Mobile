@@ -26,10 +26,16 @@ import { normalizeOrgAiModels } from '../lib/aiModels';
 import { validateUploadUrl } from '../lib/sslPinning';
 import { unwrapTaskList } from '../lib/recordingTasks';
 import { getIdempotencyUuid } from '../lib/random';
-import type { PendingConfirm } from '../types/multiPatient';
+import type { PendingConfirm, PendingConfirmFile, PendingConfirmMetadata } from '../types/multiPatient';
+import { validatePendingConfirm } from '../lib/pendingConfirm';
 import { trackEvent } from '../lib/analytics';
 import { breadcrumb } from '../lib/monitoring';
 import { waitForNetworkOnline } from '../lib/networkWait';
+import { STALE_RECORDING_UPLOAD_COPY } from '../constants/strings';
+import {
+  validatePreparedUploadEnvelope,
+  type PrepareUploadResponse,
+} from './uploadPreparation';
 import {
   tagPhase,
   phaseError,
@@ -38,11 +44,12 @@ import {
   uploadTimeoutMs,
   runWithConcurrency,
   type TaggedError,
-  type UploadPhase,
 } from './uploadRetry';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
+const PENDING_CONFIRM_PERSIST_TIMEOUT_MS = 3_000;
+const RECORDING_ANCHOR_PERSIST_TIMEOUT_MS = 3_000;
 
 export type RecordingDeleteReason =
   | 'user_delete'
@@ -50,8 +57,7 @@ export type RecordingDeleteReason =
   | 'remove_slot'
   | 'orphan_pending_confirm'
   | 'missing_audio_rerecord'
-  | 'orphan_draft_cleanup'
-  | 'post_upload_local_cleanup';
+  | 'orphan_draft_cleanup';
 
 /**
  * Expected bitrate range for a healthy recording. Outside this window we
@@ -222,7 +228,6 @@ async function uploadOnceWithRetry<T>(
         wait_ms: waitMs,
         was_online_at_retry: online,
         http_status: (err as TaggedError).httpStatus,
-        reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown',
       });
       // Tiny jitter so multiple concurrent uploads on the same device
       // don't slam the AP the instant it comes back.
@@ -378,12 +383,722 @@ function assertRecordingMatchesMetadataPayload(
   return recording;
 }
 
-function isAlreadyConfirmedOrProcessing(recording: Recording): boolean {
-  return recording.status !== 'draft' && recording.status !== 'uploading' && recording.status !== 'failed';
-}
-
 function shouldFallbackSubmittedAtSort(error: unknown, params: ListRecordingsParams): boolean {
   return error instanceof ApiError && error.status === 400 && params.sortBy === 'submittedAt';
+}
+
+interface LocalUploadFile extends PendingConfirmFile {
+  uri: string;
+  duration: number;
+}
+
+interface ResilientUploadOptions {
+  onUploadProgress?: (event: UploadProgressEvent) => void;
+  onR2Complete?: (hint: PendingConfirm) => void | Promise<void>;
+  onRecordingPrepared?: (recordingId: string) => void | Promise<void>;
+  onClearPendingConfirm?: (reason?: PendingConfirmClearReason) => void | Promise<void>;
+  resume?: PendingConfirm;
+  existingRecordingId?: string;
+  idempotencyKey?: string;
+  metadataDirty?: boolean;
+  audioDurationSeconds?: number;
+  slotIndex?: number;
+  mode?: 'durable' | 'standard';
+}
+
+type PendingConfirmClearReason =
+  | 'canonical_change'
+  | 'invalid_resume'
+  | 'committed_late_hint'
+  | 'committed_late_anchor';
+
+function completeUploadMetadata(data: CreateRecording): PendingConfirmMetadata {
+  const validated = createRecordingSchema.parse(data);
+  return {
+    patientName: validated.patientName,
+    clientName: validated.clientName || null,
+    species: validated.species || null,
+    breed: validated.breed || null,
+    appointmentType: validated.appointmentType || null,
+    templateId: validated.templateId || null,
+    foreignLanguage: validated.foreignLanguage ?? false,
+    pimsPatientId: validated.pimsPatientId || null,
+  };
+}
+
+function metadataAsPayload(metadata: PendingConfirmMetadata): RecordingPayload {
+  return { ...metadata };
+}
+
+function validatePreparationResponse(
+  raw: unknown,
+  expectedFileCount: number,
+  metadata: PendingConfirmMetadata,
+): PrepareUploadResponse {
+  let value: PrepareUploadResponse;
+  try {
+    value = validatePreparedUploadEnvelope(raw, expectedFileCount);
+  } catch (error) {
+    tagPhase(error, 'prepare');
+  }
+  if (value.outcome !== 'prepared') {
+    assertRecordingMatchesMetadataPayload(value.recording, metadataAsPayload(metadata), {
+      allowServerEnrichedBlankFields: true,
+    });
+    return value;
+  }
+  for (const upload of value.uploads!) {
+    // Keep validation in this try-controlled preparation path so URL failures
+    // remain phase tagged and cannot bypass caller cleanup/finally blocks.
+    try {
+      validateUploadUrl(upload.uploadUrl);
+    } catch (error) {
+      tagPhase(error, 'prepare');
+    }
+  }
+  return value;
+}
+
+async function preflightLocalFiles(files: LocalUploadFile[]): Promise<LocalUploadFile[]> {
+  if (files.length < 1 || files.length > 20) phaseError('preflight', 'A recording must contain between 1 and 20 audio files.');
+  const checked: LocalUploadFile[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (!(file.uri.startsWith('file://') || file.uri.startsWith('/'))) {
+      phaseError('preflight', `Audio segment ${i + 1} has an invalid local path.`);
+    }
+    if (!ALLOWED_AUDIO_TYPES.has(file.contentType)) {
+      phaseError('preflight', `Audio segment ${i + 1} has an unsupported format.`);
+    }
+    let info: Awaited<ReturnType<typeof getInfoAsync>>;
+    try {
+      info = await getInfoAsync(file.uri);
+    } catch (error) {
+      tagPhase(error, 'preflight');
+    }
+    const size = info.exists ? info.size ?? 0 : 0;
+    if (!info.exists) phaseError('preflight', `Failed to read audio segment ${i + 1}. Please try recording again.`);
+    if (!size) phaseError('preflight', `Audio segment ${i + 1} is empty. Please try recording again.`);
+    if (size > MAX_FILE_SIZE_BYTES) {
+      phaseError('preflight', `Audio segment ${i + 1} is too large. Maximum allowed size is 250MB.`);
+    }
+    checked.push({ ...file, fileSizeBytes: size });
+  }
+  return checked;
+}
+
+function preparationFiles(files: LocalUploadFile[] | PendingConfirmFile[]): PendingConfirmFile[] {
+  return files.map(({ fileName, contentType, fileSizeBytes }) => ({ fileName, contentType, fileSizeBytes }));
+}
+
+async function requestPreparation(
+  existingRecordingId: string | undefined,
+  idempotencyKey: string,
+  metadata: PendingConfirmMetadata,
+  files: PendingConfirmFile[],
+): Promise<PrepareUploadResponse> {
+  let raw: unknown;
+  try {
+    raw = await apiClient.post('/api/recordings/prepare-upload', {
+      ...(existingRecordingId ? { existingRecordingId } : {}),
+      metadata,
+      files,
+    }, idempotencyKey);
+  } catch (error) {
+    tagPhase(error, 'prepare');
+  }
+  return validatePreparationResponse(raw, files.length, metadata);
+}
+
+function isRouteLevelPrepare404(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === undefined;
+}
+
+function trackStaleRecovery(
+  stage: string,
+  outcome: string,
+  segmentCount: number,
+  mode: 'durable' | 'standard',
+): void {
+  trackEvent({
+    name: 'upload_stale_recording_recovery',
+    props: { stage, outcome, attempt: 1, segment_count: segmentCount, mode },
+  });
+}
+
+async function postConfirm(
+  recordingId: string,
+  hint: Pick<PendingConfirm, 'fileKey' | 'segmentKeys' | 'segmentCount'>,
+  metadata: PendingConfirmMetadata,
+): Promise<Recording> {
+  recordingIdSchema.parse(recordingId);
+  let confirmed: Recording;
+  try {
+    confirmed = await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
+      fileKey: hint.fileKey,
+      ...(hint.segmentKeys ? { segmentKeys: hint.segmentKeys, segmentCount: hint.segmentCount } : {}),
+      metadata,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      let current: Recording;
+      try {
+        current = await apiClient.get(`/api/recordings/${recordingId}`);
+      } catch (probeError) {
+        tagPhase(probeError, 'confirm');
+      }
+      if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
+        return assertRecordingMatchesMetadataPayload(current, metadataAsPayload(metadata), {
+          allowServerEnrichedBlankFields: true,
+        });
+      }
+    }
+    tagPhase(error, 'confirm');
+  }
+  return assertRecordingMatchesMetadataPayload(confirmed, metadataAsPayload(metadata), {
+    allowServerEnrichedBlankFields: true,
+  });
+}
+
+async function invokePreparedCallback(
+  callback: ResilientUploadOptions['onRecordingPrepared'],
+  recordingId: string,
+): Promise<{ settled: Promise<void>; timedOut: boolean }> {
+  if (!callback) return { settled: Promise.resolve(), timedOut: false };
+  const settled = Promise.resolve()
+    .then(() => callback(recordingId))
+    .then(
+      () => undefined,
+      () => {
+        // The server-side idempotency intent remains authoritative. A local
+        // SecureStore/native bridge failure must not strand the upload before
+        // the R2 PUT, and the callback stays handled if it rejects later.
+        breadcrumb('upload', 'recording_anchor_write_failed', { stage: 'prepared' });
+      },
+    );
+  try {
+    await withTimeout(
+      settled,
+      RECORDING_ANCHOR_PERSIST_TIMEOUT_MS,
+      'Timed out while saving upload identity.',
+    );
+    return { settled, timedOut: false };
+  } catch {
+    breadcrumb('upload', 'recording_anchor_write_timeout', { stage: 'prepared' });
+    return { settled, timedOut: true };
+  }
+}
+
+async function invokeClearHint(
+  callback: ResilientUploadOptions['onClearPendingConfirm'],
+  reason: PendingConfirmClearReason,
+): Promise<void> {
+  if (!callback) return;
+  const settled = Promise.resolve()
+    .then(() => callback(reason))
+    .then(
+      () => undefined,
+      () => {
+        breadcrumb('upload', 'pending_confirm_clear_failed', { stage: reason });
+      },
+    );
+  try {
+    await withTimeout(
+      settled,
+      PENDING_CONFIRM_PERSIST_TIMEOUT_MS,
+      'Timed out while clearing upload recovery state.',
+    );
+  } catch {
+    breadcrumb('upload', 'pending_confirm_clear_timeout', { stage: reason });
+  }
+}
+
+async function invokeHintCallback(
+  callback: ResilientUploadOptions['onR2Complete'],
+  hint: PendingConfirm,
+): Promise<{ settled: Promise<void>; timedOut: boolean }> {
+  if (!callback) return { settled: Promise.resolve(), timedOut: false };
+  const settled = Promise.resolve()
+    .then(() => callback(hint))
+    .then(
+      () => undefined,
+      () => {
+        // The persistent server intent and deterministic object keys remain the
+        // correctness backstop, so a local hint write must not block confirmation.
+        breadcrumb('upload', 'pending_confirm_write_failed', { stage: 'post_put' });
+      },
+    );
+  try {
+    await withTimeout(
+      settled,
+      PENDING_CONFIRM_PERSIST_TIMEOUT_MS,
+      'Timed out while saving upload recovery state.',
+    );
+    return { settled, timedOut: false };
+  } catch {
+    breadcrumb('upload', 'pending_confirm_write_timeout', { stage: 'post_put' });
+    return { settled, timedOut: true };
+  }
+}
+
+interface ActiveUploadTask {
+  cancelAsync(): Promise<void>;
+}
+
+type StaleCanonicalPreparationError = TaggedError & { staleCanonicalPreparation: true };
+
+function staleCanonicalPreparationError(): StaleCanonicalPreparationError {
+  const error = new Error('Upload preparation changed while storage uploads were active.') as StaleCanonicalPreparationError;
+  error.uploadPhase = 'prepare';
+  error.staleCanonicalPreparation = true;
+  return error;
+}
+
+function isStaleCanonicalPreparationError(error: unknown): error is StaleCanonicalPreparationError {
+  return error instanceof Error && (error as Partial<StaleCanonicalPreparationError>).staleCanonicalPreparation === true;
+}
+
+async function putPreparedFiles(
+  files: LocalUploadFile[],
+  initial: PrepareUploadResponse,
+  requestFreshPreparation: () => Promise<PrepareUploadResponse>,
+  onProgress?: (event: UploadProgressEvent) => void,
+): Promise<{ keys: string[]; already?: Recording }> {
+  if (!initial.uploads) phaseError('prepare', 'Prepared upload URLs are missing.');
+  let uploads = initial.uploads;
+  const keys = uploads.map((entry) => entry.fileKey);
+  const sentBytes = new Array(files.length).fill(0) as number[];
+  const totalBytes = files.reduce((sum, file) => sum + file.fileSizeBytes, 0);
+  let lastPercent = 0;
+  const active = new Set<ActiveUploadTask>();
+  let refreshPromise: Promise<PrepareUploadResponse> | null = null;
+  let refreshUsed = false;
+  let already: Recording | undefined;
+  let refreshFailure: TaggedError | undefined;
+
+  const emit = () => {
+    if (!onProgress) return;
+    const loaded = sentBytes.reduce((sum, bytes) => sum + bytes, 0);
+    lastPercent = Math.max(lastPercent, totalBytes > 0 ? Math.round((loaded / totalBytes) * 100) : 0);
+    onProgress({ loaded, total: totalBytes, percent: lastPercent });
+  };
+  const cancelActive = async () => {
+    await Promise.all([...active].map((task) => task.cancelAsync().catch(() => {})));
+  };
+  const refresh = async (): Promise<PrepareUploadResponse> => {
+    if (refreshPromise) return refreshPromise;
+    if (refreshUsed) phaseError('r2_put', 'The refreshed upload URL was rejected. Please try again.');
+    refreshUsed = true;
+    refreshPromise = requestFreshPreparation();
+    const next = await refreshPromise;
+    if (next.recording.id !== initial.recording.id) {
+      refreshFailure = staleCanonicalPreparationError();
+      await cancelActive();
+      throw refreshFailure;
+    }
+    if (next.outcome !== 'prepared') {
+      already = next.recording;
+      await cancelActive();
+      return next;
+    }
+    const nextKeys = next.uploads?.map((entry) => entry.fileKey) ?? [];
+    if (nextKeys.length !== keys.length || nextKeys.some((key, i) => key !== keys[i])) {
+      refreshFailure = staleCanonicalPreparationError();
+      await cancelActive();
+      throw refreshFailure;
+    }
+    uploads = next.uploads!;
+    return next;
+  };
+
+  const uploadOne = async (index: number) => {
+    const file = files[index];
+    let attempt = 0;
+    let urlEntry = uploads[index];
+    // A stale signature refresh earns exactly one PUT against the fresh URL,
+    // even when transient failures already consumed the normal attempt budget.
+    // Otherwise a final-attempt 401/403 can refresh and fall out of the loop as
+    // a false success without ever sending bytes to the new URL.
+    let refreshedUrlAttemptPending = false;
+    let usingRefreshedUrl = false;
+    while (attempt < MAX_R2_ATTEMPTS || refreshedUrlAttemptPending) {
+      attempt++;
+      refreshedUrlAttemptPending = false;
+      sentBytes[index] = 0;
+      let task: ActiveUploadTask | null = null;
+      try {
+        try {
+          validateUploadUrl(urlEntry.uploadUrl);
+        } catch (error) {
+          tagPhase(error, 'r2_put');
+        }
+        const uploadTask = createUploadTask(
+          urlEntry.uploadUrl,
+          file.uri,
+          {
+            httpMethod: 'PUT',
+            uploadType: FileSystemUploadType.BINARY_CONTENT,
+            headers: { 'Content-Type': file.contentType },
+          },
+          onProgress
+            ? (progress) => {
+                sentBytes[index] = Math.min(progress.totalBytesSent, file.fileSizeBytes);
+                emit();
+              }
+            : undefined,
+        );
+        task = uploadTask;
+        active.add(uploadTask);
+        const result = await withTimeout(
+          uploadTask.uploadAsync(),
+          uploadTimeoutMs(file.fileSizeBytes, files.length > 1 ? SEGMENT_UPLOAD_CONCURRENCY : 1),
+          'Upload timed out. Please check your connection and try again.',
+          () => { uploadTask.cancelAsync().catch(() => {}); },
+        );
+        if (!result || result.status < 200 || result.status >= 300) {
+          phaseError('r2_put', `Upload to storage failed (HTTP ${result?.status ?? 'unknown'}).`, result?.status);
+        }
+        sentBytes[index] = file.fileSizeBytes;
+        emit();
+        return;
+      } catch (error) {
+        if (already) return;
+        if (refreshFailure) throw refreshFailure;
+        if (isStalePresignError(error)) {
+          if (usingRefreshedUrl) {
+            phaseError('r2_put', 'The refreshed upload URL was rejected. Please try again.');
+          }
+          const next = await refresh();
+          if (next.outcome !== 'prepared') return;
+          urlEntry = next.uploads![index];
+          usingRefreshedUrl = true;
+          refreshedUrlAttemptPending = true;
+          continue;
+        }
+        if (!isTransientUploadError(error) || attempt >= MAX_R2_ATTEMPTS) throw error;
+        await waitForNetworkOnline(NET_RECOVERY_WAIT_MS);
+        await new Promise<void>((resolve) => setTimeout(resolve, 200 + Math.random() * 300));
+      } finally {
+        if (task) active.delete(task);
+      }
+    }
+  };
+
+  try {
+    await runWithConcurrency(files.length, SEGMENT_UPLOAD_CONCURRENCY, uploadOne);
+  } catch (error) {
+    await cancelActive();
+    if (error instanceof Error && (error as TaggedError).uploadPhase) throw error;
+    tagPhase(error, 'r2_put');
+  }
+  if (already) return { keys, already };
+  return { keys };
+}
+
+async function legacyUpload(
+  data: CreateRecording,
+  files: LocalUploadFile[],
+  metadata: PendingConfirmMetadata,
+  options: ResilientUploadOptions,
+  idempotencyKey: string,
+  persistPrepared: (recordingId: string) => Promise<void>,
+): Promise<{ recording: Recording; hint: PendingConfirm; replacedMissingRecordingId: boolean }> {
+  let recording: Recording | undefined;
+  let replacedMissingRecordingId = false;
+  let createdForLegacyUpload = false;
+  if (options.existingRecordingId) {
+    try {
+      if (options.metadataDirty) {
+        recording = await apiClient.patch(
+          `/api/recordings/${recordingIdSchema.parse(options.existingRecordingId)}/draft-metadata`,
+          normalizeDraftMetadataPayload(data),
+        );
+      } else {
+        recording = await apiClient.get(`/api/recordings/${recordingIdSchema.parse(options.existingRecordingId)}`);
+      }
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) tagPhase(error, 'patch_draft');
+      replacedMissingRecordingId = true;
+    }
+  }
+  if (!recording) {
+    try {
+      recording = await apiClient.post('/api/recordings', {
+        ...normalizeCreateRecordingPayload(data),
+        isDraft: false,
+      }, idempotencyKey);
+      createdForLegacyUpload = true;
+    } catch (error) {
+      tagPhase(error, 'create_draft');
+    }
+  }
+  if (!recording) phaseError('create_draft', 'The server did not return a recording.');
+  const canonicalRecording = recording;
+  await persistPrepared(canonicalRecording.id);
+
+  const keys = new Array(files.length) as string[];
+  const sent = new Array(files.length).fill(0) as number[];
+  const total = files.reduce((sum, file) => sum + file.fileSizeBytes, 0);
+  let lastPercent = 0;
+  const uploadOne = async (index: number) => {
+    const file = files[index];
+    await uploadOnceWithRetry(async () => {
+      let signed: UploadUrlResponse;
+      try {
+        signed = await apiClient.post(`/api/recordings/${canonicalRecording.id}/upload-url`, {
+          fileName: file.fileName,
+          contentType: file.contentType,
+          fileSizeBytes: file.fileSizeBytes,
+        });
+        validateUploadUrl(signed.uploadUrl);
+      } catch (error) {
+        tagPhase(error, 'presign');
+      }
+      keys[index] = signed.fileKey;
+      const task = createUploadTask(
+        signed.uploadUrl,
+        file.uri,
+        { httpMethod: 'PUT', uploadType: FileSystemUploadType.BINARY_CONTENT, headers: { 'Content-Type': file.contentType } },
+        options.onUploadProgress
+          ? (progress) => {
+              sent[index] = Math.min(progress.totalBytesSent, file.fileSizeBytes);
+              const loaded = sent.reduce((sum, bytes) => sum + bytes, 0);
+              lastPercent = Math.max(lastPercent, total > 0 ? Math.round((loaded / total) * 100) : 0);
+              options.onUploadProgress!({ loaded, total, percent: lastPercent });
+            }
+          : undefined,
+      );
+      const result = await withTimeout(
+        task.uploadAsync(), uploadTimeoutMs(file.fileSizeBytes),
+        'Upload timed out. Please check your connection and try again.',
+        () => { task.cancelAsync().catch(() => {}); },
+      );
+      if (!result || result.status < 200 || result.status >= 300) {
+        phaseError('r2_put', `Upload to storage failed (HTTP ${result?.status ?? 'unknown'}).`, result?.status);
+      }
+    }, { segmentIndex: index });
+  };
+  try {
+    await runWithConcurrency(files.length, SEGMENT_UPLOAD_CONCURRENCY, uploadOne);
+  } catch (error) {
+    if (createdForLegacyUpload) {
+      await apiClient
+        .delete(`/api/recordings/${canonicalRecording.id}`, { reason: 'orphan_pending_confirm' })
+        .catch(() => {});
+    }
+    throw error;
+  }
+  const hint: PendingConfirm = {
+    recordingId: canonicalRecording.id,
+    fileKey: keys[0],
+    ...(files.length > 1 ? { segmentKeys: keys, segmentCount: keys.length } : {}),
+    metadata,
+    files: preparationFiles(files),
+  };
+  return { recording: canonicalRecording, hint, replacedMissingRecordingId };
+}
+
+async function executeResilientUpload(
+  data: CreateRecording,
+  inputFiles: LocalUploadFile[],
+  options: ResilientUploadOptions,
+): Promise<Recording> {
+  const idempotencyKey = options.idempotencyKey;
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    phaseError('prepare', 'This recording is missing its stable upload identity. Please reopen it and try again.');
+  }
+  const metadata = completeUploadMetadata(data);
+  const mode = options.mode ?? 'standard';
+  const validResume = options.resume ? validatePendingConfirm(options.resume) : null;
+  let staleRestartUsed = false;
+  let qualityReported = false;
+  const timedOutPreparedWrites: Promise<void>[] = [];
+
+  const persistPrepared = async (recordingId: string): Promise<void> => {
+    const persistence = await invokePreparedCallback(options.onRecordingPrepared, recordingId);
+    if (persistence.timedOut) timedOutPreparedWrites.push(persistence.settled);
+  };
+
+  const scheduleCommittedLateWriteCleanup = (): void => {
+    for (const settled of timedOutPreparedWrites.splice(0)) {
+      settled
+        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_anchor'))
+        .catch(() => {});
+    }
+  };
+
+  const staleFailure = (error: unknown): never => {
+    if (error instanceof Error) {
+      error.message = STALE_RECORDING_UPLOAD_COPY;
+      throw error;
+    }
+    const wrapped = new Error(STALE_RECORDING_UPLOAD_COPY) as TaggedError;
+    wrapped.uploadPhase = 'confirm';
+    throw wrapped;
+  };
+
+  const prepareAndUpload = async (existingRecordingId: string | undefined): Promise<Recording> => {
+    const files = await preflightLocalFiles(inputFiles);
+    if (!qualityReported) {
+      qualityReported = true;
+      const duration = options.audioDurationSeconds ?? files.reduce((sum, file) => sum + file.duration, 0);
+      if (duration > 0) {
+        reportAudioQuality({
+          slotIndex: options.slotIndex,
+          durationSeconds: Math.round(duration),
+          sizeBytes: files.reduce((sum, file) => sum + file.fileSizeBytes, 0),
+          segmentCount: files.length,
+        });
+      }
+    }
+    const descriptors = preparationFiles(files);
+    let prepared: PrepareUploadResponse;
+    try {
+      prepared = await requestPreparation(existingRecordingId, idempotencyKey, metadata, descriptors);
+    } catch (error) {
+      if (!isRouteLevelPrepare404(error)) throw error;
+      const legacy = await legacyUpload(data, files, metadata, options, idempotencyKey, persistPrepared);
+      if (legacy.replacedMissingRecordingId) staleRestartUsed = true;
+      return persistHintAndConfirm(legacy.hint, true);
+    }
+    // A stale supplied ID resolved here is the submit action's one allowed
+    // replacement. If this canonical row also disappears later in the same
+    // action, confirmation recovery must stop instead of creating a third row.
+    // Recursive preparation after an observed canonical change may report the
+    // same replacement again, so assignment is intentionally idempotent.
+    if (prepared.replacedMissingRecordingId) staleRestartUsed = true;
+    await persistPrepared(prepared.recording.id);
+    if (validResume && validResume.recordingId !== prepared.recording.id) {
+      await invokeClearHint(options.onClearPendingConfirm, 'canonical_change');
+    }
+    if (prepared.outcome !== 'prepared') return prepared.recording;
+    let uploaded: Awaited<ReturnType<typeof putPreparedFiles>> | null = null;
+    try {
+      uploaded = await putPreparedFiles(
+        files,
+        prepared,
+        async () => requestPreparation(prepared.recording.id, idempotencyKey, metadata, descriptors),
+        options.onUploadProgress,
+      );
+    } catch (error) {
+      if (!isStaleCanonicalPreparationError(error)) throw error;
+      trackStaleRecovery('url_refresh', 'canonical_changed', files.length, mode);
+      if (staleRestartUsed) {
+        trackStaleRecovery('url_refresh', 'replacement_cap_reached', files.length, mode);
+        staleFailure(error);
+      }
+      staleRestartUsed = true;
+      await invokeClearHint(options.onClearPendingConfirm, 'canonical_change');
+      try {
+        return await prepareAndUpload(prepared.recording.id);
+      } catch (restartError) {
+        trackStaleRecovery('url_refresh', 'replacement_failed', files.length, mode);
+        staleFailure(restartError);
+      }
+    }
+    if (!uploaded) phaseError('prepare', 'The upload did not return a completion result.');
+    if (uploaded.already) return uploaded.already;
+    const hint: PendingConfirm = {
+      recordingId: prepared.recording.id,
+      fileKey: uploaded.keys[0],
+      ...(uploaded.keys.length > 1 ? { segmentKeys: uploaded.keys, segmentCount: uploaded.keys.length } : {}),
+      metadata,
+      files: descriptors,
+    };
+    return persistHintAndConfirm(hint, false);
+  };
+
+  const confirmWithRecovery = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
+    try {
+      return await postConfirm(hint.recordingId, hint, metadata);
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+    }
+    trackStaleRecovery('confirm', 'probe_started', inputFiles.length, mode);
+    let current: Recording | null = null;
+    try {
+      current = await apiClient.get(`/api/recordings/${recordingIdSchema.parse(hint.recordingId)}`);
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) {
+        trackStaleRecovery('probe', 'failed', inputFiles.length, mode);
+        if (error instanceof Error) (error as TaggedError).uploadPhase = 'probe';
+        staleFailure(error);
+      }
+      if (staleRestartUsed) {
+        trackStaleRecovery('probe', 'replacement_cap_reached', inputFiles.length, mode);
+        staleFailure(error);
+      }
+      staleRestartUsed = true;
+      await invokeClearHint(options.onClearPendingConfirm, 'canonical_change');
+      try {
+        const result = await prepareAndUpload(hint.recordingId);
+        trackStaleRecovery('probe', 'replacement_succeeded', inputFiles.length, mode);
+        return result;
+      } catch (replacementError) {
+        trackStaleRecovery('probe', 'replacement_failed', inputFiles.length, mode);
+        staleFailure(replacementError);
+      }
+    }
+    if (!current) staleFailure(new Error('The server did not return the recording probe.'));
+    const probedRecording = current!;
+    if (probedRecording.status === 'draft' || probedRecording.status === 'uploading') {
+      await new Promise<void>((resolve) => setTimeout(resolve, 600));
+      try {
+        const result = await postConfirm(hint.recordingId, hint, metadata);
+        trackStaleRecovery('confirm', 'retry_succeeded', inputFiles.length, mode);
+        return result;
+      } catch (error) {
+        trackStaleRecovery('confirm', 'retry_failed', inputFiles.length, mode);
+        staleFailure(error);
+      }
+    }
+    if (legacy || !hint.files) {
+      trackStaleRecovery('probe', 'proof_unavailable', inputFiles.length, mode);
+      const error = new Error(STALE_RECORDING_UPLOAD_COPY) as TaggedError;
+      error.uploadPhase = 'confirm';
+      throw error;
+    }
+    let proof: PrepareUploadResponse | null = null;
+    try {
+      proof = await requestPreparation(hint.recordingId, idempotencyKey, metadata, hint.files);
+    } catch (error) {
+      trackStaleRecovery('probe', 'proof_failed', inputFiles.length, mode);
+      staleFailure(error);
+    }
+    if (!proof) staleFailure(new Error('The server did not return upload proof.'));
+    const verifiedProof = proof!;
+    await persistPrepared(verifiedProof.recording.id);
+    if (verifiedProof.outcome === 'already_uploaded' || verifiedProof.outcome === 'already_processed') {
+      trackStaleRecovery('probe', 'proof_succeeded', inputFiles.length, mode);
+      return verifiedProof.recording;
+    }
+    trackStaleRecovery('probe', 'proof_failed', inputFiles.length, mode);
+    const error = new Error(STALE_RECORDING_UPLOAD_COPY) as TaggedError;
+    error.uploadPhase = 'confirm';
+    throw error;
+  };
+
+  const persistHintAndConfirm = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
+    const persistence = await invokeHintCallback(options.onR2Complete, hint);
+    const result = await confirmWithRecovery(hint, legacy);
+    if (persistence.timedOut) {
+      // A late SecureStore/native write must not resurrect recovery state after
+      // the server has confirmed the upload and the UI has cleaned the draft.
+      persistence.settled
+        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_hint'))
+        .catch(() => {});
+    }
+    return result;
+  };
+
+  if (options.resume && !validResume) {
+    await invokeClearHint(options.onClearPendingConfirm, 'invalid_resume');
+  }
+  const result = validResume
+    ? await confirmWithRecovery(validResume, false)
+    : await prepareAndUpload(options.existingRecordingId);
+  scheduleCommittedLateWriteCleanup();
+  return result;
 }
 
 export const recordingsApi = {
@@ -447,9 +1162,9 @@ export const recordingsApi = {
    *   404 — recording not found in caller's org.
    *   409 `{ code: 'NOT_DRAFT' }` — recording has moved past draft.
    *
-   * Callers are expected to catch ALL failures and fall back to delete +
-   * fresh create, so an old server (no route → 404) or any transient issue
-   * degrades to the Tier 1 behavior rather than committing stale metadata.
+   * Upload callers fail closed on non-404 errors. A proven missing draft may
+   * be resolved through the stable upload intent; live rows are never deleted
+   * merely because metadata synchronization failed.
    */
   async updateDraftMetadata(
     recordingId: string,
@@ -482,523 +1197,86 @@ export const recordingsApi = {
     opts?: { segmentKeys?: string[]; segmentCount?: number; metadata?: Partial<CreateRecording> }
   ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
-    const metadataPayload = opts?.metadata ? normalizeDraftMetadataPayload(opts.metadata) : undefined;
+    const metadata = opts?.metadata ? normalizeDraftMetadataPayload(opts.metadata) : undefined;
+    let recording: Recording;
     try {
-      const confirmed: Recording = await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
+      recording = await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
         fileKey,
         ...(opts?.segmentKeys ? { segmentKeys: opts.segmentKeys, segmentCount: opts.segmentCount } : {}),
-        ...(metadataPayload ? { metadata: metadataPayload } : {}),
+        ...(metadata ? { metadata } : {}),
       });
-      return assertRecordingMatchesMetadataPayload(confirmed, metadataPayload);
     } catch (error) {
-      // 409 means the recording is already past 'uploading' state. This happens when the
-      // client times out waiting for the confirm-upload response and retries — the first
-      // request succeeded and processing already started. Fetch current state and return it
-      // so the caller can poll normally rather than showing a spurious error.
       if (error instanceof ApiError && error.status === 409) {
-        const current = await this.get(recordingId).catch(() => null);
-        if (current && isAlreadyConfirmedOrProcessing(current)) {
-          return assertRecordingMatchesMetadataPayload(current, metadataPayload, {
+        let current: Recording;
+        try {
+          current = await apiClient.get(`/api/recordings/${recordingId}`);
+        } catch (probeError) {
+          tagPhase(probeError, 'confirm');
+        }
+        if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
+          return assertRecordingMatchesMetadataPayload(current, metadata, {
             allowServerEnrichedBlankFields: true,
           });
         }
-        if (metadataPayload) {
-          phaseError(
-            'patch_draft',
-            'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
-          );
-        }
       }
-      throw error;
+      tagPhase(error, 'confirm');
     }
+    return assertRecordingMatchesMetadataPayload(recording, metadata, {
+      allowServerEnrichedBlankFields: true,
+    });
   },
 
-  /**
-   * Full upload flow: create record → get presigned URL → upload file → confirm.
-   *
-   * Pass `options.resume` (obtained from a previous `onR2Complete` callback)
-   * to skip recording creation and R2 upload on a retry — only the confirm is
-   * retried. This prevents duplicate server recordings when the first attempt
-   * uploaded to R2 but failed at confirm time.
-   */
+  async prepareUpload(
+    data: CreateRecording,
+    files: PendingConfirmFile[],
+    options: { existingRecordingId?: string; idempotencyKey: string },
+  ): Promise<PrepareUploadResponse> {
+    return requestPreparation(
+      options.existingRecordingId,
+      options.idempotencyKey,
+      completeUploadMetadata(data),
+      files,
+    );
+  },
+
   async createWithFile(
     data: CreateRecording,
     fileUri: string,
     contentType = 'audio/x-m4a',
-    options?: {
-      onUploadProgress?: (event: UploadProgressEvent) => void;
-      onR2Complete?: (hint: PendingConfirm) => void;
-      resume?: PendingConfirm;
-      existingRecordingId?: string;
-      confirmMetadata?: Partial<CreateRecording>;
-      audioDurationSeconds?: number;
-      slotIndex?: number;
-      // Explicit upload filename. Durable AAC passes 'recording.aac'; without it
-      // we derive an extension from contentType/uri rather than the legacy
-      // hardcoded 'recording.m4a' (which would mislabel an audio/aac upload).
-      fileName?: string;
-      // Deterministic idempotency key (durable fresh-create dedup, see create()).
-      idempotencyKey?: string;
-      // Called with the server row id AFTER create/fetch and BEFORE the R2 PUT,
-      // so the durable submit can persist serverRecordingId into the manifest
-      // (temp+rename) as the death-surviving anchor before bytes go up.
-      onRecordingCreated?: (recordingId: string) => void | Promise<void>;
-    }
+    options?: ResilientUploadOptions & { fileName?: string },
   ): Promise<Recording> {
-    // Retry path: R2 already holds the file; just re-run confirm.
-    if (options?.resume) {
-      const { recordingId, fileKey, segmentKeys, segmentCount } = options.resume;
-      return this.confirmUpload(recordingId, fileKey, {
-        ...(segmentKeys ? { segmentKeys, segmentCount } : {}),
-        ...(options.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
-      });
-    }
-
-    // Step 1: Create recording record (validates data via this.create) or use existing draft
-    let recording: Recording;
-    let isExistingRecording = false;
-    if (options?.existingRecordingId) {
-      // Use provided draft recording ID instead of creating a new one. If the
-      // server row is gone (404) — user's form wasn't edited so the
-      // draftMetadataDirty probe never ran — fall through to fresh create
-      // rather than dead-end the user on local audio that still exists.
-      try {
-        recording = await this.get(options.existingRecordingId);
-        isExistingRecording = true;
-        if (options?.confirmMetadata && recording.status !== 'draft' && recording.status !== 'uploading') {
-          phaseError(
-            'patch_draft',
-            'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
-          );
-        }
-      } catch (e) {
-        if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
-        if (e instanceof ApiError && e.status === 404) {
-          if (__DEV__) console.warn('[upload] existing draft missing, creating fresh');
-          try {
-            recording = await this.create(data, { idempotencyKey: options?.idempotencyKey });
-          } catch (createError) { tagPhase(createError, 'create_draft'); }
-        } else {
-          tagPhase(e, 'create_draft');
-        }
-      }
-    } else {
-      try {
-        recording = await this.create(data, { idempotencyKey: options?.idempotencyKey });
-      } catch (e) { tagPhase(e, 'create_draft'); }
-    }
-
-    // Persist the server row id into the durable manifest BEFORE the R2 PUT, so a
-    // post-create kill reconciles (via serverRecordingId) instead of
-    // fresh-creating a duplicate. Best-effort: the deterministic idempotency key
-    // is the backstop if this write fails.
-    if (options?.onRecordingCreated) {
-      try {
-        await options.onRecordingCreated(recording.id);
-      } catch {
-        /* best-effort manifest anchor */
-      }
-    }
-
-    let r2UploadComplete = false;
-
-    try {
-      // Read local file info (fetch() doesn't support file:// URIs on Android)
-      const fileInfo = await getInfoAsync(fileUri);
-      if (!fileInfo.exists) {
-        phaseError('preflight', 'Failed to read the recorded audio file. Please try recording again.');
-      }
-      const fileSizeBytes = fileInfo.size ?? 0;
-      if (!fileSizeBytes) {
-        phaseError('preflight', 'The recorded audio file is empty. Please try recording again.');
-      }
-      // Enforce client-side file size limit
-      if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
-        phaseError(
-          'preflight',
-          `File too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
-        );
-      }
-
-      // Audio quality signal — fire before upload so we still get the metric
-      // if R2 / confirm later fail. Rate-limited at the track_event layer.
-      if (options?.audioDurationSeconds !== undefined) {
-        reportAudioQuality({
-          slotIndex: options.slotIndex,
-          durationSeconds: options.audioDurationSeconds,
-          sizeBytes: fileSizeBytes,
-          segmentCount: 1,
-        });
-      }
-
-      // Step 2: Upload to R2. Presign + PUT are wrapped together in
-      // uploadOnceWithRetry so each retry gets a fresh presigned URL (the
-      // stale-URL 403 mode in Sentry REACT-NATIVE-7) and waits for the
-      // network to recover (Sentry REACT-NATIVE-4) before retrying.
-      let fileKey: string | undefined;
-      const buildAndRunUpload = async (_attempt: number) => {
-        let uploadUrl: string;
-        let warnings: string[] | undefined;
-        try {
-          const resp = await this.getUploadUrl(
-            recording.id,
-            options?.fileName ?? deriveUploadFileName(fileUri, contentType),
-            contentType,
-            fileSizeBytes
-          );
-          uploadUrl = resp.uploadUrl;
-          fileKey = resp.fileKey;
-          warnings = resp.warnings;
-        } catch (e) { tagPhase(e, 'presign'); }
-        if (warnings?.length && __DEV__) console.warn('[upload]', ...warnings);
-        validateUploadUrl(uploadUrl);
-
-        const uploadTask = createUploadTask(
-          uploadUrl,
-          fileUri,
-          {
-            httpMethod: 'PUT',
-            uploadType: FileSystemUploadType.BINARY_CONTENT,
-            headers: { 'Content-Type': contentType },
-          },
-          options?.onUploadProgress
-            ? (progress) => {
-                const total = progress.totalBytesExpectedToSend;
-                const loaded = progress.totalBytesSent;
-                options.onUploadProgress!({
-                  loaded,
-                  total,
-                  percent: total > 0 ? Math.round((loaded / total) * 100) : 0,
-                });
-              }
-            : undefined
-        );
-        const result = await withTimeout(
-          uploadTask.uploadAsync(),
-          uploadTimeoutMs(fileSizeBytes),
-          'Upload timed out. Please check your connection and try again.',
-          () => { uploadTask.cancelAsync().catch(() => {}); }
-        );
-        if (!result || result.status < 200 || result.status >= 300) {
-          phaseError(
-            'r2_put',
-            `Upload to storage failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`,
-            result?.status
-          );
-        }
-        return result;
-      };
-
-      try {
-        await uploadOnceWithRetry(buildAndRunUpload, {});
-      } catch (e) {
-        // Closure already tagged 'presign' or 'r2_put'. Only fall back to
-        // 'r2_put' for untagged throws (e.g. raw native exceptions).
-        if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
-        tagPhase(e, 'r2_put');
-      }
-      if (!fileKey) {
-        phaseError('r2_put', 'Upload completed but no file key was returned. Please try again.');
-      }
-
-      r2UploadComplete = true;
-
-      // Notify caller that the bytes are safe on R2 — they can now persist a
-      // resume hint so a failed confirm below can be retried without creating
-      // a second server recording.
-      if (options?.onR2Complete) {
-        try {
-          options.onR2Complete({ recordingId: recording.id, fileKey });
-        } catch {
-          // Best-effort — caller's persistence failure shouldn't block confirm.
-        }
-      }
-
-      // Step 4: Confirm upload and trigger processing
-      let confirmed: Recording;
-      try {
-        confirmed = await this.confirmUpload(recording.id, fileKey, {
-          ...(isExistingRecording && options?.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
-        });
-      } catch (e) { tagPhase(e, 'confirm'); }
-      return confirmed;
-    } catch (error) {
-      // Only delete if the file hasn't been uploaded to R2 yet.
-      // If R2 upload succeeded but confirm failed, leave the recording
-      // in "uploading" state so the user can retry.
-      // Also, never delete if using an existing recording ID (draft) — let the user retry later.
-      if (!r2UploadComplete && !isExistingRecording) {
-        await this.delete(recording.id, { reason: 'orphan_pending_confirm' }).catch(() => {});
-      }
-      throw error;
-    }
+    const fileName = options?.fileName ?? deriveUploadFileName(fileUri, contentType);
+    return executeResilientUpload(data, [{
+      uri: fileUri,
+      duration: options?.audioDurationSeconds ?? 0,
+      fileName,
+      contentType,
+      fileSizeBytes: 0,
+    }], options ?? {});
   },
 
-  /**
-   * Multi-segment upload flow: create record → upload each segment → confirm with segment keys.
-   *
-   * See `createWithFile` for the semantics of `options.resume` and
-   * `options.onR2Complete`. Resume is only supported once ALL segments have
-   * been uploaded to R2 — partial resumes are not attempted because the
-   * server-side tracking would get complex and the partial-failure path
-   * already cleans up. For a partial failure the catch block deletes the
-   * server record and the retry starts fresh.
-   */
   async createWithSegments(
     data: CreateRecording,
     segments: { uri: string; duration: number }[],
     contentType = 'audio/x-m4a',
-    options?: {
-      onUploadProgress?: (event: UploadProgressEvent) => void;
-      onR2Complete?: (hint: PendingConfirm) => void;
-      resume?: PendingConfirm;
-      existingRecordingId?: string;
-      confirmMetadata?: Partial<CreateRecording>;
-      slotIndex?: number;
-    }
+    options?: ResilientUploadOptions,
   ): Promise<Recording> {
-    // Retry path: all segments already on R2, just re-run confirm.
-    if (options?.resume) {
-      const { recordingId, fileKey, segmentKeys, segmentCount } = options.resume;
-      return this.confirmUpload(recordingId, fileKey, {
-        ...(segmentKeys ? { segmentKeys, segmentCount } : {}),
-        ...(options.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
-      });
-    }
+    const files = segments.map((segment, index): LocalUploadFile => ({
+      uri: segment.uri,
+      duration: segment.duration,
+      fileName: `recording_segment_${index}.${extensionFromUri(segment.uri)}`,
+      contentType,
+      fileSizeBytes: 0,
+    }));
+    return executeResilientUpload(data, files, options ?? {});
+  },
 
-    // Use provided draft recording ID or create a new one. If the server row
-    // is gone (404) — user didn't edit the form so the draftMetadataDirty
-    // probe never ran — fall through to a fresh create instead of dead-ending
-    // on local audio that still exists.
-    let recording: Recording;
-    let isExistingRecording = false;
-    if (options?.existingRecordingId) {
-      try {
-        recording = await this.get(options.existingRecordingId);
-        isExistingRecording = true;
-        if (options?.confirmMetadata && recording.status !== 'draft' && recording.status !== 'uploading') {
-          phaseError(
-            'patch_draft',
-            'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
-          );
-        }
-      } catch (e) {
-        if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
-        if (e instanceof ApiError && e.status === 404) {
-          if (__DEV__) console.warn('[upload] existing draft missing, creating fresh');
-          try {
-            recording = await this.create(data);
-          } catch (createError) { tagPhase(createError, 'create_draft'); }
-        } else {
-          tagPhase(e, 'create_draft');
-        }
-      }
-    } else {
-      try {
-        recording = await this.create(data);
-      } catch (e) { tagPhase(e, 'create_draft'); }
-    }
-
-    let r2UploadComplete = false;
-    const totalSegments = segments.length;
-    let completedSegments = 0;
-    let totalSegmentBytes = 0;
-    const totalSegmentDuration = segments.reduce((sum, s) => sum + (s.duration || 0), 0);
-
-    try {
-      // Phase A — preflight every segment up front (cheap local stat calls):
-      // a doomed submit fails before any bytes move, and the byte totals feed
-      // the aggregate progress below.
-      const sizes: number[] = new Array(totalSegments).fill(0);
-      for (let i = 0; i < totalSegments; i++) {
-        const fileInfo = await getInfoAsync(segments[i].uri);
-        if (!fileInfo.exists) {
-          phaseError('preflight', `Failed to read audio segment ${i + 1}. Please try recording again.`);
-        }
-        const fileSizeBytes = fileInfo.size ?? 0;
-        if (!fileSizeBytes) {
-          phaseError('preflight', `Audio segment ${i + 1} is empty. Please try recording again.`);
-        }
-        if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
-          phaseError(
-            'preflight',
-            `Segment ${i + 1} too large (${Math.round(fileSizeBytes / 1024 / 1024)}MB). Maximum allowed size is 250MB.`
-          );
-        }
-        sizes[i] = fileSizeBytes;
-        totalSegmentBytes += fileSizeBytes;
-      }
-
-      // Aggregate bytes-weighted progress across concurrent segments. The
-      // monotone clamp keeps the bar from visibly regressing when a retry
-      // resets one segment's counter back to zero.
-      const sentBytes: number[] = new Array(totalSegments).fill(0);
-      let lastEmittedPercent = 0;
-      const emitProgress = () => {
-        if (!options?.onUploadProgress) return;
-        const loaded = sentBytes.reduce((sum, b) => sum + b, 0);
-        const percent = totalSegmentBytes > 0 ? Math.round((loaded / totalSegmentBytes) * 100) : 0;
-        lastEmittedPercent = Math.max(lastEmittedPercent, percent);
-        options.onUploadProgress({ loaded, total: totalSegmentBytes, percent: lastEmittedPercent });
-      };
-
-      // Phase B — bounded-parallel presign + PUT per segment. Keys land by
-      // index (NOT push): segment order is playback order, and the confirm
-      // payload must preserve it regardless of completion order.
-      const segmentKeys: (string | undefined)[] = new Array(totalSegments).fill(undefined);
-
-      const uploadSegment = async (i: number) => {
-        // Stagger the first wave so the pool's simultaneous presign POSTs
-        // don't land in the same instant (a presign 429 is not retried).
-        if (i > 0 && i < SEGMENT_UPLOAD_CONCURRENCY) {
-          await new Promise<void>((r) => setTimeout(r, i * 150));
-        }
-
-        const segment = segments[i];
-        const ext = extensionFromUri(segment.uri);
-        const segmentFileName = `recording_segment_${i}.${ext}`;
-        const fileSizeBytes = sizes[i];
-
-        // Presign + PUT wrapped together — see note in createWithFile above.
-        // Each retry attempt fetches a fresh presigned URL.
-        let fileKey: string | undefined;
-
-        const buildAndRunSegmentUpload = async (_attempt: number) => {
-          sentBytes[i] = 0; // a retry restarts this segment's byte count
-          let uploadUrl: string;
-          let warnings: string[] | undefined;
-          try {
-            const resp = await this.getUploadUrl(
-              recording.id,
-              segmentFileName,
-              contentType,
-              fileSizeBytes
-            );
-            uploadUrl = resp.uploadUrl;
-            fileKey = resp.fileKey;
-            warnings = resp.warnings;
-          } catch (e) { tagPhase(e, 'presign'); }
-          if (warnings?.length && __DEV__) console.warn(`[upload] segment ${i + 1}:`, ...warnings);
-          validateUploadUrl(uploadUrl);
-
-          const uploadTask = createUploadTask(
-            uploadUrl,
-            segment.uri,
-            {
-              httpMethod: 'PUT',
-              uploadType: FileSystemUploadType.BINARY_CONTENT,
-              headers: { 'Content-Type': contentType },
-            },
-            options?.onUploadProgress
-              ? (progress) => {
-                  sentBytes[i] = Math.min(progress.totalBytesSent, fileSizeBytes);
-                  emitProgress();
-                }
-              : undefined
-          );
-          const result = await withTimeout(
-            uploadTask.uploadAsync(),
-            uploadTimeoutMs(fileSizeBytes, SEGMENT_UPLOAD_CONCURRENCY),
-            `Upload of segment ${i + 1} timed out. Please check your connection and try again.`,
-            () => { uploadTask.cancelAsync().catch(() => {}); }
-          );
-          if (!result || result.status < 200 || result.status >= 300) {
-            phaseError(
-              'r2_put',
-              `Upload of segment ${i + 1} failed (HTTP ${result?.status ?? 'unknown'}). Please try again.`,
-              result?.status
-            );
-          }
-          return result;
-        };
-
-        try {
-          await uploadOnceWithRetry(buildAndRunSegmentUpload, { segmentIndex: i });
-        } catch (e) {
-          if (e instanceof Error && (e as TaggedError).uploadPhase) throw e;
-          tagPhase(e, 'r2_put');
-        }
-        if (!fileKey) {
-          phaseError('r2_put', `Segment ${i + 1} uploaded but no file key was returned. Please try again.`);
-        }
-
-        segmentKeys[i] = fileKey;
-        sentBytes[i] = fileSizeBytes;
-        emitProgress();
-        completedSegments++;
-      };
-
-      await runWithConcurrency(totalSegments, SEGMENT_UPLOAD_CONCURRENCY, uploadSegment);
-
-      // Every lane reported success — assert no key is missing before confirm.
-      const confirmedKeys: string[] = [];
-      for (let i = 0; i < totalSegments; i++) {
-        const key = segmentKeys[i];
-        if (!key) {
-          phaseError('r2_put', `Segment ${i + 1} did not finish uploading. Please try again.`);
-        }
-        confirmedKeys.push(key);
-      }
-
-      r2UploadComplete = true;
-
-      // Aggregate audio quality signal now that every segment size is known.
-      // Rate-limited at the track_event layer.
-      if (totalSegmentDuration > 0) {
-        reportAudioQuality({
-          slotIndex: options?.slotIndex,
-          durationSeconds: Math.round(totalSegmentDuration),
-          sizeBytes: totalSegmentBytes,
-          segmentCount: totalSegments,
-        });
-      }
-
-      // All segments are on R2. Let the caller persist a resume hint before we
-      // attempt confirm — if confirm fails, retry will skip straight to confirm
-      // rather than re-uploading every segment.
-      if (options?.onR2Complete) {
-        try {
-          options.onR2Complete({
-            recordingId: recording.id,
-            fileKey: confirmedKeys[0],
-            segmentKeys: confirmedKeys,
-            segmentCount: confirmedKeys.length,
-          });
-        } catch {
-          // Best-effort — caller's persistence failure shouldn't block confirm.
-        }
-      }
-
-      // Confirm upload with all segment keys
-      let confirmed: Recording;
-      try {
-        confirmed = await this.confirmUpload(recording.id, confirmedKeys[0], {
-          segmentKeys: confirmedKeys,
-          segmentCount: confirmedKeys.length,
-          ...(isExistingRecording && options?.confirmMetadata ? { metadata: options.confirmMetadata } : {}),
-        });
-      } catch (e) { tagPhase(e, 'confirm'); }
-      return confirmed;
-    } catch (error) {
-      // Only delete if R2 upload didn't complete and it's a new recording (not a draft).
-      // Never delete existing draft recordings — let the user retry later.
-      if (!r2UploadComplete && !isExistingRecording) {
-        await this.delete(recording.id, { reason: 'orphan_pending_confirm' }).catch(() => {});
-      }
-      // Enrich the error message for partial multi-segment failures, preserving
-      // the phase tag so uploadSlot can still classify correctly.
-      if (completedSegments > 0 && completedSegments < totalSegments && error instanceof Error) {
-        const suffix = isExistingRecording
-          ? ' (segments uploaded were queued for processing)'
-          : ' (the recording has been removed and will need to be re-recorded.)';
-        const rethrown = new Error(
-          `${error.message} (${completedSegments} of ${totalSegments} segments had uploaded successfully${suffix}`
-        ) as Error & { uploadPhase?: UploadPhase };
-        rethrown.uploadPhase = (error as Error & { uploadPhase?: UploadPhase }).uploadPhase;
-        throw rethrown;
-      }
-      throw error;
-    }
+  async confirmPendingUpload(
+    data: CreateRecording,
+    hint: PendingConfirm,
+    options: Omit<ResilientUploadOptions, 'resume'>,
+  ): Promise<Recording> {
+    return executeResilientUpload(data, [], { ...options, resume: hint });
   },
 
   async retry(id: string): Promise<Recording> {

@@ -7,10 +7,12 @@ import {
   safeDeleteDirectory,
   ensureDirectory,
 } from './fileOps';
-import type { PatientSlot, AudioSegment, DurableSlotRef } from '../types/multiPatient';
+import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '../types/multiPatient';
 import type { CreateRecording } from '../types/index';
 import { isValidDurableId } from './durableAudio/paths';
 import { durableTombstone } from './durableAudio/tombstone';
+import { clonePendingConfirm } from './pendingConfirm';
+import { normalizeUploadIntentId } from './uploadIntent';
 
 const STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
@@ -40,6 +42,7 @@ export interface DraftSegmentMetadata {
 
 export interface DraftMetadata {
   slotId: string;
+  uploadIntentId: string;
   savedAt: string;
   formData: CreateRecording;
   segments: DraftSegmentMetadata[];
@@ -50,6 +53,7 @@ export interface DraftMetadata {
   // assigned and draft metadata sync could not prove success, submit must send
   // metadata with confirm-upload even after app restart.
   draftMetadataDirty: boolean;
+  pendingConfirm: PendingConfirm | null;
   // Durable AAC pointer for a finished durable draft. When set, the draft's
   // audio lives in audio.aac under the durable root (NOT copied into
   // drafts/{userId}/{slotId}/), so `segments` is empty. cleanupOrphaned /
@@ -91,6 +95,7 @@ function cloneDraftMetadata(d: DraftMetadata): DraftMetadata {
     ...d,
     formData: { ...d.formData },
     segments: d.segments.map((s) => ({ ...s })),
+    pendingConfirm: clonePendingConfirm(d.pendingConfirm),
   };
 }
 
@@ -444,6 +449,7 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
 
   return {
     slotId: parsed.slotId,
+    uploadIntentId: normalizeUploadIntentId(parsed.uploadIntentId, parsed.slotId),
     savedAt: parsed.savedAt,
     formData: parsed.formData as CreateRecording,
     segments,
@@ -454,6 +460,7 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
     serverDraftId: parsed.serverDraftId,
     pendingSync: parsed.pendingSync,
     draftMetadataDirty: parsed.draftMetadataDirty === true,
+    pendingConfirm: clonePendingConfirm(parsed.pendingConfirm),
     durable,
   };
 }
@@ -560,19 +567,33 @@ export const draftStorage = {
     // recordings use durableActiveStore, never saveDraft.)
     if (slot.durable) {
       const existingDurable = await readDraftChunks(userId, slot.id);
+      const durableUploadIntentId = normalizeUploadIntentId(
+        slot.uploadIntentId ?? existingDurable?.uploadIntentId,
+        slot.id,
+      );
+      const durableIntentRotated =
+        !!existingDurable &&
+        durableUploadIntentId !== normalizeUploadIntentId(existingDurable.uploadIntentId, slot.id);
       // Preserve the server draft/recording anchor across this save. On crash
       // recovery a manifest can carry a serverRecordingId (set pre-death) with NO
       // prior local draft, so `existingDurable` is null — fall back to the slot's
       // serverDraftId so the death-surviving anchor is not dropped (otherwise the
       // next Submit fresh-creates a duplicate server recording instead of
       // promoting the already-created draft). Prefer an existing local anchor.
-      const resolvedServerDraftId = existingDurable?.serverDraftId ?? slot.serverDraftId ?? null;
+      // A changed upload intent means audio changed after R2 accepted the old
+      // bytes. A null slot anchor must clear, not resurrect, the stale disk ID.
+      const resolvedServerDraftId = durableIntentRotated
+        ? (slot.serverDraftId ?? null)
+        : (existingDurable?.serverDraftId ?? slot.serverDraftId ?? null);
       const durableDraftMetadataDirty =
         !!resolvedServerDraftId &&
         (slot.draftMetadataDirty ||
-          (existingDurable?.serverDraftId === resolvedServerDraftId && existingDurable.draftMetadataDirty));
+          (!durableIntentRotated &&
+            existingDurable?.serverDraftId === resolvedServerDraftId &&
+            existingDurable.draftMetadataDirty));
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
+        uploadIntentId: durableUploadIntentId,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: durableDraftMetadataDirty,
@@ -582,10 +603,13 @@ export const draftStorage = {
         audioDuration: slot.durable.durationMs / 1000,
         serverDraftId: resolvedServerDraftId,
         draftMetadataDirty: durableDraftMetadataDirty,
+        // Null is an intentional invalidation after continue/edit. Never
+        // resurrect an older on-disk hint whose manifest no longer matches.
+        pendingConfirm: clonePendingConfirm(slot.pendingConfirm),
         // An existing local draft keeps its own pendingSync. A recovery-supplied
         // anchor means the server row already exists (no create needed) → synced;
         // no anchor at all means we still owe a server-draft create → pending.
-        pendingSync: existingDurable?.serverDraftId
+        pendingSync: !durableIntentRotated && existingDurable?.serverDraftId
           ? existingDurable.pendingSync
           : !resolvedServerDraftId,
       };
@@ -615,6 +639,7 @@ export const draftStorage = {
     // potentially wipe. The fileExists check must run BEFORE any copy
     // attempt — once copies start, dest paths may get partially overwritten.
     const existing = await readDraftChunks(userId, slot.id);
+    const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
     const priorValidSave =
       !!existing &&
       existing.segments.length > 0 &&
@@ -629,7 +654,9 @@ export const draftStorage = {
       const dirReady = ensureDirectory(dir);
       if (!dirReady) {
         emitDraftSegmentCopyFailed(slot.segments.length, 0, true, [], priorValidSave);
-        throw new Error(`Draft storage: failed to create draft directory (${slot.segments.length} segments)`);
+        if (!pendingConfirm) {
+          throw new Error(`Draft storage: failed to create draft directory (${slot.segments.length} segments)`);
+        }
       }
 
       // Capture free disk once so it lands in the eventual all-failed throw's
@@ -648,54 +675,56 @@ export const draftStorage = {
       // silently absorbed into an empty draft entry.
       const draftSegments: DraftSegmentMetadata[] = [];
       const failureReasons: string[] = [];
-      for (let i = 0; i < slot.segments.length; i++) {
-        const segment = slot.segments[i];
-        if (!fileExists(segment.uri)) {
-          failureReasons.push('source_missing');
-          continue;
-        }
-
-        const destUri = `${dir}seg_${i}.m4a`;
-        try {
-          if (sameFileUri(segment.uri, destUri)) {
-            draftSegments.push({
-              uri: destUri,
-              duration: segment.duration,
-              peakMetering:
-                typeof segment.peakMetering === 'number'
-                  ? segment.peakMetering
-                  : undefined,
-            });
+      if (dirReady) {
+        for (let i = 0; i < slot.segments.length; i++) {
+          const segment = slot.segments[i];
+          if (!fileExists(segment.uri)) {
+            failureReasons.push('source_missing');
             continue;
           }
-          if (!(await copyFileReplacing(segment.uri, destUri))) {
+
+          const destUri = `${dir}seg_${i}.m4a`;
+          try {
+            if (sameFileUri(segment.uri, destUri)) {
+              draftSegments.push({
+                uri: destUri,
+                duration: segment.duration,
+                peakMetering:
+                  typeof segment.peakMetering === 'number'
+                    ? segment.peakMetering
+                    : undefined,
+              });
+              continue;
+            }
+            if (!(await copyFileReplacing(segment.uri, destUri))) {
+              failureReasons.push('dest_missing_after_copy');
+              continue;
+            }
+          } catch (err) {
+            // Pin the underlying error into the reason tag so the next RN-8
+            // event tells us which errno (ENOSPC / EPERM / …) is firing.
+            // Scrub `file://` paths defensively — same pattern as
+            // src/api/telemetry.ts:reportClientError.
+            const raw = err instanceof Error ? err.message : String(err);
+            const short = raw.replace(/file:\/\/\S+/g, '<path>').slice(0, 80);
+            failureReasons.push(`copy_threw:${short}`);
+            continue;
+          }
+
+          if (!fileExists(destUri)) {
             failureReasons.push('dest_missing_after_copy');
             continue;
           }
-        } catch (err) {
-          // Pin the underlying error into the reason tag so the next RN-8
-          // event tells us which errno (ENOSPC / EPERM / …) is firing.
-          // Scrub `file://` paths defensively — same pattern as
-          // src/api/telemetry.ts:reportClientError.
-          const raw = err instanceof Error ? err.message : String(err);
-          const short = raw.replace(/file:\/\/\S+/g, '<path>').slice(0, 80);
-          failureReasons.push(`copy_threw:${short}`);
-          continue;
-        }
 
-        if (!fileExists(destUri)) {
-          failureReasons.push('dest_missing_after_copy');
-          continue;
+          draftSegments.push({
+            uri: destUri,
+            duration: segment.duration,
+            peakMetering:
+              typeof segment.peakMetering === 'number'
+                ? segment.peakMetering
+                : undefined,
+          });
         }
-
-        draftSegments.push({
-          uri: destUri,
-          duration: segment.duration,
-          peakMetering:
-            typeof segment.peakMetering === 'number'
-              ? segment.peakMetering
-              : undefined,
-        });
       }
 
       // Emit telemetry whenever any segment failed to copy — even on partial
@@ -713,7 +742,7 @@ export const draftStorage = {
       // Refuse to persist a metadata row with zero usable segments when the
       // input had segments. The autoSaveDraft caller catches this and skips
       // the Phase 2 server-sync, preventing the "Not on this device" orphan.
-      if (slot.segments.length > 0 && draftSegments.length === 0) {
+      if (slot.segments.length > 0 && draftSegments.length === 0 && !pendingConfirm) {
         throw new Error(
           `Draft storage: all ${slot.segments.length} segment copies failed (${failureReasons.join(',')}) freeDiskMb=${freeDiskMb}`,
         );
@@ -727,22 +756,35 @@ export const draftStorage = {
       // a second SecureStore round-trip here. `updateServerDraftId` remains
       // the authoritative writer for the post-sync promotion to
       // `pendingSync: false`.
-      const resolvedServerDraftId = existing?.serverDraftId ?? null;
+      const uploadIntentId = normalizeUploadIntentId(
+        slot.uploadIntentId ?? existing?.uploadIntentId,
+        slot.id,
+      );
+      const uploadIntentRotated =
+        !!existing &&
+        uploadIntentId !== normalizeUploadIntentId(existing.uploadIntentId, slot.id);
+      const resolvedServerDraftId = uploadIntentRotated
+        ? (slot.serverDraftId ?? null)
+        : (existing?.serverDraftId ?? slot.serverDraftId ?? null);
       const draftMetadataDirty =
         !!resolvedServerDraftId &&
-        (slot.draftMetadataDirty || (existing?.draftMetadataDirty ?? false));
+        (slot.draftMetadataDirty || (!uploadIntentRotated && (existing?.draftMetadataDirty ?? false)));
       const metadata: DraftMetadata = {
         slotId: slot.id,
+        uploadIntentId,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: draftMetadataDirty,
         }),
         segments: draftSegments,
-        audioDuration: draftSegments.reduce((sum, s) => sum + s.duration, 0),
+        audioDuration: draftSegments.length > 0
+          ? draftSegments.reduce((sum, s) => sum + s.duration, 0)
+          : slot.audioDuration,
         serverDraftId: resolvedServerDraftId,
         draftMetadataDirty,
+        pendingConfirm,
         pendingSync: resolvedServerDraftId
-          ? (existing?.pendingSync ?? false)
+          ? (uploadIntentRotated ? false : (existing?.pendingSync ?? false))
           : true,
       };
 
@@ -826,6 +868,34 @@ export const draftStorage = {
       // has a draft row → next Submit creates a duplicate (rule 24). Surface
       // the silent SecureStore failure mode so it's visible in Sentry.
       draftCaptureWarning('draft_update_server_id_failed', {
+        slot_id: slotId,
+        reason: classifyDraftFailure(error),
+      });
+    }
+  },
+
+  /** Persist a complete post-PUT confirmation hint before confirmation. */
+  async updatePendingConfirm(
+    slotId: string,
+    pendingConfirm: PendingConfirm | null,
+    serverDraftId?: string,
+  ): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+    try {
+      const metadata = await readDraftChunks(userId, slotId);
+      if (!metadata) return;
+      const normalized = clonePendingConfirm(pendingConfirm);
+      if (pendingConfirm && !normalized) return;
+      metadata.pendingConfirm = normalized;
+      if (serverDraftId) {
+        metadata.serverDraftId = serverDraftId;
+        metadata.pendingSync = false;
+      }
+      await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+      invalidateDraftsCache();
+    } catch (error) {
+      draftCaptureWarning('draft_pending_confirm_write_failed', {
         slot_id: slotId,
         reason: classifyDraftFailure(error),
       });
@@ -1013,6 +1083,10 @@ export const draftStorage = {
 
   /** True if this draft still has at least one segment audio file on disk. */
   async draftHasLocalAudio(meta: DraftMetadata): Promise<boolean> {
+    // The caller uses this as a recoverability predicate for sign-out warnings.
+    // Once R2 accepted the bytes, valid confirmation proof is enough even if
+    // no local audio remains.
+    if (clonePendingConfirm(meta.pendingConfirm)) return true;
     // A durable draft has empty segments but its audio lives in audio.aac under
     // the durable root. Treat a valid, non-purged durable pointer as local audio
     // so the orphan sweep / "Not Submitted" loader don't mistake it for a
@@ -1139,6 +1213,10 @@ export const draftStorage = {
     try {
       const drafts = await this.listDrafts();
       for (const draft of drafts) {
+        // Missing local audio is not an orphan after R2 has accepted the bytes.
+        // Keep the proof so loadDraft can finish the server commit.
+        if (clonePendingConfirm(draft.pendingConfirm)) continue;
+
         const durableId =
           draft.durable && isValidDurableId(draft.durable.recordingId)
             ? draft.durable.recordingId

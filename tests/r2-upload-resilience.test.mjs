@@ -65,19 +65,14 @@ test('tagPhase preserves an existing uploadPhase from an inner boundary', async 
   }
 });
 
-test('both r2_put status throws propagate result.status to phaseError', async () => {
+test('unified r2_put status handling propagates result.status to phaseError', async () => {
   const src = await read('src/api/recordings.ts');
 
-  // Single-file upload path
   assert.match(
     src,
-    /phaseError\(\s*'r2_put',\s*`Upload to storage failed \(HTTP \$\{result\?\.status \?\? 'unknown'\}\)\. Please try again\.`,\s*result\?\.status\s*\)/
+    /phaseError\('r2_put', `Upload to storage failed \(HTTP \$\{result\?\.status \?\? 'unknown'\}\)\.`, result\?\.status\)/
   );
-  // Multi-segment upload path
-  assert.match(
-    src,
-    /phaseError\(\s*'r2_put',\s*`Upload of segment \$\{i \+ 1\} failed \(HTTP \$\{result\?\.status \?\? 'unknown'\}\)\. Please try again\.`,\s*result\?\.status\s*\)/
-  );
+  assert.match(src, /runWithConcurrency\(files\.length, SEGMENT_UPLOAD_CONCURRENCY, uploadOne\)/);
 });
 
 test('uploadOnceWithRetry re-presigns once on stale 401/403, never beyond attempt 1', async () => {
@@ -107,7 +102,7 @@ test('uploadOnceWithRetry re-presigns once on stale 401/403, never beyond attemp
 test('analytics.ts adds recording_auto_stashed event with AutoStashReason union', async () => {
   const src = await read('src/lib/analytics.ts');
 
-  assert.match(src, /export type AutoStashReason = 'r2_put_dead_network' \| 'create_draft_dead_network';/);
+  assert.match(src, /export type AutoStashReason =[\s\S]*'r2_put_dead_network'[\s\S]*'create_draft_dead_network'[\s\S]*'prepare_dead_network';/);
   assert.match(
     src,
     /\| \{ name: 'recording_auto_stashed'; props: \{ reason: AutoStashReason; slot_index: number; segment_count: number; duration_s: number \} \}/
@@ -128,17 +123,17 @@ test('record.tsx imports isTransientUploadError from recordings module', async (
   assert.match(importBlock, /isTransientUploadError/);
 });
 
-test('record.tsx flags auto-stash eligibility on transient r2_put or create_draft network death', async () => {
+test('record.tsx flags auto-stash eligibility on transient r2_put, create_draft, or prepare network death', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
 
-  // The flag is set only when the failure is transient AND on one of the two
+  // The flag is set only when the failure is transient AND on one of the three
   // network-dead phases that recover by stashing-then-online-resubmit.
   // Narrower gates matter — a presign 403 or a silence-check throw must NOT
   // trigger auto-stash.
   assert.match(src, /if \(isTransientUploadError\(error\)\) \{/);
   assert.match(
     src,
-    /if \(phase === 'r2_put'\) \{\s*autoStashableFailuresRef\.current\.set\(slot\.id, 'r2_put_dead_network'\);\s*\} else if \(phase === 'create_draft'\) \{\s*autoStashableFailuresRef\.current\.set\(slot\.id, 'create_draft_dead_network'\);\s*\}/
+    /if \(phase === 'r2_put'\) \{\s*autoStashableFailuresRef\.current\.set\(slot\.id, 'r2_put_dead_network'\);\s*\} else if \(phase === 'create_draft'\) \{\s*autoStashableFailuresRef\.current\.set\(slot\.id, 'create_draft_dead_network'\);\s*\} else if \(phase === 'prepare'\) \{\s*autoStashableFailuresRef\.current\.set\(slot\.id, 'prepare_dead_network'\);\s*\}/
   );
   // Fresh attempt clears any stale flag so a retry-then-different-failure
   // doesn't accidentally stash.

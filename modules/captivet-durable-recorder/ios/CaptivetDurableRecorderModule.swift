@@ -71,6 +71,14 @@ public class CaptivetDurableRecorderModule: Module {
       )
     }
 
+    AsyncFunction("setPendingConfirm") { (input: SetPendingConfirmInput) in
+      try DurableRecorderEngine.shared.setPendingConfirm(
+        userId: input.userId,
+        recordingId: input.recordingId,
+        pendingConfirmJson: input.pendingConfirmJson
+      )
+    }
+
     AsyncFunction("markUploaded") { (input: MarkUploadedInput) in
       try DurableRecorderEngine.shared.markUploaded(
         userId: input.userId,
@@ -141,4 +149,10 @@ internal struct MarkUploadedInput: Record {
   @Field var userId: String = ""
   @Field var recordingId: String = ""
   @Field var confirmedUploadAt: String = ""
+}
+
+internal struct SetPendingConfirmInput: Record {
+  @Field var userId: String = ""
+  @Field var recordingId: String = ""
+  @Field var pendingConfirmJson: String? = nil
 }

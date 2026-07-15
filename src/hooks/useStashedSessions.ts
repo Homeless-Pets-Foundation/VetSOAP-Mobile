@@ -8,7 +8,10 @@ import { safeDeleteFile } from '../lib/fileOps';
 import { getSecureRandomHex } from '../lib/random';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import type { StashedSession } from '../types/stash';
+import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
+import { normalizeUploadIntentId } from '../lib/uploadIntent';
+import { clonePendingConfirm } from '../lib/pendingConfirm';
 
 function generateId(): string {
   // expo-crypto primary; global crypto fallback. No Math.random fallback:
@@ -149,8 +152,12 @@ export function useStashedSessions(userId: string | null) {
         // Durable slots have empty `segments` (audio is in audio.aac under the
         // durable root) — count them as audio so a pure-durable session stashes.
         const preStashSegmentCount = slotsToStash.reduce((sum, s) => sum + s.segments.length, 0);
-        const hasDurableAudio = slotsToStash.some((s) => s.durable !== null);
-        if (preStashSegmentCount === 0 && !hasDurableAudio) {
+        const requiredPreStashSegmentCount = slotsToStash.reduce(
+          (sum, slot) => sum + (clonePendingConfirm(slot.pendingConfirm) ? 0 : slot.segments.length),
+          0,
+        );
+        const hasRecoverableAudio = slotsToStash.some(slotHasRecoverableAudio);
+        if (preStashSegmentCount === 0 && !hasRecoverableAudio) {
           if (__DEV__) console.error('[Stash] no audio in any slot — aborting to prevent data loss');
           return false;
         }
@@ -171,10 +178,16 @@ export function useStashedSessions(userId: string | null) {
           (sum, s) => sum + s.segments.length,
           0
         );
+        const sourceSlotsById = new Map(slotsToStash.map((slot) => [slot.id, slot]));
+        const copiedRequiredSegments = stashedSlots.reduce((sum, stashedSlot) => {
+          const sourceSlot = sourceSlotsById.get(stashedSlot.id);
+          return sum + (clonePendingConfirm(sourceSlot?.pendingConfirm) ? 0 : stashedSlot.segments.length);
+        }, 0);
 
-        // Require every segment to copy successfully before we commit the stash.
-        // Otherwise keep the active session intact and discard the temporary copy.
-        if (totalSegments !== preStashSegmentCount) {
+        // Require every segment that is still the authoritative audio copy to
+        // move successfully. Once pending-confirm proof exists, R2 owns those
+        // bytes and missing local segment files must not block a proof-only stash.
+        if (copiedRequiredSegments !== requiredPreStashSegmentCount) {
           await stashAudioManager.deleteStashedAudio(sessionId);
           return false;
         }
@@ -304,15 +317,17 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
 
       const convertToPatientSlots = (
-        stashedSlots: { id: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; durable?: PatientSlot['durable'] }[]
+        stashedSlots: { id: string; uploadIntentId?: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; pendingConfirm?: PatientSlot['pendingConfirm']; durable?: PatientSlot['durable'] }[]
       ): PatientSlot[] => {
         return stashedSlots.map((slot) => {
           // Rule 20 read site (3 of 3): restore the durable pointer so Resume of a
           // parked durable recording re-references audio.aac instead of orphaning it.
           const durable = slot.durable ?? null;
-          const hasAudio = slot.segments.length > 0 || durable !== null;
+          const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
+          const hasAudio = slot.segments.length > 0 || durable !== null || pendingConfirm !== null;
           return {
             id: slot.id,
+            uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
             formData: { ...slot.formData },
             audioState: hasAudio ? ('stopped' as const) : ('idle' as const),
             segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration, peakMetering: s.peakMetering })),
@@ -326,7 +341,7 @@ export function useStashedSessions(userId: string | null) {
             draftSlotId: slot.draftSlotId ?? null,
             serverDraftId: slot.serverDraftId ?? null,
             draftMetadataDirty: !!slot.serverDraftId && (slot.draftMetadataDirty === true || slot.draftMetadataDirty === undefined),
-            pendingConfirm: null,
+            pendingConfirm,
           };
         });
       };

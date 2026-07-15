@@ -426,6 +426,20 @@ internal object DurableRecorderEngine {
     mutateManifest(ctx.applicationContext, uId, rId) { it.serverRecordingId = serverId }
   }
 
+  fun setPendingConfirm(ctx: Context, input: Map<String, Any?>) {
+    val uId = DurablePaths.requireValidId(input["userId"] as? String, "userId")
+    val rId = DurablePaths.requireValidId(input["recordingId"] as? String, "recordingId")
+    val pendingJson = input["pendingConfirmJson"] as? String
+    if (pendingJson != null) {
+      if (pendingJson.toByteArray(Charsets.UTF_8).size > 16 * 1024) {
+        throw DurableRecorderException(DurableErrors.STATE, "pendingConfirmJson is too large")
+      }
+      runCatching { org.json.JSONObject(pendingJson) }.getOrNull()
+        ?: throw DurableRecorderException(DurableErrors.STATE, "pendingConfirmJson is invalid")
+    }
+    mutateManifest(ctx.applicationContext, uId, rId) { it.pendingConfirmJson = pendingJson }
+  }
+
   fun markUploaded(ctx: Context, input: Map<String, Any?>) {
     val uId = DurablePaths.requireValidId(input["userId"] as? String, "userId")
     val rId = DurablePaths.requireValidId(input["recordingId"] as? String, "recordingId")

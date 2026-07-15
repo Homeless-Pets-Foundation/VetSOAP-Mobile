@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('dirty server draft metadata must block stale promotion on submit', async () => {
+test('dirty server draft metadata is applied through strict preparation and confirmation', async () => {
   const record = await read('app/(app)/(tabs)/record.tsx');
   const api = await read('src/api/recordings.ts');
   const retry = await read('src/lib/retryableCleanup.ts');
@@ -14,34 +14,19 @@ test('dirty server draft metadata must block stale promotion on submit', async (
   assert.match(record, /if \(getUploadPhase\(error\) === 'patch_draft'\) return true/);
   assert.doesNotMatch(record, /draftMetadataSyncBlockedError/);
 
-  const durableSubmit = record.slice(
-    record.indexOf('const durableConfirmMetadata ='),
-    record.indexOf('const cleanupOutcome', record.indexOf('const durableConfirmMetadata ='))
-  );
-  assert.match(durableSubmit, /slot\.serverDraftId && slot\.draftMetadataDirty \? slot\.formData : undefined/);
-  assert.match(durableSubmit, /durableConfirmMetadata \? \{ confirmMetadata: durableConfirmMetadata \} : \{\}/);
+  assert.match(record, /metadataDirty: !!slot\.draftMetadataDirty/g);
+  assert.match(record, /onRecordingPrepared/);
+  assert.match(record, /dispatch\(\{ type: 'CLEAR_DRAFT_DIRTY', slotId: slot\.id \}\)/);
 
-  const segmentSubmit = record.slice(
-    record.indexOf('const confirmMetadata ='),
-    record.indexOf('let result;')
-  );
-  assert.match(segmentSubmit, /useExistingDraft && serverDraftId && slot\.draftMetadataDirty \? slot\.formData : undefined/);
-  assert.match(record, /confirmMetadata \? \{ confirmMetadata \} : \{\}/);
-
-  assert.match(api, /const metadataPayload = opts\?\.metadata \? normalizeDraftMetadataPayload\(opts\.metadata\) : undefined/);
-  assert.match(api, /metadataPayload \? \{ metadata: metadataPayload \} : \{\}/);
-  assert.match(api, /const confirmed: Recording = await apiClient\.post\(`\/api\/recordings\/\$\{recordingId\}\/confirm-upload`/);
-  assert.match(api, /return assertRecordingMatchesMetadataPayload\(confirmed, metadataPayload\)/);
+  assert.match(api, /function completeUploadMetadata/);
+  assert.match(api, /metadata: PendingConfirmMetadata/);
+  assert.match(api, /metadata,\s*files/);
+  assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata\)/);
   assert.match(api, /const AI_ENRICHABLE_METADATA_FIELDS = new Set/);
   assert.match(api, /function assertRecordingMatchesMetadataPayload\([\s\S]*allowServerEnrichedBlankFields/);
   assert.match(api, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
-  assert.match(api, /function isAlreadyConfirmedOrProcessing\(recording: Recording\): boolean/);
-  assert.match(api, /return assertRecordingMatchesMetadataPayload\(current, metadataPayload,[\s\S]*allowServerEnrichedBlankFields: true/);
-  assert.match(api, /if \(metadataPayload\) \{/);
-  assert.match(api, /phaseError\(\s*'patch_draft'/);
-  assert.match(api, /confirmMetadata\?: Partial<CreateRecording>/);
-  assert.match(api, /recording\.status !== 'draft' && recording\.status !== 'uploading'[\s\S]*phaseError\(\s*'patch_draft'/);
-  assert.match(api, /isExistingRecording && options\?\.confirmMetadata \? \{ metadata: options\.confirmMetadata \} : \{\}/);
+  assert.match(api, /assertRecordingMatchesMetadataPayload\(value\.recording, metadataAsPayload\(metadata\)/);
+  assert.doesNotMatch(api, /isAlreadyConfirmedOrProcessing/);
 
   const syncDraft = record.slice(
     record.indexOf('const syncServerDraft = useCallback'),
@@ -186,7 +171,8 @@ test('recording deletes send explicit PHI-free delete reasons', async () => {
   assert.match(record, /deleteSlotDraft\(slot, 'remove_slot'\)/);
   assert.match(record, /reason: 'missing_audio_rerecord'/);
   assert.match(record, /reason: 'orphan_draft_cleanup'/);
-  assert.match(record, /deleteRecordingWithRetry\(serverId, 'post_upload_local_cleanup'\)/);
+  assert.doesNotMatch(record, /deleteRecordingWithRetry\(serverId, 'post_upload_local_cleanup'\)/);
+  assert.match(record, /A racing create can therefore return the exact canonical/);
   assert.match(record, /reason: 'user_delete'/);
   assert.match(detail, /recordingsApi\.delete\(id, \{ reason: 'user_delete' \}\)/);
 });

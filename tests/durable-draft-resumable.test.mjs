@@ -48,6 +48,15 @@ const durableBadIdDraft = {
   durable: { ...durableDraft.durable, recordingId: '../escape' },
 };
 
+const pendingConfirmDraft = {
+  ...emptyLegacyDraft,
+  slotId: 'slot-4',
+  pendingConfirm: {
+    recordingId: '11111111-1111-4111-8111-111111111111',
+    fileKey: 'recordings/22222222-2222-4222-8222-222222222222/11111111-1111-4111-8111-111111111111.m4a',
+  },
+};
+
 test('isDraftResumable: durable draft with empty segments is resumable', async () => {
   const mod = await loadTsModule('src/lib/draftRecordings.ts', mocks);
   assert.equal(mod.isDraftResumable(durableDraft), true);
@@ -55,14 +64,17 @@ test('isDraftResumable: durable draft with empty segments is resumable', async (
   assert.equal(mod.isDraftResumable(emptyLegacyDraft), false);
   // A path-traversal durable id is rejected (Rule 15) -> not resumable via durable.
   assert.equal(mod.isDraftResumable(durableBadIdDraft), false);
+  // R2 confirmation proof remains resumable even after local audio disappears.
+  assert.equal(mod.isDraftResumable(pendingConfirmDraft), true);
 });
 
 test('buildDraftResumeMap: durable draft maps its serverDraftId -> slotId', async () => {
   const mod = await loadTsModule('src/lib/draftRecordings.ts', mocks);
-  const map = mod.buildDraftResumeMap([durableDraft, emptyLegacyDraft]);
+  const map = mod.buildDraftResumeMap([durableDraft, emptyLegacyDraft, pendingConfirmDraft]);
   assert.equal(map['srv-abc'], 'slot-1');
   // The empty legacy draft is absent (nothing to resume).
-  assert.equal(Object.keys(map).length, 1);
+  assert.equal(map['local-draft:slot-4'], 'slot-4');
+  assert.equal(Object.keys(map).length, 2);
 });
 
 test('mergeDraftRecordings: durable draft surfaces as a Not-Submitted card', async () => {

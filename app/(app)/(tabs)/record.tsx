@@ -36,7 +36,13 @@ import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
 import { isValidDurableId } from '../../../src/lib/durableAudio/paths';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
+import { validatePendingConfirm } from '../../../src/lib/pendingConfirm';
 import { getSecureRandomHex } from '../../../src/lib/random';
+import {
+  durableUploadIdempotencyKey,
+  normalizeUploadIntentId,
+  slotUploadIdempotencyKey,
+} from '../../../src/lib/uploadIntent';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
 import { useAuthUser } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
@@ -52,7 +58,7 @@ import {
   type RecordingDeleteReason,
 } from '../../../src/api/recordings';
 import { ApiError } from '../../../src/api/client';
-import { deleteRecordingWithRetry, patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
+import { patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import {
   trackEvent,
   type NetworkState,
@@ -80,6 +86,7 @@ import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
 import { UploadOverlay } from '../../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
+import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
 
@@ -151,6 +158,13 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
 function showRecordPermissionAlert(): void {
   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
   Alert.alert(RECORD_APPOINTMENT_PERMISSION_TITLE, RECORD_APPOINTMENT_PERMISSION_MESSAGE);
+}
+
+function showUploadInProgressAlert(): void {
+  Alert.alert(
+    'Upload in Progress',
+    'Please wait for this recording upload to finish before changing its audio.',
+  );
 }
 
 function isExpectedSubmitApiFailure(error: unknown): boolean {
@@ -559,12 +573,7 @@ function RecordingSession() {
     releaseResumedStash(stashId).catch(() => {});
   }, [releaseResumedStash]);
 
-  /**
-   * Best-effort delete a server recording that was left dangling because the
-   * segment set it covered was replaced or extended (e.g. continueRecording,
-   * clearAudio, replaceAllSegments). The server also has its own cleanup for
-   * abandoned "uploading" rows, so failures here are non-fatal.
-   */
+  /** Best-effort cleanup for an intent the user explicitly abandons. */
   const deleteOrphanServerRecording = useCallback((
     slot: PatientSlot,
     reason: RecordingDeleteReason = 'orphan_pending_confirm'
@@ -600,33 +609,12 @@ function RecordingSession() {
     }
   }, [deleteLocalSlotDraft]);
 
-  /**
-   * Editing metadata on a slot with a pendingConfirm hint invalidates it: the
-   * server record the hint points to was created with the OLD formData, and
-   * the retry path in the API short-circuits to confirmUpload without
-   * re-sending formData. The reducer drops the hint on UPDATE_FORM; this
-   * wrapper best-effort deletes the now-orphaned server record before
-   * dispatching, matching the existing pattern from continueRecording/
-   * clearAudio/replaceAllSegments. For clientName edits — which fan out to
-   * all slots — we walk every slot and delete each orphan.
-   */
+  /** Metadata edits retain the stable upload intent and any complete R2 hint. */
   const handleUpdateForm = useCallback(
     (slotId: string, field: keyof CreateRecording, value: string | boolean | undefined) => {
-      if (field === 'clientName') {
-        session.slots.forEach((s) => {
-          if (s.pendingConfirm && s.uploadStatus !== 'success') {
-            deleteOrphanServerRecording(s);
-          }
-        });
-      } else {
-        const target = session.slots.find((s) => s.id === slotId);
-        if (target && target.pendingConfirm && target.uploadStatus !== 'success') {
-          deleteOrphanServerRecording(target);
-        }
-      }
       updateForm(slotId, field, value);
     },
-    [session.slots, updateForm, deleteOrphanServerRecording]
+    [updateForm]
   );
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
@@ -700,6 +688,12 @@ function RecordingSession() {
   // Guard: track which slot IDs are actively uploading to prevent double-submission
   // across React render batches (useRef is synchronous; useState is not).
   const uploadingSlotIdsRef = useRef<Set<string>>(new Set());
+  const isSlotUploadActive = useCallback((slotId: string): boolean => {
+    if (uploadingSlotIdsRef.current.has(slotId)) return true;
+    return sessionRef.current.slots.some(
+      (slot) => slot.id === slotId && slot.uploadStatus === 'uploading',
+    );
+  }, []);
   // Guard: a slot marked for submission may still finish its deferred local draft save,
   // but it must not create a new server-side draft row while upload is in flight.
   const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
@@ -1208,7 +1202,7 @@ function RecordingSession() {
       // durable audio recovers, but with no form data) — durable finish must get
       // the same restart protection as segment recordings.
       const slotsToPersist = sessionRef.current.slots.filter(
-        (slot) => (slot.segments.length > 0 || !!slot.durable) && slot.uploadStatus !== 'success'
+        (slot) => slotHasRecoverableAudio(slot) && slot.uploadStatus !== 'success'
       );
 
       await Promise.all(
@@ -1305,11 +1299,7 @@ function RecordingSession() {
 
   // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
   const unsavedCount = session.slots.filter(
-    (s) => (s.segments.length > 0 && s.uploadStatus !== 'success') ||
-            // A durable slot has empty segments (audio in audio.aac); count it as
-            // unsaved whenever it hasn't uploaded, or the leave guard would let a
-            // finished-but-unsubmitted durable recording slip away without warning.
-            (!!s.durable && s.uploadStatus !== 'success') ||
+    (s) => (slotHasRecoverableAudio(s) && s.uploadStatus !== 'success') ||
             s.audioState === 'recording' || s.audioState === 'paused'
   ).length;
 
@@ -1394,6 +1384,10 @@ function RecordingSession() {
         showRecordPermissionAlert();
         return;
       }
+      if (isSlotUploadActive(slotId)) {
+        showUploadInProgressAlert();
+        return;
+      }
 
       // If another slot owns the recorder, prompt to stop it first
       if (session.recorderBoundToSlotId && session.recorderBoundToSlotId !== slotId) {
@@ -1444,7 +1438,7 @@ function RecordingSession() {
       startRecordingForSlot(slotId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- startRecordingForSlot accessed via startRecordingRef
-    [session.recorderBoundToSlotId, session.slots, recorder, user?.role]
+    [isSlotUploadActive, session.recorderBoundToSlotId, session.slots, recorder, user?.role]
   );
 
   const startRecordingForSlot = useCallback(
@@ -1775,6 +1769,17 @@ function RecordingSession() {
   const handleContinueRecording = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
+      if (isSlotUploadActive(slotId)) {
+        showUploadInProgressAlert();
+        return;
+      }
+      if (slot?.pendingConfirm) {
+        Alert.alert(
+          'Finish Submission First',
+          'This recording has already reached secure storage. Retry Submit or delete it and start over before adding more audio.',
+        );
+        return;
+      }
       if (slot?.durable && (slot.uploadStatus === 'success' || slot.durable.recoveredAudioUri)) {
         Alert.alert(
           'Recording Complete',
@@ -1786,7 +1791,6 @@ function RecordingSession() {
         if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
           recorder.resetWithoutDelete();
         }
-        if (slot) deleteOrphanServerRecording(slot);
         continueRecording(slotId);
         if (slot?.durable) startRecordingForSlot(slotId);
       };
@@ -1801,7 +1805,6 @@ function RecordingSession() {
               {
                 text: 'Stop & Continue',
                 onPress: () => {
-                  if (slot) deleteOrphanServerRecording(slot);
                   continueRecording(slotId);
                   enqueuePendingStart(slotId);
                   (async () => {
@@ -1820,7 +1823,6 @@ function RecordingSession() {
           return;
         }
         if (boundSlot && recorder.state === 'paused') {
-          if (slot) deleteOrphanServerRecording(slot);
           continueRecording(slotId);
           enqueuePendingStart(slotId);
           (async () => {
@@ -1837,12 +1839,16 @@ function RecordingSession() {
       }
       beginContinue();
     },
-    [session.recorderBoundToSlotId, session.slots, continueRecording, recorder, deleteOrphanServerRecording, startRecordingForSlot, enqueuePendingStart, removePendingStart, setAudioState]
+    [isSlotUploadActive, session.recorderBoundToSlotId, session.slots, continueRecording, recorder, startRecordingForSlot, enqueuePendingStart, removePendingStart, setAudioState]
   );
 
   const handleRecordAgain = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
+      if (isSlotUploadActive(slotId)) {
+        showUploadInProgressAlert();
+        return;
+      }
       const segmentCount = slot?.segments.length ?? 0;
       Alert.alert(
         segmentCount > 1 ? 'Delete All Recordings?' : 'Delete Current Recording?',
@@ -1892,15 +1898,19 @@ function RecordingSession() {
         ]
       );
     },
-    [session.slots, session.recorderBoundToSlotId, clearAudio, recorder, deleteOrphanServerRecording, deleteSlotDraft, user?.id]
+    [isSlotUploadActive, session.slots, session.recorderBoundToSlotId, clearAudio, recorder, deleteOrphanServerRecording, deleteSlotDraft, user?.id]
   );
 
   const handleRemove = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
       if (!slot) return;
+      if (isSlotUploadActive(slotId)) {
+        showUploadInProgressAlert();
+        return;
+      }
 
-      const hasRecording = slot.segments.length > 0 || !!slot.durable || isSlotActivelyRecording(slot);
+      const hasRecording = slotHasRecoverableAudio(slot) || isSlotActivelyRecording(slot);
 
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
@@ -1958,7 +1968,7 @@ function RecordingSession() {
         removeSlot(slotId);
       }
     },
-    [session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder, deleteOrphanServerRecording, deleteSlotDraft, user?.id]
+    [isSlotUploadActive, session.slots, session.recorderBoundToSlotId, recorder, removeSlot, unbindRecorder, deleteOrphanServerRecording, deleteSlotDraft, user?.id]
   );
 
   const slotHasLiveRecorder = useCallback(
@@ -1982,7 +1992,7 @@ function RecordingSession() {
         showRecordPermissionAlert();
         return null;
       }
-      if ((slot.segments.length === 0 && !slot.durable) || slot.uploadStatus === 'uploading') return null;
+      if ((slot.segments.length === 0 && !slot.durable && !slot.pendingConfirm) || slot.uploadStatus === 'uploading') return null;
       if (slot.uploadStatus === 'success') return slot.serverRecordingId ?? null;
       // Synchronous ref guard — prevents a second concurrent upload of the same slot
       // during the window between button tap and React state update disabling the button.
@@ -2049,6 +2059,126 @@ function RecordingSession() {
       let uploadSizeBytes = 0;
 
       try {
+        // Prefer the file-backed recovery engine while a complete local copy is
+        // still available. It confirms first, but can perform the single allowed
+        // prepare + PUT restart if the hinted server row was deleted. Reserve
+        // confirmation-only recovery for the case where R2 is the sole copy.
+        if (slot.pendingConfirm) {
+          const uid = user?.id;
+          const durable = slot.durable;
+          if (durable && !uid) {
+            showRecordPermissionAlert();
+            return null;
+          }
+          const nativeManifest = durable && uid
+            ? await durableRecorder.getManifest({ userId: uid, recordingId: durable.recordingId }).catch(() => null)
+            : null;
+          let hasCompleteLocalAudio = false;
+          if (durable) {
+            const durableUri = nativeManifest?.audioFile.uri ?? durable.recoveredAudioUri ?? null;
+            if (durableUri) {
+              const info = await getInfoAsync(durableUri).catch(() => ({ exists: false, size: 0 }));
+              hasCompleteLocalAudio = info.exists && (info.size ?? 0) > 0;
+            }
+          } else if (slot.segments.length > 0) {
+            hasCompleteLocalAudio = true;
+            for (const segment of slot.segments) {
+              const info = await getInfoAsync(segment.uri).catch(() => ({ exists: false, size: 0 }));
+              if (!info.exists || !(info.size ?? 0)) {
+                hasCompleteLocalAudio = false;
+                break;
+              }
+            }
+          }
+
+          if (!hasCompleteLocalAudio) {
+            const onClearPendingConfirm = async () => {
+              dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
+              await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, null);
+              if (durable && uid && nativeManifest) {
+                await durableRecorder.setPendingConfirm({
+                  userId: uid,
+                  recordingId: durable.recordingId,
+                  pendingConfirm: null,
+                });
+              }
+            };
+            setUploadStatus(slot.id, 'uploading', { progress: 95 });
+            const result = await recordingsApi.confirmPendingUpload(
+              slot.formData,
+              slot.pendingConfirm,
+              {
+                idempotencyKey: durable
+                  ? durableUploadIdempotencyKey(durable.recordingId)
+                  : slotUploadIdempotencyKey(normalizeUploadIntentId(slot.uploadIntentId, slot.id)),
+                onClearPendingConfirm,
+                mode: durable ? 'durable' : 'standard',
+                slotIndex,
+              },
+            );
+
+            completedUploadSlotIdsRef.current.add(slot.id);
+            setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: result.id });
+            recordSubmitAttempt(result.id);
+
+            if (durable && uid) {
+              const confirmedAt = new Date().toISOString();
+              if (nativeManifest) {
+                await durableRecorder
+                  .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
+                  .catch(() => {});
+              }
+              const confirmDraftGone = async (): Promise<boolean> => {
+                try {
+                  await draftStorage.deleteDraft(slot.id);
+                  await recoveryIntent.clearForDraftSlot(slot.id);
+                } catch {
+                  return false;
+                }
+                return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
+              };
+              let draftDeleted = await confirmDraftGone();
+              if (!draftDeleted) draftDeleted = await confirmDraftGone();
+              if (draftDeleted) {
+                if (nativeManifest) {
+                  await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
+                } else if (durable.recoveredAudioUri) {
+                  safeDeleteFile(durable.recoveredAudioUri);
+                }
+              }
+              await durableTombstone.add(durable.recordingId).catch(() => {});
+              durableRecoveryStore.remove(durable.recordingId);
+              trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: result.id } });
+            } else {
+              slot.segments.forEach((segment) => safeDeleteFile(segment.uri));
+              draftStorage.deleteDraft(slot.id).catch(() => {});
+              recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+            }
+
+            const latencyMs = Date.now() - uploadStartedAt;
+            trackEvent({
+              name: 'submit_succeeded',
+              props: {
+                slot_index: slotIndex,
+                segment_count: segmentCount,
+                duration_s: durationSeconds,
+                size_bytes: 0,
+                recording_id: result.id,
+                attempt_number: attemptNumber,
+                latency_ms: latencyMs,
+                ...baseSubmitDiagnostics,
+              },
+            });
+            breadcrumb('upload', 'pending_confirm_recovered', {
+              slot_index: slotIndex,
+              attempt_number: attemptNumber,
+              latency_ms: latencyMs,
+            });
+            uploadAttemptCountsRef.current.delete(slot.id);
+            return result.id;
+          }
+        }
+
         // ── Durable AAC upload (single audio.aac, no segments[], bypass split) ──
         if (slot.durable) {
           const durable = slot.durable;
@@ -2103,29 +2233,41 @@ function RecordingSession() {
             }
           }
 
-          // Upload ONLY the complete-ADTS-frame prefix. A crash can leave a torn
-          // partial frame past the manifest's completeFrameBytes anchor; sending
-          // the raw file would fail server-side ADTS validation. When the file is
-          // longer than the anchor, stream the prefix into a temp .aac and upload
-          // that; a clean stop has anchor === size so this is skipped. Only the
-          // native-manifest path has a trustworthy anchor (a recovered vault copy
-          // was already truncated at recovery time).
+          // Upload an immutable snapshot of ONLY the complete-ADTS-frame prefix.
+          // A crash can leave a torn partial frame past completeFrameBytes, and a
+          // recorder race can append bytes after createWithFile reads the source
+          // size. Uploading the live audio.aac in either case makes the presigned
+          // Content-Length disagree with the bytes the native uploader reads
+          // (Sentry REACT-NATIVE-4: "expected N bytes but received M"). Always
+          // copying the anchored prefix makes the preflight size and upload body
+          // refer to the same frozen file. A recovered vault copy is already a
+          // static, prefix-truncated file and therefore does not need this copy.
           let durableUploadUri = durableUri;
           let durablePrefixTempUri: string | null = null;
           const completeFrameBytes = manifest?.audioFile.completeFrameBytes ?? 0;
-          if (hasNativeManifest && completeFrameBytes > 0 && completeFrameBytes < durableSizeBytes) {
+          if (hasNativeManifest) {
+            if (completeFrameBytes <= 0 || completeFrameBytes > durableSizeBytes) {
+              const anchorError = new Error(
+                'The recording audio is still being finalized. Please wait a moment and try submitting again.',
+              ) as Error & { uploadPhase?: 'preflight' };
+              anchorError.uploadPhase = 'preflight';
+              throw anchorError;
+            }
             const tempUri = `${Paths.cache.uri}durable-upload-${durable.recordingId}.aac`;
             if (writeFilePrefix(durableUri, tempUri, completeFrameBytes)) {
               durableUploadUri = tempUri;
               durablePrefixTempUri = tempUri;
-              breadcrumb('upload', 'durable_prefix_truncated', {
+              breadcrumb('upload', 'durable_snapshot_created', {
                 file_bytes: durableSizeBytes,
                 prefix_bytes: completeFrameBytes,
               });
-            } else if (__DEV__) {
-              // Best-effort: on failure fall back to the full file (server may
-              // still accept it if the tail happened to be frame-aligned).
-              console.error('[Record] durable prefix truncation failed; uploading full file');
+            } else {
+              safeDeleteFile(tempUri);
+              const snapshotError = new Error(
+                'The recording could not be prepared for upload. Your audio is still saved; please try again.',
+              ) as Error & { uploadPhase?: 'preflight' };
+              snapshotError.uploadPhase = 'preflight';
+              throw snapshotError;
             }
           }
 
@@ -2135,8 +2277,6 @@ function RecordingSession() {
           // metadata is sent with confirm-upload so metadata + status commit
           // atomically; if the server cannot apply it, uploadSlot fails closed.
           let durableUseExisting = slot.serverDraftId ?? slot.serverRecordingId ?? undefined;
-          const durableConfirmMetadata =
-            slot.serverDraftId && slot.draftMetadataDirty ? slot.formData : undefined;
           let durableResult;
           try {
             durableResult = await recordingsApi.createWithFile(
@@ -2147,14 +2287,23 @@ function RecordingSession() {
                 fileName: 'recording.aac',
                 // Deterministic key derived from the on-disk durable recordingId so
                 // a retried create() after a kill reuses the same server row.
-                idempotencyKey: `durable-${durable.recordingId}`,
+                idempotencyKey: durableUploadIdempotencyKey(durable.recordingId),
                 // Persist serverRecordingId into the manifest BEFORE the R2 PUT.
                 // No-op for a recovered vault copy (no native manifest to anchor).
-                onRecordingCreated: async (recordingId) => {
-                  if (!hasNativeManifest) return;
-                  await durableRecorder
-                    .setServerRecordingId({ userId: uid, recordingId: durable.recordingId, serverRecordingId: recordingId })
-                    .catch(() => {});
+                onRecordingPrepared: async (recordingId) => {
+                  dispatch({
+                    type: 'SET_DRAFT_IDS',
+                    slotId: slot.id,
+                    draftSlotId: slot.draftSlotId ?? slot.id,
+                    serverDraftId: recordingId,
+                  });
+                  await draftStorage.updateServerDraftId(slot.draftSlotId ?? slot.id, recordingId);
+                  dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
+                  if (hasNativeManifest) {
+                    await durableRecorder
+                      .setServerRecordingId({ userId: uid, recordingId: durable.recordingId, serverRecordingId: recordingId })
+                      .catch(() => {});
+                  }
                 },
                 onUploadProgress: ({ percent }) => {
                   const now = Date.now();
@@ -2163,15 +2312,53 @@ function RecordingSession() {
                     setUploadStatus(slot.id, 'uploading', { progress: Math.round(5 + (percent * 85) / 100) });
                   }
                 },
-                onR2Complete: (hint) => {
+                onR2Complete: async (hint) => {
                   setUploadStatus(slot.id, 'uploading', {
                     progress: 95,
-                    pendingConfirm: { recordingId: hint.recordingId, fileKey: hint.fileKey },
+                    pendingConfirm: hint,
                   });
+                  await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, hint, hint.recordingId);
+                  if (hasNativeManifest) {
+                    await durableRecorder.setPendingConfirm({
+                      userId: uid,
+                      recordingId: durable.recordingId,
+                      pendingConfirm: hint,
+                    });
+                  }
+                },
+                onClearPendingConfirm: async (reason) => {
+                  const draftSlotId = slot.draftSlotId ?? slot.id;
+                  const committedLateWrite =
+                    reason === 'committed_late_anchor' || reason === 'committed_late_hint';
+                  dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
+                  if (committedLateWrite) {
+                    // Delete the resurrected metadata first. Calling another
+                    // SecureStore rewrite before deletion could hang on the same
+                    // Keystore failure and prevent the repair from ever running.
+                    await draftStorage.deleteDraft(draftSlotId);
+                    await recoveryIntent.clearForDraftSlot(draftSlotId);
+                    if (hasNativeManifest) {
+                      await durableRecorder.setPendingConfirm({
+                        userId: uid,
+                        recordingId: durable.recordingId,
+                        pendingConfirm: null,
+                      });
+                    }
+                    return;
+                  }
+                  await draftStorage.updatePendingConfirm(draftSlotId, null);
+                  if (hasNativeManifest) {
+                    await durableRecorder.setPendingConfirm({
+                      userId: uid,
+                      recordingId: durable.recordingId,
+                      pendingConfirm: null,
+                    });
+                  }
                 },
                 resume: slot.pendingConfirm ?? undefined,
                 ...(durableUseExisting ? { existingRecordingId: durableUseExisting } : {}),
-                ...(durableConfirmMetadata ? { confirmMetadata: durableConfirmMetadata } : {}),
+                metadataDirty: !!slot.draftMetadataDirty,
+                mode: 'durable',
                 audioDurationSeconds: durableDurationSeconds,
                 slotIndex,
               },
@@ -2398,21 +2585,36 @@ function RecordingSession() {
         // confirm fails or is interrupted, a user-driven retry will flow through
         // the `resume:` branch on the API — calling only confirmUpload again
         // rather than creating a second server recording.
-        const onR2Complete = (hint: {
-          recordingId: string;
-          fileKey: string;
-          segmentKeys?: string[];
-          segmentCount?: number;
-        }) => {
+        const onR2Complete = async (hint: NonNullable<PatientSlot['pendingConfirm']>) => {
           setUploadStatus(slot.id, 'uploading', {
             progress: 95,
-            pendingConfirm: {
-              recordingId: hint.recordingId,
-              fileKey: hint.fileKey,
-              segmentKeys: hint.segmentKeys,
-              segmentCount: hint.segmentCount,
-            },
+            pendingConfirm: hint,
           });
+          await draftStorage.updatePendingConfirm(slot.draftSlotId ?? slot.id, hint, hint.recordingId);
+        };
+
+        const onRecordingPrepared = async (recordingId: string) => {
+          dispatch({
+            type: 'SET_DRAFT_IDS',
+            slotId: slot.id,
+            draftSlotId: slot.draftSlotId ?? slot.id,
+            serverDraftId: recordingId,
+          });
+          await draftStorage.updateServerDraftId(slot.draftSlotId ?? slot.id, recordingId);
+          dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
+        };
+
+        const onClearPendingConfirm = async (reason?: string) => {
+          const draftSlotId = slot.draftSlotId ?? slot.id;
+          const committedLateWrite =
+            reason === 'committed_late_anchor' || reason === 'committed_late_hint';
+          dispatch({ type: 'SET_PENDING_CONFIRM', slotId: slot.id, pendingConfirm: null });
+          if (committedLateWrite) {
+            await draftStorage.deleteDraft(draftSlotId);
+            await recoveryIntent.clearForDraftSlot(draftSlotId);
+            return;
+          }
+          await draftStorage.updatePendingConfirm(draftSlotId, null);
         };
 
         // If we'd reuse a server draft and the user edited formData after the
@@ -2420,9 +2622,6 @@ function RecordingSession() {
         // applies metadata + status in one transaction or rejects the confirm.
         let useExistingDraft = !!slot.serverDraftId;
         const serverDraftId = slot.serverDraftId;
-        const confirmMetadata =
-          useExistingDraft && serverDraftId && slot.draftMetadataDirty ? slot.formData : undefined;
-
         let result;
         if (segmentsForUpload.length === 1) {
           // Single segment: use existing single-file upload (only when no
@@ -2434,9 +2633,15 @@ function RecordingSession() {
             {
               onUploadProgress,
               onR2Complete,
+              onRecordingPrepared,
+              onClearPendingConfirm,
               resume: slot.pendingConfirm ?? undefined,
+              idempotencyKey: slotUploadIdempotencyKey(
+                normalizeUploadIntentId(slot.uploadIntentId, slot.id),
+              ),
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
-              ...(confirmMetadata ? { confirmMetadata } : {}),
+              metadataDirty: !!slot.draftMetadataDirty,
+              mode: 'standard',
               audioDurationSeconds: durationSeconds,
               slotIndex,
             }
@@ -2450,9 +2655,15 @@ function RecordingSession() {
             {
               onUploadProgress,
               onR2Complete,
+              onRecordingPrepared,
+              onClearPendingConfirm,
               resume: slot.pendingConfirm ?? undefined,
+              idempotencyKey: slotUploadIdempotencyKey(
+                normalizeUploadIntentId(slot.uploadIntentId, slot.id),
+              ),
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
-              ...(confirmMetadata ? { confirmMetadata } : {}),
+              metadataDirty: !!slot.draftMetadataDirty,
+              mode: 'standard',
               slotIndex,
             }
           );
@@ -2563,7 +2774,7 @@ function RecordingSession() {
           phase,
           severity: telemetrySeverity,
           errorCode,
-          message: msg,
+          message: `Recording submission failed during ${phase}.`,
           recordingId: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
           slotIndex,
           segmentCount,
@@ -2574,7 +2785,10 @@ function RecordingSession() {
           submitContext: failureSubmitDiagnostics,
         });
         if (!isRecoverable) {
-          captureException(error, {
+          // Do not forward a raw API/native error message: it can contain an
+          // object key, filename, signed URL, or provider detail. Safe phase
+          // and outcome codes retain enough signal for grouping.
+          captureException(new Error(`recording_submit_failed:${phase}:${errorCode}`), {
             tags: {
               phase,
               error_code: errorCode,
@@ -2602,8 +2816,8 @@ function RecordingSession() {
           error_code: errorCode,
           attempt_number: attemptNumber,
         });
-        // Signal auto-stash eligibility to the submit handler. Two phases
-        // qualify, both characterized by a dead network mid-submit that the
+        // Signal auto-stash eligibility to the submit handler. Three phases
+        // qualify, all characterized by a dead network mid-submit that the
         // user can recover from by re-submitting once online:
         //   - r2_put: transient exhaustion after all 3 retries (Sentry
         //     REACT-NATIVE-4 fingerprint).
@@ -2611,6 +2825,8 @@ function RecordingSession() {
         //     POSTing the draft row or validating an existing serverDraftId
         //     (Sentry REACT-NATIVE-C fingerprint, multi-patient Submit-All on
         //     offline tablet).
+        //   - prepare: the atomic prepare-upload request itself failed before
+        //     any storage PUT. The stable intent makes a later retry safe.
         // presign / preflight / silence / confirm failures stay excluded —
         // those represent local-file / metering / server-side state problems
         // that won't resolve just by stashing and retrying when back online.
@@ -2619,6 +2835,8 @@ function RecordingSession() {
             autoStashableFailuresRef.current.set(slot.id, 'r2_put_dead_network');
           } else if (phase === 'create_draft') {
             autoStashableFailuresRef.current.set(slot.id, 'create_draft_dead_network');
+          } else if (phase === 'prepare') {
+            autoStashableFailuresRef.current.set(slot.id, 'prepare_dead_network');
           }
         }
         return null;
@@ -2690,9 +2908,14 @@ function RecordingSession() {
           const result = durableRecordingId
             ? await recordingsApi.create(slot.formData, {
                 isDraft: true,
-                idempotencyKey: `durable-${durableRecordingId}`,
+                idempotencyKey: durableUploadIdempotencyKey(durableRecordingId),
               })
-            : await recordingsApi.create(slot.formData, { isDraft: true });
+            : await recordingsApi.create(slot.formData, {
+                isDraft: true,
+                idempotencyKey: slotUploadIdempotencyKey(
+                  normalizeUploadIntentId(slot.uploadIntentId, slot.id),
+                ),
+              });
           serverId = result.id;
           if (durableRecordingId && user?.id) {
             await durableRecorder
@@ -2705,7 +2928,12 @@ function RecordingSession() {
           }
 
           if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
-            deleteRecordingWithRetry(serverId, 'post_upload_local_cleanup').catch(() => {});
+            // The Finish-time create and Submit share one persistent upload
+            // intent. A racing create can therefore return the exact canonical
+            // row Submit is preparing, uploading, or has already completed.
+            // Deleting it here would recreate the stale-row 404 window this
+            // protocol closes. Leave the server winner intact; only transient
+            // local draft state may be removed after proven upload success.
             if (completedUploadSlotIdsRef.current.has(slotId)) {
               draftStorage.deleteDraft(slotId).catch(() => {});
               recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
@@ -2979,10 +3207,7 @@ function RecordingSession() {
       const success = await stashSession(session);
       if (!success) return false;
 
-      session.slots.forEach((slot) => {
-        deleteOrphanServerRecording(slot);
-        deleteLocalSlotDraft(slot);
-      });
+      session.slots.forEach((slot) => deleteLocalSlotDraft(slot));
 
       for (const { id, reason } of eligible) {
         const idx = session.slots.findIndex((s) => s.id === id);
@@ -3014,7 +3239,6 @@ function RecordingSession() {
       stashSession,
       releaseResumedStashIfAny,
       resetSession,
-      deleteOrphanServerRecording,
       deleteLocalSlotDraft,
     ]
   );
@@ -3070,7 +3294,7 @@ function RecordingSession() {
             // Check if other slots still have unsaved recordings (exclude already-uploaded slots)
             const otherSlotsWithRecordings = sessionRef.current.slots.some(
               (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
-                (s.segments.length > 0 || !!s.durable || s.audioState === 'recording' || s.audioState === 'paused')
+                (slotHasRecoverableAudio(s) || s.audioState === 'recording' || s.audioState === 'paused')
             );
 
             if (otherSlotsWithRecordings) {
@@ -3129,7 +3353,7 @@ function RecordingSession() {
       ? []
       : sessionRef.current.slots.filter(
           (s) =>
-            (s.segments.length > 0 || !!s.durable) &&
+            slotHasRecoverableAudio(s) &&
             s.uploadStatus !== 'success' &&
             !slotHasRequiredSubmitFields(s)
         );
@@ -3144,7 +3368,7 @@ function RecordingSession() {
     }
 
     const slotsToUpload = sessionRef.current.slots.filter(
-      (s) => (s.segments.length > 0 || !!s.durable) &&
+      (s) => slotHasRecoverableAudio(s) &&
         (recordFirstEnabled || slotHasRequiredSubmitFields(s)) &&
         s.uploadStatus !== 'success' &&
         s.uploadStatus !== 'uploading' &&
@@ -3296,15 +3520,14 @@ function RecordingSession() {
         const postFlushSession = sessionRef.current;
         const success = await stashSession(postFlushSession);
         if (success) {
-          // The stashed form of the session does not persist pendingConfirm, so
-          // any half-confirmed server recording is now unreachable. Best-effort
-          // delete each one so they don't linger as orphaned 'uploading' rows.
-          // Local auto-saved draft metadata/audio is removed because the stash
+          // The stash persists the stable intent, canonical server ID, and any
+          // complete pending-confirm hint, so retries continue with the same
+          // row after resume. Local auto-saved draft metadata/audio is removed
+          // because the stash
           // now owns the local files. The server draft row is intentionally
           // preserved via `serverDraftId` in the stash payload so resume ->
           // submit promotes the same draft in place.
           postFlushSession.slots.forEach((slot) => {
-            deleteOrphanServerRecording(slot);
             deleteLocalSlotDraft(slot);
           });
           // The new stash supersedes the one we resumed from — release it so the
@@ -3325,7 +3548,7 @@ function RecordingSession() {
           // Include durable slots (empty segments, audio in audio.aac) — otherwise
           // a durable-only session that fails to stash (max stashes, SecureStore
           // write fail) shows no feedback and the user thinks it saved.
-          const hasRecordings = postFlushSession.slots.some((s) => s.segments.length > 0 || !!s.durable);
+          const hasRecordings = postFlushSession.slots.some(slotHasRecoverableAudio);
           if (hasRecordings) {
             Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
           }
@@ -3339,7 +3562,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteLocalSlotDraft, flushScheduledDraft]);
+  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteLocalSlotDraft, flushScheduledDraft]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,
@@ -3419,9 +3642,19 @@ function RecordingSession() {
             return;
           }
         }
-        // Validate all segment files still exist
-        for (const seg of draft.segments) {
-          if (!fileExists(seg.uri)) {
+        let restoredPendingConfirm = validatePendingConfirm(draft.pendingConfirm);
+        if (!restoredPendingConfirm && draft.durable && user?.id) {
+          const nativeManifest = await durableRecorder.getManifest({
+            userId: user.id,
+            recordingId: draft.durable.recordingId,
+          }).catch(() => null);
+          restoredPendingConfirm = validatePendingConfirm(nativeManifest?.pendingConfirm);
+        }
+        // Once R2 has accepted the bytes, confirmation no longer depends on a
+        // local file. Only prompt to re-record when there is no valid proof.
+        if (!restoredPendingConfirm) {
+          for (const seg of draft.segments) {
+            if (fileExists(seg.uri)) continue;
             Alert.alert(
               'Audio Not Found',
               'The recording audio was not found on this device. Would you like to start a new recording with the same patient details pre-filled?',
@@ -3445,9 +3678,10 @@ function RecordingSession() {
             return;
           }
         }
-        // All files present — restore into session
+        // Local files are present or R2 proof is sufficient — restore session.
         const restoredSlot: PatientSlot = {
           id: draft.slotId,
+          uploadIntentId: normalizeUploadIntentId(draft.uploadIntentId, draft.slotId),
           formData: draft.formData,
           audioState: 'stopped',
           segments: draft.segments,
@@ -3465,7 +3699,7 @@ function RecordingSession() {
           // draft, submit should send current formData with confirm-upload even
           // if an older build did not persist the dirty bit.
           draftMetadataDirty: draft.draftMetadataDirty || !!draft.serverDraftId,
-          pendingConfirm: null,
+          pendingConfirm: restoredPendingConfirm,
         };
         restoreSession([restoredSlot]);
         recoveryIntent.clearForDraftSlot(draft.slotId).catch(() => {});
@@ -3474,7 +3708,7 @@ function RecordingSession() {
         Alert.alert('Error', 'Could not load the draft recording.');
       }
     },
-    [resetSession, restoreSession, router]
+    [resetSession, restoreSession, router, user?.id]
   );
 
   const { draftSlotId } = useLocalSearchParams<{ draftSlotId?: string }>();
@@ -3511,10 +3745,7 @@ function RecordingSession() {
     // let the preserve list keep their rows intact.
     const trulyUnsaved = currentSlots.some(
       (s) =>
-        (s.segments.length > 0 && !s.draftSlotId && s.uploadStatus !== 'success') ||
-        // Durable slot (empty segments): count as unsaved whenever not uploaded so
-        // loading another draft can't silently reset an unsubmitted durable slot.
-        (!!s.durable && s.uploadStatus !== 'success') ||
+        (slotHasRecoverableAudio(s) && !s.draftSlotId && s.uploadStatus !== 'success') ||
         s.audioState === 'recording' ||
         s.audioState === 'paused'
     );
@@ -3772,6 +4003,17 @@ function RecordingSession() {
   const handleEditRecording = useCallback(
     (slotId: string) => {
       const slot = session.slots.find((s) => s.id === slotId);
+      if (isSlotUploadActive(slotId)) {
+        showUploadInProgressAlert();
+        return;
+      }
+      if (slot?.pendingConfirm) {
+        Alert.alert(
+          'Finish Submission First',
+          'This recording has already been uploaded and is waiting for confirmation. Submit it again to finish, or choose Delete & Start Over before editing.',
+        );
+        return;
+      }
       // v1: the waveform editor operates on legacy m4a segments. A durable AAC
       // recording (empty segments[], audio in audio.aac) is submitted as-is;
       // in-app editing of durable recordings is a follow-up.
@@ -3809,11 +4051,8 @@ function RecordingSession() {
               safeDeleteFile(seg.uri);
             }
           });
-          // Segment set is about to change — the pendingConfirm (if any) no
-          // longer matches the audio. Best-effort delete the orphan before
-          // the reducer clears the hint.
-          const editedSlot = sessionRef.current.slots.find((s) => s.id === result.slotId);
-          if (editedSlot) deleteOrphanServerRecording(editedSlot);
+          // Segment set is about to change. The reducer clears the obsolete
+          // pending hint while retaining the stable intent/canonical row.
           replaceAllSegments(result.slotId, result.segments);
           // Re-persist the edited segment set so a restart can't reopen the
           // pre-edit draft audio.
@@ -3827,7 +4066,7 @@ function RecordingSession() {
 
       router.push('/(app)/audio-editor' as any);
     },
-    [session.slots, router, replaceAllSegments, deleteOrphanServerRecording]
+    [isSlotUploadActive, session.slots, router, replaceAllSegments]
   );
 
   // Show stash list when session is clean and stashes exist

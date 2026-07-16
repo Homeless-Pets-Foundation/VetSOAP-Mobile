@@ -1121,9 +1121,11 @@ export const recordingsApi = {
     }
   },
 
-  async get(id: string): Promise<Recording> {
+  async get(id: string, options: { timeoutMs?: number } = {}): Promise<Recording> {
     recordingIdSchema.parse(id);
-    return apiClient.get(`/api/recordings/${id}`);
+    return apiClient.request(`/api/recordings/${id}`, {
+      timeoutMs: options.timeoutMs,
+    });
   },
 
   async create(

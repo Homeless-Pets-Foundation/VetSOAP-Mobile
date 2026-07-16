@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import { AppState } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../api/client';
 import { recordingsApi } from '../api/recordings';
@@ -10,21 +11,56 @@ import { useAuthDeviceRegistration, useAuthUser } from './useAuth';
 const LOCAL_DRAFTS_STALE_MS = 60_000;
 const RECONCILE_INTERVAL_MS = 5 * 60_000;
 const RECONCILE_CONCURRENCY = 3;
+const RECONCILE_REQUEST_TIMEOUT_MS = 10_000;
+const RECONCILE_PROBE_DEADLINE_MS = 12_000;
 const EMPTY_DRAFTS: DraftMetadata[] = [];
 
 const lastReconciledAtByUser = new Map<string, number>();
 const reconcileInFlightByUser = new Map<string, Promise<number>>();
 
-async function getServerDraftPresence(serverDraftId: string): Promise<ServerDraftPresence> {
-  try {
-    const recording = await recordingsApi.get(serverDraftId);
-    return recording.status === 'draft' ? 'present' : 'unknown';
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) {
-      return 'missing';
-    }
-    return 'unknown';
-  }
+interface ServerDraftProbeResult {
+  presence: ServerDraftPresence;
+  interrupted: boolean;
+}
+
+function getServerDraftPresence(serverDraftId: string): Promise<ServerDraftProbeResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: ServerDraftProbeResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      appStateSubscription.remove();
+      resolve(result);
+    };
+    const deadline = setTimeout(() => {
+      finish({ presence: 'unknown', interrupted: false });
+    }, RECONCILE_PROBE_DEADLINE_MS);
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') {
+        finish({ presence: 'unknown', interrupted: true });
+      }
+    });
+
+    recordingsApi
+      .get(serverDraftId, { timeoutMs: RECONCILE_REQUEST_TIMEOUT_MS })
+      .then((recording) => {
+        finish({
+          presence: recording.status === 'draft' ? 'present' : 'unknown',
+          interrupted: false,
+        });
+      })
+      .catch((error) => {
+        finish({
+          presence: error instanceof ApiError && error.status === 404 ? 'missing' : 'unknown',
+          interrupted: false,
+        });
+      });
+  });
+}
+
+function shouldDeferReconciliation(): boolean {
+  return AppState.currentState !== 'active';
 }
 
 async function runBounded<T>(items: T[], worker: (item: T) => Promise<void>, limit: number): Promise<void> {
@@ -33,13 +69,18 @@ async function runBounded<T>(items: T[], worker: (item: T) => Promise<void>, lim
     while (cursor < items.length) {
       const index = cursor;
       cursor++;
-      await worker(items[index]);
+      const item = items[index];
+      if (item !== undefined) {
+        await worker(item);
+      }
     }
   });
   await Promise.all(workers);
 }
 
 async function reconcileMissingServerDrafts(userId: string, force: boolean): Promise<number> {
+  if (shouldDeferReconciliation()) return 0;
+
   const now = Date.now();
   const last = lastReconciledAtByUser.get(userId) ?? 0;
   if (!force && now - last < RECONCILE_INTERVAL_MS) return 0;
@@ -48,7 +89,9 @@ async function reconcileMissingServerDrafts(userId: string, force: boolean): Pro
   if (existing) return existing;
 
   const promise = (async () => {
-    const drafts = await measurePhase('local_draft_list', { source: 'reconcile' }, () => draftStorage.listDrafts());
+    const drafts = await measurePhase('local_draft_list', { source: 'reconcile' }, () =>
+      draftStorage.listDraftsForUser(userId)
+    );
     const linkedDrafts = drafts.filter((draft) => draft.serverDraftId && !draft.pendingSync);
 
     return measurePhase(
@@ -56,21 +99,33 @@ async function reconcileMissingServerDrafts(userId: string, force: boolean): Pro
       { user_scoped: true, count: linkedDrafts.length },
       async () => {
         let reconciled = 0;
+        let deferredUntilForeground = false;
 
         await runBounded(
           linkedDrafts,
           async (draft) => {
+            if (shouldDeferReconciliation()) {
+              deferredUntilForeground = true;
+              return;
+            }
             const serverDraftId = draft.serverDraftId;
             if (!serverDraftId) return;
-            const presence = await getServerDraftPresence(serverDraftId);
+            const probe = await getServerDraftPresence(serverDraftId);
+            if (probe.interrupted || shouldDeferReconciliation()) {
+              deferredUntilForeground = true;
+              return;
+            }
+            const presence = probe.presence;
             if (presence !== 'missing') return;
-            await draftStorage.clearServerDraftId(draft.slotId);
+            await draftStorage.clearServerDraftIdForUser(userId, draft.slotId);
             reconciled++;
           },
           RECONCILE_CONCURRENCY
         );
 
-        lastReconciledAtByUser.set(userId, Date.now());
+        if (!deferredUntilForeground) {
+          lastReconciledAtByUser.set(userId, Date.now());
+        }
         return reconciled;
       }
     );
@@ -101,6 +156,23 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
   const userId = user?.id ?? null;
   const canReconcileServerDrafts = !!userId && !deviceRegistrationPending && !deviceRegistrationBlock;
 
+  const reconcileInBackground = useCallback(
+    (force: boolean) => {
+      if (!userId || !canReconcileServerDrafts || shouldDeferReconciliation()) return;
+
+      reconcileMissingServerDrafts(userId, force)
+        .then((reconciled) => {
+          if (reconciled === 0) return;
+          return queryClient.invalidateQueries({
+            queryKey: ['local-drafts', userId],
+            refetchType: 'active',
+          });
+        })
+        .catch(() => {});
+    },
+    [canReconcileServerDrafts, queryClient, userId]
+  );
+
   const query = useQuery({
     queryKey: ['local-drafts', userId],
     enabled: !!userId,
@@ -108,10 +180,11 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
     gcTime: 10 * 60_000,
     queryFn: async () => {
       if (!userId) return [] as DraftMetadata[];
-      if (canReconcileServerDrafts) {
-        await reconcileMissingServerDrafts(userId, false);
-      }
-      return measurePhase('local_draft_list', { source: 'query' }, () => draftStorage.listDrafts());
+      const drafts = await measurePhase('local_draft_list', { source: 'query' }, () =>
+        draftStorage.listDraftsForUser(userId)
+      );
+      reconcileInBackground(false);
+      return drafts;
     },
   });
 
@@ -126,17 +199,15 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
         'local_draft_refresh',
         { force_reconcile: forceReconcile },
         async () => {
-          if (canReconcileServerDrafts) {
-            await reconcileMissingServerDrafts(userId, forceReconcile);
-          }
           await queryClient.invalidateQueries({
             queryKey: ['local-drafts', userId],
             refetchType: 'active',
           });
+          reconcileInBackground(forceReconcile);
         }
       ).catch(() => {});
     },
-    [canReconcileServerDrafts, queryClient, userId]
+    [queryClient, reconcileInBackground, userId]
   );
 
   return {

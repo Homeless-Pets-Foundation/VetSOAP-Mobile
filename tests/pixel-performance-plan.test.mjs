@@ -150,8 +150,15 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(localDrafts, /const canReconcileServerDrafts = !!userId && !deviceRegistrationPending && !deviceRegistrationBlock/);
   assert.match(localDrafts, /const RECONCILE_INTERVAL_MS = 5 \* 60_000/);
   assert.match(localDrafts, /const RECONCILE_CONCURRENCY = 3/);
+  assert.match(localDrafts, /const RECONCILE_REQUEST_TIMEOUT_MS = 10_000/);
+  assert.match(localDrafts, /const RECONCILE_PROBE_DEADLINE_MS = 12_000/);
+  assert.match(localDrafts, /AppState\.addEventListener\('change'/);
+  assert.match(localDrafts, /AppState\.currentState !== 'active'/);
   assert.match(localDrafts, /runBounded\(/);
-  assert.match(localDrafts, /clearServerDraftId\(draft\.slotId\)/);
+  assert.match(localDrafts, /listDraftsForUser\(userId\)/);
+  assert.match(localDrafts, /clearServerDraftIdForUser\(userId, draft\.slotId\)/);
+  assert.match(localDrafts, /reconcileInBackground\(false\);\s*return drafts;/);
+  assert.doesNotMatch(localDrafts, /await reconcileMissingServerDrafts\(userId/);
 
   assert.match(pendingSync, /const inFlightByUser = new Map/);
   assert.match(pendingSync, /const lastFailedAtByUser = new Map/);

@@ -355,6 +355,46 @@ test('draftStorage: cache never leaks across users on a shared tablet', async ()
   assert.equal(back[0].slotId, 'aslot');
 });
 
+test('draftStorage: explicit server-draft detach remains scoped after the active user changes', async () => {
+  const { draftStorage } = await loadDraftStorage();
+
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('aslot'));
+  await draftStorage.updateServerDraftId('aslot', 'server-a');
+
+  draftStorage.setUserId('userB');
+  await draftStorage.saveDraft(makeSlot('bslot'));
+  await draftStorage.updateServerDraftId('bslot', 'server-b');
+
+  await draftStorage.clearServerDraftIdForUser('userA', 'aslot');
+
+  const aDrafts = await draftStorage.listDraftsForUser('userA');
+  const bDrafts = await draftStorage.listDraftsForUser('userB');
+  assert.equal(aDrafts[0].serverDraftId, null);
+  assert.equal(bDrafts[0].serverDraftId, 'server-b');
+  assert.equal(draftStorage.getUserId(), 'userB');
+});
+
+test('draftStorage: delayed reconciliation cannot clear a newer server-draft link', async () => {
+  const { draftStorage } = await loadDraftStorage();
+
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+  await draftStorage.updateServerDraftId('slot1', 'server-old');
+
+  // The server probe for server-old is still in flight when another path
+  // relinks the slot. Its eventual 404 must not detach server-new.
+  await draftStorage.updateServerDraftId('slot1', 'server-new');
+  await draftStorage.clearServerDraftIdForUser('userA', 'slot1', 'server-old');
+
+  let draft = await draftStorage.getDraft('slot1');
+  assert.equal(draft.serverDraftId, 'server-new');
+
+  await draftStorage.clearServerDraftIdForUser('userA', 'slot1', 'server-new');
+  draft = await draftStorage.getDraft('slot1');
+  assert.equal(draft.serverDraftId, null);
+});
+
 test('draftStorage: syncPending for user A while scoped to user B cannot poison B\'s cache', async () => {
   const { draftStorage } = await loadDraftStorage();
 

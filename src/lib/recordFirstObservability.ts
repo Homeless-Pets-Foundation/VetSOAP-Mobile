@@ -198,6 +198,12 @@ export function buildExtractionObservedProps(recording: Recording): ExtractionOb
  * completed record-first recording with a blank patient name returns no
  * metadata at all OR applied nothing.
  *
+ * Multi-patient extraction is intentionally excluded. The server must never
+ * auto-apply metadata when it detects multiple patients; that path shows the
+ * review UI and is already counted by `ai_metadata_extraction_observed` with
+ * `multiple_patients_detected=true`. Reporting it as an extraction warning
+ * turns the safety gate into Sentry noise.
+ *
  * IMPORTANT: do NOT gate this on `needsMetadataReview`. The server clears that
  * flag when extraction returns null (no suggestions to review) — i.e. the
  * exact zero-fill failure this must catch. The blank-patient-name check is
@@ -211,6 +217,7 @@ export function shouldReportZeroFill(
   const patientNameBlank = currentFieldValue(recording, 'patientName') === '';
   if (!patientNameBlank) return false;
   const meta = recording.aiExtractedMetadata ?? null;
+  if (meta?.multiplePatientsDetected === true) return false;
   const appliedCount = appliedFieldList(recording).length;
   return meta == null || appliedCount === 0;
 }

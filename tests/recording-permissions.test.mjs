@@ -128,7 +128,10 @@ test('ApiClient routes an unrecoverable 401 to sign-out instead of a zombie sess
   assert.match(client, /private onSessionExpired\?/);
   assert.match(client, /setOnSessionExpired\(callback/);
   // After onUnauthorized()'s refresh+retry, a still-401 response fires onSessionExpired.
-  assert.match(client, /if \(response\.status === 401\) \{\s*try \{ await this\.onSessionExpired\?\.\(\);/);
+  assert.match(
+    client,
+    /if \(response\.status === 401\) \{\s*throwIfRequestAborted\(signal\);\s*try \{ await this\.onSessionExpired\?\.\(\);/
+  );
 
   const auth = await read('src/auth/AuthProvider.tsx');
   // Wired with fresh-session + in-progress-sign-out guards, then signs out to re-auth.

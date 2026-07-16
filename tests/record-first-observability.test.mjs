@@ -158,6 +158,27 @@ test('A2: extracted but nothing applied + blank name → warning fires (zero_app
   assert.equal(OBS.zeroFillErrorCode(rec), 'zero_applied');
 });
 
+test('A2: multi-patient safety block stays in analytics but does not fire an error warning', () => {
+  const rec = makeRecording({
+    patientName: '',
+    needsMetadataReview: true,
+    aiExtractedMetadata: {
+      appliedFields: [],
+      multiplePatientsDetected: true,
+      fields: {
+        patientName: { value: 'Patient A' },
+        species: { value: 'Canine' },
+      },
+    },
+  });
+
+  const observed = OBS.buildExtractionObservedProps(rec);
+  assert.equal(observed.multiple_patients_detected, true);
+  assert.equal(observed.applied_field_count, 0);
+  assert.equal(observed.extracted_field_count, 2);
+  assert.equal(OBS.shouldReportZeroFill(rec, true), false);
+});
+
 test('A2: applied something → no warning even with blank patient name', () => {
   const rec = makeRecording({
     patientName: '',

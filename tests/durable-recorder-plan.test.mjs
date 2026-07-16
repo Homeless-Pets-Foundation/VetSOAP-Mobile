@@ -148,6 +148,34 @@ test('uploadSlot durable: preparation sends the complete current metadata snapsh
   assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata\)/);
 });
 
+test('direct confirmation cannot regress to PATCH-oriented partial metadata', async () => {
+  const api = await read('src/api/recordings.ts');
+  const directConfirm = api.slice(
+    api.indexOf('async confirmUpload('),
+    api.indexOf('async prepareUpload(', api.indexOf('async confirmUpload(')),
+  );
+
+  assert.match(directConfirm, /metadata\?: CreateRecording/);
+  assert.match(directConfirm, /completeUploadMetadata\(opts\.metadata\)/);
+  assert.doesNotMatch(directConfirm, /normalizeDraftMetadataPayload/);
+});
+
+test('durable submit telemetry reports the native file and manifest duration', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+
+  assert.match(
+    src,
+    /slot\.durable\s*\? slot\.durable\.durationMs \/ 1000\s*:\s*slot\.segments\.reduce/,
+  );
+  assert.match(src, /const segmentCount = slot\.durable \? 1 : slot\.segments\.length/);
+  const durableUpload = src.slice(
+    src.indexOf('// ── Durable AAC upload'),
+    src.indexOf('// Pre-flight: read local segment sizes'),
+  );
+  assert.match(durableUpload, /segment_count: segmentCount/);
+  assert.doesNotMatch(durableUpload, /segment_count: 0/);
+});
+
 test('draftStorage: durable-aware orphan/audio checks + metadata-only save', async () => {
   const src = await read('src/lib/draftStorage.ts');
   assert.match(src, /if \(slot\.durable\) \{/); // metadata-only durable save branch

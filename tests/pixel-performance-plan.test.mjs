@@ -121,6 +121,7 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   const record = await read('app/(app)/(tabs)/record.tsx');
   const cache = await read('src/lib/recordingQueryCache.ts');
   const draftStorage = await read('src/lib/draftStorage.ts');
+  const apiClient = await read('src/api/client.ts');
   const homeFocusRefresh = home.slice(
     home.indexOf('const handleFocusRefresh'),
     home.indexOf('useFocusEffect(handleFocusRefresh)')
@@ -152,6 +153,10 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(localDrafts, /const RECONCILE_CONCURRENCY = 3/);
   assert.match(localDrafts, /const RECONCILE_REQUEST_TIMEOUT_MS = 10_000/);
   assert.match(localDrafts, /const RECONCILE_PROBE_DEADLINE_MS = 12_000/);
+  assert.match(localDrafts, /const controller = new AbortController\(\)/);
+  assert.match(localDrafts, /signal: controller\.signal/);
+  assert.match(localDrafts, /allowAuthSideEffects: false/);
+  assert.match(localDrafts, /finish\(\{ presence: 'unknown', interrupted: true \}, true\)/);
   assert.match(localDrafts, /AppState\.addEventListener\('change'/);
   assert.match(localDrafts, /AppState\.currentState !== 'active'/);
   assert.match(localDrafts, /draftStorage\.getUserId\(\) !== userId/);
@@ -163,6 +168,11 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(localDrafts, /clearServerDraftIdForUser\(userId, draft\.slotId, serverDraftId\)/);
   assert.match(localDrafts, /reconcileInBackground\(false\);\s*return drafts;/);
   assert.doesNotMatch(localDrafts, /await reconcileMissingServerDrafts\(userId/);
+
+  assert.match(apiClient, /signal\?: AbortSignal/);
+  assert.match(apiClient, /signal\?\.addEventListener\('abort', abortFromExternalSignal/);
+  assert.match(apiClient, /if \(allowAuthSideEffects && response\.status === 428/);
+  assert.match(apiClient, /if \(allowAuthSideEffects && response\.status === 401/);
 
   assert.match(pendingSync, /const inFlightByUser = new Map/);
   assert.match(pendingSync, /const lastFailedAtByUser = new Map/);

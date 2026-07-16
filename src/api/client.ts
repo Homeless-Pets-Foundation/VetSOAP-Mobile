@@ -7,6 +7,13 @@ import { setDurableCaptureFlag } from '../lib/durableFlag';
 
 const REQUEST_TIMEOUT_MS = 30000;
 
+function throwIfRequestAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Request aborted');
+  error.name = 'AbortError';
+  throw error;
+}
+
 /**
  * Classify an API path into a coarse bucket for telemetry cardinality. Full
  * paths leak PHI-adjacent identifiers (recording_id, user_id) and explode
@@ -219,17 +226,24 @@ export class ApiClient {
     serializedBody: string | undefined,
     timeoutMs: number,
     idempotencyKey?: string,
-    requestId?: string
+    requestId?: string,
+    signal?: AbortSignal,
   ): Promise<Response> {
+    throwIfRequestAborted(signal);
     const authHeaders = await this.getAuthHeaders();
+    throwIfRequestAborted(signal);
     // Cache device ID after first successful read to avoid hitting SecureStore on every request.
     // Don't cache null — Keystore may be transiently unavailable (e.g. Android direct boot).
     if (this.cachedDeviceId === undefined) {
       const id = await secureStorage.getDeviceId();
       if (id) this.cachedDeviceId = id;
     }
+    throwIfRequestAborted(signal);
     const deviceId = this.cachedDeviceId ?? null;
     const controller = new AbortController();
+    const abortFromExternalSignal = () => controller.abort();
+    signal?.addEventListener('abort', abortFromExternalSignal, { once: true });
+    if (signal?.aborted) controller.abort();
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -267,6 +281,7 @@ export class ApiClient {
       throw error;
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortFromExternalSignal);
     }
   }
 
@@ -279,6 +294,9 @@ export class ApiClient {
       timeoutMs?: number;
       idempotencyKey?: string;
       parseJson?: boolean;
+      signal?: AbortSignal;
+      /** Disable global auth/device/MFA handlers for best-effort background probes. */
+      allowAuthSideEffects?: boolean;
     } = {}
   ): Promise<T> {
     const {
@@ -288,6 +306,8 @@ export class ApiClient {
       timeoutMs = REQUEST_TIMEOUT_MS,
       idempotencyKey,
       parseJson = true,
+      signal,
+      allowAuthSideEffects = true,
     } = config;
 
     let url = `${API_URL}${path}`;
@@ -308,7 +328,17 @@ export class ApiClient {
     const requestId = getIdempotencyUuid();
     const fetchStartedAt = Date.now();
     let retried = false;
-    let response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
+    let response = await this.doFetch(
+      url,
+      method,
+      path,
+      serializedBody,
+      timeoutMs,
+      idempotencyKey,
+      requestId,
+      signal,
+    );
+    throwIfRequestAborted(signal);
 
     // Cache the min-app-version floor + durable flag from a response and handle a
     // 426 as terminal-non-auth. Runs on the INITIAL response AND (below) on the
@@ -316,6 +346,7 @@ export class ApiClient {
     // by a retried 426 would fall through to generic handling, never cache the
     // floor, and let a below-floor build keep recording until it gets a direct 426.
     const handleUpgradeResponse = async (resp: Response): Promise<void> => {
+      throwIfRequestAborted(signal);
       // Opportunistically cache the floor from ANY response so the offline-first
       // record-start gate has a value without a dedicated round-trip.
       try {
@@ -339,6 +370,7 @@ export class ApiClient {
       // (which would show a generic "Something went wrong" and block nothing).
       if (resp.status === 426) {
         const upgradeBody = await resp.clone().json().catch(() => ({})) ?? {};
+        throwIfRequestAborted(signal);
         if (typeof upgradeBody.minVersion === 'string') setMinVersionFloor(upgradeBody.minVersion);
         const endpointKind = endpointKindOf(path);
         emitApiRequestFailed(endpointKind, 426, Date.now() - fetchStartedAt, retried);
@@ -357,21 +389,34 @@ export class ApiClient {
     // need to register before /api/* calls are accepted. Only the registration
     // endpoint itself is exempt from the handshake — calling it from here
     // would re-enter with the same 428, so we skip the handler for that path.
-    if (response.status === 428 && path !== '/api/device-sessions/register') {
+    if (allowAuthSideEffects && response.status === 428 && path !== '/api/device-sessions/register') {
       const errorPreview = await response.clone().json().catch(() => ({})) ?? {};
+      throwIfRequestAborted(signal);
       if (errorPreview.code === 'DEVICE_REGISTRATION_REQUIRED' && this.onDeviceRegistrationRequired) {
         const registered = await this.onDeviceRegistrationRequired().catch(() => false);
+        throwIfRequestAborted(signal);
         if (registered) {
           if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after device registration');
           retried = true;
-        response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
+          response = await this.doFetch(
+            url,
+            method,
+            path,
+            serializedBody,
+            timeoutMs,
+            idempotencyKey,
+            requestId,
+            signal,
+          );
+          throwIfRequestAborted(signal);
         }
       }
     }
 
     // On 401, check for device revocation before attempting refresh
-    if (response.status === 401) {
+    if (allowAuthSideEffects && response.status === 401) {
       const errorPreview = await response.clone().json().catch(() => ({})) ?? {};
+      throwIfRequestAborted(signal);
       if (errorPreview.code === 'DEVICE_REVOKED') {
         // Device was revoked by admin — force sign-out without token refresh
         try { await this.onDeviceRevoked?.(); } catch { /* ignore */ }
@@ -397,13 +442,24 @@ export class ApiClient {
       } catch {
         // onUnauthorized handler failed — fall through to error
       }
+      throwIfRequestAborted(signal);
       const newToken = this.currentToken;
 
       // If the token changed after refresh, retry the request once
       if (newToken && newToken !== oldToken) {
         if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
         retried = true;
-        response = await this.doFetch(url, method, path, serializedBody, timeoutMs, idempotencyKey, requestId);
+        response = await this.doFetch(
+          url,
+          method,
+          path,
+          serializedBody,
+          timeoutMs,
+          idempotencyKey,
+          requestId,
+          signal,
+        );
+        throwIfRequestAborted(signal);
       }
 
       // Still 401 after the refresh attempt → the session can't authenticate
@@ -412,7 +468,9 @@ export class ApiClient {
       // session. Fires only after a refresh already ran; transient network blips
       // surface as throws (not clean 401s) so they don't trip it.
       if (response.status === 401) {
+        throwIfRequestAborted(signal);
         try { await this.onSessionExpired?.(); } catch { /* ignore */ }
+        throwIfRequestAborted(signal);
       }
     }
 
@@ -423,6 +481,7 @@ export class ApiClient {
     const latencyMs = Date.now() - fetchStartedAt;
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({})) ?? {};
+      throwIfRequestAborted(signal);
       const details = Array.isArray(errorBody.details)
         ? errorBody.details
             .map((detail: unknown): { field?: string; message: string } | null => {
@@ -446,7 +505,7 @@ export class ApiClient {
       const message = this.buildErrorMessage(response.status, errorBody, details);
       const code = typeof errorBody.code === 'string' ? errorBody.code : undefined;
 
-      if (response.status === 403 && code === 'MFA_REQUIRED') {
+      if (allowAuthSideEffects && response.status === 403 && code === 'MFA_REQUIRED') {
         await this.onMfaRequired?.({
           path,
           method,
@@ -460,6 +519,7 @@ export class ApiClient {
           maxAgeSeconds:
             typeof errorBody.maxAgeSeconds === 'number' ? errorBody.maxAgeSeconds : undefined,
         });
+        throwIfRequestAborted(signal);
       }
 
       // Strip the fields we lift to first-class properties so callers reading
@@ -490,6 +550,7 @@ export class ApiClient {
       return undefined as T;
     }
 
+    throwIfRequestAborted(signal);
     return response.json().catch(() => {
       throw new ApiError('Invalid response format from server', response.status);
     });

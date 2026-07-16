@@ -1121,10 +1121,19 @@ export const recordingsApi = {
     }
   },
 
-  async get(id: string, options: { timeoutMs?: number } = {}): Promise<Recording> {
+  async get(
+    id: string,
+    options: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      allowAuthSideEffects?: boolean;
+    } = {},
+  ): Promise<Recording> {
     recordingIdSchema.parse(id);
     return apiClient.request(`/api/recordings/${id}`, {
       timeoutMs: options.timeoutMs,
+      signal: options.signal,
+      allowAuthSideEffects: options.allowAuthSideEffects,
     });
   },
 

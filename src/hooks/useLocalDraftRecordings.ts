@@ -26,24 +26,30 @@ interface ServerDraftProbeResult {
 function getServerDraftPresence(serverDraftId: string): Promise<ServerDraftProbeResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (result: ServerDraftProbeResult) => {
+    const controller = new AbortController();
+    const finish = (result: ServerDraftProbeResult, abortRequest = false) => {
       if (settled) return;
       settled = true;
+      if (abortRequest) controller.abort();
       clearTimeout(deadline);
       appStateSubscription.remove();
       resolve(result);
     };
     const deadline = setTimeout(() => {
-      finish({ presence: 'unknown', interrupted: false });
+      finish({ presence: 'unknown', interrupted: false }, true);
     }, RECONCILE_PROBE_DEADLINE_MS);
     const appStateSubscription = AppState.addEventListener('change', (nextState) => {
       if (nextState !== 'active') {
-        finish({ presence: 'unknown', interrupted: true });
+        finish({ presence: 'unknown', interrupted: true }, true);
       }
     });
 
     recordingsApi
-      .get(serverDraftId, { timeoutMs: RECONCILE_REQUEST_TIMEOUT_MS })
+      .get(serverDraftId, {
+        timeoutMs: RECONCILE_REQUEST_TIMEOUT_MS,
+        signal: controller.signal,
+        allowAuthSideEffects: false,
+      })
       .then((recording) => {
         finish({
           presence: recording.status === 'draft' ? 'present' : 'unknown',

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { AppState } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../api/client';
@@ -63,6 +63,10 @@ function shouldDeferReconciliation(): boolean {
   return AppState.currentState !== 'active';
 }
 
+function shouldInterruptReconciliation(userId: string): boolean {
+  return shouldDeferReconciliation() || draftStorage.getUserId() !== userId;
+}
+
 async function runBounded<T>(items: T[], worker: (item: T) => Promise<void>, limit: number): Promise<void> {
   let cursor = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -79,7 +83,7 @@ async function runBounded<T>(items: T[], worker: (item: T) => Promise<void>, lim
 }
 
 async function reconcileMissingServerDrafts(userId: string, force: boolean): Promise<number> {
-  if (shouldDeferReconciliation()) return 0;
+  if (shouldInterruptReconciliation(userId)) return 0;
 
   const now = Date.now();
   const last = lastReconciledAtByUser.get(userId) ?? 0;
@@ -104,14 +108,18 @@ async function reconcileMissingServerDrafts(userId: string, force: boolean): Pro
         await runBounded(
           linkedDrafts,
           async (draft) => {
-            if (shouldDeferReconciliation()) {
+            if (shouldInterruptReconciliation(userId)) {
               deferredUntilForeground = true;
               return;
             }
             const serverDraftId = draft.serverDraftId;
             if (!serverDraftId) return;
             const probe = await getServerDraftPresence(serverDraftId);
-            if (probe.interrupted || shouldDeferReconciliation()) {
+            // ApiClient reads the current global auth token. If auth changed
+            // while this probe was in flight, a 404 may describe the new
+            // user's visibility rather than whether this user's draft exists.
+            // Treat that result as unknown and preserve the local anchor.
+            if (probe.interrupted || shouldInterruptReconciliation(userId)) {
               deferredUntilForeground = true;
               return;
             }
@@ -158,7 +166,7 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
 
   const reconcileInBackground = useCallback(
     (force: boolean) => {
-      if (!userId || !canReconcileServerDrafts || shouldDeferReconciliation()) return;
+      if (!userId || !canReconcileServerDrafts || shouldInterruptReconciliation(userId)) return;
 
       reconcileMissingServerDrafts(userId, force)
         .then((reconciled) => {
@@ -172,6 +180,34 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
     },
     [canReconcileServerDrafts, queryClient, userId]
   );
+
+  useEffect(() => {
+    if (!userId || !canReconcileServerDrafts) return;
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active' || draftStorage.getUserId() !== userId) return;
+
+      // A background transition resolves active probes as interrupted. If
+      // their shared job has not unwound yet, resume only after it leaves the
+      // per-user in-flight map; otherwise the dedupe would join the canceled
+      // job and no reconciliation would actually restart.
+      const existing = reconcileInFlightByUser.get(userId);
+      if (existing) {
+        existing
+          .finally(() => {
+            if (AppState.currentState === 'active' && draftStorage.getUserId() === userId) {
+              reconcileInBackground(false);
+            }
+          })
+          .catch(() => {});
+        return;
+      }
+
+      reconcileInBackground(false);
+    });
+
+    return () => subscription.remove();
+  }, [canReconcileServerDrafts, reconcileInBackground, userId]);
 
   const query = useQuery({
     queryKey: ['local-drafts', userId],

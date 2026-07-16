@@ -154,6 +154,10 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(localDrafts, /const RECONCILE_PROBE_DEADLINE_MS = 12_000/);
   assert.match(localDrafts, /AppState\.addEventListener\('change'/);
   assert.match(localDrafts, /AppState\.currentState !== 'active'/);
+  assert.match(localDrafts, /draftStorage\.getUserId\(\) !== userId/);
+  assert.match(localDrafts, /nextState !== 'active'/);
+  assert.match(localDrafts, /reconcileInFlightByUser\.get\(userId\)/);
+  assert.match(localDrafts, /reconcileInBackground\(false\)/);
   assert.match(localDrafts, /runBounded\(/);
   assert.match(localDrafts, /listDraftsForUser\(userId\)/);
   assert.match(localDrafts, /clearServerDraftIdForUser\(userId, draft\.slotId, serverDraftId\)/);

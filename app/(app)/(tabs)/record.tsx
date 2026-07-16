@@ -2015,10 +2015,15 @@ function RecordingSession() {
       const currentSlots = sessionRef.current.slots;
       const slotIndex = currentSlots.findIndex((s) => s.id === slot.id);
       const slotCount = currentSlots.length;
+      // Durable AAC is one upload file backed by a native manifest, so its
+      // segments[] is intentionally empty. Report the upload shape instead of
+      // emitting the misleading 0 files / 0 seconds seen in NODE-19.
       const durationSeconds = Math.round(
-        slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0)
+        slot.durable
+          ? slot.durable.durationMs / 1000
+          : slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0)
       );
-      const segmentCount = slot.segments.length;
+      const segmentCount = slot.durable ? 1 : slot.segments.length;
       const uploadStartedAt = Date.now();
       const netState = networkStateForTelemetry();
       const willUseAtomicMetadataUpdate = !!slot.serverDraftId && slot.draftMetadataDirty;
@@ -2427,7 +2432,7 @@ function RecordingSession() {
             name: 'submit_succeeded',
             props: {
               slot_index: slotIndex,
-              segment_count: 0,
+              segment_count: segmentCount,
               duration_s: durableDurationSeconds,
               size_bytes: durableSizeBytes,
               recording_id: durableResult.id,

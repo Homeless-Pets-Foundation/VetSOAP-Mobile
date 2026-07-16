@@ -1194,10 +1194,15 @@ export const recordingsApi = {
   async confirmUpload(
     recordingId: string,
     fileKey: string,
-    opts?: { segmentKeys?: string[]; segmentCount?: number; metadata?: Partial<CreateRecording> }
+    opts?: { segmentKeys?: string[]; segmentCount?: number; metadata?: CreateRecording }
   ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
-    const metadata = opts?.metadata ? normalizeDraftMetadataPayload(opts.metadata) : undefined;
+    // confirm-upload's metadata contract is a complete snapshot. Keep the
+    // PATCH-oriented partial normalizer out of this path; Mobile 1.13.10 used
+    // it here and omitted foreignLanguage=false, which the strict API rejected
+    // as INVALID_CONFIRM_UPLOAD.
+    const metadata = opts?.metadata ? completeUploadMetadata(opts.metadata) : undefined;
+    const metadataPayload = metadata ? metadataAsPayload(metadata) : undefined;
     let recording: Recording;
     try {
       recording = await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
@@ -1214,14 +1219,14 @@ export const recordingsApi = {
           tagPhase(probeError, 'confirm');
         }
         if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
-          return assertRecordingMatchesMetadataPayload(current, metadata, {
+          return assertRecordingMatchesMetadataPayload(current, metadataPayload, {
             allowServerEnrichedBlankFields: true,
           });
         }
       }
       tagPhase(error, 'confirm');
     }
-    return assertRecordingMatchesMetadataPayload(recording, metadata, {
+    return assertRecordingMatchesMetadataPayload(recording, metadataPayload, {
       allowServerEnrichedBlankFields: true,
     });
   },

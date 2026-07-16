@@ -920,12 +920,17 @@ export const draftStorage = {
    * so delayed network responses must remain bound to the user that launched
    * the work rather than whichever user is active when the response arrives.
    */
-  async clearServerDraftIdForUser(userId: string, slotId: string): Promise<void> {
+  async clearServerDraftIdForUser(
+    userId: string,
+    slotId: string,
+    expectedServerDraftId?: string,
+  ): Promise<void> {
     if (!userId) return;
 
     try {
       const metadata = await readDraftChunks(userId, slotId);
       if (!metadata || !metadata.serverDraftId) return;
+      if (expectedServerDraftId && metadata.serverDraftId !== expectedServerDraftId) return;
 
       metadata.serverDraftId = null;
       metadata.pendingSync = false;

@@ -156,7 +156,7 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(localDrafts, /AppState\.currentState !== 'active'/);
   assert.match(localDrafts, /runBounded\(/);
   assert.match(localDrafts, /listDraftsForUser\(userId\)/);
-  assert.match(localDrafts, /clearServerDraftIdForUser\(userId, draft\.slotId\)/);
+  assert.match(localDrafts, /clearServerDraftIdForUser\(userId, draft\.slotId, serverDraftId\)/);
   assert.match(localDrafts, /reconcileInBackground\(false\);\s*return drafts;/);
   assert.doesNotMatch(localDrafts, /await reconcileMissingServerDrafts\(userId/);
 

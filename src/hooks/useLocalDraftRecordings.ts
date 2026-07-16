@@ -117,7 +117,7 @@ async function reconcileMissingServerDrafts(userId: string, force: boolean): Pro
             }
             const presence = probe.presence;
             if (presence !== 'missing') return;
-            await draftStorage.clearServerDraftIdForUser(userId, draft.slotId);
+            await draftStorage.clearServerDraftIdForUser(userId, draft.slotId, serverDraftId);
             reconciled++;
           },
           RECONCILE_CONCURRENCY

@@ -56,6 +56,7 @@ import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import type { RecordingMetadataField, UpdateRecordingMetadata } from '../../../../src/types';
 
 function DetailSkeleton() {
@@ -127,6 +128,8 @@ export default function RecordingDetailScreen() {
     queryKey: ['recording', id],
     queryFn: () => recordingsApi.get(id!),
     enabled: !!id,
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
     refetchInterval: (query) => {
       if (!isAppActive) return false;
       const status = query.state.data?.status;
@@ -186,6 +189,7 @@ export default function RecordingDetailScreen() {
     queryKey: ['soapNote', id],
     queryFn: () => recordingsApi.getSoapNote(id!),
     enabled: !!id && recording?.status === 'completed',
+    gcTime: PERSIST_GC_TIME_MS,
     retry: 3,
     retryDelay: 2000,
   });
@@ -198,6 +202,7 @@ export default function RecordingDetailScreen() {
     queryKey: ['recordingTasks', id],
     queryFn: () => recordingsApi.getRecordingTasks(id!),
     enabled: !!id && recording?.status === 'completed',
+    gcTime: PERSIST_GC_TIME_MS,
     // Tasks are generated asynchronously a few seconds after completion. Refetch
     // on remount + poll briefly while empty so the card self-heals instead of
     // caching an empty list during that window. See getTasksRefetchInterval.

@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query';
 import { Search, User } from 'lucide-react-native';
 import { patientsApi } from '../../../../src/api/patients';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
@@ -39,6 +40,8 @@ export default function PatientListScreen() {
     isFetchingNextPage,
   } = useInfiniteQuery({
     queryKey: ['patients', 'list', debouncedSearch],
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
     queryFn: ({ pageParam = 1 }) =>
       patientsApi.list({
         search: debouncedSearch || undefined,

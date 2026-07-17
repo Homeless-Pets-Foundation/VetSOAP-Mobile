@@ -32,6 +32,7 @@ import { hydrateMinVersionFloor } from '../lib/minVersion';
 import { durableRecoveryStore } from '../lib/durableAudio/recoveryState';
 import { audioTempFiles } from '../lib/audioTempFiles';
 import { queryClient } from '../lib/queryClient';
+import { startQueryPersistence, stopQueryPersistence } from '../lib/queryPersistence';
 import { audioEditorBridge } from '../lib/audioEditorBridge';
 import { clearClipboard } from '../lib/secureClipboard';
 import { clearPeakCache } from '../lib/waveformCache';
@@ -748,6 +749,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setStashUserId(scopedUserId);
     draftStorage.setUserId(scopedUserId);
+    // Offline read-cache persistence is user-scoped like the stores above
+    // (rule 13) and activates only once the scope is known (WP28).
+    startQueryPersistence(scopedUserId);
     // Durable recorder stores are user-scoped too (Rule 13): set before any
     // durable read/write (tombstone consult, recovery scan).
     durableTombstone.setUserId(scopedUserId);
@@ -1399,7 +1403,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       3000,
       'secure_clear'
     );
-    // Clear cached PHI from React Query
+    // Clear cached PHI from React Query; the persisted offline snapshot is a
+    // transient cache too (rule 8 — unlike drafts) and must not survive to
+    // the next user on a shared tablet.
+    stopQueryPersistence({ removeStored: true });
     queryClient.clear();
 
     // Await transient-cache cleanup before clearing auth state so in-memory
@@ -1688,7 +1695,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               'secure_clear'
             );
             // Clear cached PHI so the next user on this shared tablet
-            // doesn't briefly see the previous user's recording list.
+            // doesn't briefly see the previous user's recording list — the
+            // persisted offline snapshot included.
+            stopQueryPersistence({ removeStored: true });
             queryClient.clear();
             setStashUserId(null);
             draftStorage.setUserId(null);

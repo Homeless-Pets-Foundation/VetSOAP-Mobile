@@ -14,6 +14,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Edit2, User } from 'lucide-react-native';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { patientsApi } from '../../../../src/api/patients';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { Button } from '../../../../src/components/ui/Button';
 import { friendlyErrorMessage } from '../../../../src/lib/errorCopy';
 import { TextInputField } from '../../../../src/components/ui/TextInputField';
@@ -139,6 +140,8 @@ export default function PatientDetailScreen() {
     queryKey: ['patient', id],
     queryFn: () => patientsApi.get(id!),
     enabled: !!id,
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
   });
 
   const {
@@ -146,6 +149,7 @@ export default function PatientDetailScreen() {
     isLoading: recordingsLoading,
   } = useQuery({
     queryKey: ['patient', id, 'recordings'],
+    gcTime: PERSIST_GC_TIME_MS,
     queryFn: () => patientsApi.listRecordings(id!, { limit: 20 }),
     enabled: !!id && activeTab === 'visits',
   });

@@ -30,6 +30,7 @@ import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { displayPatientName } from '../../../../src/lib/recordingDisplay';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
 
@@ -127,6 +128,8 @@ export default function RecordingsListScreen() {
     isStale,
   } = useInfiniteQuery({
     queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', reviewStatusFilter ?? 'any', 'submittedAt-desc'],
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
     queryFn: ({ pageParam = 1 }) =>
       recordingsApi.list({
         search: debouncedSearch || undefined,

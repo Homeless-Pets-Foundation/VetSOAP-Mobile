@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
+import { View, Text, Alert, ActivityIndicator, AccessibilityInfo, Linking, Pressable, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';
@@ -16,10 +16,12 @@ import {
   MULTI_PATIENT_RECORD_FIRST_COPY,
   OVERSIZED_CONFIRM_COPY,
   RECORD_BANNERS,
+  RECORDER_TRANSITION_COPY,
   REPLACE_SESSION_COPY,
   SILENT_CHECK_COPY,
   TEMPLATE_DEFAULT_COPY,
 } from '../../../src/constants/strings';
+import { Toast } from '../../../src/components/Toast';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { stashStorage } from '../../../src/lib/stashStorage';
@@ -657,6 +659,15 @@ function RecordingSession() {
   // The AppState handler reads this from a ref — its effect deps are pinned
   // to avoid re-subscribing AppState on every state mutation.
   const interruptionPendingResumeRef = useRef<{ slotId: string } | null>(null);
+  // Durable interruptions finalize the recording (no auto-resume in v1); this
+  // drives an explanatory, dismissible banner so the capture doesn't silently
+  // flip from "Recording…" to "Recording Complete" mid-exam.
+  const [durableInterruptionNotice, setDurableInterruptionNotice] = useState(false);
+  // Transient toast shown when swiping away from a live recording auto-pauses
+  // it — without this the only feedback is a haptic, and a vet can keep
+  // talking while nothing records.
+  const [pauseToast, setPauseToast] = useState<string | null>(null);
+  const hidePauseToast = useCallback(() => setPauseToast(null), []);
   const netInfo = useNetInfo();
   const isConnected = netInfo.isConnected;
   // Derives a coarse connection descriptor for telemetry. Don't leak SSIDs or
@@ -1091,6 +1102,10 @@ function RecordingSession() {
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       breadcrumb('record', 'durable_interruption_finished', { slot_id: slotId });
+      // Explain the silent finalize: the card flips from "Recording…" to
+      // "Recording Complete" with no other cue, mid-exam.
+      setDurableInterruptionNotice(true);
+      AccessibilityInfo.announceForAccessibility(RECORDER_TRANSITION_COPY.interruptedSaved);
       recorder.resetWithoutDelete();
       return;
     }
@@ -1106,8 +1121,16 @@ function RecordingSession() {
     interruptionPendingResumeRef.current = { slotId };
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     breadcrumb('record', 'interruption_paused', { slot_id: slotId });
+    // The banner below is Android-only via accessibilityLiveRegion; announce
+    // explicitly so iOS VoiceOver users hear the pause too.
+    AccessibilityInfo.announceForAccessibility(RECORDER_TRANSITION_COPY.interruptedPaused);
     recorder.resetWithoutDelete();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally fires only on the recorder transition; reading session/refs from current render is correct
+  }, [recorder.state]);
+
+  // A fresh recording supersedes the durable-interruption explainer.
+  useEffect(() => {
+    if (recorder.state === 'recording') setDurableInterruptionNotice(false);
   }, [recorder.state]);
 
   // Android audio-focus interruption bridge.
@@ -1375,10 +1398,19 @@ function RecordingSession() {
       Haptics.selectionAsync().catch(() => {});
       const leavingSlotId = session.recorderBoundToSlotId;
       if (leavingSlotId && recorder.state === 'recording') {
+        const leavingSlot = session.slots.find((s) => s.id === leavingSlotId);
+        const patientLabel =
+          leavingSlot?.formData.patientName?.trim() ||
+          `Patient ${session.slots.findIndex((s) => s.id === leavingSlotId) + 1}`;
         (async () => {
           try {
             await recorder.pause();
             setAudioState(leavingSlotId, 'paused');
+            // Visible + spoken feedback — the auto-pause is otherwise silent
+            // (haptic only) and a vet could keep talking while nothing records.
+            const message = RECORDER_TRANSITION_COPY.autoPaused(patientLabel);
+            setPauseToast(message);
+            AccessibilityInfo.announceForAccessibility(message);
           } catch {
             try { await recorder.stop(); } catch {}
           }
@@ -1387,7 +1419,7 @@ function RecordingSession() {
       if (opts?.fromSwipe) swipeChangeRef.current = true;
       setActiveIndex(index);
     },
-    [session.activeIndex, session.recorderBoundToSlotId, recorder, setActiveIndex, setAudioState]
+    [session.activeIndex, session.recorderBoundToSlotId, session.slots, recorder, setActiveIndex, setAudioState]
   );
 
   const handleScrollEnd = useCallback(
@@ -4270,7 +4302,7 @@ function RecordingSession() {
       {/* Interruption Banner — call/Siri/headphones interrupted recording.
           Stays visible from the moment the partial segment is saved until
           AppState returns to 'active' and recording auto-resumes. */}
-      {interruptionPendingResume && (
+      {(interruptionPendingResume || durableInterruptionNotice) && (
         <View
           className="mx-5 mb-2 px-3 py-3 bg-status-warning border-2 border-status-warning rounded-lg flex-row items-center"
           accessibilityLiveRegion="assertive"
@@ -4278,8 +4310,23 @@ function RecordingSession() {
         >
           <View className="w-2 h-2 rounded-full bg-warning-500 mr-3" />
           <Text className="text-body-sm font-semibold text-status-warning flex-1">
-            Recording paused for call — auto-resuming when you return.
+            {interruptionPendingResume
+              ? RECORDER_TRANSITION_COPY.interruptedPaused
+              : RECORDER_TRANSITION_COPY.interruptedSaved}
           </Text>
+          {!interruptionPendingResume && (
+            <Pressable
+              onPress={() => setDurableInterruptionNotice(false)}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss interruption notice"
+              hitSlop={10}
+              style={{ minHeight: 44, justifyContent: 'center' }}
+            >
+              <Text className="text-body-sm font-semibold text-status-warning underline">
+                {RECORDER_TRANSITION_COPY.dismiss}
+              </Text>
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -4357,6 +4404,7 @@ function RecordingSession() {
         totalSlotsToUpload={totalSlotsToUpload}
         isMulti={isSubmittingAll}
       />
+      <Toast message={pauseToast ?? ''} visible={pauseToast !== null} onHide={hidePauseToast} />
     </SafeAreaView>
   );
 }

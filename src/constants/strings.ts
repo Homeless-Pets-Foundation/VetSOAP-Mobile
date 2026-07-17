@@ -100,6 +100,18 @@ export const AUDIO_PLAYER_COPY = {
   part: (n: number): string => `Part ${n}`,
 } as const;
 
+export const RECORDER_TRANSITION_COPY = {
+  /** Toast + screen-reader announcement when swiping away auto-pauses a live recording. */
+  autoPaused: (patientLabel: string): string => `Recording for ${patientLabel} paused`,
+  /** Legacy interruption banner: partial segment saved, auto-resume armed. */
+  interruptedPaused:
+    'Recording paused by an interruption (call or another app) — auto-resuming when it ends.',
+  /** Durable interruption banner: capture finalized as a submittable draft (no auto-resume in v1). */
+  interruptedSaved:
+    'An interruption ended this recording. The audio was saved — tap Continue Recording to add more.',
+  dismiss: 'OK',
+} as const;
+
 export const RECORD_BANNERS = {
   pendingDraftOffline: 'Draft recording pending upload — connect to Wi-Fi to sync',
   pendingDraftOnline: 'Draft saved locally — syncing to server…',

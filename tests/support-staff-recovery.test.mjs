@@ -460,7 +460,7 @@ test('restore is same-org, all-or-nothing, keeps only proof-backed server state,
 });
 
 test('settings and recovery screens use scoped recovery APIs and expose destructive fallback only on preserve failure', async () => {
-  const settings = await read('app/(app)/(tabs)/settings.tsx');
+  const settings = await read('app/(app)/settings.tsx');
   const recovery = await read('app/(app)/recording-recovery.tsx');
 
   assert.match(settings, /Recover Local Recordings/);

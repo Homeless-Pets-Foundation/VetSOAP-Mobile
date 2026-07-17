@@ -111,11 +111,6 @@ export default function TabsLayout() {
           tabBarAccessibilityLabel: 'Browse patients',
         }}
       />
-      {/* Hide settings from tab bar */}
-      <Tabs.Screen
-        name="settings"
-        options={{ href: null }}
-      />
     </Tabs>
   );
 }

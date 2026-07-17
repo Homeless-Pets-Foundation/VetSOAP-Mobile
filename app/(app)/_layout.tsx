@@ -200,6 +200,7 @@ export default function AppLayout() {
         <OfflineBanner />
         <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
           <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="settings" />
           {/* iOS interactive-pop swipe-back from screen edge intercepts the left
               trim handle's pan when the user starts the drag near the edge.
               Disable it here — the editor has its own back button. */}

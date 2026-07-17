@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect } from 'react';
 import { AppState, View } from 'react-native';
-import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react-native';
@@ -29,21 +28,24 @@ function providerWithModel(issue: ProviderIssue): string {
   return issue.primaryModel ? `${label} ${issue.primaryModel}` : label;
 }
 
+/**
+ * Lead with the user impact; provider/model/code jargon is demoted to a
+ * short trailing detail (2026-07 audit: the old message opened with
+ * "Z.ai GLM-4.6 needs attention… reported rate limit (code 429)").
+ */
 function messageForIssue(issue: ProviderIssue): string {
-  const fallback = issue.outcome === 'fallback_success' && issue.fallbackProvider
-    ? `${providerLabel(issue.fallbackProvider)} fallback is completing SOAP notes.`
-    : 'SOAP generation may not complete automatically until this is fixed.';
+  const impact = issue.outcome === 'fallback_success' && issue.fallbackProvider
+    ? 'SOAP notes may be delayed — a backup AI provider is completing them.'
+    : 'SOAP notes may be delayed — our AI provider is having issues.';
   const ownership = issue.actionableByOrgAdmin
     ? issue.recommendedAction
     : 'Captivet operations has been notified.';
-  const code = issue.externalCode ? ` (code ${issue.externalCode})` : '';
-  return `${providerWithModel(issue)} needs attention. ${fallback} ${providerLabel(
-    issue.primaryProvider
-  )} reported ${errorClassLabel(issue.errorClass)}${code}. ${ownership}`;
+  const code = issue.externalCode ? ` (${issue.externalCode})` : '';
+  const detail = `Detail: ${providerWithModel(issue)} — ${errorClassLabel(issue.errorClass)}${code}.`;
+  return `${impact} ${ownership} ${detail}`;
 }
 
 export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
-  const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthUser();
   const canView = user?.role === 'owner' || user?.role === 'admin';
@@ -101,11 +103,13 @@ export function ProviderIssueBanner({ location }: { location: 'home' | 'settings
                 onPress: () => acknowledgeMutation.mutate(issue.issueKey),
               }
             : {
-                label: 'Settings',
-                onPress: () => router.push('/settings' as never),
+                // Home offers the same server-side acknowledge Settings has —
+                // the component-local X used to look identical but silently
+                // reappear on next mount.
+                label: acknowledgeMutation.isPending ? 'Dismissing' : 'Dismiss',
+                onPress: () => acknowledgeMutation.mutate(issue.issueKey),
               }
         }
-        dismissible={location === 'home'}
       />
     </View>
   );

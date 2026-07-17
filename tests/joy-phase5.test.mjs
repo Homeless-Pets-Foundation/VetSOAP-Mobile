@@ -120,7 +120,7 @@ test('local Android testing installs beside the Play-signed production app', asy
 test('theme preference has dark vars, root hydration, and active settings selector', async () => {
   const css = await read('global.css');
   const rootLayout = await read('app/_layout.tsx');
-  const settings = await read('app/(app)/(tabs)/settings.tsx');
+  const settings = await read('app/(app)/settings.tsx');
   const preference = await read('src/lib/themePreference.ts');
   const preferenceHook = await read('src/hooks/useThemePreference.ts');
   const hook = await read('src/hooks/useThemeColors.ts');

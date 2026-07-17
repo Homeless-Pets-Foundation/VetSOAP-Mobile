@@ -661,6 +661,9 @@ async function postConfirm(
   } catch (error) {
     const conflict = typedUploadIntentConflict(error, 'confirm');
     if (conflict) throw conflict;
+    // Rolling deployments and older API versions can commit the upload and
+    // still return an untyped 409. Retain the proven-completed GET fallback;
+    // typed conflicts use the stricter recovery endpoint below.
     if (error instanceof ApiError && error.status === 409) {
       let current: Recording;
       try {
@@ -668,8 +671,16 @@ async function postConfirm(
       } catch (probeError) {
         tagPhase(probeError, 'confirm');
       }
-      if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
-        return assertRecordingMatchesMetadataPayload(current, metadataAsPayload(metadata), matchOptions);
+      if (
+        current.status !== 'draft' &&
+        current.status !== 'uploading' &&
+        current.status !== 'failed'
+      ) {
+        return assertRecordingMatchesMetadataPayload(
+          current,
+          metadataAsPayload(metadata),
+          matchOptions,
+        );
       }
     }
     tagPhase(error, 'confirm');

@@ -387,7 +387,7 @@ test('recovered durable draft preserves the death-surviving server anchor', asyn
   assert.match(draft, /serverDraftId: resolvedServerDraftId/);
   assert.match(
     draft,
-    /pendingSync: uploadRestartPending\s*\?\s*false\s*:\s*!durableIntentRotated && existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/,
+    /pendingSync: supersededUploadKey \|\| uploadRestartPending\s*\?\s*false\s*:\s*!durableIntentRotated && existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/,
   );
 });
 

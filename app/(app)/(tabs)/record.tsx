@@ -3149,6 +3149,9 @@ function RecordingSession() {
         if (!canRecordAppointments(user?.role)) return;
         const slot = sessionRef.current.slots.find((s) => s.id === slotId);
         if (!slot) return;
+        // Replacement identities are valid only through the controlled
+        // upload-intent recovery endpoint. Check both the in-memory slot and
+        // the persisted two-phase marker before any background server write.
         if (slot.supersededUploadKey || uploadRestartSlotIdsRef.current.has(slotId)) return;
         const persistedDraft = await draftStorage.getDraft(draftSlotId);
         if (persistedDraft?.supersededUploadKey || persistedDraft?.uploadRestartPending) return;
@@ -3795,18 +3798,24 @@ function RecordingSession() {
           {
             text: 'Restart Upload',
             onPress: () => {
+              // Block any already-scheduled draft sync before the two-phase
+              // local restart begins. runSingleSubmit keeps this marker set
+              // until the recovery request finishes.
+              markSubmitIntent([slot.id]);
               persistControlledUploadRestart(slot)
                 .then((restarted) => {
                   if (restarted) {
                     runSingleSubmit(restarted);
                     return;
                   }
+                  clearSubmitIntent([slot.id]);
                   Alert.alert(
                     'Restart Not Started',
                     'The local recovery state changed. Your audio is still saved; check the upload status again.',
                   );
                 })
                 .catch(() => {
+                  clearSubmitIntent([slot.id]);
                   Alert.alert(
                     'Restart Not Started',
                     'Captivet could not safely save the new upload attempt. Your audio remains on this device.',
@@ -3818,7 +3827,9 @@ function RecordingSession() {
       );
     },
     [
+      clearSubmitIntent,
       finishingDraftSlotId,
+      markSubmitIntent,
       persistControlledUploadRestart,
       runSingleSubmit,
       slotHasLiveRecorder,

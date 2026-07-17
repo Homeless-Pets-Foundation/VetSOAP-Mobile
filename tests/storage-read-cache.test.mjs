@@ -464,6 +464,96 @@ test('draftStorage: syncPending reports partial failures and leaves failed draft
   assert.equal(slot2.pendingSync, true);
 });
 
+test('draftStorage: durable restart marker blocks sync until phase 2 commits', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const slotId = 'slot-restart-two-phase';
+  const oldKey = 'recording-upload-v1:slot:intent-before-restart';
+  const replacementKey = 'recording-upload-v2:restart:intent-after-restart';
+
+  await draftStorage.saveDraft({
+    ...makeSlot(slotId),
+    uploadIntentId: 'intent-before-restart',
+  });
+  await draftStorage.updateServerDraftId(slotId, 'server-before-restart');
+  await draftStorage.updatePendingConfirm(slotId, {
+    recordingId: '11111111-1111-4111-8111-111111111111',
+    fileKey:
+      'recordings/22222222-2222-4222-8222-222222222222/11111111-1111-4111-8111-111111111111.m4a',
+  }, 'server-before-restart');
+
+  assert.equal(
+    await draftStorage.beginUploadAttemptReset(slotId, oldKey, replacementKey),
+    true,
+  );
+  let draft = await draftStorage.getDraft(slotId);
+  assert.equal(draft.uploadKeyOverride, null);
+  assert.equal(draft.supersededUploadKey, null);
+  assert.equal(draft.serverDraftId, 'server-before-restart');
+  assert.ok(draft.pendingConfirm);
+  assert.equal(draft.pendingSync, false);
+  assert.deepEqual(
+    { ...draft.uploadRestartPending },
+    {
+      expectedOldKey: oldKey,
+      replacementKey,
+      previousPendingSync: false,
+    },
+  );
+
+  let creates = 0;
+  let result = await draftStorage.syncPending('userA', async () => {
+    creates++;
+    return { id: 'must-not-create' };
+  });
+  assert.deepEqual({ ...result }, { attempted: 0, succeeded: 0, failed: 0 });
+  assert.equal(creates, 0);
+
+  assert.equal(
+    await draftStorage.commitUploadAttemptReset(slotId, oldKey, replacementKey),
+    true,
+  );
+  draft = await draftStorage.getDraft(slotId);
+  assert.equal(draft.uploadKeyOverride, replacementKey);
+  assert.equal(draft.supersededUploadKey, oldKey);
+  assert.equal(draft.uploadRestartPending, null);
+  assert.equal(draft.serverDraftId, null);
+  assert.equal(draft.pendingConfirm, null);
+  assert.equal(draft.pendingSync, false);
+});
+
+test('draftStorage: re-saving a restarted draft cannot enter ordinary background creation', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const slotId = 'slot-restart-resave';
+  const oldKey = 'recording-upload-v1:slot:intent-before-restart';
+  const replacementKey = 'recording-upload-v2:restart:intent-after-restart';
+  const restartedSlot = {
+    ...makeSlot(slotId),
+    uploadIntentId: 'intent-before-restart',
+    uploadKeyOverride: replacementKey,
+    supersededUploadKey: oldKey,
+  };
+
+  await draftStorage.saveDraft({
+    ...makeSlot(slotId),
+    uploadIntentId: 'intent-before-restart',
+  });
+  assert.equal(await draftStorage.resetUploadAttempt(slotId, oldKey, replacementKey), true);
+  await draftStorage.saveDraft(restartedSlot);
+
+  const draft = await draftStorage.getDraft(slotId);
+  assert.equal(draft.pendingSync, false);
+  assert.equal(draft.supersededUploadKey, oldKey);
+  let creates = 0;
+  const result = await draftStorage.syncPending('userA', async () => {
+    creates++;
+    return { id: 'must-not-create' };
+  });
+  assert.deepEqual({ ...result }, { attempted: 0, succeeded: 0, failed: 0 });
+  assert.equal(creates, 0);
+});
+
 test('draftStorage: cached reads hand out defensive clones', async () => {
   const { draftStorage } = await loadDraftStorage();
   draftStorage.setUserId('userA');

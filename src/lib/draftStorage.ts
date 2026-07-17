@@ -646,14 +646,16 @@ export const draftStorage = {
           (!durableIntentRotated &&
             existingDurable?.serverDraftId === resolvedServerDraftId &&
             existingDurable.draftMetadataDirty));
-      const uploadRestartPending = slot.supersededUploadKey
+      const uploadKeyOverride = normalizeUploadKeyOverride(slot.uploadKeyOverride);
+      const supersededUploadKey = normalizeSupersededUploadKey(slot.supersededUploadKey);
+      const uploadRestartPending = supersededUploadKey
         ? null
         : (existingDurable?.uploadRestartPending ?? null);
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
         uploadIntentId: durableUploadIntentId,
-        uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
-        supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
+        uploadKeyOverride,
+        supersededUploadKey,
         uploadRestartPending,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
@@ -674,7 +676,7 @@ export const draftStorage = {
         // An existing local draft keeps its own pendingSync. A recovery-supplied
         // anchor means the server row already exists (no create needed) → synced;
         // no anchor at all means we still owe a server-draft create → pending.
-        pendingSync: uploadRestartPending
+        pendingSync: supersededUploadKey || uploadRestartPending
           ? false
           : !durableIntentRotated && existingDurable?.serverDraftId
             ? existingDurable.pendingSync
@@ -837,14 +839,16 @@ export const draftStorage = {
       const draftMetadataDirty =
         !!resolvedServerDraftId &&
         (slot.draftMetadataDirty || (!uploadIntentRotated && (existing?.draftMetadataDirty ?? false)));
-      const uploadRestartPending = slot.supersededUploadKey
+      const uploadKeyOverride = normalizeUploadKeyOverride(slot.uploadKeyOverride);
+      const supersededUploadKey = normalizeSupersededUploadKey(slot.supersededUploadKey);
+      const uploadRestartPending = supersededUploadKey
         ? null
         : (existing?.uploadRestartPending ?? null);
       const metadata: DraftMetadata = {
         slotId: slot.id,
         uploadIntentId,
-        uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
-        supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
+        uploadKeyOverride,
+        supersededUploadKey,
         uploadRestartPending,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
@@ -861,7 +865,7 @@ export const draftStorage = {
         serverDraftId: resolvedServerDraftId,
         draftMetadataDirty,
         pendingConfirm,
-        pendingSync: uploadRestartPending
+        pendingSync: supersededUploadKey || uploadRestartPending
           ? false
           : resolvedServerDraftId
             ? (uploadIntentRotated ? false : (existing?.pendingSync ?? false))
@@ -1711,8 +1715,9 @@ export const draftStorage = {
 
       for (const draft of drafts) {
         if (!draft.pendingSync) continue;
-        // A replacement identity must be established by the explicit recovery
-        // transaction, never by ordinary background draft creation.
+        // A controlled restart must establish its replacement through the
+        // recovery transaction, never the ordinary background draft-create
+        // path. Leave it for the explicit user submit.
         if (draft.supersededUploadKey || draft.uploadRestartPending) continue;
         result.attempted++;
         pendingDraftSyncSlotIds.add(draft.slotId);

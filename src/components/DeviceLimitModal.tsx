@@ -10,6 +10,7 @@ import { useThemeColors } from '../hooks/useThemeColors';
 import { devicesApi, type DeviceSession } from '../api/devices';
 import { Button } from './ui/Button';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
+import { breadcrumb } from '../lib/monitoring';
 import { DEVICE_LIMIT_COPY } from '../constants/strings';
 
 function getDeviceIcon(deviceType: string | null) {
@@ -173,8 +174,11 @@ export function DeviceLimitModal() {
                 }
               } catch (error) {
                 // Never surface raw API error text to users; keep the detail
-                // in dev logs only (CLAUDE.md rule 12).
+                // in dev logs + a Sentry breadcrumb (no PHI — error name only).
                 if (__DEV__) console.error('[DeviceLimitModal] revoke failed:', error);
+                breadcrumb('auth', 'device_limit_revoke_failed', {
+                  error_name: error instanceof Error ? error.name : 'unknown',
+                });
                 Alert.alert('Revoke Failed', DEVICE_LIMIT_COPY.revokeFailed);
               } finally {
                 setRevokingId(null);

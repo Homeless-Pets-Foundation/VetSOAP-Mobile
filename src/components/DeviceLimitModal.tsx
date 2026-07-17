@@ -3,13 +3,14 @@ import { Modal, View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { ShieldAlert, Smartphone, Tablet, Monitor } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuthDeviceRegistration } from '../hooks/useAuth';
+import { useAuthActions, useAuthDeviceRegistration } from '../hooks/useAuth';
 import { useResponsive } from '../hooks/useResponsive';
 import { useDeviceCapacity } from '../hooks/useDeviceCapacity';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { devicesApi, type DeviceSession } from '../api/devices';
 import { Button } from './ui/Button';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
+import { DEVICE_LIMIT_COPY } from '../constants/strings';
 
 function getDeviceIcon(deviceType: string | null) {
   if (!deviceType) return Smartphone;
@@ -64,12 +65,15 @@ export function DeviceLimitModal() {
     deviceRegistrationBlock,
     retryDeviceRegistration,
   } = useAuthDeviceRegistration();
+  const { signOut } = useAuthActions();
   const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
   const queryClient = useQueryClient();
   const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity({ mode: 'manage' });
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [retryFailed, setRetryFailed] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   const visible = !!deviceRegistrationBlock;
 
@@ -78,6 +82,8 @@ export function DeviceLimitModal() {
     if (!visible) {
       setRevokingId(null);
       setRetrying(false);
+      setRetryFailed(false);
+      setSigningOut(false);
     }
   }, [visible]);
 
@@ -98,6 +104,7 @@ export function DeviceLimitModal() {
     (async () => {
       if (isBusy) return;
       setRetrying(true);
+      setRetryFailed(false);
       try {
         const ok = await retryDeviceRegistration();
         if (ok) {
@@ -105,11 +112,28 @@ export function DeviceLimitModal() {
             .invalidateQueries({ queryKey: ['device-sessions'] })
             .catch(() => {});
           invalidateRecordingCaches(queryClient, 'device_registration_recovered');
+        } else {
+          // Without this the footer text just stops saying "Reconnecting…"
+          // and the user can't tell a failed retry from nothing happening.
+          setRetryFailed(true);
         }
+      } catch {
+        setRetryFailed(true);
       } finally {
         setRetrying(false);
       }
     })().catch(() => {});
+  };
+
+  const handleSignOut = () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    // Escape hatch: a user unwilling to revoke a colleague's device on a
+    // shared account is otherwise permanently stuck in this hard-block modal.
+    // Standard sign-out preserves drafts/stashes (CLAUDE.md rule 8).
+    signOut()
+      .catch(() => {})
+      .finally(() => setSigningOut(false));
   };
 
   const handleRevoke = (device: DeviceSession) => {
@@ -148,11 +172,10 @@ export function DeviceLimitModal() {
                   invalidateRecordingCaches(queryClient, 'device_registration_recovered');
                 }
               } catch (error) {
-                const message =
-                  error instanceof Error
-                    ? error.message
-                    : 'Could not revoke this device.';
-                Alert.alert('Revoke Failed', message);
+                // Never surface raw API error text to users; keep the detail
+                // in dev logs only (CLAUDE.md rule 12).
+                if (__DEV__) console.error('[DeviceLimitModal] revoke failed:', error);
+                Alert.alert('Revoke Failed', DEVICE_LIMIT_COPY.revokeFailed);
               } finally {
                 setRevokingId(null);
                 setRetrying(false);
@@ -264,7 +287,6 @@ export function DeviceLimitModal() {
                               ? 'text-content-tertiary'
                               : 'text-status-danger'
                         }`}
-                        allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
                         {`${isThisRowBusy ? 'Revoking…' : 'Revoke'} `}
@@ -278,11 +300,31 @@ export function DeviceLimitModal() {
 
           {/* Footer */}
           <View className="px-5 py-3 border-t border-border-default">
+            {retryFailed && !retrying && (
+              <Text
+                className="text-caption text-status-danger text-center mb-2"
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+              >
+                {DEVICE_LIMIT_COPY.stillAtLimit}
+              </Text>
+            )}
             <Text className="text-caption text-content-tertiary text-center">
               {retrying
                 ? 'Reconnecting this device…'
                 : 'Revoking a device will sign it out everywhere.'}
             </Text>
+            <View className="mt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onPress={handleSignOut}
+                loading={signingOut}
+                disabled={isBusy}
+              >
+                {DEVICE_LIMIT_COPY.signOut}
+              </Button>
+            </View>
           </View>
         </View>
       </View>

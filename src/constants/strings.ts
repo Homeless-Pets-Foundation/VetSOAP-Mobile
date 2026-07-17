@@ -71,6 +71,12 @@ export const PASSWORD_RESET_COPY = {
     "Tap the link in the email to reset your password. If you don't see the email, check your spam folder.",
 } as const;
 
+export const DEVICE_LIMIT_COPY = {
+  signOut: 'Sign out instead',
+  stillAtLimit: 'Still at the device limit. Revoke a device below or sign out.',
+  revokeFailed: "Couldn't revoke that device. Check your connection and try again.",
+} as const;
+
 export const MFA_BOOTSTRAP_COPY = {
   failed: "Couldn't load verification. Check your connection and try again.",
   retry: 'Try Again',

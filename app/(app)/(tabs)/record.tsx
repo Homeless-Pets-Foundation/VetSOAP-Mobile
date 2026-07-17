@@ -3470,7 +3470,10 @@ function RecordingSession() {
             } else {
               releaseResumedStashIfAny();
               resetSession();
-              router.push(`/recordings/${serverRecordingId}` as `/recordings/${string}`);
+              // from=submit: the detail screen's Back must return to the
+              // recordings list, not router.back() into this just-reset form
+              // (Codex P2, PR #143).
+              router.push(`/recordings/${serverRecordingId}?from=submit` as `/recordings/${string}`);
             }
           } else {
             // Upload returned null — uploadSlot already set the on-card error

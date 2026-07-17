@@ -41,11 +41,39 @@ const PERSISTED_KEY_ROOTS = new Set([
   'patient', // detail + visits
 ]);
 
+/**
+ * Only DEFAULT (unsearched, unfiltered) list variants are persisted. Every
+ * debounced search string / filter combination creates a distinct infinite-
+ * query key; persisting them all grows the AsyncStorage snapshot without bound
+ * on clinics that search a lot, eventually causing slow or storage-full writes
+ * (Codex P2, PR #143). Detail queries and non-list collections are unaffected.
+ */
+function isPersistableListVariant(queryKey: readonly unknown[]): boolean {
+  const [root, sub] = queryKey;
+  if (root === 'patients' && sub === 'list') {
+    // ['patients', 'list', search]
+    return !queryKey[2];
+  }
+  if (root === 'recordings' && sub === 'list') {
+    // ['recordings', 'list', search, status, review, sort]
+    return (
+      !queryKey[2] &&
+      (queryKey[3] === 'all' || queryKey[3] == null) &&
+      (queryKey[4] === 'any' || queryKey[4] == null)
+    );
+  }
+  if (root === 'recordings' && sub === 'drafts') {
+    // ['recordings', 'drafts', 'list', search, sort]
+    return !queryKey[3];
+  }
+  return true;
+}
+
 // Structural param type: npm may nest a second @tanstack/query-core under
 // query-persist-client-core, and the two nominal Query types don't unify.
 function shouldPersistQuery(query: {
   queryKey: readonly unknown[];
-  state: { status: string; data?: unknown };
+  state: { status: string; data?: unknown; dataUpdatedAt?: number };
 }): boolean {
   const root = query.queryKey[0];
   if (typeof root !== 'string' || !PERSISTED_KEY_ROOTS.has(root)) return false;
@@ -55,7 +83,19 @@ function shouldPersistQuery(query: {
   // persistence write drop it, so a second offline launch lost everything
   // (Codex P2, PR #143). Queries with no data (pending, or errored before
   // ever succeeding) are still skipped.
-  return query.state.data !== undefined;
+  if (query.state.data === undefined) return false;
+  // Bound the on-disk snapshot to default list variants (see helper).
+  if (!isPersistableListVariant(query.queryKey)) return false;
+  // Expire by the query's OWN last update, not the snapshot envelope.
+  // persistQueryClient applies maxAge to the envelope timestamp, which every
+  // write refreshes — so a stale-but-repeatedly-rewritten patient/recording
+  // could otherwise survive forever instead of aging out at 7 days (Codex P2,
+  // PR #143).
+  const updatedAt = query.state.dataUpdatedAt;
+  if (typeof updatedAt === 'number' && Date.now() - updatedAt > PERSIST_MAX_AGE_MS) {
+    return false;
+  }
+  return true;
 }
 
 interface ActivePersistence {

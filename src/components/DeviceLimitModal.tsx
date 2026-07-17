@@ -3,7 +3,8 @@ import { Modal, View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { ShieldAlert, Smartphone, Tablet, Monitor } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuthActions, useAuthDeviceRegistration } from '../hooks/useAuth';
+import { useAuthActions, useAuthDeviceRegistration, useAuthUser } from '../hooks/useAuth';
+import type { SignOutRecoveryMode } from '../auth/AuthProvider';
 import { useResponsive } from '../hooks/useResponsive';
 import { useDeviceCapacity } from '../hooks/useDeviceCapacity';
 import { useThemeColors } from '../hooks/useThemeColors';
@@ -11,6 +12,7 @@ import { devicesApi, type DeviceSession } from '../api/devices';
 import { Button } from './ui/Button';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 import { breadcrumb } from '../lib/monitoring';
+import { SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED } from '../lib/supportStaffRecoveryVault';
 import { DEVICE_LIMIT_COPY } from '../constants/strings';
 
 function getDeviceIcon(deviceType: string | null) {
@@ -67,6 +69,7 @@ export function DeviceLimitModal() {
     retryDeviceRegistration,
   } = useAuthDeviceRegistration();
   const { signOut } = useAuthActions();
+  const user = useAuthUser();
   const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
   const queryClient = useQueryClient();
@@ -97,7 +100,10 @@ export function DeviceLimitModal() {
   }, [liveDevices, deviceRegistrationBlock]);
 
   const capacity = liveCapacity ?? deviceRegistrationBlock?.capacity ?? null;
-  const isBusy = revokingId !== null || retrying;
+  // signingOut is part of the shared busy guard: during support_staff recovery
+  // preservation the API token is still valid, so a device Revoke tapped mid
+  // sign-out could revoke another clinic device (Codex P2, PR #143).
+  const isBusy = revokingId !== null || retrying || signingOut;
 
   if (!deviceRegistrationBlock) return null;
 
@@ -126,15 +132,58 @@ export function DeviceLimitModal() {
     })().catch(() => {});
   };
 
-  const handleSignOut = () => {
-    if (signingOut) return;
+  // Escape hatch: a user unwilling to revoke a colleague's device on a shared
+  // account is otherwise permanently stuck in this hard-block modal. Standard
+  // sign-out preserves drafts/stashes (CLAUDE.md rule 8). support_staff use
+  // recoveryMode 'required' so a failed recovery-vault save blocks sign-out
+  // and surfaces the same retry/destructive choice as Settings — otherwise a
+  // storage-full recovery failure silently strands per-user drafts from the
+  // owner/admin who signs in next (Codex P2, PR #143).
+  const runSignOut = (recoveryMode: SignOutRecoveryMode) => {
+    if (isBusy) return;
     setSigningOut(true);
-    // Escape hatch: a user unwilling to revoke a colleague's device on a
-    // shared account is otherwise permanently stuck in this hard-block modal.
-    // Standard sign-out preserves drafts/stashes (CLAUDE.md rule 8).
-    signOut()
-      .catch(() => {})
+    signOut({ recoveryMode })
+      .catch((error) => {
+        if (
+          recoveryMode === 'required' &&
+          error instanceof Error &&
+          error.message === SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED
+        ) {
+          Alert.alert(
+            'Recovery Save Failed',
+            'The app could not save a recovery copy of the local recordings. Local storage may be full or unavailable. Stay signed in and try again, or sign out and permanently delete the local recordings on this tablet.',
+            [
+              { text: 'Stay Signed In', style: 'cancel' },
+              { text: 'Retry', onPress: () => runSignOut('required') },
+              {
+                text: 'Sign Out & Delete',
+                style: 'destructive',
+                onPress: () => {
+                  Alert.alert(
+                    'Delete Local Recordings?',
+                    'This signs out without saving a recovery copy. Any unsent local recordings for this support staff account may be permanently removed from this tablet.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Delete & Sign Out',
+                        style: 'destructive',
+                        onPress: () => runSignOut('destructive'),
+                      },
+                    ]
+                  );
+                },
+              },
+            ]
+          );
+          return;
+        }
+        if (__DEV__) console.error('[DeviceLimitModal] signOut failed:', error);
+      })
       .finally(() => setSigningOut(false));
+  };
+
+  const handleSignOut = () => {
+    runSignOut(user?.role === 'support_staff' ? 'required' : 'best_effort');
   };
 
   const handleRevoke = (device: DeviceSession) => {
@@ -260,7 +309,9 @@ export function DeviceLimitModal() {
                 const Icon = getDeviceIcon(device.deviceType);
                 const typeLabel = formatDeviceTypeLabel(device.deviceType);
                 const isThisRowBusy = revokingId === device.id;
-                const otherBusy = revokingId !== null && !isThisRowBusy;
+                // Dim + disable this row while any other action (a different
+                // revoke, a retry, or sign-out) holds the busy guard.
+                const otherBusy = isBusy && !isThisRowBusy;
                 return (
                   <View
                     key={device.id}
@@ -283,9 +334,10 @@ export function DeviceLimitModal() {
                     </View>
                     <Pressable
                       onPress={() => handleRevoke(device)}
-                      disabled={revokingId !== null}
+                      disabled={isBusy}
                       accessibilityRole="button"
                       accessibilityLabel={`Revoke ${device.deviceName || typeLabel}`}
+                      accessibilityState={{ disabled: isBusy }}
                       hitSlop={8}
                       className="ml-2 px-3 py-2"
                     >

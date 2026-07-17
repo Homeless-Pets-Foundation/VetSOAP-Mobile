@@ -17,8 +17,16 @@ test('persistence is user-keyed, allowlisted, and success-only', async () => {
   // hydrated query flips status to 'error' with data intact, and requiring
   // 'success' made the next write drop the only usable cached data (Codex P2
   // round 4). Queries that never held data are still excluded.
-  assert.match(src, /query\.state\.data !== undefined/);
+  assert.match(src, /if \(query\.state\.data === undefined\) return false;/);
   assert.doesNotMatch(src, /query\.state\.status === 'success'/);
+  // Only DEFAULT list variants are persisted — every search/filter key would
+  // otherwise accumulate on disk unbounded (Codex P2 round 10).
+  assert.match(src, /function isPersistableListVariant/);
+  assert.match(src, /if \(!isPersistableListVariant\(query\.queryKey\)\) return false;/);
+  // Expire by the query's OWN dataUpdatedAt, not the snapshot envelope (Codex
+  // P2 round 10) — else a repeatedly-rewritten stale entry lives forever.
+  assert.match(src, /query\.state\.dataUpdatedAt/);
+  assert.match(src, /Date\.now\(\) - updatedAt > PERSIST_MAX_AGE_MS/);
   for (const allowed of ['recordings', 'recording', 'soapNote', 'patients', 'patient']) {
     assert.ok(src.includes(`'${allowed}'`), `${allowed} should be persistable`);
   }

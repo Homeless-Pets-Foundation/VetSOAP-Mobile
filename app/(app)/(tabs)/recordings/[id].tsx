@@ -90,7 +90,7 @@ function DetailSkeleton() {
 }
 
 export default function RecordingDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, from } = useLocalSearchParams<{ id: string; from?: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
   const { iconMd } = useResponsive();
@@ -609,15 +609,22 @@ export default function RecordingDetailScreen() {
     router.navigate(`/record?draftSlotId=${draftLocalSlotId}` as never);
   }, [draftLocalSlotId, router]);
 
-  // Back respects where the user came from (Home, patient history, post-submit)
-  // instead of always dumping them on the Recordings list.
+  // Back respects where the user came from (Home, patient history) instead of
+  // always dumping them on the Recordings list. Exception: a post-submit push
+  // (`from=submit`) sits on top of the just-reset Record form, so a plain
+  // router.back() would land on an empty form — route those to the recordings
+  // list explicitly (Codex P2, PR #143).
   const goBack = useCallback(() => {
+    if (from === 'submit') {
+      router.replace('/recordings');
+      return;
+    }
     if (router.canGoBack()) {
       router.back();
     } else {
       router.replace('/recordings');
     }
-  }, [router]);
+  }, [router, from]);
 
   // Terminal error only when nothing is cached: with offline persistence a
   // failed refetch coexists with restored data — render the recording, not

@@ -18,12 +18,10 @@ import { WaveformEditor } from '../../src/components/WaveformEditor';
 import { Button } from '../../src/components/ui/Button';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import type { AudioSegment } from '../../src/types/multiPatient';
+import { formatClockDuration } from '../../src/lib/formatClock';
 
-function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
+// H:MM:SS at >=60min via the shared clock util (2h captures read "120:00" before).
+const formatTime = formatClockDuration;
 
 /**
  * Isolated time display component. Subscribes to the Reanimated shared value

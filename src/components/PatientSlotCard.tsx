@@ -15,6 +15,7 @@ import Animated, {
 import { Mic, X, Plus, Scissors, Trash2, Check, ChevronDown, ChevronUp } from 'lucide-react-native';
 import { PatientForm } from './PatientForm';
 import { AudioWaveform } from './AudioWaveform';
+import { formatClockDuration } from '../lib/formatClock';
 import { RecorderLiveReadout } from './RecorderLiveReadout';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
@@ -101,11 +102,6 @@ function PulsingDot() {
   );
 }
 
-function formatDuration(seconds: number) {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
 
 // Shallow-memoized: the parent passes slot-id-parameterized stable callbacks,
 // and recorder ticks no longer re-render the parent (live metering/timer is
@@ -340,6 +336,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: totalSlots > 1 ? 24 : 80 }}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets
     >
       {/* Patient header */}
       <View className="flex-row items-center justify-between mt-4 mb-3">
@@ -409,14 +406,14 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         ) : isStopped ? (
           <Text className="text-body text-content-secondary mb-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
             {slot.segments.length > 1
-              ? `${slot.segments.length} segments · ${formatDuration(slot.audioDuration)}`
-              : formatDuration(slot.audioDuration)}
+              ? `${slot.segments.length} segments · ${formatClockDuration(slot.audioDuration)}`
+              : formatClockDuration(slot.audioDuration)}
           </Text>
         ) : (
           <>
             <AudioWaveform isActive={false} />
             <Text className="text-timer font-bold mb-5 text-content-primary" style={styles.timerText}>
-              {formatDuration(duration)}
+              {formatClockDuration(duration)}
             </Text>
           </>
         )}
@@ -464,6 +461,14 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               >
                 <Mic color={canStartRecording ? colors.contentOnBrand : colors.contentTertiary} size={scale(32)} />
               </AnimatedPressable>
+              {!recordFirstEnabled && !hasRequiredFields && audioState === 'idle' && (
+                <Text
+                  className="text-caption text-content-tertiary mt-2"
+                  style={{ alignSelf: 'stretch', textAlign: 'center' }}
+                >
+                  Fill in patient, client, species, and appointment type to record.
+                </Text>
+              )}
             </Animated.View>
           )}
 
@@ -610,14 +615,16 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
         {isStopped && hasCapturedAudio && !isRecorderOwner && !isFinishSaving && (
           <Text className="text-caption text-content-tertiary mt-2" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
-            Processing usually takes 1-2 minutes.
+            {slot.uploadStatus === 'success'
+              ? 'Processing usually takes 1-2 minutes.'
+              : 'Submit to generate the SOAP note.'}
           </Text>
         )}
 
         {/* Idle with existing segments: show info that new recording will be appended */}
         {audioState === 'idle' && hasSegments && (
           <Text className="text-caption text-brand-600 mt-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
-            {slot.segments.length} segment{slot.segments.length > 1 ? 's' : ''} recorded ({formatDuration(slot.audioDuration)}). New recording will be appended.
+            {slot.segments.length} segment{slot.segments.length > 1 ? 's' : ''} recorded ({formatClockDuration(slot.audioDuration)}). New recording will be appended.
           </Text>
         )}
       </Card>

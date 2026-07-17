@@ -96,6 +96,9 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
   }, [languageValue, recordingId]);
 
   const copySection = useCallback(async (label: string, text: string) => {
+    // Clear a prior action failure so a successful retry doesn't show the
+    // success toast and a stale "copy failed" side by side (Codex P2, PR #143).
+    setErrorStatus(null);
     try {
       await copyWithAutoClear(`${label}:\n${toPlainText(text)}`);
       setToast(TRANSLATION_COPY.copied);

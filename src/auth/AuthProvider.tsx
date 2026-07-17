@@ -1919,7 +1919,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           code: errorCode === 'invalid_credentials' ? ('invalid_credentials' as const) : ('other' as const),
         };
       }
-      return { error: 'Invalid email or password', code: 'invalid_credentials' as const };
+      if (errorCode === 'rate_limited') {
+        return { error: 'Too many attempts. Please wait a moment and try again.', code: 'other' as const };
+      }
+      // Only a real credential rejection may carry 'invalid_credentials' —
+      // classifying rate limits / server errors / payload rejections as bad
+      // credentials would advance the brute-force lockout during an outage
+      // (Codex P2, PR #143).
+      if (errorCode === 'invalid_credentials') {
+        return { error: 'Invalid email or password', code: 'invalid_credentials' as const };
+      }
+      return { error: 'Sign-in failed. Please try again.', code: 'other' as const };
     }
     if (__DEV__) console.log('[Auth] signIn: success');
     return { error: null };

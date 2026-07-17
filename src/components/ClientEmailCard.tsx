@@ -50,6 +50,9 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
 
   const copyDraft = useCallback(async () => {
     if (!draft) return;
+    // Clear a prior action failure so a successful retry doesn't show the
+    // success toast and a stale "copy failed" side by side (Codex P2, PR #143).
+    setErrorStatus(null);
     try {
       await copyWithAutoClear(`${draft.subject ?? ''}\n\n${draft.body ?? ''}`);
       setToast(CLIENT_EMAIL_COPY.copied);
@@ -61,6 +64,7 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
 
   const openMail = useCallback(async () => {
     if (!draft) return;
+    setErrorStatus(null);
     const subject = draft.subject || 'Visit summary';
     const body = draft.body || '';
 
@@ -88,6 +92,7 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
 
   const shareDraft = useCallback(async () => {
     if (!draft) return;
+    setErrorStatus(null);
     try {
       const subject = draft.subject ?? '';
       const body = draft.body ?? '';

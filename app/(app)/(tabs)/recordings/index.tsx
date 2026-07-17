@@ -163,6 +163,7 @@ export default function RecordingsListScreen() {
     () => sortRecordingsBySubmittedAt(data?.pages.flatMap((page) => page.data) ?? [], 'desc'),
     [data]
   );
+  const listedRecordingIds = useMemo(() => new Set(recordings.map((r) => r.id)), [recordings]);
   const submittedRecordingQueries = useQueries({
     queries: submittedIds.map((id) => ({
       queryKey: ['recording', id],
@@ -170,6 +171,18 @@ export default function RecordingsListScreen() {
       enabled: canLoadServerData && submittedIds.length > 0,
       staleTime: 0,
       refetchOnMount: 'always' as const,
+      // When a search/status filter excludes a submitted id from the polled
+      // list, this detail query becomes the banner's only data source — and
+      // a fetch-once query would freeze it at Uploading/Transcribing. Poll
+      // while it's still processing AND the list doesn't cover it; the list's
+      // own 10s polling is authoritative otherwise (Codex P2, PR #143).
+      refetchInterval: (query: { state: { data?: { id?: string; status?: string } } }) => {
+        if (!isTabFocused) return false;
+        const rec = query.state.data;
+        if (!rec?.id || listedRecordingIds.has(rec.id)) return false;
+        const processing = !['completed', 'failed', 'pending_metadata'].includes(rec.status ?? '');
+        return processing ? 10000 : false;
+      },
     })),
   });
   const submittedRecordingsById = useMemo(() => {

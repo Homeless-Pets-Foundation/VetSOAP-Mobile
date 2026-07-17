@@ -52,8 +52,12 @@ test('a restore that outlives its persistence scope is discarded before hydratio
   // Writes are best-effort too: the persistence subscription invokes
   // persistClient with no observing caller, so a rejected AsyncStorage write
   // (storage full) must be swallowed, not crash Hermes (Codex P1 round 7).
-  assert.match(src, /persistClient: async \(client\) => \{\s*\n\s*try \{/);
+  assert.match(src, /persistClient: async \(client\) => \{/);
   assert.match(src, /persist write failed/);
+  // A write queued inside the persister's throttle window can land AFTER
+  // sign-out's removeClient and recreate the outgoing user's snapshot — the
+  // sweep must re-run once the window settles (Codex P2 round 8).
+  assert.match(src, /setTimeout\(removeSnapshot, PERSIST_THROTTLE_MS \+ 1000\)/);
   // Stop must invalidate any in-flight restore.
   const stopStart = src.indexOf('export function stopQueryPersistence');
   assert.match(src.slice(stopStart, stopStart + 300), /generation \+= 1/);

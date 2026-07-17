@@ -22,6 +22,9 @@ import { queryClient } from './queryClient';
 /** 7 days — matches the persisted snapshot's maxAge. */
 export const PERSIST_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Write-throttle for the AsyncStorage persister; sign-out sweeps re-run after this window. */
+const PERSIST_THROTTLE_MS = 2000;
+
 /**
  * gcTime for queries that should survive into the persisted snapshot.
  * React Query never dehydrates a query past its gcTime, so the allowlisted
@@ -92,7 +95,7 @@ export function startQueryPersistence(userId: string): void {
     const persister = createAsyncStoragePersister({
       storage: AsyncStorage,
       key: storageKeyForUser(userId),
-      throttleTime: 2000,
+      throttleTime: PERSIST_THROTTLE_MS,
     });
 
     // Guard the restore payload at the moment the AsyncStorage read resolves:
@@ -161,7 +164,16 @@ export function stopQueryPersistence(opts: { removeStored: boolean }): void {
     active = null;
     current?.unsubscribe();
     if (opts.removeStored && current) {
-      Promise.resolve(current.persister.removeClient()).catch(() => {});
+      const removeSnapshot = () => {
+        Promise.resolve(current.persister.removeClient()).catch(() => {});
+      };
+      removeSnapshot();
+      // The async-storage persister throttles writes (PERSIST_THROTTLE_MS);
+      // unsubscribing stops new cache events but a write already queued
+      // inside the throttle window still fires and would recreate the
+      // outgoing user's snapshot AFTER the removal above. Sweep again once
+      // the window (plus margin) has settled (Codex P2, PR #143).
+      setTimeout(removeSnapshot, PERSIST_THROTTLE_MS + 1000);
     }
   } catch (error) {
     if (__DEV__) console.error('[queryPersistence] stop failed:', error);

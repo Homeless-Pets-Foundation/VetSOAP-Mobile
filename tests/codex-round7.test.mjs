@@ -16,6 +16,10 @@ test('brute-force lockout advances only on invalid_credentials', async () => {
   assert.match(auth, /code: 'signout_pending' as const/);
   assert.match(auth, /code: 'network' as const/);
   assert.match(auth, /code: 'invalid_credentials' as const/);
+  // …and the PROD fallthrough must not brand rate limits / server errors as
+  // bad credentials — that recreated the outage lockout (Codex P2 round 8).
+  assert.match(auth, /if \(errorCode === 'invalid_credentials'\) \{\s*\n\s*return \{ error: 'Invalid email or password', code: 'invalid_credentials' as const \};/);
+  assert.match(auth, /return \{ error: 'Sign-in failed\. Please try again\.', code: 'other' as const \};/);
 
   const login = await read('app/(auth)/login.tsx');
   // …and only genuine credential rejections increment the counter. A network
@@ -47,4 +51,25 @@ test('recordings list prefers polled list data; detail is fallback only', async 
     src,
     /recording\?\.id && submittedIdSet\.has\(recording\.id\) && !map\.has\(recording\.id\)/
   );
+  // When a search/status filter excludes a submitted id from the list, the
+  // detail query is the banner's ONLY source — it must poll while processing
+  // instead of freezing at its mount-time status (Codex P2 round 8).
+  assert.match(src, /listedRecordingIds\.has\(rec\.id\)\) return false/);
+  assert.match(src, /const processing = !\['completed', 'failed', 'pending_metadata'\]\.includes\(rec\.status \?\? ''\)/);
+});
+
+test('card actions clear stale errors before running (Codex P2 round 8)', async () => {
+  const clientEmail = await read('src/components/ClientEmailCard.tsx');
+  for (const action of ['const copyDraft', 'const openMail', 'const shareDraft']) {
+    const start = clientEmail.indexOf(action);
+    assert.ok(start >= 0, `${action} must exist`);
+    assert.match(
+      clientEmail.slice(start, start + 400),
+      /setErrorStatus\(null\)/,
+      `${action} must clear the prior action error`
+    );
+  }
+  const translation = await read('src/components/TranslationCard.tsx');
+  const copyStart = translation.indexOf('const copySection');
+  assert.match(translation.slice(copyStart, copyStart + 400), /setErrorStatus\(null\)/);
 });

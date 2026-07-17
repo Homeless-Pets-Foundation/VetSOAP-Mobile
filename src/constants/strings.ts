@@ -48,6 +48,35 @@ export const OVERSIZED_CONFIRM_COPY = {
   upload: 'Upload',
 } as const;
 
+export const DISCARD_SESSION_COPY = {
+  title: 'Discard Recordings?',
+  /** Body when every at-risk slot is truly unsaved (no drafts involved). */
+  body: (unsavedCount: number): string =>
+    unsavedCount === 1
+      ? 'You have 1 unsubmitted recording. Leaving will discard it.'
+      : `You have ${unsavedCount} unsubmitted recordings. Leaving will discard them.`,
+  /** Body when the session also holds finished drafts — those are durable and survive. */
+  bodyWithDrafts: (unsavedCount: number): string =>
+    unsavedCount === 1
+      ? 'You have 1 recording that is not saved yet. Leaving will discard it. Finished drafts stay in Not Submitted.'
+      : `You have ${unsavedCount} recordings that are not saved yet. Leaving will discard them. Finished drafts stay in Not Submitted.`,
+  stay: 'Stay',
+  discard: 'Discard',
+} as const;
+
+export const REPLACE_SESSION_COPY = {
+  title: 'Replace Current Session?',
+  /** Load-draft variant: truly-unsaved work is replaced; drafts are preserved. */
+  bodyLoadDraft:
+    'You have unsaved recordings in progress. Loading this draft will replace them. Finished drafts stay in Not Submitted.',
+  /** Resume-stash variant. */
+  bodyResumeStash:
+    'You have unsaved recordings in progress. Resuming this saved session will replace them. Finished drafts stay in Not Submitted.',
+  cancel: 'Cancel',
+  loadDraft: 'Load Draft',
+  replace: 'Replace',
+} as const;
+
 export const SOAP_SECTION_ACTIONS = {
   edit: 'Edit',
   copy: 'Copy',

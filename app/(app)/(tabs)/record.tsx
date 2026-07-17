@@ -12,9 +12,11 @@ import { Paths } from 'expo-file-system';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
 import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import {
+  DISCARD_SESSION_COPY,
   MULTI_PATIENT_RECORD_FIRST_COPY,
   OVERSIZED_CONFIRM_COPY,
   RECORD_BANNERS,
+  REPLACE_SESSION_COPY,
   SILENT_CHECK_COPY,
   TEMPLATE_DEFAULT_COPY,
 } from '../../../src/constants/strings';
@@ -89,6 +91,30 @@ import { Button } from '../../../src/components/ui/Button';
 import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
+
+/**
+ * "Truly unsaved" = work that would actually be lost if the session were
+ * discarded: in-memory audio with no committed draft, or a live/paused
+ * recorder. Slots with a `draftSlotId` are durable on disk + server (they
+ * survive as "Not Submitted" cards on Home), so discard/replace flows must
+ * neither count them as at-risk nor delete them.
+ */
+function isTrulyUnsavedSlot(s: PatientSlot): boolean {
+  return (
+    (slotHasRecoverableAudio(s) && !s.draftSlotId && s.uploadStatus !== 'success') ||
+    s.audioState === 'recording' ||
+    s.audioState === 'paused'
+  );
+}
+
+/** Draft ids for every slot committed as a draft — the preserve list for discardCurrentSession. */
+function collectPreserveDraftSlotIds(slots: PatientSlot[]): string[] {
+  const ids: string[] = [];
+  for (const s of slots) {
+    if (s.draftSlotId) ids.push(s.draftSlotId);
+  }
+  return ids;
+}
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
   const { scale } = useResponsive();
@@ -1297,26 +1323,28 @@ function RecordingSession() {
     resetSession();
   }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft, user?.id]);
 
-  // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
-  const unsavedCount = session.slots.filter(
-    (s) => (slotHasRecoverableAudio(s) && s.uploadStatus !== 'success') ||
-            s.audioState === 'recording' || s.audioState === 'paused'
-  ).length;
+  // Navigation guard: only active when there are truly unsaved recordings.
+  // Drafted slots (draftSlotId set) are durable on disk + server and survive
+  // discard via the preserve list below, so they don't arm the guard.
+  const unsavedCount = session.slots.filter(isTrulyUnsavedSlot).length;
+  const draftedSlotCount = session.slots.filter((s) => s.draftSlotId).length;
 
   usePreventRemove(unsavedCount > 0 && !isSubmittingAll, ({ data }) => {
     Alert.alert(
-      'Discard Recordings?',
-      unsavedCount === 1
-        ? 'You have 1 unsubmitted recording. Leaving will discard it.'
-        : `You have ${unsavedCount} unsubmitted recordings. Leaving will discard them.`,
+      DISCARD_SESSION_COPY.title,
+      draftedSlotCount > 0
+        ? DISCARD_SESSION_COPY.bodyWithDrafts(unsavedCount)
+        : DISCARD_SESSION_COPY.body(unsavedCount),
       [
-        { text: 'Stay', style: 'cancel' },
+        { text: DISCARD_SESSION_COPY.stay, style: 'cancel' },
         {
-          text: 'Discard',
+          text: DISCARD_SESSION_COPY.discard,
           style: 'destructive',
           onPress: () => {
             (async () => {
-              await discardCurrentSession();
+              await discardCurrentSession({
+                preserveDraftSlotIds: collectPreserveDraftSlotIds(sessionRef.current.slots),
+              });
               navigation.dispatch(data.action);
             })().catch(() => {});
           },
@@ -3743,26 +3771,19 @@ function RecordingSession() {
       return;
     }
 
-    // "Truly unsaved" = work that would actually be lost if we reset the
-    // session: in-memory segments with no draft saved, or a live/paused
-    // recorder. Drafted slots are durable on disk + server, so loading a
-    // different draft doesn't lose them — we skip the warning dialog and
-    // let the preserve list keep their rows intact.
-    const trulyUnsaved = currentSlots.some(
-      (s) =>
-        (slotHasRecoverableAudio(s) && !s.draftSlotId && s.uploadStatus !== 'success') ||
-        s.audioState === 'recording' ||
-        s.audioState === 'paused'
-    );
+    // Drafted slots are durable on disk + server, so loading a different
+    // draft doesn't lose them — we skip the warning dialog and let the
+    // preserve list keep their rows intact (see isTrulyUnsavedSlot).
+    const trulyUnsaved = currentSlots.some(isTrulyUnsavedSlot);
 
     if (trulyUnsaved) {
       Alert.alert(
-        'Replace Current Session?',
-        'You have unsaved recordings in progress. Loading this draft will replace them.',
+        REPLACE_SESSION_COPY.title,
+        REPLACE_SESSION_COPY.bodyLoadDraft,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: REPLACE_SESSION_COPY.cancel, style: 'cancel' },
           {
-            text: 'Load Draft',
+            text: REPLACE_SESSION_COPY.loadDraft,
             style: 'destructive',
             onPress: () => {
               (async () => {
@@ -3958,24 +3979,36 @@ function RecordingSession() {
         })().catch(() => {});
       };
 
-      if (hasUnsavedRecordings) {
+      const currentSlots = sessionRef.current.slots;
+      const preserveDraftSlotIds = collectPreserveDraftSlotIds(currentSlots);
+      const trulyUnsaved = currentSlots.some(isTrulyUnsavedSlot);
+
+      if (trulyUnsaved) {
         Alert.alert(
-          'Replace Current Session?',
-          'Your current recordings will be lost. Are you sure you want to resume the saved session?',
+          REPLACE_SESSION_COPY.title,
+          REPLACE_SESSION_COPY.bodyResumeStash,
           [
-            { text: 'Cancel', style: 'cancel' },
+            { text: REPLACE_SESSION_COPY.cancel, style: 'cancel' },
             {
-              text: 'Replace',
+              text: REPLACE_SESSION_COPY.replace,
               style: 'destructive',
               onPress: () => {
                 (async () => {
-                  await discardCurrentSession();
+                  await discardCurrentSession({ preserveDraftSlotIds });
                   doResume();
                 })().catch(() => {});
               },
             },
           ]
         );
+      } else if (hasUnsavedRecordings) {
+        // Only drafted (durable) slots in the session — nothing is actually at
+        // risk, so skip the scary dialog, but still discard-with-preserve so
+        // debounce timers/stash pins are cleaned up before the restore.
+        (async () => {
+          await discardCurrentSession({ preserveDraftSlotIds });
+          doResume();
+        })().catch(() => {});
       } else {
         doResume();
       }

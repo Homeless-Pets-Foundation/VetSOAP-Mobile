@@ -487,9 +487,15 @@ test('discarding a live durable capture discards its native files before reset',
 test('durable slots are counted in the unsaved leave/reset guards', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
   // Both unsavedCount (leave guard) and trulyUnsaved (draft-load reset) use the
-  // shared predicate, which covers durable and pending-confirm-only slots.
-  assert.match(rec, /const unsavedCount = session\.slots\.filter\([\s\S]*?slotHasRecoverableAudio\(s\) && s\.uploadStatus !== 'success'/);
-  assert.match(rec, /const trulyUnsaved = currentSlots\.some\([\s\S]*?slotHasRecoverableAudio\(s\) && !s\.draftSlotId && s\.uploadStatus !== 'success'/);
+  // shared isTrulyUnsavedSlot predicate, which covers durable and
+  // pending-confirm-only slots while excluding committed drafts (durable on
+  // disk + server; preserved via preserveDraftSlotIds on discard).
+  assert.match(rec, /function isTrulyUnsavedSlot\(s: PatientSlot\): boolean \{[\s\S]*?slotHasRecoverableAudio\(s\) && !s\.draftSlotId && s\.uploadStatus !== 'success'/);
+  assert.match(rec, /const unsavedCount = session\.slots\.filter\(isTrulyUnsavedSlot\)/);
+  assert.match(rec, /const trulyUnsaved = currentSlots\.some\(isTrulyUnsavedSlot\)/);
+  // Discard paths must thread the preserve list so drafted slots survive.
+  assert.match(rec, /preserveDraftSlotIds: collectPreserveDraftSlotIds\(sessionRef\.current\.slots\)/);
+  assert.match(rec, /await discardCurrentSession\(\{ preserveDraftSlotIds \}\)/);
 });
 
 test('deleteDraft removes a recovered durable AAC but not shared native audio', async () => {

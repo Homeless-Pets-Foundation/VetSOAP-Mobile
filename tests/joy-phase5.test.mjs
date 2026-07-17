@@ -240,5 +240,7 @@ test('client email subject-only mail retry reports copied body', async () => {
   const strings = await read('src/constants/strings.ts');
 
   assert.match(strings, /bodyCopied: 'Email body copied — paste it into your message\.'/);
-  assert.match(card, /setStatus\(body \? CLIENT_EMAIL_COPY\.bodyCopied : CLIENT_EMAIL_COPY\.fallbackCopied\)/);
+  // WP27: success feedback moved from the persistent status caption to the
+  // transient Toast.
+  assert.match(card, /setToast\(body \? CLIENT_EMAIL_COPY\.bodyCopied : CLIENT_EMAIL_COPY\.fallbackCopied\)/);
 });

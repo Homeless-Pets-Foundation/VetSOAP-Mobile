@@ -8,8 +8,10 @@ import { TRANSLATION_COPY } from '../constants/strings';
 import { trackEvent, type TranslationTargetLanguage } from '../lib/analytics';
 import { copyWithAutoClear } from '../lib/secureClipboard';
 import { toPlainText } from '../lib/markdown';
+import { MarkdownText } from './MarkdownText';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
+import { Toast } from './Toast';
 import { SegmentedControl } from './ui/SegmentedControl';
 import { Select } from './ui/Select';
 import { useThemeColors } from '../hooks/useThemeColors';
@@ -70,12 +72,14 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
   const [languageValue, setLanguageValue] = useState<TranslationLanguageCode>('es');
   const [result, setResult] = useState<TranslateResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  // Success feedback = transient toast (audit theme D); errors stay inline.
+  const [toast, setToast] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const quickLanguageValue = isQuickLanguage(languageValue) ? languageValue : null;
 
   const translate = useCallback(async () => {
     setLoading(true);
-    setStatus(null);
+    setErrorStatus(null);
     try {
       const translated = await recordingsApi.translate(recordingId, { targetLanguage: languageValue });
       setResult(translated);
@@ -85,7 +89,7 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (error) {
-      setStatus(translationErrorMessage(error));
+      setErrorStatus(translationErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -94,10 +98,10 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
   const copySection = useCallback(async (label: string, text: string) => {
     try {
       await copyWithAutoClear(`${label}:\n${toPlainText(text)}`);
-      setStatus(TRANSLATION_COPY.copied);
+      setToast(TRANSLATION_COPY.copied);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch {
-      setStatus(TRANSLATION_COPY.copyFailed);
+      setErrorStatus(TRANSLATION_COPY.copyFailed);
     }
   }, []);
 
@@ -154,13 +158,18 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
                   {TRANSLATION_COPY.copy}
                 </Button>
               </View>
-              <Text className="text-body-sm text-content-body">{result[key]}</Text>
+              <MarkdownText text={result[key] ?? ''} />
             </View>
           ))}
         </View>
       )}
 
-      {status && <Text className="text-caption text-content-tertiary mt-2">{status}</Text>}
+      {errorStatus && (
+        <Text className="text-caption text-status-danger mt-2" accessibilityRole="alert">
+          {errorStatus}
+        </Text>
+      )}
+      <Toast message={toast ?? ''} visible={!!toast} onHide={() => setToast(null)} />
     </Card>
   );
 }

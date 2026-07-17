@@ -42,6 +42,7 @@ async function loadHarness({
   const preparation = await loadPure('src/api/uploadPreparation.ts');
   const pending = await loadPure('src/lib/pendingConfirm.ts');
   const retry = await loadPure('src/api/uploadRetry.ts');
+  const pimsPatientIdIntent = await loadPure('src/lib/pimsPatientIdIntent.ts');
   const apiClient = {
     post: async (...args) => {
       events.push(['post', args[0]]);
@@ -98,6 +99,7 @@ async function loadHarness({
       '../constants/strings': { STALE_RECORDING_UPLOAD_COPY: 'saved locally' },
       './uploadPreparation': preparation,
       './uploadRetry': retry,
+      '../lib/pimsPatientIdIntent': pimsPatientIdIntent,
     };
     if (!(specifier in modules)) throw new Error(`unexpected module ${specifier}`);
     return modules[specifier];
@@ -186,6 +188,68 @@ test('prepared multi-file upload anchors first, PUTs exact ordered keys, persist
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'put', 'post']);
 });
 
+test('fresh confirmation accepts a server-supplied Patient ID when the submitted ID is blank', async () => {
+  const submittedMetadata = { ...metadata, pimsPatientId: '' };
+  const enrichedRecording = {
+    ...recording,
+    patientId: '33333333-3333-4333-8333-333333333333',
+    pimsPatientId: 'server-chart-id',
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path, body) => {
+      if (path.endsWith('/prepare-upload')) {
+        assert.equal(body.metadata.pimsPatientId, null);
+        return prepared(1);
+      }
+      if (path.endsWith('/confirm-upload')) {
+        assert.equal(body.metadata.pimsPatientId, null);
+        return enrichedRecording;
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  const result = await harness.recordingsApi.createWithFile(
+    submittedMetadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    { idempotencyKey: 'intent-server-patient-id' },
+  );
+
+  assert.equal(result.pimsPatientId, 'server-chart-id');
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('fresh confirmation rejects a server Patient ID after the user explicitly cleared it', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) {
+        return { ...recording, pimsPatientId: 'server-chart-id' };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(
+      { ...metadata, pimsPatientId: '' },
+      'file:///one.m4a',
+      'audio/x-m4a',
+      {
+        idempotencyKey: 'intent-explicit-patient-id-clear',
+        pimsPatientIdExplicitlyCleared: true,
+      },
+    ),
+    (error) =>
+      error?.uploadPhase === 'patch_draft' &&
+      /Could not sync the latest patient details/.test(error.message),
+  );
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
 test('a complete confirmation hint resumes without reading a missing local file', async () => {
   let fileReads = 0;
   const hint = {
@@ -231,6 +295,98 @@ test('confirm 409 probes and returns an already-committed recording without loca
   assert.equal(result.status, 'completed');
   assert.equal(fileReads, 0);
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
+test('confirm 409 accepts a server-supplied Patient ID when the submitted ID is blank', async () => {
+  let fileReads = 0;
+  const completed = {
+    ...recording,
+    status: 'completed',
+    patientId: '33333333-3333-4333-8333-333333333333',
+    pimsPatientId: 'server-chart-id',
+  };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => completed,
+  });
+
+  const result = await harness.recordingsApi.confirmPendingUpload(
+    { ...metadata, pimsPatientId: '' },
+    hint,
+    { idempotencyKey: 'intent-confirm-retry' },
+  );
+
+  assert.equal(result.pimsPatientId, 'server-chart-id');
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
+test('confirm 409 rejects a server Patient ID after the user explicitly cleared it', async () => {
+  const completed = {
+    ...recording,
+    status: 'completed',
+    pimsPatientId: 'server-chart-id',
+  };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: false }),
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => completed,
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.confirmPendingUpload(
+      { ...metadata, pimsPatientId: '' },
+      hint,
+      {
+        idempotencyKey: 'intent-explicit-clear-confirm-retry',
+        pimsPatientIdExplicitlyCleared: true,
+      },
+    ),
+    (error) =>
+      error?.uploadPhase === 'patch_draft' &&
+      /Could not sync the latest patient details/.test(error.message),
+  );
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
+test('confirmation rejects a different server Patient ID when the submitted ID is nonblank', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) {
+        return { ...recording, pimsPatientId: 'chart-B' };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(
+      { ...metadata, pimsPatientId: 'chart-A' },
+      'file:///one.m4a',
+      'audio/x-m4a',
+      { idempotencyKey: 'intent-patient-id-mismatch' },
+    ),
+    (error) =>
+      error?.uploadPhase === 'patch_draft' &&
+      /Could not sync the latest patient details/.test(error.message),
+  );
 });
 
 test('only an untyped route-level prepare 404 enters the legacy compatibility flow', async () => {
@@ -419,7 +575,13 @@ test('already-uploaded preparation anchors the canonical row without PUT or conf
 });
 
 test('already-processed preparation anchors the canonical row without PUT or confirm', async () => {
-  const completed = { ...recording, status: 'completed', soapNoteId: 'soap-1' };
+  const completed = {
+    ...recording,
+    status: 'completed',
+    soapNoteId: 'soap-1',
+    patientId: '33333333-3333-4333-8333-333333333333',
+    pimsPatientId: 'server-chart-id',
+  };
   const callbacks = [];
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),
@@ -436,7 +598,7 @@ test('already-processed preparation anchors the canonical row without PUT or con
     },
   });
   const result = await harness.recordingsApi.createWithFile(
-    metadata,
+    { ...metadata, pimsPatientId: '' },
     'file:///one.m4a',
     'audio/x-m4a',
     {
@@ -446,7 +608,44 @@ test('already-processed preparation anchors the canonical row without PUT or con
     },
   );
   assert.equal(result.status, 'completed');
+  assert.equal(result.pimsPatientId, 'server-chart-id');
   assert.deepEqual(callbacks, [['anchor', recordingId]]);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
+});
+
+test('already-processed preparation rejects enrichment for a legacy null Patient ID clear', async () => {
+  const completed = {
+    ...recording,
+    status: 'completed',
+    soapNoteId: 'soap-1',
+    pimsPatientId: 'server-chart-id',
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        return {
+          outcome: 'already_processed',
+          recording: completed,
+          replacedMissingRecordingId: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(
+      { ...metadata, pimsPatientId: null },
+      'file:///one.m4a',
+      'audio/x-m4a',
+      { idempotencyKey: 'intent-legacy-null-patient-id-clear' },
+    ),
+    (error) =>
+      error?.uploadPhase === 'patch_draft' &&
+      /Could not sync the latest patient details/.test(error.message),
+  );
   assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
 });
 

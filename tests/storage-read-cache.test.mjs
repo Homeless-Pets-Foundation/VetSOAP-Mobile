@@ -216,6 +216,10 @@ async function loadDraftStorage(state, opts = {}) {
     './uploadIntent': {
       normalizeUploadIntentId: (value, slotId) => value || `legacy:${slotId}`,
     },
+    './pimsPatientIdIntent': {
+      isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
+        persistedIntent === true || value === null,
+    },
   });
   return { draftStorage: mod.draftStorage, ...store };
 }

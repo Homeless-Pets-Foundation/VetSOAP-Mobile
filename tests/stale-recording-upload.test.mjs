@@ -117,6 +117,23 @@ test('pending-confirm-only slots count as recoverable captured audio', async () 
   );
 });
 
+test('Patient ID clear intent distinguishes untouched blanks, explicit clears, and re-entry', async () => {
+  const {
+    nextPimsPatientIdExplicitlyCleared,
+    isPimsPatientIdExplicitlyCleared,
+  } = await loadPure('src/lib/pimsPatientIdIntent.ts');
+
+  assert.equal(nextPimsPatientIdExplicitlyCleared('', '', false), false);
+  assert.equal(nextPimsPatientIdExplicitlyCleared('', 'chart-1', false), false);
+  assert.equal(nextPimsPatientIdExplicitlyCleared('chart-1', '', false), true);
+  assert.equal(nextPimsPatientIdExplicitlyCleared('', '', true), true);
+  assert.equal(nextPimsPatientIdExplicitlyCleared(null, '', false), true);
+  assert.equal(nextPimsPatientIdExplicitlyCleared(null, 'chart-2', true), false);
+  assert.equal(isPimsPatientIdExplicitlyCleared('', false), false);
+  assert.equal(isPimsPatientIdExplicitlyCleared('', true), true);
+  assert.equal(isPimsPatientIdExplicitlyCleared(null, false), true);
+});
+
 test('stable upload intents rotate when audio changes after R2 completion', async () => {
   const { normalizeUploadIntentId, slotUploadIdempotencyKey, durableUploadIdempotencyKey } = await loadPure('src/lib/uploadIntent.ts');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');

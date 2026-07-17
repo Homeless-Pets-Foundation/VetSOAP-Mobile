@@ -143,9 +143,10 @@ test('uploadSlot durable: preparation sends the complete current metadata snapsh
   const iCreateWithFile = src.indexOf("'audio/aac'", iDurableBranch);
   assert.ok(iCreateWithFile > iDurableBranch);
   assert.match(src, /metadataDirty: !!slot\.draftMetadataDirty/);
+  assert.match(src, /pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared/);
   assert.match(api, /const metadata = completeUploadMetadata\(data\)/);
-  assert.match(api, /requestPreparation\(existingRecordingId, idempotencyKey, metadata, descriptors\)/);
-  assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata\)/);
+  assert.match(api, /requestPreparation\(\s*existingRecordingId,[\s\S]*?metadataMatchOptions,\s*\)/);
+  assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata, metadataMatchOptions\)/);
 });
 
 test('direct confirmation cannot regress to PATCH-oriented partial metadata', async () => {

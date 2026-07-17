@@ -165,6 +165,10 @@ async function loadRecoveryVaultForTest() {
       normalizeUploadIntentId: (value, slotId) => value || `legacy:${slotId}`,
     },
     './pendingConfirm': pendingConfirm,
+    './pimsPatientIdIntent': {
+      isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
+        persistedIntent === true || value === null,
+    },
   };
 
   const module = { exports: {} };
@@ -200,6 +204,7 @@ function makeDraft(slotId) {
       breed: '',
       appointmentType: 'Wellness',
     },
+    pimsPatientIdExplicitlyCleared: false,
     segments: [{ uri, duration: 10 }],
     audioDuration: 10,
     serverDraftId: null,
@@ -395,6 +400,11 @@ test('recovery vault preserves and restores validated pending-confirm proof with
   const proof = makePendingConfirm();
   drafts.current = [{
     ...makeDraft('proof-only'),
+    formData: {
+      ...makeDraft('proof-only').formData,
+      pimsPatientId: null,
+    },
+    pimsPatientIdExplicitlyCleared: true,
     segments: [],
     audioDuration: 0,
     pendingConfirm: proof,
@@ -405,6 +415,7 @@ test('recovery vault preserves and restores validated pending-confirm proof with
   assert.equal(preserved.recoverableCount, 1);
   const [item] = await supportStaffRecoveryVault.listItemsForUser(privilegedUser);
   assert.equal(item.slots[0].pendingConfirm.recordingId, proof.recordingId);
+  assert.equal(item.slots[0].pimsPatientIdExplicitlyCleared, true);
   assert.equal((await supportStaffRecoveryVault.listItemsForUser(veterinarian)).length, 0);
 
   const restored = await supportStaffRecoveryVault.restoreItemToCurrentUserDrafts(privilegedUser, item.id);
@@ -412,6 +423,7 @@ test('recovery vault preserves and restores validated pending-confirm proof with
   assert.equal(savedDraftSlots[0].segments.length, 0);
   assert.equal(savedDraftSlots[0].pendingConfirm.recordingId, proof.recordingId);
   assert.equal(savedDraftSlots[0].serverDraftId, proof.recordingId);
+  assert.equal(savedDraftSlots[0].pimsPatientIdExplicitlyCleared, true);
 });
 
 test('veterinarian recovery strips cross-user proof and re-uploads a complete vault copy', async () => {

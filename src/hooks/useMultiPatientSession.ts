@@ -4,6 +4,10 @@ import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot, SessionAction, SessionState, AudioSegment, DurableSlotRef } from '../types/multiPatient';
 import { isValidDurableId } from '../lib/durableAudio/paths';
 import { createUploadIntentId, normalizeUploadIntentId } from '../lib/uploadIntent';
+import {
+  isPimsPatientIdExplicitlyCleared,
+  nextPimsPatientIdExplicitlyCleared,
+} from '../lib/pimsPatientIdIntent';
 
 /** Validate that a segment URI is a local file path (not a remote URL). */
 function isLocalFileUri(uri: string): boolean {
@@ -66,6 +70,7 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
       appointmentType: '',
       templateId: defaultTemplateId,
     },
+    pimsPatientIdExplicitlyCleared: false,
     audioState: 'idle',
     segments: [],
     durable: null,
@@ -149,17 +154,32 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           ? { ...slot, draftMetadataDirty: true }
           : slot;
 
-      const applyInvariants = markDirtyIfHasServerDraft;
+      const applyFormUpdate = (
+        slot: PatientSlot,
+        field: keyof CreateRecording,
+        value: string | boolean | undefined,
+      ): PatientSlot => {
+        const pimsPatientIdExplicitlyCleared =
+          field === 'pimsPatientId'
+            ? nextPimsPatientIdExplicitlyCleared(
+                slot.formData.pimsPatientId,
+                value as CreateRecording['pimsPatientId'],
+                slot.pimsPatientIdExplicitlyCleared,
+              )
+            : slot.pimsPatientIdExplicitlyCleared;
+        return markDirtyIfHasServerDraft({
+          ...slot,
+          formData: { ...slot.formData, [field]: value },
+          pimsPatientIdExplicitlyCleared,
+        });
+      };
 
       // clientName propagates to all slots
       if (action.field === 'clientName') {
         return {
           ...state,
           slots: state.slots.map((slot) =>
-            applyInvariants({
-              ...slot,
-              formData: { ...slot.formData, clientName: action.value as string },
-            })
+            applyFormUpdate(slot, 'clientName', action.value)
           ),
         };
       }
@@ -167,10 +187,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? applyInvariants({
-                ...slot,
-                formData: { ...slot.formData, [action.field]: action.value },
-              })
+            ? applyFormUpdate(slot, action.field, action.value)
             : slot
         ),
       };
@@ -337,6 +354,10 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             // and stash resume. If true, submit must send current formData with
             // confirm-upload rather than promoting stale server-draft metadata.
             draftMetadataDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
+            pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+              slot.formData.pimsPatientId,
+              slot.pimsPatientIdExplicitlyCleared,
+            ),
           };
         }),
         activeIndex: 0,

@@ -86,7 +86,7 @@ export interface Recording {
 export type AppointmentType = 'Wellness Exam' | 'Sick Visit' | 'Urgent/Emergency' | 'Follow-up';
 
 export interface CreateRecording {
-  pimsPatientId?: string;
+  pimsPatientId?: string | null;
   patientName: string;
   clientName?: string | null;
   species?: string | null;

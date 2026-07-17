@@ -11,6 +11,9 @@ export interface StashedSlot {
   id: string;
   uploadIntentId?: string;
   formData: CreateRecording;
+  // Optional for stashes written before explicit Patient ID clear intent was
+  // persisted. Legacy null form values are interpreted fail-closed on restore.
+  pimsPatientIdExplicitlyCleared?: boolean;
   segments: StashedSegment[];
   audioDuration: number; // sum of all segment durations
   // Preserve draft linkage across the stash round-trip so Resume → Submit promotes

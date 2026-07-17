@@ -435,6 +435,7 @@ export class UploadIntentConflictError extends Error {
     public readonly conflict: UploadIntentConflictDetails,
     phase: 'prepare' | 'confirm',
     message = 'This upload needs a safe status check before it can continue.',
+    public readonly recoveryOutcome: 'restart_available' | 'unresolved' | null = null,
   ) {
     super(message);
     this.name = 'UploadIntentConflictError';
@@ -660,6 +661,17 @@ async function postConfirm(
   } catch (error) {
     const conflict = typedUploadIntentConflict(error, 'confirm');
     if (conflict) throw conflict;
+    if (error instanceof ApiError && error.status === 409) {
+      let current: Recording;
+      try {
+        current = await apiClient.get(`/api/recordings/${recordingId}`);
+      } catch (probeError) {
+        tagPhase(probeError, 'confirm');
+      }
+      if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
+        return assertRecordingMatchesMetadataPayload(current, metadataAsPayload(metadata), matchOptions);
+      }
+    }
     tagPhase(error, 'confirm');
   }
   return assertRecordingMatchesMetadataPayload(confirmed, metadataAsPayload(metadata), matchOptions);
@@ -1022,6 +1034,7 @@ async function executeResilientUpload(
   };
   const mode = options.mode ?? 'standard';
   const validResume = options.resume ? validatePendingConfirm(options.resume) : null;
+  let latestPendingConfirm: PendingConfirm | null = validResume;
   let staleRestartUsed = false;
   let recoveryRestartConsumed = false;
   let qualityReported = false;
@@ -1080,7 +1093,12 @@ async function executeResilientUpload(
           pendingConfirm: validResume ?? undefined,
         });
         if (recovery.outcome === 'restart_available' || recovery.outcome === 'unresolved') {
-          throw new UploadIntentConflictError(recovery.conflict, 'prepare');
+          throw new UploadIntentConflictError(
+            recovery.conflict,
+            'prepare',
+            undefined,
+            recovery.outcome,
+          );
         }
         if (recovery.outcome === 'already_uploaded' || recovery.outcome === 'already_processed') {
           return assertRecordingMatchesMetadataPayload(
@@ -1245,6 +1263,7 @@ async function executeResilientUpload(
   };
 
   const persistHintAndConfirm = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
+    latestPendingConfirm = hint;
     const persistence = await invokeHintCallback(options.onR2Complete, hint);
     const result = await confirmWithRecovery(hint, legacy);
     if (persistence.timedOut) {
@@ -1267,24 +1286,40 @@ async function executeResilientUpload(
     scheduleCommittedLateWriteCleanup();
     return result;
   } catch (error) {
-    if (!(error instanceof UploadIntentConflictError) || options.supersededIdempotencyKey) {
+    if (!(error instanceof UploadIntentConflictError)) {
       throw error;
     }
-    let descriptors = validResume?.files;
+    // A recovery response has already classified this state. Preserve that
+    // exact outcome so callers cannot offer a restart for `unresolved`, and do
+    // not inspect it again under a different identity.
+    if (error.recoveryOutcome) throw error;
+
+    const recoveryHint = latestPendingConfirm;
+    let descriptors = recoveryHint?.files;
     if (!descriptors) {
-      try {
-        descriptors = preparationFiles(await preflightLocalFiles(inputFiles));
-      } catch {
+      if (inputFiles.length > 0) {
+        try {
+          descriptors = preparationFiles(await preflightLocalFiles(inputFiles));
+        } catch {
+          throw error;
+        }
+      } else if (recoveryHint) {
+        // Native durable confirmation proofs intentionally omit file
+        // descriptors to keep PHI and mutable metadata out of the plaintext
+        // manifest. The server can still inspect its canonical intent and R2
+        // keys from this exact pending-confirm proof.
+        descriptors = [];
+      } else {
         throw error;
       }
     }
     const recovery = await requestUploadIntentRecovery({
       action: 'inspect',
       inspectionKey: idempotencyKey,
-      existingRecordingId: validResume?.recordingId ?? options.existingRecordingId,
+      existingRecordingId: recoveryHint?.recordingId ?? options.existingRecordingId,
       metadata,
       files: descriptors,
-      pendingConfirm: validResume ?? undefined,
+      pendingConfirm: recoveryHint ?? undefined,
     });
     if (recovery.outcome === 'already_uploaded' || recovery.outcome === 'already_processed') {
       scheduleCommittedLateWriteCleanup();
@@ -1295,7 +1330,12 @@ async function executeResilientUpload(
       );
     }
     if (recovery.outcome === 'restart_available' || recovery.outcome === 'unresolved') {
-      throw new UploadIntentConflictError(recovery.conflict, error.uploadPhase);
+      throw new UploadIntentConflictError(
+        recovery.conflict,
+        error.uploadPhase,
+        undefined,
+        recovery.outcome,
+      );
     }
     phaseError('prepare', 'The upload status check returned an unexpected restart response.');
   }

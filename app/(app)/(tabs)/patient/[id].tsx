@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,20 @@ import {
   Pressable,
   RefreshControl,
   ActivityIndicator,
-  TextInput,
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Edit2, User } from 'lucide-react-native';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { patientsApi } from '../../../../src/api/patients';
+import { ApiError } from '../../../../src/api/client';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
+import { removePatientFromCachedLists } from '../../../../src/lib/recordingQueryCache';
 import { Button } from '../../../../src/components/ui/Button';
+import { friendlyErrorMessage } from '../../../../src/lib/errorCopy';
+import { TextInputField } from '../../../../src/components/ui/TextInputField';
 import { Card } from '../../../../src/components/ui/Card';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
@@ -60,7 +64,6 @@ function AiSummaryText({ summary }: { summary: string }) {
           {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
           <Text
             className="text-body-sm font-medium text-brand-600"
-            allowFontScaling={false}
             style={{ flexShrink: 0, paddingRight: 2 }}
           >
             {`${expanded ? 'Show less' : 'Read more'} `}
@@ -81,34 +84,58 @@ function ProfileField({ label, value }: { label: string; value: string | null | 
   );
 }
 
+/**
+ * Strict calendar-date check. `new Date('2020-02-31')` NORMALIZES to Mar 2
+ * instead of failing, so regex + isNaN let nonexistent dates through —
+ * round-trip the components against the resulting UTC date instead.
+ */
+function isValidCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
 function EditableField({
   label,
   value,
   onChangeText,
   placeholder,
   multiline,
+  keyboardType,
+  error,
 }: {
   label: string;
   value: string;
   onChangeText: (v: string) => void;
   placeholder?: string;
   multiline?: boolean;
+  keyboardType?: 'default' | 'numbers-and-punctuation';
+  error?: string;
 }) {
-  const colors = useThemeColors();
+  // Thin wrapper over the shared TextInputField (WP18) — the previous local
+  // reimplementation lacked accessibilityLabel, focus borders, and the error
+  // contract. textAlignVertical is a TextInput prop on Android.
   return (
-    <View className="mb-3.5">
-      <Text className="text-body-sm font-medium text-content-body mb-1.5">{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={colors.contentTertiary}
-        multiline={multiline}
-        numberOfLines={multiline ? 3 : 1}
-        className={`input-base min-h-[44px] text-body text-content-primary ${multiline ? 'py-2' : ''}`}
-        style={multiline ? { height: 80, textAlignVertical: 'top' } : undefined}
-      />
-    </View>
+    <TextInputField
+      label={label}
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      multiline={multiline}
+      numberOfLines={multiline ? 3 : 1}
+      keyboardType={keyboardType}
+      error={error}
+      textAlignVertical={multiline ? 'top' : undefined}
+      className={multiline ? 'min-h-[80px] py-2' : undefined}
+    />
   );
 }
 
@@ -122,6 +149,15 @@ export default function PatientDetailScreen() {
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const [editMode, setEditMode] = useState(false);
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({});
+  const [dobError, setDobError] = useState<string | null>(null);
+
+  // A definitive 403 (revoked) / 404 (deleted) latches terminal so the cached
+  // profile + visits stop rendering and are evicted from the snapshot, mirror
+  // of recordings/[id] (Codex P1, PR #143).
+  const [accessRevoked, setAccessRevoked] = useState<{ status: number } | null>(null);
+  useEffect(() => {
+    setAccessRevoked(null);
+  }, [id]);
 
   const {
     data: patient,
@@ -132,17 +168,58 @@ export default function PatientDetailScreen() {
   } = useQuery({
     queryKey: ['patient', id],
     queryFn: () => patientsApi.get(id!),
-    enabled: !!id,
+    enabled: !!id && !accessRevoked,
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
   });
 
+  useEffect(() => {
+    if (accessRevoked) return;
+    if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+      setAccessRevoked({ status: error.status });
+    }
+  }, [error, accessRevoked]);
+
+  useEffect(() => {
+    if (!accessRevoked || !id) return;
+    queryClient.removeQueries({ queryKey: ['patient', id] }); // profile + visits pages
+    // Also strip it from cached patient-list pages, or the revoked/deleted
+    // patient's identifying metadata still renders offline (Codex P1, PR #143).
+    removePatientFromCachedLists(queryClient, id);
+  }, [accessRevoked, id, queryClient]);
+
+  const [visitsLimit, setVisitsLimit] = useState(20);
   const {
     data: recordingsData,
     isLoading: recordingsLoading,
+    isFetching: recordingsFetching,
+    isPlaceholderData: recordingsIsPlaceholder,
   } = useQuery({
-    queryKey: ['patient', id, 'recordings'],
-    queryFn: () => patientsApi.listRecordings(id!, { limit: 20 }),
-    enabled: !!id && activeTab === 'visits',
+    queryKey: ['patient', id, 'recordings', visitsLimit],
+    gcTime: PERSIST_GC_TIME_MS,
+    queryFn: () => patientsApi.listRecordings(id!, { limit: visitsLimit }),
+    enabled: !!id && activeTab === 'visits' && !accessRevoked,
+    placeholderData: keepPreviousData,
   });
+
+  // Each "Load more visits" press creates a NEW query key (limit 20/40/60…)
+  // while the superseded pages stay cached — and persisted — for 7 days,
+  // storing the same visits quadratically (Codex P2, PR #143). Once the
+  // expanded page has REAL data, drop the smaller snapshots. The placeholder
+  // gate matters: keepPreviousData makes recordingsData truthy immediately
+  // with the SMALLER page's data, and pruning then would delete the last
+  // successful page while the expanded request can still fail offline
+  // (Codex P2 round 7).
+  useEffect(() => {
+    if (!id || !recordingsData || recordingsIsPlaceholder) return;
+    queryClient.removeQueries({
+      queryKey: ['patient', id, 'recordings'],
+      predicate: (query) => {
+        const limit = query.queryKey[3];
+        return typeof limit === 'number' && limit < visitsLimit;
+      },
+    });
+  }, [id, recordingsData, recordingsIsPlaceholder, visitsLimit, queryClient]);
 
   const updateMutation = useMutation({
     mutationFn: (draft: ProfileDraft) => {
@@ -170,6 +247,10 @@ export default function PatientDetailScreen() {
 
   const startEdit = useCallback(() => {
     if (!patient) return;
+    // Clear any DOB validation error from a prior aborted edit — reopening
+    // reloads the valid saved value, so a stale error would flag it until the
+    // field is touched again (Codex P2, PR #143).
+    setDobError(null);
     setProfileDraft({
       name: patient.name,
       species: patient.species,
@@ -248,7 +329,35 @@ export default function PatientDetailScreen() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator color={colors.brand500} size="large" />
         </View>
-      ) : error || !patient ? (
+      ) : accessRevoked ? (
+        // Revoked (403) / deleted (404): terminal even with cached data.
+        <View className="flex-1 items-center justify-center px-8">
+          <User color={colors.contentTertiary} size={48} />
+          <Text className="text-body font-medium text-content-primary mt-4 text-center">
+            {accessRevoked.status === 404
+              ? 'Patient not found'
+              : 'You no longer have access to this patient.'}
+          </Text>
+          <Button variant="secondary" onPress={() => router.back()} className="mt-4">
+            Go Back
+          </Button>
+        </View>
+      ) : error && !patient && !(error instanceof ApiError && error.status === 404) ? (
+        <View className="flex-1 items-center justify-center px-8">
+          <User color={colors.contentTertiary} size={48} />
+          <Text className="text-body font-medium text-content-primary mt-4 text-center">
+            {friendlyErrorMessage(error, 'load')}
+          </Text>
+          <View className="mt-4 flex-row gap-2">
+            <Button variant="primary" onPress={() => { refetch().catch(() => {}); }}>
+              Retry
+            </Button>
+            <Button variant="secondary" onPress={() => router.back()}>
+              Go Back
+            </Button>
+          </View>
+        </View>
+      ) : !patient || (error instanceof ApiError && error.status === 404) ? (
         <View className="flex-1 items-center justify-center px-8">
           <User color={colors.contentTertiary} size={48} />
           <Text className="text-body font-medium text-content-primary mt-4">Patient not found</Text>
@@ -261,7 +370,13 @@ export default function PatientDetailScreen() {
           className="flex-1"
           contentContainerStyle={{ padding: 20, maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} tintColor={colors.brand500} />
+            <RefreshControl
+              refreshing={isRefetching}
+              onRefresh={() => { refetch().catch(() => {}); }}
+              tintColor={colors.brand500}
+              colors={[colors.brand500]}
+              progressBackgroundColor={colors.surfaceRaised}
+            />
           }
         >
           {/* SUMMARY TAB */}
@@ -271,7 +386,7 @@ export default function PatientDetailScreen() {
               <Card className="mb-4">
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center">
-                    <View className="w-2 h-2 rounded-full bg-warning-500 mr-2" />
+                    <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-2" />
                     <Text className="text-body-sm font-semibold text-content-body">AI Patient Summary</Text>
                   </View>
                   {patient.aiHistoryUpdatedAt && (() => { const d = new Date(patient.aiHistoryUpdatedAt); return !isNaN(d.getTime()) && Date.now() - d.getTime() > 30 * 24 * 60 * 60 * 1000; })() && (
@@ -299,20 +414,16 @@ export default function PatientDetailScreen() {
                           })()}
                         </Text>
                       )}
-                      <Pressable
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onPress={() => regenerateSummaryMutation.mutate()}
                         disabled={regenerateSummaryMutation.isPending}
-                        hitSlop={8}
+                        loading={regenerateSummaryMutation.isPending}
+                        accessibilityLabel="Regenerate AI summary"
                       >
-                        {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
-                        <Text
-                          className="text-caption font-medium text-brand-600"
-                          allowFontScaling={false}
-                          style={{ flexShrink: 0, paddingRight: 2 }}
-                        >
-                          {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'} `}
-                        </Text>
-                      </Pressable>
+                        {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'}
+                      </Button>
                     </View>
                   </>
                 ) : (
@@ -320,20 +431,16 @@ export default function PatientDetailScreen() {
                     <Text className="text-body text-content-tertiary italic mb-2">
                       No summary yet. Summaries are generated automatically after completed visits.
                     </Text>
-                    <Pressable
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onPress={() => regenerateSummaryMutation.mutate()}
                       disabled={regenerateSummaryMutation.isPending}
-                      hitSlop={8}
+                      loading={regenerateSummaryMutation.isPending}
+                      accessibilityLabel="Generate AI summary now"
                     >
-                      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
-                      <Text
-                        className="text-caption font-medium text-brand-600"
-                        allowFontScaling={false}
-                        style={{ flexShrink: 0, paddingRight: 2 }}
-                      >
-                        {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'} `}
-                      </Text>
-                    </Pressable>
+                      {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'}
+                    </Button>
                   </>
                 )}
               </Card>
@@ -401,6 +508,23 @@ export default function PatientDetailScreen() {
                   );
                 })
               )}
+              {/* The flat limit silently truncated long-term patients' history
+                  (WP31) — surface the total and let the user load the rest. */}
+              {(recordingsData?.pagination?.total ?? 0) > (recordingsData?.data.length ?? 0) && (
+                <View className="items-center mb-3">
+                  <Text className="text-caption text-content-tertiary mb-2">
+                    Showing {recordingsData?.data.length} of {recordingsData?.pagination?.total} visits
+                  </Text>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={recordingsFetching}
+                    onPress={() => setVisitsLimit((limit) => limit + 20)}
+                  >
+                    Load more visits
+                  </Button>
+                </View>
+              )}
             </View>
           )}
 
@@ -422,7 +546,6 @@ export default function PatientDetailScreen() {
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-body-sm text-brand-600 ml-1"
-                        allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
                         {'Edit '}
@@ -453,7 +576,7 @@ export default function PatientDetailScreen() {
                   <View className="flex-row justify-between items-center mb-4">
                     <Text className="text-body-sm font-semibold text-content-body">Edit Profile</Text>
                     <Pressable
-                      onPress={() => setEditMode(false)}
+                      onPress={() => { setEditMode(false); setDobError(null); }}
                       hitSlop={8}
                       accessibilityRole="button"
                       accessibilityLabel="Cancel editing"
@@ -461,7 +584,6 @@ export default function PatientDetailScreen() {
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-body-sm text-content-tertiary"
-                        allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
                         {'Cancel '}
@@ -476,6 +598,12 @@ export default function PatientDetailScreen() {
                     placeholder="Patient name"
                   />
                   <EditableField
+                    label="Species"
+                    value={profileDraft.species ?? ''}
+                    onChangeText={(v) => setProfileDraft((p) => ({ ...p, species: v || null }))}
+                    placeholder="e.g., Canine, Feline"
+                  />
+                  <EditableField
                     label="Breed"
                     value={profileDraft.breed ?? ''}
                     onChangeText={(v) => setProfileDraft((p) => ({ ...p, breed: v || null }))}
@@ -484,8 +612,13 @@ export default function PatientDetailScreen() {
                   <EditableField
                     label="Date of Birth (YYYY-MM-DD)"
                     value={profileDraft.dateOfBirth ?? ''}
-                    onChangeText={(v) => setProfileDraft((p) => ({ ...p, dateOfBirth: v || null }))}
+                    onChangeText={(v) => {
+                      setDobError(null);
+                      setProfileDraft((p) => ({ ...p, dateOfBirth: v || null }));
+                    }}
                     placeholder="e.g., 2020-03-15"
+                    keyboardType="numbers-and-punctuation"
+                    error={dobError ?? undefined}
                   />
                   <EditableField
                     label="Known Allergies"
@@ -510,15 +643,20 @@ export default function PatientDetailScreen() {
                   />
 
                   {updateMutation.error && (
-                    <Text className="text-body-sm text-status-danger mb-3">
-                      {updateMutation.error instanceof Error
-                        ? updateMutation.error.message
-                        : 'Failed to save changes.'}
+                    <Text className="text-body-sm text-status-danger mb-3" accessibilityRole="alert">
+                      {friendlyErrorMessage(updateMutation.error)}
                     </Text>
                   )}
 
                   <Button
-                    onPress={() => updateMutation.mutate(profileDraft)}
+                    onPress={() => {
+                      const dob = profileDraft.dateOfBirth;
+                      if (dob && !isValidCalendarDate(dob)) {
+                        setDobError('Enter a real date as YYYY-MM-DD (e.g., 2020-03-15).');
+                        return;
+                      }
+                      updateMutation.mutate(profileDraft);
+                    }}
                     loading={updateMutation.isPending}
                     disabled={updateMutation.isPending}
                   >

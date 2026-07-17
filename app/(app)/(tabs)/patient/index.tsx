@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useInfiniteQuery } from '@tanstack/react-query';
-import { User } from 'lucide-react-native';
+import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query';
+import { Search, User } from 'lucide-react-native';
 import { patientsApi } from '../../../../src/api/patients';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
@@ -39,6 +40,8 @@ export default function PatientListScreen() {
     isFetchingNextPage,
   } = useInfiniteQuery({
     queryKey: ['patients', 'list', debouncedSearch],
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
     queryFn: ({ pageParam = 1 }) =>
       patientsApi.list({
         search: debouncedSearch || undefined,
@@ -46,6 +49,9 @@ export default function PatientListScreen() {
         limit: PAGE_SIZE,
       }),
     initialPageParam: 1,
+    // Keep showing the previous results while a refined search loads — the
+    // list used to blank to skeletons on every keystroke.
+    placeholderData: keepPreviousData,
     getNextPageParam: (lastPage) => {
       if (!lastPage.pagination) return undefined;
       const { page, totalPages } = lastPage.pagination;
@@ -90,7 +96,7 @@ export default function PatientListScreen() {
               isFocused ? 'border-brand-500' : 'border-border-strong'
             }`}
           >
-            <User color={colors.contentTertiary} size={iconSm} />
+            <Search color={colors.contentTertiary} size={iconSm} />
             <TextInput
               value={search}
               onChangeText={setSearch}

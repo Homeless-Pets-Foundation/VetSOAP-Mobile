@@ -12,6 +12,7 @@ import { buildSoapHtml, buildSoapPlainText } from '../lib/soapPdf';
 import { sharePdfHtml, shareText } from '../lib/share';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
+import { Toast } from './Toast';
 import { useThemeColors } from '../hooks/useThemeColors';
 
 const PIMS_TARGETS: { label: string; value: ExportTarget }[] = [
@@ -33,18 +34,21 @@ export function ExportSheet({
   const queryClient = useQueryClient();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [showPims, setShowPims] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  // Success feedback is a transient toast (audit theme D); only errors stay
+  // inline. The old persistent caption never auto-cleared and was easy to miss.
+  const [toast, setToast] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<string | null>(null);
 
   const plainText = useMemo(() => buildSoapPlainText(soapNote), [soapNote]);
 
   const copyAll = useCallback(async () => {
     setBusyAction('copy');
-    setStatus(null);
+    setErrorStatus(null);
     try {
       await copyWithAutoClear(plainText);
       trackEvent({ name: 'soap_exported', props: { target: 'clipboard', recording_id: recording.id } });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      setStatus(EXPORT_COPY.copied);
+      setToast(EXPORT_COPY.copied);
     } finally {
       setBusyAction(null);
     }
@@ -52,12 +56,12 @@ export function ExportSheet({
 
   const shareAsText = useCallback(async () => {
     setBusyAction('text');
-    setStatus(null);
+    setErrorStatus(null);
     try {
       const shared = await shareText(plainText, 'SOAP Note');
       if (shared) {
         trackEvent({ name: 'soap_exported', props: { target: 'share_sheet', recording_id: recording.id } });
-        setStatus(EXPORT_COPY.shared);
+        setToast(EXPORT_COPY.shared);
       }
     } finally {
       setBusyAction(null);
@@ -66,11 +70,11 @@ export function ExportSheet({
 
   const shareAsPdf = useCallback(async () => {
     setBusyAction('pdf');
-    setStatus(null);
+    setErrorStatus(null);
     try {
       await sharePdfHtml(buildSoapHtml(soapNote, recording), 'SOAP Note');
       trackEvent({ name: 'soap_exported', props: { target: 'pdf', recording_id: recording.id } });
-      setStatus(EXPORT_COPY.shared);
+      setToast(EXPORT_COPY.shared);
     } finally {
       setBusyAction(null);
     }
@@ -78,14 +82,14 @@ export function ExportSheet({
 
   const markExported = useCallback(async (target: ExportTarget) => {
     setBusyAction(target);
-    setStatus(null);
+    setErrorStatus(null);
     try {
       await soapNotesApi.export(soapNote.id, { exportedTo: target });
       trackEvent({ name: 'soap_exported', props: { target: 'pims', recording_id: recording.id } });
       queryClient.invalidateQueries({ queryKey: ['soapNote', recording.id] }).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ['recording', recording.id] }).catch(() => {});
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      setStatus(EXPORT_COPY.marked);
+      setToast(EXPORT_COPY.marked);
     } finally {
       setBusyAction(null);
     }
@@ -114,7 +118,7 @@ export function ExportSheet({
           variant="secondary"
           size="sm"
           loading={busyAction === 'copy'}
-          onPress={() => { copyAll().catch((error) => setStatus(error instanceof Error ? error.message : EXPORT_COPY.copyFailed)); }}
+          onPress={() => { copyAll().catch(() => setErrorStatus(EXPORT_COPY.copyFailed)); }}
           icon={<Copy color={colors.contentBody} size={14} />}
         >
           {EXPORT_COPY.copyAll}
@@ -123,7 +127,7 @@ export function ExportSheet({
           variant="secondary"
           size="sm"
           loading={busyAction === 'text'}
-          onPress={() => { shareAsText().catch((error) => setStatus(error instanceof Error ? error.message : EXPORT_COPY.shareFailed)); }}
+          onPress={() => { shareAsText().catch(() => setErrorStatus(EXPORT_COPY.shareFailed)); }}
           icon={<Share2 color={colors.contentBody} size={14} />}
         >
           {EXPORT_COPY.shareText}
@@ -132,7 +136,7 @@ export function ExportSheet({
           variant="secondary"
           size="sm"
           loading={busyAction === 'pdf'}
-          onPress={() => { shareAsPdf().catch((error) => setStatus(error instanceof Error ? error.message : EXPORT_COPY.pdfFailed)); }}
+          onPress={() => { shareAsPdf().catch(() => setErrorStatus(EXPORT_COPY.pdfFailed)); }}
           icon={<FileText color={colors.contentBody} size={14} />}
         >
           {EXPORT_COPY.sharePdf}
@@ -152,7 +156,7 @@ export function ExportSheet({
                   variant="secondary"
                   size="sm"
                   loading={busyAction === target.value}
-                  onPress={() => { markExported(target.value).catch((error) => setStatus(error instanceof Error ? error.message : EXPORT_COPY.markFailed)); }}
+                  onPress={() => { markExported(target.value).catch(() => setErrorStatus(EXPORT_COPY.markFailed)); }}
                 >
                   {target.label}
                 </Button>
@@ -166,7 +170,12 @@ export function ExportSheet({
         )}
       </View>
 
-      {status && <Text className="text-caption text-content-tertiary mt-2">{status}</Text>}
+      {errorStatus && (
+        <Text className="text-caption text-status-danger mt-2" accessibilityRole="alert">
+          {errorStatus}
+        </Text>
+      )}
+      <Toast message={toast ?? ''} visible={!!toast} onHide={() => setToast(null)} placement="inline" />
     </Card>
   );
 }

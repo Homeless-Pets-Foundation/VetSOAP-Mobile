@@ -33,7 +33,7 @@ function formatRelativeTime(isoDate: string): string {
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays === 1) return 'Yesterday';
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 export function StashedSessionCard({ stash, onResume, onDelete }: StashedSessionCardProps) {

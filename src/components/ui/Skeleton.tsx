@@ -1,3 +1,5 @@
+// Loading-state convention: Skeleton for list/card CONTENT placeholders;
+// ActivityIndicator only for in-button / inline busy states.
 import React, { useEffect } from 'react';
 import { View } from 'react-native';
 import Animated, {

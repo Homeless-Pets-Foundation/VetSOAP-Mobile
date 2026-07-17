@@ -26,7 +26,7 @@ export function DurableRecoveryBanner() {
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={() => router.push('/durable-recovery' as never)}
-      className="mb-4 flex-row items-center gap-3 rounded-xl border border-brand-300 bg-brand-50 px-4 py-3"
+      className="mb-4 flex-row items-center gap-3 rounded-xl border border-brand-300 bg-brand-50 dark:bg-surface-sunken dark:border-border-default px-4 py-3"
     >
       <FileClock size={20} color={colors.brand500} />
       <Text className="flex-1 text-content-body font-medium">{label}</Text>

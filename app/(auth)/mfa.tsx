@@ -10,15 +10,18 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import QRCode from 'react-native-qrcode-svg';
-import { AlertCircle, LogOut, RefreshCw, ShieldCheck } from 'lucide-react-native';
+import { AlertCircle, Copy, LogOut, RefreshCw, ShieldCheck } from 'lucide-react-native';
 import { useAuthActions, useAuthMfa, useAuthReadiness } from '../../src/hooks/useAuth';
 import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
+import { CopiedToast } from '../../src/components/ui/CopiedToast';
 import { isSetupApprovalCodeError, mfaErrorMessage } from '../../src/auth/mfaPolicy';
+import { copyWithAutoClear } from '../../src/lib/secureClipboard';
+import { MFA_BOOTSTRAP_COPY } from '../../src/constants/strings';
 
-type MfaMode = 'loading' | 'challenge' | 'enroll';
+type MfaMode = 'loading' | 'challenge' | 'enroll' | 'error';
 
 interface PendingEnrollment {
   factorId: string;
@@ -57,6 +60,7 @@ export default function MfaScreen() {
   const [error, setError] = useState<string | null>(null);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [setupKeyCopied, setSetupKeyCopied] = useState(false);
   const autoBootstrapKeyRef = useRef<string | null>(null);
 
   const returnToApp = useCallback(() => {
@@ -153,7 +157,10 @@ export default function MfaScreen() {
         setError(mfaErrorMessage(e));
         return;
       }
-      setMode('challenge');
+      // A generic bootstrap failure means no challenge was started — showing
+      // the code form would only let Verify fail again. Present an explicit
+      // failed state with Retry instead.
+      setMode('error');
       setError(mfaErrorMessage(e));
     } finally {
       setIsBootstrapping(false);
@@ -246,7 +253,9 @@ export default function MfaScreen() {
   const isEnrollmentSetupPending = mode === 'enroll' && !enrollment;
   const title = mode === 'enroll' ? 'Set up MFA' : 'Verify your identity';
   const subtitle =
-    isEnrollmentSetupPending
+    mode === 'error'
+      ? MFA_BOOTSTRAP_COPY.failed
+      : isEnrollmentSetupPending
       ? 'Set up an authenticator app before continuing.'
       : mode === 'enroll'
       ? 'Scan the QR code with your authenticator app, then enter the generated code.'
@@ -293,6 +302,27 @@ export default function MfaScreen() {
                 <View className="py-8 items-center">
                   <ActivityIndicator size="large" color={colors.brand500} />
                 </View>
+              ) : mode === 'error' ? (
+                <View className="gap-3">
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    icon={<RefreshCw color={colors.contentOnBrand} size={iconSm} />}
+                    disabled={isBootstrapping}
+                    onPress={() => {
+                      bootstrapMfa().catch(() => {});
+                    }}
+                  >
+                    {MFA_BOOTSTRAP_COPY.retry}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    icon={<LogOut color={colors.contentBody} size={iconSm} />}
+                    onPress={handleSignOut}
+                  >
+                    Sign out
+                  </Button>
+                </View>
               ) : (
                 <View>
                   {isEnrollmentSetupPending ? (
@@ -334,7 +364,7 @@ export default function MfaScreen() {
                             bootstrapMfa().catch(() => {});
                           }}
                         >
-                          Restart
+                          Start over
                         </Button>
                         <Button
                           variant="ghost"
@@ -350,21 +380,50 @@ export default function MfaScreen() {
                     <>
                       {mode === 'enroll' && enrollment ? (
                         <View className="items-center bg-surface rounded-lg p-4 mb-5">
-                          <QRCode
-                            value={enrollment.uri}
-                            size={Math.min(scale(220), 220)}
-                            backgroundColor={colors.surfaceRaised}
-                            color={colors.contentPrimary}
-                          />
-                          <Text className="text-caption font-semibold text-content-tertiary mt-4 mb-1">
-                            Setup key
-                          </Text>
-                          <Text
-                            selectable
-                            className="text-body-sm text-content-body text-center"
+                          {/* The accessible group covers only the QR + key text —
+                              grouping the whole card made the nested "Copy setup
+                              key" button unreachable for VoiceOver/TalkBack, and
+                              screen-reader users enrolling on the same device
+                              can't scan the QR (Codex P2, PR #143). */}
+                          <View
+                            className="items-center"
+                            accessible
+                            accessibilityLabel="QR code for authenticator app setup — or copy the setup key below"
                           >
-                            {enrollment.secret}
-                          </Text>
+                            <QRCode
+                              value={enrollment.uri}
+                              size={Math.min(scale(220), 220)}
+                              backgroundColor={colors.surfaceRaised}
+                              color={colors.contentPrimary}
+                            />
+                            <Text className="text-caption font-semibold text-content-tertiary mt-4 mb-1">
+                              Setup key
+                            </Text>
+                            <Text
+                              selectable
+                              className="text-body-sm text-content-body text-center"
+                            >
+                              {enrollment.secret}
+                            </Text>
+                          </View>
+                          <View className="mt-3">
+                            <CopiedToast visible={setupKeyCopied} className="-top-1 right-0" />
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              icon={<Copy color={colors.contentBody} size={iconSm} />}
+                              onPress={() => {
+                                copyWithAutoClear(enrollment.secret)
+                                  .then(() => {
+                                    setSetupKeyCopied(true);
+                                    setTimeout(() => setSetupKeyCopied(false), 1500);
+                                  })
+                                  .catch(() => {});
+                              }}
+                            >
+                              Copy setup key
+                            </Button>
+                          </View>
                         </View>
                       ) : null}
 
@@ -405,7 +464,7 @@ export default function MfaScreen() {
                             bootstrapMfa().catch(() => {});
                           }}
                         >
-                          Restart
+                          Start over
                         </Button>
                         <Button
                           variant="ghost"

@@ -5,6 +5,7 @@ import {
   LONG_RECORDING_WARNING_COPY,
   LONG_RECORDING_WARNING_THRESHOLD_SEC,
 } from '../constants/strings';
+import { formatClockDuration } from '../lib/formatClock';
 
 const styles = StyleSheet.create({
   timerText: {
@@ -16,11 +17,6 @@ const styles = StyleSheet.create({
   },
 });
 
-function formatDuration(seconds: number) {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
 
 interface RecorderLiveReadoutProps {
   /** Stable getter from useAudioRecorder — reads refs/native, no React state. */
@@ -98,7 +94,7 @@ export function RecorderLiveReadout({
         }`}
         style={styles.timerText}
       >
-        {formatDuration(totalSeconds)}
+        {formatClockDuration(totalSeconds)}
       </Text>
       {/* Non-blocking warning for multi-hour recordings. Peak extraction scales
           with FFmpeg seek cost on the edit path, which is slow on low-end

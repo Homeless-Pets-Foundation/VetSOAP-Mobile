@@ -191,6 +191,138 @@ test('listDrafts exposes durable recordingId for recovery suppression', async ()
   assert.equal(ids.join(','), 'dr-abc123');
 });
 
+test('durable upload restart uses a two-phase marker and clears old server proof only on commit', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const oldKey = 'recording-upload-v1:durable:dr-abc123';
+  const replacementKey = 'recording-upload-v2:restart:replacement-one';
+  await draftStorage.saveDraft({
+    ...durableSlot(),
+    serverDraftId: 'server-old',
+    pendingConfirm: {
+      recordingId: '11111111-1111-4111-8111-111111111111',
+      fileKey:
+        'recordings/22222222-2222-4222-8222-222222222222/11111111-1111-4111-8111-111111111111.aac',
+    },
+  });
+
+  assert.equal(
+    await draftStorage.beginUploadAttemptReset('slot-durable-1', oldKey, replacementKey),
+    true,
+  );
+  let meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.uploadRestartPending.expectedOldKey, oldKey);
+  assert.equal(meta.uploadRestartPending.replacementKey, replacementKey);
+  assert.equal(meta.uploadRestartPending.previousPendingSync, false);
+  assert.equal(meta.serverDraftId, 'server-old', 'phase 1 preserves the old server anchor');
+  assert.ok(meta.pendingConfirm, 'phase 1 preserves confirmation proof');
+  assert.equal(meta.pendingSync, false, 'phase 1 blocks background creation');
+
+  assert.equal(
+    await draftStorage.commitUploadAttemptReset('slot-durable-1', oldKey, replacementKey),
+    true,
+  );
+  meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.uploadKeyOverride, replacementKey);
+  assert.equal(meta.supersededUploadKey, oldKey);
+  assert.equal(meta.uploadRestartPending, null);
+  assert.equal(meta.serverDraftId, null);
+  assert.equal(meta.pendingConfirm, null);
+  assert.equal(meta.pendingSync, false);
+});
+
+test('durable upload restart cancellation restores the prior background-sync state', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const oldKey = 'recording-upload-v1:durable:dr-abc123';
+  const replacementKey = 'recording-upload-v2:restart:replacement-two';
+  await draftStorage.saveDraft(durableSlot());
+
+  assert.equal(
+    await draftStorage.beginUploadAttemptReset('slot-durable-1', oldKey, replacementKey),
+    true,
+  );
+  await draftStorage.cancelUploadAttemptReset('slot-durable-1', oldKey, replacementKey);
+  const meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.uploadRestartPending, null);
+  assert.equal(meta.uploadKeyOverride, null);
+  assert.equal(meta.supersededUploadKey, null);
+  assert.equal(meta.pendingSync, true);
+});
+
+test('startup reconciliation follows the native durable manifest and blocks a third identity', async () => {
+  const oldKey = 'recording-upload-v1:durable:dr-abc123';
+  const replacementKey = 'recording-upload-v2:restart:replacement-three';
+
+  {
+    const { draftStorage } = await loadDraftStorage();
+    draftStorage.setUserId('userA');
+    await draftStorage.saveDraft(durableSlot());
+    await draftStorage.beginUploadAttemptReset('slot-durable-1', oldKey, replacementKey);
+    assert.equal(
+      await draftStorage.reconcileUploadAttemptReset(
+        'slot-durable-1',
+        replacementKey,
+        oldKey,
+      ),
+      'committed',
+    );
+    const meta = await draftStorage.getDraft('slot-durable-1');
+    assert.equal(meta.uploadKeyOverride, replacementKey);
+    assert.equal(meta.supersededUploadKey, oldKey);
+  }
+
+  {
+    const { draftStorage } = await loadDraftStorage();
+    draftStorage.setUserId('userA');
+    await draftStorage.saveDraft(durableSlot());
+    await draftStorage.beginUploadAttemptReset('slot-durable-1', oldKey, replacementKey);
+    assert.equal(
+      await draftStorage.reconcileUploadAttemptReset('slot-durable-1', null, null),
+      'cancelled',
+    );
+    const meta = await draftStorage.getDraft('slot-durable-1');
+    assert.equal(meta.uploadRestartPending, null);
+    assert.equal(meta.pendingSync, true);
+  }
+
+  {
+    const { draftStorage } = await loadDraftStorage();
+    draftStorage.setUserId('userA');
+    await draftStorage.saveDraft(durableSlot());
+    await draftStorage.beginUploadAttemptReset('slot-durable-1', oldKey, replacementKey);
+    assert.equal(
+      await draftStorage.reconcileUploadAttemptReset(
+        'slot-durable-1',
+        'recording-upload-v2:restart:unexpected',
+        oldKey,
+      ),
+      'blocked',
+    );
+    const meta = await draftStorage.getDraft('slot-durable-1');
+    assert.ok(meta.uploadRestartPending, 'an ambiguous identity remains fail-closed');
+  }
+});
+
+test('background sync skips replacement identities reserved for explicit recovery', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft({
+    ...durableSlot(),
+    uploadKeyOverride: 'recording-upload-v2:restart:replacement-four',
+    supersededUploadKey: 'recording-upload-v1:durable:dr-abc123',
+  });
+  let creates = 0;
+  const result = await draftStorage.syncPending('userA', async () => {
+    creates++;
+    return { id: 'must-not-create' };
+  });
+  assert.equal(result.attempted, 0);
+  assert.equal(result.succeeded, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(creates, 0);
+});
+
 // Source guards for the native audit fixes (A/B/C/E) — cannot compile natively.
 test('native audit fixes present in source', async () => {
   const iosEngine = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
@@ -205,4 +337,13 @@ test('native audit fixes present in source', async () => {
 
   const andManifest = await read('modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableManifest.kt');
   assert.match(andManifest, /manifest-\$\{java\.util\.UUID\.randomUUID\(\)\}\.json\.tmp/); // Fix E: unique temp
+
+  const reducer = await read('src/hooks/useMultiPatientSession.ts');
+  assert.match(reducer, /uploadKeyOverride: normalizeUploadKeyOverride\(slot\.uploadKeyOverride\)/);
+  assert.match(reducer, /supersededUploadKey: normalizeSupersededUploadKey\(slot\.supersededUploadKey\)/);
+
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(record, /error\.recoveryOutcome === 'restart_available'/);
+  assert.match(record, /beginUploadAttemptReset[\s\S]*resetUploadAttempt[\s\S]*commitUploadAttemptReset/);
+  assert.match(record, /persistedDraft\?\.supersededUploadKey \|\| persistedDraft\?\.uploadRestartPending/);
 });

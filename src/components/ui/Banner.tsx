@@ -10,13 +10,19 @@ import * as Haptics from 'expo-haptics';
 import { X, type LucideIcon } from 'lucide-react-native';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors } from '../../hooks/useThemeColors';
+import { HIT_SLOP } from './styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-export type BannerVariant = 'info' | 'warning' | 'error';
+/**
+ * Canonical variant vocabulary is `info | success | warning | danger`
+ * (matching Badge/StatusBadge — WP31 convergence). `error` is a legacy
+ * alias for `danger` kept so existing call sites need no migration.
+ */
+export type BannerVariant = 'info' | 'success' | 'warning' | 'danger' | 'error';
 
 const VARIANT_CLASSES: Record<
-  BannerVariant,
+  Exclude<BannerVariant, 'error'>,
   { container: string; text: string; ctaText: string }
 > = {
   info: {
@@ -24,17 +30,26 @@ const VARIANT_CLASSES: Record<
     text: 'text-status-info',
     ctaText: 'text-status-info',
   },
+  success: {
+    container: 'bg-status-success border-status-success',
+    text: 'text-status-success',
+    ctaText: 'text-status-success',
+  },
   warning: {
     container: 'bg-status-warning border-status-warning',
     text: 'text-status-warning',
     ctaText: 'text-status-warning',
   },
-  error: {
+  danger: {
     container: 'bg-status-danger border-status-danger',
     text: 'text-status-danger',
     ctaText: 'text-status-danger',
   },
 };
+
+function resolveVariant(variant: BannerVariant): Exclude<BannerVariant, 'error'> {
+  return variant === 'error' ? 'danger' : variant;
+}
 
 interface BannerProps {
   variant?: BannerVariant;
@@ -67,13 +82,16 @@ export function Banner({
   const ctaAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: ctaScale.value }] }));
   if (dismissed) return null;
 
-  const v = VARIANT_CLASSES[variant];
+  const resolved = resolveVariant(variant);
+  const v = VARIANT_CLASSES[resolved];
   const iconColor =
-    variant === 'info'
+    resolved === 'info'
       ? colors.statusInfoFg
-      : variant === 'warning'
-        ? colors.statusWarningFg
-        : colors.statusDangerFg;
+      : resolved === 'success'
+        ? colors.statusSuccessFg
+        : resolved === 'warning'
+          ? colors.statusWarningFg
+          : colors.statusDangerFg;
 
   return (
     <Animated.View
@@ -104,11 +122,19 @@ export function Banner({
           }}
           accessibilityRole="button"
           accessibilityLabel={cta.label}
-          hitSlop={8}
-          className="ml-2"
+          hitSlop={HIT_SLOP}
+          className="ml-2 justify-center min-h-[44px]"
           style={ctaAnimStyle}
         >
-          <Text className={`text-body-sm font-semibold ${v.ctaText}`}>{cta.label}</Text>
+          {/* Trailing space + flexShrink:0 — Android under-measures single-word
+              Text ("Manage", "Retry") in flex-rows and clips the last glyph;
+              fixing it here covers every Banner call site. Do NOT remove. */}
+          <Text
+            className={`text-body-sm font-semibold ${v.ctaText}`}
+            style={{ flexShrink: 0, paddingRight: 2 }}
+          >
+            {`${cta.label} `}
+          </Text>
         </AnimatedPressable>
       ) : null}
       {dismissible ? (
@@ -116,8 +142,8 @@ export function Banner({
           onPress={() => setDismissed(true)}
           accessibilityRole="button"
           accessibilityLabel="Dismiss"
-          hitSlop={8}
-          className="ml-2"
+          hitSlop={HIT_SLOP}
+          className="ml-2 justify-center min-h-[44px]"
         >
           <X color={iconColor} size={iconSm} />
         </Pressable>

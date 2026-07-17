@@ -30,6 +30,9 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
   const job = measurePhase('pending_draft_sync', { user_scoped: true }, async () => {
     try {
       const result = await draftStorage.syncPending(userId, async (draft) => {
+        if (draft.supersededUploadKey || draft.uploadRestartPending) {
+          throw new Error('controlled_upload_restart_requires_explicit_submit');
+        }
         // A durable draft MUST create its server row with a deterministic
         // idempotency key derived from its on-disk durable recordingId. A later
         // Submit reuses the same `durable-${recordingId}` key, so the server

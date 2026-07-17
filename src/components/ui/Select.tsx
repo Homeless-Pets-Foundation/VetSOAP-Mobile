@@ -29,6 +29,9 @@ interface SelectProps<Value extends string = string> {
   fieldClassName?: string;
 }
 
+// Growth path: option lists are small today (species, models, languages). If
+// one outgrows a sheet, add a `searchable` prop with a filter TextInput at the
+// top of the sheet rather than swapping to platform-divergent pickers.
 export function Select<Value extends string = string>({
   options,
   value,

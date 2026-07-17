@@ -33,6 +33,8 @@ interface WaveformEditorProps {
   // Fires whenever a trim handle is activated (grabbed via pan or snapped via tap). Drives
   // the nudge-button target in the parent.
   onHandleActivate?: (which: 'start' | 'end') => void;
+  // Screen-reader nudge forwarded to TrimOverlay's adjustable handles.
+  onNudge?: (which: 'start' | 'end', deltaSec: number) => void;
   isLoading?: boolean;
 }
 
@@ -58,6 +60,7 @@ export function WaveformEditor({
   onScrubStart,
   onScrubEnd,
   onHandleActivate,
+  onNudge,
   isLoading = false,
 }: WaveformEditorProps) {
   const colors = useThemeColors();
@@ -304,6 +307,7 @@ export function WaveformEditor({
               onScrubStart={onScrubStart}
               onScrubEnd={onScrubEnd}
               onHandleActivate={onHandleActivate}
+              onNudge={onNudge}
               zoomSV={zoomSV}
               panSV={panSV}
               onZoomToggle={toggleZoomAt}

@@ -4408,6 +4408,14 @@ function RecordingSession() {
           accessibilityRole="adjustable"
           accessibilityLabel={`Patient ${session.activeIndex + 1} of ${session.slots.length}`}
           accessibilityLiveRegion="polite"
+          // adjustable without actions is a lie to screen readers — wire the
+          // swipe gestures to actually change the active patient.
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(event) => {
+            const delta = event.nativeEvent.actionName === 'increment' ? 1 : -1;
+            const next = Math.max(0, Math.min(session.activeIndex + delta, session.slots.length - 1));
+            if (next !== session.activeIndex) selectPatientIndex(next);
+          }}
         >
           {paginationText ? (
             <Text className="text-caption text-content-tertiary">{paginationText}</Text>

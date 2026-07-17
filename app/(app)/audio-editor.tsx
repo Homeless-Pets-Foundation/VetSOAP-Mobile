@@ -19,6 +19,7 @@ import { Button } from '../../src/components/ui/Button';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import type { AudioSegment } from '../../src/types/multiPatient';
 import { formatClockDuration } from '../../src/lib/formatClock';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // H:MM:SS at >=60min via the shared clock util (2h captures read "120:00" before).
 const formatTime = formatClockDuration;
@@ -235,7 +236,7 @@ function SegmentTab({
               disabled={disabled}
               accessibilityRole="button"
               accessibilityLabel={`Delete segment ${label}`}
-              hitSlop={6}
+              hitSlop={12}
               className={`w-6 h-6 rounded-full items-center justify-center ${
                 isSelected ? 'bg-content-on-brand/20' : 'bg-border-strong'
               }`}
@@ -389,42 +390,58 @@ export default function AudioEditorScreen() {
     }, [])
   );
 
-  // Auto-concatenate multiple segments into one when a new editing session starts
+  // Offer to merge multiple segments when a new editing session starts.
+  // Merge is EXPLICIT (2026-07 audit): auto-concatenating destroyed the
+  // segment structure and set hasChanges before the user touched anything —
+  // opening the editor and tapping Done silently committed a merge, and Back
+  // threatened "Discard Changes?" with no user edit. Declining keeps
+  // per-segment editing.
   useEffect(() => {
     if (initialSegmentCountRef.current <= 1) return;
-
-    setIsConcatenating(true);
-    const segmentUris = segments.map((s) => s.uri);
     const segmentCount = initialSegmentCountRef.current;
-    const mergedPeakMetering = segments.reduce(
-      (max, segment) => typeof segment.peakMetering === 'number' && segment.peakMetering > max
-        ? segment.peakMetering
-        : max,
-      -160
-    );
-    (async () => {
-      try {
-        await audioTempFiles.ensureDir();
-        const outputPath = audioTempFiles.getConcatOutputPath();
-        const result = await concatenateAudio(segmentUris, outputPath);
-        setSegments([{
-          uri: result.uri,
-          duration: result.duration,
-          peakMetering: mergedPeakMetering > -160 ? mergedPeakMetering : undefined,
-        }]);
-        setSegmentLabels([1]);
-        setSelectedIndex(0);
-        setHasChanges(true);
-        Alert.alert('Segments Merged', `${segmentCount} recording segments have been combined into one.`);
-      } catch (error) {
-        if (__DEV__) console.error('[Editor] concatenation failed:', error);
-        Alert.alert('Note', 'Could not merge segments. You can edit each segment individually.');
-      } finally {
+
+    const runMerge = () => {
+      setIsConcatenating(true);
+      const segmentUris = segments.map((s) => s.uri);
+      const mergedPeakMetering = segments.reduce(
+        (max, segment) => typeof segment.peakMetering === 'number' && segment.peakMetering > max
+          ? segment.peakMetering
+          : max,
+        -160
+      );
+      (async () => {
+        try {
+          await audioTempFiles.ensureDir();
+          const outputPath = audioTempFiles.getConcatOutputPath();
+          const result = await concatenateAudio(segmentUris, outputPath);
+          setSegments([{
+            uri: result.uri,
+            duration: result.duration,
+            peakMetering: mergedPeakMetering > -160 ? mergedPeakMetering : undefined,
+          }]);
+          setSegmentLabels([1]);
+          setSelectedIndex(0);
+          // The merge IS a structural change the user asked for.
+          setHasChanges(true);
+        } catch (error) {
+          if (__DEV__) console.error('[Editor] concatenation failed:', error);
+          Alert.alert('Note', 'Could not merge segments. You can edit each segment individually.');
+        } finally {
+          setIsConcatenating(false);
+        }
+      })().catch(() => {
         setIsConcatenating(false);
-      }
-    })().catch(() => {
-      setIsConcatenating(false);
-    });
+      });
+    };
+
+    Alert.alert(
+      'Merge Segments?',
+      `This recording has ${segmentCount} segments. Merge them into one to trim across the full timeline, or edit each segment on its own.`,
+      [
+        { text: 'Edit Separately', style: 'cancel' },
+        { text: `Merge ${segmentCount} Segments`, onPress: runMerge },
+      ]
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey]);
 
@@ -669,6 +686,27 @@ export default function AudioEditorScreen() {
   // is panned or tap-snapped.
   const lastActiveHandleRef = useRef<'start' | 'end'>('end');
   const [nudgeTarget, setNudgeTarget] = useState<'start' | 'end'>('end');
+
+  // One-time zoom hint (non-secure flag; fine in AsyncStorage).
+  const [showZoomHint, setShowZoomHint] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const seen = await AsyncStorage.getItem('captivet_editor_zoom_hint_seen');
+        if (!seen && !cancelled) {
+          setShowZoomHint(true);
+          await AsyncStorage.setItem('captivet_editor_zoom_hint_seen', '1');
+          setTimeout(() => setShowZoomHint(false), 5000);
+        }
+      } catch {
+        // hint is best-effort
+      }
+    })().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const handleHandleActivate = useCallback((which: 'start' | 'end') => {
     lastActiveHandleRef.current = which;
     setNudgeTarget(which);
@@ -687,9 +725,8 @@ export default function AudioEditorScreen() {
     return { coarse: 30, fine: 2 };
   }, [selectedSegment?.duration]);
 
-  const nudgeHandle = useCallback(
-    (deltaSec: number) => {
-      const which = lastActiveHandleRef.current;
+  const nudgeHandleFor = useCallback(
+    (which: 'start' | 'end', deltaSec: number) => {
       const dur = selectedSegment?.duration ?? 0;
       if (dur <= 0) return;
       Haptics.selectionAsync().catch(() => {});
@@ -702,6 +739,21 @@ export default function AudioEditorScreen() {
       }
     },
     [selectedSegment?.duration, trimStart, trimEnd]
+  );
+
+  const nudgeHandle = useCallback(
+    (deltaSec: number) => nudgeHandleFor(lastActiveHandleRef.current, deltaSec),
+    [nudgeHandleFor]
+  );
+
+  // Screen-reader increment/decrement on the trim handles themselves.
+  const handleA11yNudge = useCallback(
+    (which: 'start' | 'end', deltaSec: number) => {
+      lastActiveHandleRef.current = which;
+      setNudgeTarget(which);
+      nudgeHandleFor(which, deltaSec);
+    },
+    [nudgeHandleFor]
   );
 
   // Long-press auto-repeat. setInterval cleared on release.
@@ -1385,15 +1437,30 @@ export default function AudioEditorScreen() {
     return (
       <SafeAreaView className="flex-1 bg-surface items-center justify-center">
         <ActivityIndicator size="large" color={colors.brand500} />
-        <Text className="text-body text-content-tertiary mt-3">Merging segments...</Text>
+        <Text className="text-body text-content-tertiary mt-3">Merging segments…</Text>
+        <Text className="text-caption text-content-tertiary mt-1">This can take a minute on older tablets.</Text>
       </SafeAreaView>
     );
   }
 
   if (!input || segments.length === 0) {
     return (
-      <SafeAreaView className="flex-1 bg-surface items-center justify-center">
-        <Text className="text-body text-content-tertiary">No recording to edit.</Text>
+      <SafeAreaView className="flex-1 bg-surface">
+        <View className="flex-row items-center px-5 pt-3 pb-2">
+          <Pressable
+            onPress={() => router.back()}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+            hitSlop={8}
+            className="p-2 -ml-2"
+          >
+            <ArrowLeft color={colors.contentBody} size={24} />
+          </Pressable>
+          <Text className="text-body-lg font-bold text-content-primary ml-2">Edit Recording</Text>
+        </View>
+        <View className="flex-1 items-center justify-center">
+          <Text className="text-body text-content-tertiary">No recording to edit.</Text>
+        </View>
       </SafeAreaView>
     );
   }
@@ -1501,7 +1568,7 @@ export default function AudioEditorScreen() {
                       accessibilityRole="button"
                       accessibilityLabel={`Merge segment ${segmentLabels[i] ?? i + 1} with segment ${segmentLabels[i + 1] ?? i + 2}`}
                       accessibilityHint="Combines two adjacent segments into one"
-                      hitSlop={6}
+                      hitSlop={12}
                       className="w-7 h-7 items-center justify-center"
                     >
                       <ArrowLeftRight size={16} color={colors.brand500} strokeWidth={2.5} />
@@ -1548,8 +1615,20 @@ export default function AudioEditorScreen() {
           onScrubStart={handleScrubStart}
           onScrubEnd={handleScrubEnd}
           onHandleActivate={handleHandleActivate}
+          onNudge={handleA11yNudge}
           isLoading={isPeaksLoading}
         />
+        {showZoomHint && (
+          <View
+            className="absolute top-2 self-center bg-toast-bg rounded-pill px-3 py-1.5"
+            pointerEvents="none"
+            accessibilityLiveRegion="polite"
+          >
+            <Text className="text-caption text-toast-fg font-medium">
+              Pinch or double-tap to zoom
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Nudge row — frame-accurate adjustment of the last-touched trim handle. Four buttons
@@ -1579,7 +1658,7 @@ export default function AudioEditorScreen() {
               disabled={isTrimming}
               accessibilityRole="button"
               accessibilityLabel={`Nudge ${nudgeTarget} ${label}`}
-              hitSlop={6}
+              hitSlop={12}
               className="px-3 py-2 rounded-lg bg-surface-sunken"
             >
               <Text className="text-body-sm font-semibold text-content-body text-center" style={{ fontVariant: ['tabular-nums'] }}>
@@ -1606,7 +1685,7 @@ export default function AudioEditorScreen() {
               disabled={isTrimming}
               accessibilityRole="button"
               accessibilityLabel={isPlayingAll ? 'Stop playing all segments' : 'Play all segments end to end'}
-              hitSlop={6}
+              hitSlop={12}
               className={`flex-row items-center gap-2 px-4 py-2 rounded-full ${
                 isPlayingAll ? 'bg-brand-600' : 'bg-surface-sunken'
               }`}

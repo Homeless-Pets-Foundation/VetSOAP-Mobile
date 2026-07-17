@@ -50,7 +50,13 @@ interface TrimOverlayProps {
   // Double-tap zoom — receives the tapped time in seconds (within the current visible
   // window). Placed inside TrimOverlay's Exclusive group so it beats single-tap handle-snap.
   onZoomToggle?: (tapSec: number) => void;
+  // Screen-reader nudge: the handles declare accessibilityRole="adjustable", so
+  // increment/decrement swipes MUST do something (they were silently ignored).
+  onNudge?: (which: 'start' | 'end', deltaSec: number) => void;
 }
+
+/** Seconds moved per accessibility increment/decrement swipe. */
+const A11Y_NUDGE_STEP_SEC = 1;
 
 const HANDLE_WIDTH = 14;
 const MIN_TRIM_GAP_SEC = 1;
@@ -76,6 +82,7 @@ export function TrimOverlay({
   zoomSV,
   panSV,
   onZoomToggle,
+  onNudge,
 }: TrimOverlayProps) {
   const colors = useThemeColors();
   // Which handle is being dragged: 0 = none, 1 = start, 2 = end, 3 = scrub playhead
@@ -426,7 +433,12 @@ export function TrimOverlay({
           ]}
           accessibilityRole="adjustable"
           accessibilityLabel="Start trim handle"
-          accessibilityHint="Drag or tap to adjust the start of the trim region"
+          accessibilityHint="Swipe up or down to adjust the start of the trim region"
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(event) => {
+            const delta = event.nativeEvent.actionName === 'increment' ? A11Y_NUDGE_STEP_SEC : -A11Y_NUDGE_STEP_SEC;
+            onNudge?.('start', delta);
+          }}
         >
           <Animated.View style={styles.grip}>
             <Animated.View style={[styles.gripLine, { backgroundColor: colors.contentOnBrand }]} />
@@ -444,7 +456,12 @@ export function TrimOverlay({
           ]}
           accessibilityRole="adjustable"
           accessibilityLabel="End trim handle"
-          accessibilityHint="Drag or tap to adjust the end of the trim region"
+          accessibilityHint="Swipe up or down to adjust the end of the trim region"
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(event) => {
+            const delta = event.nativeEvent.actionName === 'increment' ? A11Y_NUDGE_STEP_SEC : -A11Y_NUDGE_STEP_SEC;
+            onNudge?.('end', delta);
+          }}
         >
           <Animated.View style={styles.grip}>
             <Animated.View style={[styles.gripLine, { backgroundColor: colors.contentOnBrand }]} />
@@ -531,7 +548,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: BADGE_OFFSET_Y,
     left: 0,
-    width: BADGE_WIDTH,
+    minWidth: BADGE_WIDTH,
     paddingVertical: 3,
     paddingHorizontal: 6,
     borderRadius: 4,

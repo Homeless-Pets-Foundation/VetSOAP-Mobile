@@ -664,20 +664,28 @@ function RecordingSession() {
     }
   }, [deleteLocalSlotDraft]);
 
+  // Synchronous mirror for guards: while a Submit All batch runs, the whole
+  // session is frozen (even with the overlay hidden via the escape hatch), so
+  // no new slot/recording — and no metadata edit — can be created and then
+  // silently discarded by the post-batch resetSession() (Codex P1, PR #143).
+  // Declared here (before handleUpdateForm) to avoid a TDZ reference; its
+  // value is refreshed each render right after the isSubmittingAll state below.
+  const isSubmittingAllRef = useRef(false);
+
   /** Metadata edits retain the stable upload intent and any complete R2 hint. */
   const handleUpdateForm = useCallback(
     (slotId: string, field: keyof CreateRecording, value: string | boolean | undefined) => {
+      // Frozen during Submit All: the upload loop holds a pre-edit slot
+      // snapshot (edits wouldn't reach the server) and the post-batch reset
+      // would discard them anyway (Codex P1, PR #143).
+      if (isSubmittingAllRef.current) return;
       updateForm(slotId, field, value);
     },
     [updateForm]
   );
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
-  // Synchronous mirror for guards: while a Submit All batch runs, the whole
-  // session is frozen (even with the overlay hidden via the escape hatch), so
-  // no new slot/recording can be created and then silently discarded by the
-  // post-batch resetSession() (Codex P1, PR #143).
-  const isSubmittingAllRef = useRef(false);
+  // Refresh the guard mirror declared above handleUpdateForm each render.
   isSubmittingAllRef.current = isSubmittingAll;
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
   // Slot ids in the current submit batch — UploadOverlay scopes its

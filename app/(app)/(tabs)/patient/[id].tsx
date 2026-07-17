@@ -247,6 +247,10 @@ export default function PatientDetailScreen() {
 
   const startEdit = useCallback(() => {
     if (!patient) return;
+    // Clear any DOB validation error from a prior aborted edit — reopening
+    // reloads the valid saved value, so a stale error would flag it until the
+    // field is touched again (Codex P2, PR #143).
+    setDobError(null);
     setProfileDraft({
       name: patient.name,
       species: patient.species,
@@ -572,7 +576,7 @@ export default function PatientDetailScreen() {
                   <View className="flex-row justify-between items-center mb-4">
                     <Text className="text-body-sm font-semibold text-content-body">Edit Profile</Text>
                     <Pressable
-                      onPress={() => setEditMode(false)}
+                      onPress={() => { setEditMode(false); setDobError(null); }}
                       hitSlop={8}
                       accessibilityRole="button"
                       accessibilityLabel="Cancel editing"

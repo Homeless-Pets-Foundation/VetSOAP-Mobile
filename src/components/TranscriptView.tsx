@@ -43,98 +43,82 @@ export interface TranscriptChunk {
 export function chunkTranscript(text: string): TranscriptChunk[] {
   if (text.length <= CHUNK_THRESHOLD_CHARS) return [{ text, startsSourceParagraph: true }];
 
-  const paragraphs = text.split(/\n{2,}/);
-  if (paragraphs.length > 1) {
-    // Merge tiny paragraphs so we don't render thousands of Text nodes.
-    // Oversized paragraphs are split FIRST (sentence, then hard boundaries):
-    // a short heading followed by one 10,000-char speech-to-text paragraph
-    // would otherwise ride through this branch as a single giant Text — the
-    // exact Android layout/selection ANR this chunking exists to prevent
-    // (Codex P2, PR #143). '\n\n' is used ONLY at boundaries that existed in
-    // the source; pieces of a split paragraph rejoin with a space so the
-    // transcript isn't inflated with fake blank lines (Codex P2 round 5).
-    const chunks: TranscriptChunk[] = [];
-    let current = '';
-    let currentStartsParagraph = true;
-    for (const para of paragraphs) {
-      let firstPieceOfPara = true;
-      for (const piece of splitOversizedRun(para)) {
-        const sep = firstPieceOfPara ? '\n\n' : ' ';
-        firstPieceOfPara = false;
-        if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
-          chunks.push({ text: current, startsSourceParagraph: currentStartsParagraph });
-          current = piece;
-          currentStartsParagraph = sep === '\n\n';
-        } else {
-          current = current ? `${current}${sep}${piece}` : piece;
-        }
-      }
-    }
-    if (current) chunks.push({ text: current, startsSourceParagraph: currentStartsParagraph });
-    return chunks;
-  }
-
-  // No paragraph breaks — accumulate sentences, hard-splitting any single
-  // "sentence" that itself exceeds the target (degraded speech-to-text can
-  // produce 6,000+ chars with no punctuation at all, which would otherwise
-  // come back as ONE chunk and reintroduce the Android single-TextView ANR).
-  return accumulateWithSpaces(text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized)).map(
-    (t, i) => ({ text: t, startsSourceParagraph: i === 0 })
-  );
-}
-
-/**
- * Split an oversized run at sentence boundaries first (hard boundaries last),
- * re-accumulated into ~target-size pieces so callers get few, bounded pieces
- * rather than one element per sentence.
- */
-function splitOversizedRun(run: string): string[] {
-  if (run.length <= FALLBACK_CHUNK_CHARS) return [run];
-  return accumulateWithSpaces(run.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized));
-}
-
-/** Merge pieces into ~FALLBACK_CHUNK_CHARS chunks, space-joined. */
-function accumulateWithSpaces(pieces: string[]): string[] {
-  const out: string[] = [];
+  // Whitespace-preserving chunker (Codex P2, PR #143): the transcript is
+  // tokenized into text lines and the newline runs that separate them, so all
+  // INNER whitespace (single-newline speaker turns, section labels, repeated
+  // spaces) is reproduced verbatim inside each chunk. A chunk boundary is only
+  // ever placed where a newline run already exists — that run is consumed and
+  // the sibling <Text> blocks' own line break stands in for it, so chunking
+  // changes Text-node size without changing the displayed transcript. A blank
+  // line (>=2 newlines) at a consumed boundary marks the next chunk a source
+  // paragraph start (renders the mt-3 gap). Only a single line longer than the
+  // target is hard-split (unavoidable), and even then by SLICING so no
+  // characters are lost or collapsed.
+  const tokens = text.split(/(\n+)/); // [line, sep, line, sep, ...]
+  const chunks: TranscriptChunk[] = [];
   let current = '';
-  for (const piece of pieces) {
-    if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
-      out.push(current);
-      current = piece;
-    } else {
-      current = current ? `${current} ${piece}` : piece;
-    }
-  }
-  if (current) out.push(current);
-  return out;
-}
+  let startsParagraph = true;
 
-/** Split a punctuation-less run at whitespace (hard char boundary as last resort). */
-function hardSplitOversized(piece: string): string[] {
-  if (piece.length <= FALLBACK_CHUNK_CHARS) return [piece];
-  const words = piece.split(/\s+/);
-  const out: string[] = [];
-  let current = '';
-  for (const word of words) {
-    // A single unbroken token longer than the target gets sliced outright.
-    if (word.length > FALLBACK_CHUNK_CHARS) {
-      if (current) {
-        out.push(current);
-        current = '';
-      }
-      for (let i = 0; i < word.length; i += FALLBACK_CHUNK_CHARS) {
-        out.push(word.slice(i, i + FALLBACK_CHUNK_CHARS));
+  const flush = () => {
+    if (current.length > 0) {
+      chunks.push({ text: current, startsSourceParagraph: startsParagraph });
+      current = '';
+    }
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token) continue;
+
+    if (i % 2 === 1) {
+      // Newline run separating two lines. Keep it inline while the chunk still
+      // fits (verbatim); otherwise consume it as the boundary.
+      if (current.length + token.length <= FALLBACK_CHUNK_CHARS) {
+        current += token;
+      } else {
+        flush();
+        startsParagraph = token.length >= 2;
       }
       continue;
     }
-    if (current.length + word.length + 1 > FALLBACK_CHUNK_CHARS && current) {
-      out.push(current);
-      current = word;
-    } else {
-      current = current ? `${current} ${word}` : word;
+
+    // A text line. Slice-split only if it alone exceeds the target.
+    const pieces = token.length > FALLBACK_CHUNK_CHARS ? hardSplitOversized(token) : [token];
+    for (const piece of pieces) {
+      if (current.length > 0 && current.length + piece.length > FALLBACK_CHUNK_CHARS) {
+        flush();
+        // A size-forced split mid-line is not a source paragraph boundary.
+        startsParagraph = false;
+      }
+      current += piece;
     }
   }
-  if (current) out.push(current);
+  flush();
+  return chunks;
+}
+
+/**
+ * Slice an oversized line (no newlines of its own) into <=target pieces,
+ * cutting AFTER a space so no character is dropped and repeated whitespace is
+ * preserved within each piece (Codex P2, PR #143). A single unbroken token
+ * longer than the target is cut at the hard char boundary as a last resort.
+ */
+function hardSplitOversized(line: string): string[] {
+  if (line.length <= FALLBACK_CHUNK_CHARS) return [line];
+  const out: string[] = [];
+  let pos = 0;
+  while (pos < line.length) {
+    if (line.length - pos <= FALLBACK_CHUNK_CHARS) {
+      out.push(line.slice(pos));
+      break;
+    }
+    const window = line.slice(pos, pos + FALLBACK_CHUNK_CHARS);
+    const lastSpace = window.lastIndexOf(' ');
+    // Cut just after the space so it stays with the preceding piece.
+    const cut = lastSpace > 0 ? lastSpace + 1 : window.length;
+    out.push(line.slice(pos, pos + cut));
+    pos += cut;
+  }
   return out;
 }
 

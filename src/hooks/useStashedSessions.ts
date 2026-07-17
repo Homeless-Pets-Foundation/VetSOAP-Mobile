@@ -13,6 +13,7 @@ import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot, SessionState } from '../types/multiPatient';
 import { normalizeUploadIntentId } from '../lib/uploadIntent';
 import { clonePendingConfirm } from '../lib/pendingConfirm';
+import { isPimsPatientIdExplicitlyCleared } from '../lib/pimsPatientIdIntent';
 
 function generateId(): string {
   // expo-crypto primary; global crypto fallback. No Math.random fallback:
@@ -318,7 +319,7 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
 
       const convertToPatientSlots = (
-        stashedSlots: { id: string; uploadIntentId?: string; formData: PatientSlot['formData']; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; pendingConfirm?: PatientSlot['pendingConfirm']; durable?: PatientSlot['durable'] }[]
+        stashedSlots: { id: string; uploadIntentId?: string; formData: PatientSlot['formData']; pimsPatientIdExplicitlyCleared?: boolean; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; pendingConfirm?: PatientSlot['pendingConfirm']; durable?: PatientSlot['durable'] }[]
       ): PatientSlot[] => {
         return stashedSlots.map((slot) => {
           // Rule 20 read site (3 of 3): restore the durable pointer so Resume of a
@@ -330,6 +331,10 @@ export function useStashedSessions(userId: string | null) {
             id: slot.id,
             uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
             formData: { ...slot.formData },
+            pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+              slot.formData.pimsPatientId,
+              slot.pimsPatientIdExplicitlyCleared,
+            ),
             audioState: hasAudio ? ('stopped' as const) : ('idle' as const),
             segments: slot.segments.map((s) => ({ uri: s.uri, duration: s.duration, peakMetering: s.peakMetering })),
             durable,

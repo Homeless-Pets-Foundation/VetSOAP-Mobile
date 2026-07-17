@@ -17,6 +17,7 @@ import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '
 import { isValidDurableId } from './durableAudio/paths';
 import { normalizeUploadIntentId } from './uploadIntent';
 import { clonePendingConfirm } from './pendingConfirm';
+import { isPimsPatientIdExplicitlyCleared } from './pimsPatientIdIntent';
 
 const CHUNK_SIZE = 1900;
 const MAX_RECOVERY_ITEMS = 50;
@@ -60,6 +61,7 @@ export interface RecoverySlot {
   id: string;
   uploadIntentId?: string;
   formData: CreateRecording | null;
+  pimsPatientIdExplicitlyCleared?: boolean;
   segments: RecoverySegment[];
   audioDuration: number;
   sourceDraftSlotId?: string | null;
@@ -297,6 +299,7 @@ async function buildItemFromSlots(
       id: string;
       uploadIntentId?: string;
       formData: CreateRecording | null;
+      pimsPatientIdExplicitlyCleared?: boolean;
       segments: { uri: string; duration?: number; peakMetering?: number }[];
       audioDuration?: number;
       sourceDraftSlotId?: string | null;
@@ -366,6 +369,10 @@ async function buildItemFromSlots(
       id: slot.id,
       uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
       formData: slot.formData ? { ...slot.formData } : null,
+      pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+        slot.formData?.pimsPatientId,
+        slot.pimsPatientIdExplicitlyCleared,
+      ),
       segments: recoveredSegments,
       durable: durableForSlot,
       pendingConfirm: pendingConfirmForSlot,
@@ -538,6 +545,7 @@ function draftToBuildSlot(draft: DraftMetadata) {
     id: draft.slotId,
     uploadIntentId: draft.uploadIntentId,
     formData: draft.formData,
+    pimsPatientIdExplicitlyCleared: draft.pimsPatientIdExplicitlyCleared,
     segments: draft.segments,
     audioDuration: draft.audioDuration,
     sourceDraftSlotId: draft.slotId,
@@ -552,6 +560,7 @@ function stashedSlotToBuildSlot(slot: StashedSlot) {
     id: slot.id,
     uploadIntentId: slot.uploadIntentId,
     formData: slot.formData,
+    pimsPatientIdExplicitlyCleared: slot.pimsPatientIdExplicitlyCleared,
     segments: slot.segments,
     audioDuration: slot.audioDuration,
     sourceDraftSlotId: slot.draftSlotId ?? null,
@@ -651,6 +660,10 @@ function makeRestoredSlot(
     id: slotId,
     uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
     formData,
+    pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+      formData.pimsPatientId,
+      slot.pimsPatientIdExplicitlyCleared,
+    ),
     audioState: 'stopped',
     segments,
     durable,

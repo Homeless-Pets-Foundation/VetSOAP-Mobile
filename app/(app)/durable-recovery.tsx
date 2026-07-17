@@ -65,6 +65,7 @@ function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
     id: slotId,
     uploadIntentId: normalizeUploadIntentId(undefined, slotId),
     formData: { ...BLANK_FORM },
+    pimsPatientIdExplicitlyCleared: false,
     audioState: 'stopped',
     segments: [],
     durable: {

@@ -10,6 +10,7 @@ import type { PatientSlot } from '../types/multiPatient';
 import type { StashedSlot, StashedSession } from '../types/stash';
 import { clonePendingConfirm } from './pendingConfirm';
 import { normalizeUploadIntentId } from './uploadIntent';
+import { isPimsPatientIdExplicitlyCleared } from './pimsPatientIdIntent';
 
 const BASE_STASH_DIR = `${Paths.document.uri}stashed-audio/`;
 
@@ -115,6 +116,10 @@ export const stashAudioManager = {
           id: slot.id,
           uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
           formData: { ...slot.formData },
+          pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+            slot.formData.pimsPatientId,
+            slot.pimsPatientIdExplicitlyCleared,
+          ),
           segments: stashedSegments,
           audioDuration: stashedDurable
             ? stashedDurable.durationMs / 1000

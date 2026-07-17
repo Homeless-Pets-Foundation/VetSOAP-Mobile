@@ -96,6 +96,7 @@ import { Button } from '../../../src/components/ui/Button';
 import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
+import { isPimsPatientIdExplicitlyCleared } from '../../../src/lib/pimsPatientIdIntent';
 
 /**
  * "Truly unsaved" = work that would actually be lost if the session were
@@ -2284,6 +2285,10 @@ function RecordingSession() {
                 idempotencyKey: durable
                   ? durableUploadIdempotencyKey(durable.recordingId)
                   : slotUploadIdempotencyKey(normalizeUploadIntentId(slot.uploadIntentId, slot.id)),
+                pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+                  slot.formData.pimsPatientId,
+                  slot.pimsPatientIdExplicitlyCleared,
+                ),
                 onClearPendingConfirm,
                 mode: durable ? 'durable' : 'standard',
                 slotIndex,
@@ -2531,6 +2536,10 @@ function RecordingSession() {
                 resume: slot.pendingConfirm ?? undefined,
                 ...(durableUseExisting ? { existingRecordingId: durableUseExisting } : {}),
                 metadataDirty: !!slot.draftMetadataDirty,
+                pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+                  slot.formData.pimsPatientId,
+                  slot.pimsPatientIdExplicitlyCleared,
+                ),
                 mode: 'durable',
                 audioDurationSeconds: durableDurationSeconds,
                 slotIndex,
@@ -2814,6 +2823,10 @@ function RecordingSession() {
               ),
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
               metadataDirty: !!slot.draftMetadataDirty,
+              pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+                slot.formData.pimsPatientId,
+                slot.pimsPatientIdExplicitlyCleared,
+              ),
               mode: 'standard',
               audioDurationSeconds: durationSeconds,
               slotIndex,
@@ -2836,6 +2849,10 @@ function RecordingSession() {
               ),
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
               metadataDirty: !!slot.draftMetadataDirty,
+              pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+                slot.formData.pimsPatientId,
+                slot.pimsPatientIdExplicitlyCleared,
+              ),
               mode: 'standard',
               slotIndex,
             }
@@ -3870,6 +3887,10 @@ function RecordingSession() {
           id: draft.slotId,
           uploadIntentId: normalizeUploadIntentId(draft.uploadIntentId, draft.slotId),
           formData: draft.formData,
+          pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+            draft.formData.pimsPatientId,
+            draft.pimsPatientIdExplicitlyCleared,
+          ),
           audioState: 'stopped',
           segments: draft.segments,
           // Durable drafts reference audio.aac (empty segments); restore the pointer.

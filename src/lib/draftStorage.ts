@@ -13,6 +13,7 @@ import { isValidDurableId } from './durableAudio/paths';
 import { durableTombstone } from './durableAudio/tombstone';
 import { clonePendingConfirm } from './pendingConfirm';
 import { normalizeUploadIntentId } from './uploadIntent';
+import { isPimsPatientIdExplicitlyCleared } from './pimsPatientIdIntent';
 
 const STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
@@ -45,6 +46,7 @@ export interface DraftMetadata {
   uploadIntentId: string;
   savedAt: string;
   formData: CreateRecording;
+  pimsPatientIdExplicitlyCleared: boolean;
   segments: DraftSegmentMetadata[];
   audioDuration: number;
   serverDraftId: string | null;
@@ -452,6 +454,10 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
     uploadIntentId: normalizeUploadIntentId(parsed.uploadIntentId, parsed.slotId),
     savedAt: parsed.savedAt,
     formData: parsed.formData as CreateRecording,
+    pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+      (parsed.formData as CreateRecording).pimsPatientId,
+      parsed.pimsPatientIdExplicitlyCleared,
+    ),
     segments,
     audioDuration:
       typeof parsed.audioDuration === 'number'
@@ -598,6 +604,10 @@ export const draftStorage = {
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: durableDraftMetadataDirty,
         }),
+        pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+          slot.formData.pimsPatientId,
+          slot.pimsPatientIdExplicitlyCleared,
+        ),
         segments: [],
         durable: slot.durable,
         audioDuration: slot.durable.durationMs / 1000,
@@ -776,6 +786,10 @@ export const draftStorage = {
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: draftMetadataDirty,
         }),
+        pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+          slot.formData.pimsPatientId,
+          slot.pimsPatientIdExplicitlyCleared,
+        ),
         segments: draftSegments,
         audioDuration: draftSegments.length > 0
           ? draftSegments.reduce((sum, s) => sum + s.duration, 0)

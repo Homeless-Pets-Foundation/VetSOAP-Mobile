@@ -68,6 +68,7 @@ function durableSlot() {
   return {
     id: 'slot-durable-1',
     formData: { patientName: 'redacted', clientName: 'redacted', species: 'canine' },
+    pimsPatientIdExplicitlyCleared: false,
     audioState: 'stopped',
     segments: [],
     durable: DURABLE,
@@ -118,8 +119,10 @@ test('server draft metadata dirty bit survives local storage round-trip', async 
     ...durableSlot(),
     serverDraftId: 'srv-1',
     draftMetadataDirty: true,
+    pimsPatientIdExplicitlyCleared: true,
     formData: {
       ...durableSlot().formData,
+      pimsPatientId: null,
       appointmentType: undefined,
       templateId: undefined,
     },
@@ -128,6 +131,7 @@ test('server draft metadata dirty bit survives local storage round-trip', async 
   let meta = await draftStorage.getDraft('slot-durable-1');
   assert.equal(meta.serverDraftId, 'srv-1');
   assert.equal(meta.draftMetadataDirty, true);
+  assert.equal(meta.pimsPatientIdExplicitlyCleared, true);
   assert.equal(hasOwn(meta.formData, 'appointmentType'), true);
   assert.equal(meta.formData.appointmentType, null);
   assert.equal(hasOwn(meta.formData, 'templateId'), true);
@@ -136,6 +140,11 @@ test('server draft metadata dirty bit survives local storage round-trip', async 
   await draftStorage.updateServerDraftId('slot-durable-1', 'srv-1');
   meta = await draftStorage.getDraft('slot-durable-1');
   assert.equal(meta.draftMetadataDirty, false, 'successful server sync clears the dirty bit');
+  assert.equal(
+    meta.pimsPatientIdExplicitlyCleared,
+    true,
+    'successful draft sync must not erase explicit Patient ID clear intent before upload',
+  );
 
   const marked = await draftStorage.markDraftMetadataDirty('slot-durable-1');
   assert.equal(marked, true);

@@ -13,6 +13,10 @@ test('persistence is user-keyed, allowlisted, and success-only', async () => {
   const src = await read('src/lib/queryPersistence.ts');
   assert.match(src, /captivet_rq_cache_\$\{userId\}/);
   assert.match(src, /shouldDehydrateQuery: shouldPersistQuery/);
+  // Paused mutations are dehydrated by default — an offline clinical edit would
+  // serialize its variables and hydrate as an orphaned mutation. Never persist
+  // mutations (Codex P2 round 12).
+  assert.match(src, /shouldDehydrateMutation: \(\) => false/);
   // Persist on data-present, NOT status==='success': an offline refetch of a
   // hydrated query flips status to 'error' with data intact, and requiring
   // 'success' made the next write drop the only usable cached data (Codex P2

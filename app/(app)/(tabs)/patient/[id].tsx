@@ -16,6 +16,7 @@ import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer
 import { patientsApi } from '../../../../src/api/patients';
 import { ApiError } from '../../../../src/api/client';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
+import { removePatientFromCachedLists } from '../../../../src/lib/recordingQueryCache';
 import { Button } from '../../../../src/components/ui/Button';
 import { friendlyErrorMessage } from '../../../../src/lib/errorCopy';
 import { TextInputField } from '../../../../src/components/ui/TextInputField';
@@ -182,6 +183,9 @@ export default function PatientDetailScreen() {
   useEffect(() => {
     if (!accessRevoked || !id) return;
     queryClient.removeQueries({ queryKey: ['patient', id] }); // profile + visits pages
+    // Also strip it from cached patient-list pages, or the revoked/deleted
+    // patient's identifying metadata still renders offline (Codex P1, PR #143).
+    removePatientFromCachedLists(queryClient, id);
   }, [accessRevoked, id, queryClient]);
 
   const [visitsLimit, setVisitsLimit] = useState(20);

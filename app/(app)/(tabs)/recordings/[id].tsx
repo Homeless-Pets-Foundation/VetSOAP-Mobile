@@ -40,7 +40,7 @@ import { clonePendingConfirm } from '../../../../src/lib/pendingConfirm';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
 import { ERROR_COPY, METADATA_REVIEW_COPY, RECORDING_DETAIL_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
-import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../../../../src/lib/recordingQueryCache';
+import { invalidateRecordingCaches, mergeRecordingIntoCachedLists, removeRecordingFromCachedLists } from '../../../../src/lib/recordingQueryCache';
 import {
   shouldEmitExtractionObserved,
   buildExtractionObservedProps,
@@ -174,6 +174,9 @@ export default function RecordingDetailScreen() {
     queryClient.removeQueries({ queryKey: ['recording', id] });
     queryClient.removeQueries({ queryKey: ['soapNote', id] });
     queryClient.removeQueries({ queryKey: ['recordingTasks', id] });
+    // Also strip it from cached list pages, or its patient/client metadata
+    // still renders offline in the Recordings list (Codex P1, PR #143).
+    removeRecordingFromCachedLists(queryClient, id);
   }, [accessRevoked, id, queryClient]);
 
   // Fire the celebration exactly on the transition into 'completed'.

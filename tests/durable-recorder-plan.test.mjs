@@ -128,10 +128,16 @@ test('recording controls cannot mutate a slot while its upload owns the audio', 
   // still 'pending') must be locked too — with the overlay hidden, mutating a
   // queued slot makes the batch loop upload stale/deleted audio (Codex P1).
   const predicateStart = src.indexOf('const isSlotUploadActive = useCallback');
-  assert.match(
-    src.slice(predicateStart, predicateStart + 900),
-    /submitIntentSlotIdsRef\.current\.has\(slotId\)/
-  );
+  const predicateBody = src.slice(predicateStart, predicateStart + 1100);
+  assert.match(predicateBody, /submitIntentSlotIdsRef\.current\.has\(slotId\)/);
+  // A Submit All batch freezes the WHOLE session — even slots not in the batch
+  // must be locked, or a new slot recorded mid-batch is discarded by the
+  // post-batch resetSession() (Codex P1 round 12).
+  assert.match(predicateBody, /if \(isSubmittingAllRef\.current\) return true;/);
+  assert.match(src, /const isSubmittingAllRef = useRef\(false\);/);
+  // handleAddPatient is blocked during the batch too.
+  const addStart = src.indexOf('const handleAddPatient = useCallback');
+  assert.match(src.slice(addStart, addStart + 300), /if \(isSubmittingAllRef\.current\)/);
   assert.match(src, /function showUploadInProgressAlert\(\): void/);
   for (const handler of ['handleStart', 'handleContinueRecording', 'handleRecordAgain', 'handleRemove', 'handleEditRecording']) {
     const start = src.indexOf(`const ${handler} = useCallback`);

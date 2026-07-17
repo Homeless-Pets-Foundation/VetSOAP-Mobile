@@ -673,6 +673,12 @@ function RecordingSession() {
   );
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
+  // Synchronous mirror for guards: while a Submit All batch runs, the whole
+  // session is frozen (even with the overlay hidden via the escape hatch), so
+  // no new slot/recording can be created and then silently discarded by the
+  // post-batch resetSession() (Codex P1, PR #143).
+  const isSubmittingAllRef = useRef(false);
+  isSubmittingAllRef.current = isSubmittingAll;
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
   // Slot ids in the current submit batch — UploadOverlay scopes its
   // progress math to these (WP6: cross-batch counting inflated progress).
@@ -774,6 +780,10 @@ function RecordingSession() {
   // but it must not create a new server-side draft row while upload is in flight.
   const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
   const isSlotUploadActive = useCallback((slotId: string): boolean => {
+    // A Submit All batch freezes the entire session — even a slot NOT in the
+    // batch must not be mutated, because the batch's success path resets the
+    // whole session and would discard it (Codex P1, PR #143).
+    if (isSubmittingAllRef.current) return true;
     if (uploadingSlotIdsRef.current.has(slotId)) return true;
     // Slots queued behind the current upload in a Submit All batch exist only
     // in submitIntentSlotIdsRef (uploadStatus still 'pending'), yet the batch
@@ -3648,6 +3658,12 @@ function RecordingSession() {
   }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordFirstEnabled, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
+    // Frozen during Submit All — a new patient created mid-batch would be wiped
+    // by the post-batch resetSession() (Codex P1, PR #143).
+    if (isSubmittingAllRef.current) {
+      showUploadInProgressAlert();
+      return;
+    }
     const shouldWarnRecordFirstMultiPatient =
       recordFirstEnabled &&
       sessionRef.current.slots.length === 1 &&

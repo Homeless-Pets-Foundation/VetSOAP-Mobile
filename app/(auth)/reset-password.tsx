@@ -83,12 +83,20 @@ export default function ResetPasswordScreen() {
           {
             text: 'OK',
             onPress: () => {
-              clearPasswordRecovery();
-              trackPendingSignOut(supabase.auth.signOut())
-                .catch(() => {})
-                .finally(() => {
-                  router.replace('/(auth)/login');
-                });
+              // Keep the recovery gate ACTIVE until we actually navigate to
+              // Login. Clearing it first lets the (auth) layout treat the
+              // still-authenticated recovery session as normal and redirect to
+              // '/'; if GoTrue's signOut then hangs, the .finally() navigation
+              // never fires and the authenticated app is exposed. Bound the
+              // sign-out (rule 24) and clear + navigate together (Codex P1,
+              // PR #143) — same pattern as leaveToLogin.
+              Promise.race([
+                trackPendingSignOut(supabase.auth.signOut()).catch(() => {}),
+                new Promise((resolve) => setTimeout(resolve, 5_000)),
+              ]).finally(() => {
+                clearPasswordRecovery();
+                router.replace('/(auth)/login');
+              });
             },
           },
         ]

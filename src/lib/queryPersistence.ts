@@ -192,7 +192,15 @@ export function startQueryPersistence(userId: string): void {
       // App version + user id: an app update or user switch invalidates the
       // snapshot wholesale rather than risking shape mismatches.
       buster: `${appVersion()}:${userId}`,
-      dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
+      dehydrateOptions: {
+        shouldDehydrateQuery: shouldPersistQuery,
+        // TanStack dehydrates PAUSED mutations by default. An offline patient/
+        // SOAP/metadata edit would serialize its clinical-content variables to
+        // AsyncStorage and later hydrate as an orphaned mutation with no
+        // component-defined mutationFn — never persist mutations (Codex P2,
+        // PR #143); there is no safe replay design here.
+        shouldDehydrateMutation: () => false,
+      },
       // Restored queries have no mounted observer at cold-launch, so they'd
       // inherit queryClient's global 10-minute gcTime and be evicted long
       // before a screen that reads them mounts — the per-screen

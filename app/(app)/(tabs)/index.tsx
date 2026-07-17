@@ -454,7 +454,12 @@ export default function HomeScreen() {
             <SkeletonCard />
             <SkeletonCard />
           </View>
-        ) : isError ? (
+        ) : isError && recordings.length === 0 ? (
+          // Only replace the list with the error card when there is NO cached
+          // data. A persisted list hydrated offline keeps isError=true after
+          // the background refetch fails; showing the error card then would
+          // hide the usable cache on the default landing screen (Codex P2,
+          // PR #143).
           <Card className="items-center py-6">
             <FileText color={colors.danger600} size={iconLg} />
             <Text className="text-body text-content-secondary mt-3 text-center">

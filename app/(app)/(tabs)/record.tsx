@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, Alert, ActivityIndicator, AccessibilityInfo, Linking, Pressable, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
+import { View, Text, Alert, ActivityIndicator, AccessibilityInfo, Linking, Platform, Pressable, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';
@@ -129,6 +129,17 @@ function collectPreserveDraftSlotIds(
     if (s.draftSlotId && !excludeSlotIds?.has(s.id)) ids.push(s.draftSlotId);
   }
   return ids;
+}
+
+/**
+ * Announce a transition for screen readers on iOS only. The on-card status
+ * badge and the interruption banner already carry `accessibilityLiveRegion`
+ * (Android-only), so an unconditional announce here double-speaks every
+ * transition under TalkBack — mirror the iOS gating Toast/CopiedToast use
+ * (Codex P2, PR #143).
+ */
+function announceForIOS(message: string): void {
+  if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(message);
 }
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
@@ -1146,7 +1157,7 @@ function RecordingSession() {
       // Explain the silent finalize: the card flips from "Recording…" to
       // "Recording Complete" with no other cue, mid-exam.
       setDurableInterruptionNotice(true);
-      AccessibilityInfo.announceForAccessibility(RECORDER_TRANSITION_COPY.interruptedSaved);
+      announceForIOS(RECORDER_TRANSITION_COPY.interruptedSaved);
       recorder.resetWithoutDelete();
       return;
     }
@@ -1163,8 +1174,9 @@ function RecordingSession() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     breadcrumb('record', 'interruption_paused', { slot_id: slotId });
     // The banner below is Android-only via accessibilityLiveRegion; announce
-    // explicitly so iOS VoiceOver users hear the pause too.
-    AccessibilityInfo.announceForAccessibility(RECORDER_TRANSITION_COPY.interruptedPaused);
+    // explicitly so iOS VoiceOver users hear the pause too (iOS-gated to avoid
+    // a double announcement on Android).
+    announceForIOS(RECORDER_TRANSITION_COPY.interruptedPaused);
     recorder.resetWithoutDelete();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally fires only on the recorder transition; reading session/refs from current render is correct
   }, [recorder.state]);
@@ -1184,11 +1196,11 @@ function RecordingSession() {
     prevRecorderStateRef.current = next;
     if (prev === next) return;
     if (next === 'recording') {
-      AccessibilityInfo.announceForAccessibility(prev === 'paused' ? 'Recording resumed' : 'Recording started');
+      announceForIOS(prev === 'paused' ? 'Recording resumed' : 'Recording started');
     } else if (next === 'paused') {
-      AccessibilityInfo.announceForAccessibility('Recording paused');
+      announceForIOS('Recording paused');
     } else if (next === 'stopped' && (prev === 'recording' || prev === 'paused')) {
-      AccessibilityInfo.announceForAccessibility('Recording finished');
+      announceForIOS('Recording finished');
     }
   }, [recorder.state]);
 
@@ -1484,9 +1496,11 @@ function RecordingSession() {
             setAudioState(leavingSlotId, 'paused');
             // Visible + spoken feedback — the auto-pause is otherwise silent
             // (haptic only) and a vet could keep talking while nothing records.
+            // The Toast host owns the announcement (iOS-gated announce +
+            // Android live region), so no explicit call here — that would
+            // double-speak on both platforms (Codex P2, PR #143).
             const message = RECORDER_TRANSITION_COPY.autoPaused(patientLabel);
             setPauseToast(message);
-            AccessibilityInfo.announceForAccessibility(message);
           } catch {
             try { await recorder.stop(); } catch {}
           }

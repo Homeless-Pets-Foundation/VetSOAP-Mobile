@@ -56,8 +56,12 @@ test('a restore that outlives its persistence scope is discarded before hydratio
   assert.match(src, /persist write failed/);
   // A write queued inside the persister's throttle window can land AFTER
   // sign-out's removeClient and recreate the outgoing user's snapshot — the
-  // sweep must re-run once the window settles (Codex P2 round 8).
-  assert.match(src, /setTimeout\(removeSnapshot, PERSIST_THROTTLE_MS \+ 1000\)/);
+  // sweep must re-run once the window settles (Codex P2 round 8)…
+  assert.match(src, /setTimeout\(\(\) => \{[\s\S]*?PERSIST_THROTTLE_MS \+ 1000\)/);
+  // …but must SKIP if the same user re-signed in within the window and a
+  // fresh persister now owns this exact key — else it wipes the new session's
+  // snapshot (Codex P2 round 9).
+  assert.match(src, /if \(active\?\.userId === current\.userId\) return;/);
   // Stop must invalidate any in-flight restore.
   const stopStart = src.indexOf('export function stopQueryPersistence');
   assert.match(src.slice(stopStart, stopStart + 300), /generation \+= 1/);

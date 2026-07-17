@@ -173,7 +173,14 @@ export function stopQueryPersistence(opts: { removeStored: boolean }): void {
       // inside the throttle window still fires and would recreate the
       // outgoing user's snapshot AFTER the removal above. Sweep again once
       // the window (plus margin) has settled (Codex P2, PR #143).
-      setTimeout(removeSnapshot, PERSIST_THROTTLE_MS + 1000);
+      setTimeout(() => {
+        // If the SAME user signed back in within the window, a fresh persister
+        // now owns this exact storage key — deleting would wipe the new
+        // session's snapshot. The key is user-scoped, so a different user (or
+        // no user) is safe to sweep (Codex P2, PR #143).
+        if (active?.userId === current.userId) return;
+        removeSnapshot();
+      }, PERSIST_THROTTLE_MS + 1000);
     }
   } catch (error) {
     if (__DEV__) console.error('[queryPersistence] stop failed:', error);

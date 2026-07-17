@@ -21,9 +21,10 @@ test('dirty server draft metadata is applied through strict preparation and conf
   assert.match(api, /function completeUploadMetadata/);
   assert.match(api, /metadata: PendingConfirmMetadata/);
   assert.match(api, /metadata,\s*files/);
-  assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata\)/);
+  assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata, metadataMatchOptions\)/);
   assert.match(api, /const SERVER_ENRICHABLE_BLANK_METADATA_FIELDS = new Set/);
   assert.match(api, /function assertRecordingMatchesMetadataPayload\([\s\S]*allowServerEnrichedBlankFields/);
+  assert.match(api, /!\(key === 'pimsPatientId' && opts\.pimsPatientIdExplicitlyCleared\)/);
   assert.match(api, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
   assert.match(api, /assertRecordingMatchesMetadataPayload\(value\.recording, metadataAsPayload\(metadata\)/);
   assert.doesNotMatch(api, /isAlreadyConfirmedOrProcessing/);
@@ -39,20 +40,31 @@ test('dirty server draft metadata is applied through strict preparation and conf
   assert.match(record, /preserveDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
   const session = await read('src/hooks/useMultiPatientSession.ts');
   const types = await read('src/types/multiPatient.ts');
+  const draftStorage = await read('src/lib/draftStorage.ts');
+  const recoveryVault = await read('src/lib/supportStaffRecoveryVault.ts');
   assert.match(types, /type: 'MARK_DRAFT_METADATA_DIRTY'; slotId: string/);
   assert.match(types, /preserveDirty\?: boolean/);
+  assert.match(types, /pimsPatientIdExplicitlyCleared: boolean/);
   assert.match(session, /case 'MARK_DRAFT_METADATA_DIRTY':/);
+  assert.match(session, /nextPimsPatientIdExplicitlyCleared/);
   assert.match(session, /draftMetadataDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
   assert.match(session, /draftMetadataDirty: preserveDirty/);
+  assert.match(draftStorage, /pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared/g);
   assert.match(retry, /transient_failure';\s*\/\/ retries exhausted — caller must keep local audio recoverable/);
 
   const stashTypes = await read('src/types/stash.ts');
   const stashAudio = await read('src/lib/stashAudioManager.ts');
   const useStash = await read('src/hooks/useStashedSessions.ts');
   assert.match(stashTypes, /draftMetadataDirty\?: boolean/);
+  assert.match(stashTypes, /pimsPatientIdExplicitlyCleared\?: boolean/);
   assert.match(stashAudio, /draftMetadataDirty: !!slot\.serverDraftId && slot\.draftMetadataDirty/);
+  assert.match(stashAudio, /pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared/);
   assert.match(useStash, /draftMetadataDirty\?: boolean/);
+  assert.match(useStash, /pimsPatientIdExplicitlyCleared\?: boolean/);
+  assert.match(useStash, /pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared/);
   assert.match(useStash, /draftMetadataDirty: !!slot\.serverDraftId && \(slot\.draftMetadataDirty === true \|\| slot\.draftMetadataDirty === undefined\)/);
+  assert.match(recoveryVault, /pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared/g);
+  assert.match(record, /pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared/g);
 });
 
 test('Submit All uses the same metadata gate as per-slot submit outside record-first', async () => {

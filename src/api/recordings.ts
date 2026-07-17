@@ -45,6 +45,7 @@ import {
   runWithConcurrency,
   type TaggedError,
 } from './uploadRetry';
+import { isPimsPatientIdExplicitlyCleared } from '../lib/pimsPatientIdIntent';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
@@ -353,10 +354,15 @@ export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): R
   });
 }
 
+interface MetadataMatchOptions {
+  allowServerEnrichedBlankFields?: boolean;
+  pimsPatientIdExplicitlyCleared?: boolean;
+}
+
 function recordingMatchesMetadataPayload(
   recording: Recording,
   payload: RecordingPayload,
-  opts: { allowServerEnrichedBlankFields?: boolean } = {}
+  opts: MetadataMatchOptions = {}
 ): boolean {
   const recordingData = recording as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(payload)) {
@@ -365,6 +371,7 @@ function recordingMatchesMetadataPayload(
     if (
       opts.allowServerEnrichedBlankFields &&
       SERVER_ENRICHABLE_BLANK_METADATA_FIELDS.has(key) &&
+      !(key === 'pimsPatientId' && opts.pimsPatientIdExplicitlyCleared) &&
       (value === null || value === '') &&
       recordingValue !== null &&
       recordingValue !== ''
@@ -379,7 +386,7 @@ function recordingMatchesMetadataPayload(
 function assertRecordingMatchesMetadataPayload(
   recording: Recording,
   payload?: RecordingPayload,
-  opts: { allowServerEnrichedBlankFields?: boolean } = {}
+  opts: MetadataMatchOptions = {}
 ): Recording {
   if (payload && Object.keys(payload).length > 0 && !recordingMatchesMetadataPayload(recording, payload, opts)) {
     phaseError(
@@ -408,6 +415,7 @@ interface ResilientUploadOptions {
   existingRecordingId?: string;
   idempotencyKey?: string;
   metadataDirty?: boolean;
+  pimsPatientIdExplicitlyCleared?: boolean;
   audioDurationSeconds?: number;
   slotIndex?: number;
   mode?: 'durable' | 'standard';
@@ -441,6 +449,7 @@ function validatePreparationResponse(
   raw: unknown,
   expectedFileCount: number,
   metadata: PendingConfirmMetadata,
+  matchOptions: MetadataMatchOptions,
 ): PrepareUploadResponse {
   let value: PrepareUploadResponse;
   try {
@@ -449,9 +458,7 @@ function validatePreparationResponse(
     tagPhase(error, 'prepare');
   }
   if (value.outcome !== 'prepared') {
-    assertRecordingMatchesMetadataPayload(value.recording, metadataAsPayload(metadata), {
-      allowServerEnrichedBlankFields: true,
-    });
+    assertRecordingMatchesMetadataPayload(value.recording, metadataAsPayload(metadata), matchOptions);
     return value;
   }
   for (const upload of value.uploads!) {
@@ -503,6 +510,7 @@ async function requestPreparation(
   idempotencyKey: string,
   metadata: PendingConfirmMetadata,
   files: PendingConfirmFile[],
+  matchOptions: MetadataMatchOptions,
 ): Promise<PrepareUploadResponse> {
   let raw: unknown;
   try {
@@ -514,7 +522,7 @@ async function requestPreparation(
   } catch (error) {
     tagPhase(error, 'prepare');
   }
-  return validatePreparationResponse(raw, files.length, metadata);
+  return validatePreparationResponse(raw, files.length, metadata, matchOptions);
 }
 
 function isRouteLevelPrepare404(error: unknown): boolean {
@@ -537,6 +545,7 @@ async function postConfirm(
   recordingId: string,
   hint: Pick<PendingConfirm, 'fileKey' | 'segmentKeys' | 'segmentCount'>,
   metadata: PendingConfirmMetadata,
+  matchOptions: MetadataMatchOptions,
 ): Promise<Recording> {
   recordingIdSchema.parse(recordingId);
   let confirmed: Recording;
@@ -555,16 +564,12 @@ async function postConfirm(
         tagPhase(probeError, 'confirm');
       }
       if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
-        return assertRecordingMatchesMetadataPayload(current, metadataAsPayload(metadata), {
-          allowServerEnrichedBlankFields: true,
-        });
+        return assertRecordingMatchesMetadataPayload(current, metadataAsPayload(metadata), matchOptions);
       }
     }
     tagPhase(error, 'confirm');
   }
-  return assertRecordingMatchesMetadataPayload(confirmed, metadataAsPayload(metadata), {
-    allowServerEnrichedBlankFields: true,
-  });
+  return assertRecordingMatchesMetadataPayload(confirmed, metadataAsPayload(metadata), matchOptions);
 }
 
 async function invokePreparedCallback(
@@ -915,6 +920,13 @@ async function executeResilientUpload(
     phaseError('prepare', 'This recording is missing its stable upload identity. Please reopen it and try again.');
   }
   const metadata = completeUploadMetadata(data);
+  const metadataMatchOptions: MetadataMatchOptions = {
+    allowServerEnrichedBlankFields: true,
+    pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+      data.pimsPatientId,
+      options.pimsPatientIdExplicitlyCleared,
+    ),
+  };
   const mode = options.mode ?? 'standard';
   const validResume = options.resume ? validatePendingConfirm(options.resume) : null;
   let staleRestartUsed = false;
@@ -961,7 +973,13 @@ async function executeResilientUpload(
     const descriptors = preparationFiles(files);
     let prepared: PrepareUploadResponse;
     try {
-      prepared = await requestPreparation(existingRecordingId, idempotencyKey, metadata, descriptors);
+      prepared = await requestPreparation(
+        existingRecordingId,
+        idempotencyKey,
+        metadata,
+        descriptors,
+        metadataMatchOptions,
+      );
     } catch (error) {
       if (!isRouteLevelPrepare404(error)) throw error;
       const legacy = await legacyUpload(data, files, metadata, options, idempotencyKey, persistPrepared);
@@ -984,7 +1002,13 @@ async function executeResilientUpload(
       uploaded = await putPreparedFiles(
         files,
         prepared,
-        async () => requestPreparation(prepared.recording.id, idempotencyKey, metadata, descriptors),
+        async () => requestPreparation(
+          prepared.recording.id,
+          idempotencyKey,
+          metadata,
+          descriptors,
+          metadataMatchOptions,
+        ),
         options.onUploadProgress,
       );
     } catch (error) {
@@ -1017,7 +1041,7 @@ async function executeResilientUpload(
 
   const confirmWithRecovery = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
     try {
-      return await postConfirm(hint.recordingId, hint, metadata);
+      return await postConfirm(hint.recordingId, hint, metadata, metadataMatchOptions);
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 404)) throw error;
     }
@@ -1051,7 +1075,7 @@ async function executeResilientUpload(
     if (probedRecording.status === 'draft' || probedRecording.status === 'uploading') {
       await new Promise<void>((resolve) => setTimeout(resolve, 600));
       try {
-        const result = await postConfirm(hint.recordingId, hint, metadata);
+        const result = await postConfirm(hint.recordingId, hint, metadata, metadataMatchOptions);
         trackStaleRecovery('confirm', 'retry_succeeded', inputFiles.length, mode);
         return result;
       } catch (error) {
@@ -1067,7 +1091,13 @@ async function executeResilientUpload(
     }
     let proof: PrepareUploadResponse | null = null;
     try {
-      proof = await requestPreparation(hint.recordingId, idempotencyKey, metadata, hint.files);
+      proof = await requestPreparation(
+        hint.recordingId,
+        idempotencyKey,
+        metadata,
+        hint.files,
+        metadataMatchOptions,
+      );
     } catch (error) {
       trackStaleRecovery('probe', 'proof_failed', inputFiles.length, mode);
       staleFailure(error);
@@ -1212,7 +1242,12 @@ export const recordingsApi = {
   async confirmUpload(
     recordingId: string,
     fileKey: string,
-    opts?: { segmentKeys?: string[]; segmentCount?: number; metadata?: CreateRecording }
+    opts?: {
+      segmentKeys?: string[];
+      segmentCount?: number;
+      metadata?: CreateRecording;
+      pimsPatientIdExplicitlyCleared?: boolean;
+    }
   ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
     // confirm-upload's metadata contract is a complete snapshot. Keep the
@@ -1221,6 +1256,13 @@ export const recordingsApi = {
     // as INVALID_CONFIRM_UPLOAD.
     const metadata = opts?.metadata ? completeUploadMetadata(opts.metadata) : undefined;
     const metadataPayload = metadata ? metadataAsPayload(metadata) : undefined;
+    const metadataMatchOptions: MetadataMatchOptions = {
+      allowServerEnrichedBlankFields: true,
+      pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+        opts?.metadata?.pimsPatientId,
+        opts?.pimsPatientIdExplicitlyCleared,
+      ),
+    };
     let recording: Recording;
     try {
       recording = await apiClient.post(`/api/recordings/${recordingId}/confirm-upload`, {
@@ -1237,28 +1279,35 @@ export const recordingsApi = {
           tagPhase(probeError, 'confirm');
         }
         if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
-          return assertRecordingMatchesMetadataPayload(current, metadataPayload, {
-            allowServerEnrichedBlankFields: true,
-          });
+          return assertRecordingMatchesMetadataPayload(current, metadataPayload, metadataMatchOptions);
         }
       }
       tagPhase(error, 'confirm');
     }
-    return assertRecordingMatchesMetadataPayload(recording, metadataPayload, {
-      allowServerEnrichedBlankFields: true,
-    });
+    return assertRecordingMatchesMetadataPayload(recording, metadataPayload, metadataMatchOptions);
   },
 
   async prepareUpload(
     data: CreateRecording,
     files: PendingConfirmFile[],
-    options: { existingRecordingId?: string; idempotencyKey: string },
+    options: {
+      existingRecordingId?: string;
+      idempotencyKey: string;
+      pimsPatientIdExplicitlyCleared?: boolean;
+    },
   ): Promise<PrepareUploadResponse> {
     return requestPreparation(
       options.existingRecordingId,
       options.idempotencyKey,
       completeUploadMetadata(data),
       files,
+      {
+        allowServerEnrichedBlankFields: true,
+        pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
+          data.pimsPatientId,
+          options.pimsPatientIdExplicitlyCleared,
+        ),
+      },
     );
   },
 

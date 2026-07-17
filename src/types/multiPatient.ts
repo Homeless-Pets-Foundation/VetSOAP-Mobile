@@ -69,6 +69,10 @@ export interface PatientSlot {
   id: string;
   uploadIntentId: string;
   formData: CreateRecording;
+  // Distinguishes an untouched blank Patient ID (server enrichment allowed)
+  // from one the user deliberately removed (server must preserve the clear).
+  // This upload-affecting bit must survive every draft/stash/vault round-trip.
+  pimsPatientIdExplicitlyCleared: boolean;
   audioState: 'idle' | 'recording' | 'paused' | 'stopped';
   segments: AudioSegment[];
   // Durable AAC capture pointer (null for legacy segments[] m4a slots). A slot

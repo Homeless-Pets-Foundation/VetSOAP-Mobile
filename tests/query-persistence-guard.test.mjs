@@ -49,6 +49,11 @@ test('a restore that outlives its persistence scope is discarded before hydratio
   assert.match(src, /const \[unsubscribe, restorePromise\] = persistQueryClient\(/);
   assert.match(src, /Promise\.resolve\(restorePromise\)\.catch\(/);
   assert.match(src, /restore read failed/);
+  // Writes are best-effort too: the persistence subscription invokes
+  // persistClient with no observing caller, so a rejected AsyncStorage write
+  // (storage full) must be swallowed, not crash Hermes (Codex P1 round 7).
+  assert.match(src, /persistClient: async \(client\) => \{\s*\n\s*try \{/);
+  assert.match(src, /persist write failed/);
   // Stop must invalidate any in-flight restore.
   const stopStart = src.indexOf('export function stopQueryPersistence');
   assert.match(src.slice(stopStart, stopStart + 300), /generation \+= 1/);

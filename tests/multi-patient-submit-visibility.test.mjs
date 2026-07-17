@@ -106,7 +106,10 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(list, /recordingsApi\.get\(id\)/);
   assert.match(list, /refetchOnMount: 'always' as const/);
   assert.match(list, /for \(const recording of recordings\)[\s\S]*for \(const query of submittedRecordingQueries\)/);
-  assert.match(list, /for \(const query of submittedRecordingQueries\)[\s\S]*submittedIdSet\.has\(recording\.id\)\) map\.set\(recording\.id, recording\)/);
+  // Detail results are a FALLBACK for ids the polled list doesn't contain —
+  // the list refetches processing recordings every 10s while detail queries
+  // fetch once on mount (Codex P2 round 7).
+  assert.match(list, /for \(const query of submittedRecordingQueries\)[\s\S]*submittedIdSet\.has\(recording\.id\) && !map\.has\(recording\.id\)/);
   assert.match(list, /const pinSubmitted = \(items: Recording\[\]\): Recording\[\] =>/);
   assert.match(list, /\}, \[debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById\]\)/);
   assert.match(list, /highlighted=\{submittedIdSet\.has\(item\.id\)\}/);

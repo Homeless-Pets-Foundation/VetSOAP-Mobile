@@ -1871,7 +1871,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // error rather than authenticate into the race.
     if (!(await waitForPendingSignOut(10_000))) {
       if (__DEV__) console.log('[Auth] signIn: pending sign-out unresolved, aborting');
-      return { error: LOGIN_COPY.signOutStillPending };
+      return { error: LOGIN_COPY.signOutStillPending, code: 'signout_pending' as const };
     }
 
     let { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -1901,16 +1901,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         props: { auth_method: 'password', error_code: errorCode, retry_used: retryUsed },
       });
 
+      // `code` tells the login screen whether this failure was a genuine
+      // credential rejection — only those count toward the brute-force
+      // lockout (Codex P2, PR #143).
       if (error.message?.includes('Email not confirmed')) {
-        return { error: 'Please confirm your email address before signing in.' };
+        return { error: 'Please confirm your email address before signing in.', code: 'email_unconfirmed' as const };
       }
       if (error.status === 0 || error.message?.includes('fetch')) {
-        return { error: 'Unable to reach the authentication server. Please check your connection.' };
+        return {
+          error: 'Unable to reach the authentication server. Please check your connection.',
+          code: 'network' as const,
+        };
       }
       if (__DEV__) {
-        return { error: `[DEV] ${error.message} (status: ${error.status})` };
+        return {
+          error: `[DEV] ${error.message} (status: ${error.status})`,
+          code: errorCode === 'invalid_credentials' ? ('invalid_credentials' as const) : ('other' as const),
+        };
       }
-      return { error: 'Invalid email or password' };
+      return { error: 'Invalid email or password', code: 'invalid_credentials' as const };
     }
     if (__DEV__) console.log('[Auth] signIn: success');
     return { error: null };

@@ -181,7 +181,13 @@ export default function RecordingsListScreen() {
     }
     for (const query of submittedRecordingQueries) {
       const recording = query.data;
-      if (recording?.id && submittedIdSet.has(recording.id)) map.set(recording.id, recording);
+      // Fallback ONLY for ids the polled list doesn't contain yet: the list
+      // refetches processing recordings every 10s while these detail queries
+      // fetch once on mount, so letting the detail result win froze banner
+      // rows at their initial Uploading/Transcribing state (Codex P2, PR #143).
+      if (recording?.id && submittedIdSet.has(recording.id) && !map.has(recording.id)) {
+        map.set(recording.id, recording);
+      }
     }
     return map;
   }, [recordings, submittedIdSet, submittedRecordingQueries]);

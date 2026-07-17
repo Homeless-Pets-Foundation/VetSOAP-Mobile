@@ -169,6 +169,7 @@ export default function PatientDetailScreen() {
     data: recordingsData,
     isLoading: recordingsLoading,
     isFetching: recordingsFetching,
+    isPlaceholderData: recordingsIsPlaceholder,
   } = useQuery({
     queryKey: ['patient', id, 'recordings', visitsLimit],
     gcTime: PERSIST_GC_TIME_MS,
@@ -180,10 +181,13 @@ export default function PatientDetailScreen() {
   // Each "Load more visits" press creates a NEW query key (limit 20/40/60…)
   // while the superseded pages stay cached — and persisted — for 7 days,
   // storing the same visits quadratically (Codex P2, PR #143). Once the
-  // expanded page has data, drop the smaller snapshots. Runs after
-  // keepPreviousData has already handed the old page over, so no flicker.
+  // expanded page has REAL data, drop the smaller snapshots. The placeholder
+  // gate matters: keepPreviousData makes recordingsData truthy immediately
+  // with the SMALLER page's data, and pruning then would delete the last
+  // successful page while the expanded request can still fail offline
+  // (Codex P2 round 7).
   useEffect(() => {
-    if (!id || !recordingsData) return;
+    if (!id || !recordingsData || recordingsIsPlaceholder) return;
     queryClient.removeQueries({
       queryKey: ['patient', id, 'recordings'],
       predicate: (query) => {
@@ -191,7 +195,7 @@ export default function PatientDetailScreen() {
         return typeof limit === 'number' && limit < visitsLimit;
       },
     });
-  }, [id, recordingsData, visitsLimit, queryClient]);
+  }, [id, recordingsData, recordingsIsPlaceholder, visitsLimit, queryClient]);
 
   const updateMutation = useMutation({
     mutationFn: (draft: ProfileDraft) => {

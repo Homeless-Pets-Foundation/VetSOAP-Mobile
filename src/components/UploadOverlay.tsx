@@ -111,16 +111,30 @@ export function UploadOverlay({
   let currentUploadIndex: number;
 
   if (isMulti && totalSlotsToUpload > 1) {
-    overallProgress = Math.min(
-      100,
-      totalSlotsToUpload > 0
-        ? Math.round(((uploadsCompleted * 100 + currentProgress) / (totalSlotsToUpload * 100)) * 100)
-        : 0
-    );
     // Position of the ACTIVE slot in the batch — the completed count stalls
     // after a failed slot (it only counts successes), which left the counter
     // one behind for every later upload (Codex P2, PR #143).
     const activeIndexInBatch = currentSlotId ? batchSlotIds.indexOf(currentSlotId) : -1;
+    const currentSlotSettled =
+      currentSlot?.uploadStatus === 'success' || currentSlot?.uploadStatus === 'error';
+    // Progress counts ATTEMPTED slots, not only successes: sequential Submit
+    // All continues past a failed slot, and success-only math made the bar
+    // jump backward on the next slot and finish at (N-1)/N (Codex P2 round
+    // 7). The loop walks batchSlotIds in order, so every slot before the
+    // active index has been attempted; a settled active slot contributes its
+    // full unit instead of a lingering partial percentage.
+    const attemptedUnits =
+      activeIndexInBatch >= 0
+        ? activeIndexInBatch + (currentSlotSettled ? 1 : 0)
+        : uploadsCompleted;
+    overallProgress = Math.min(
+      100,
+      Math.round(
+        ((attemptedUnits * 100 + (currentSlotSettled ? 0 : currentProgress)) /
+          (totalSlotsToUpload * 100)) *
+          100
+      )
+    );
     currentUploadIndex = activeIndexInBatch >= 0 ? activeIndexInBatch + 1 : uploadsCompleted + 1;
   } else {
     // Single-slot batch: a successful slot must read 100%, not the zeroed

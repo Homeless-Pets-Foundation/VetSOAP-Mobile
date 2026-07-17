@@ -22,6 +22,13 @@ function getCrypto() {
 export type AuthResult = {
   error: string | null;
   cancelled?: boolean;
+  /**
+   * Failure class for password sign-in. Only 'invalid_credentials' counts
+   * toward the login screen's brute-force lockout — network outages, pending
+   * sign-outs, and config failures never reached a credential check, and
+   * counting them locked users out during outages (Codex P2, PR #143).
+   */
+  code?: 'invalid_credentials' | 'email_unconfirmed' | 'network' | 'signout_pending' | 'other';
 };
 
 let googleConfigured = false;

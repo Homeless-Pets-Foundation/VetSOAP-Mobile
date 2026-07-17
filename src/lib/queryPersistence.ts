@@ -100,7 +100,17 @@ export function startQueryPersistence(userId: string): void {
     // persistQueryClient skips hydration entirely — the payload never touches
     // the shared client.
     const guardedPersister: Persister = {
-      persistClient: (client) => persister.persistClient(client),
+      // Best-effort like restore: the persistence subscription invokes this
+      // with no observing caller, so a rejected write (storage full,
+      // AsyncStorage unavailable) would be an unhandled Hermes rejection —
+      // a release crash during a routine cache update (rule 4).
+      persistClient: async (client) => {
+        try {
+          await persister.persistClient(client);
+        } catch (error) {
+          if (__DEV__) console.error('[queryPersistence] persist write failed:', error);
+        }
+      },
       restoreClient: async () => {
         // Never throw (rule 1): a corrupted/unreadable snapshot means "no
         // cache", not a crash — the app just fetches from the network.

@@ -69,6 +69,12 @@ test('batch position tracks the ACTIVE slot, not the completed count (Codex P2 r
   const overlay = await read('src/components/UploadOverlay.tsx');
   assert.match(overlay, /batchSlotIds\.indexOf\(currentSlotId\)/);
   assert.match(overlay, /activeIndexInBatch >= 0 \? activeIndexInBatch \+ 1 : uploadsCompleted \+ 1/);
+  // Progress math counts ATTEMPTED slots (success or failure), not just
+  // successes — success-only units made the bar jump backward after a failed
+  // slot and finish at (N-1)/N (Codex P2 round 7).
+  assert.match(overlay, /const attemptedUnits =/);
+  assert.match(overlay, /activeIndexInBatch \+ \(currentSlotSettled \? 1 : 0\)/);
+  assert.match(overlay, /attemptedUnits \* 100 \+ \(currentSlotSettled \? 0 : currentProgress\)/);
 });
 
 test('in-card toasts render inline, not absolutely against the card (Codex P2 round 6)', async () => {

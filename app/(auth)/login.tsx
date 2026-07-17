@@ -127,7 +127,13 @@ export default function LoginScreen() {
     try {
       const result = await signIn(emailResult.data, passwordResult.data);
       if (result.error) {
-        failedAttemptsRef.current += 1;
+        // Only genuine credential rejections advance the brute-force counter.
+        // Network outages / pending sign-outs never reached a credential
+        // check — counting them locked users out during outages (Codex P2,
+        // PR #143).
+        if (result.code === 'invalid_credentials') {
+          failedAttemptsRef.current += 1;
+        }
         if (failedAttemptsRef.current >= MAX_LOGIN_ATTEMPTS) {
           startLockout();
         } else {
@@ -164,12 +170,11 @@ export default function LoginScreen() {
           return;
         }
         if (result.error) {
-          failedAttemptsRef.current += 1;
-          if (failedAttemptsRef.current >= MAX_LOGIN_ATTEMPTS) {
-            startLockout();
-          } else {
-            setError(result.error);
-          }
+          // Social failures are config/native/network shaped — no credential
+          // ever reaches a brute-forceable check (the provider's own prompt
+          // guards that), so they don't advance the lockout counter. The
+          // lockout GATE above still blocks social while locked out.
+          setError(result.error);
         } else {
           failedAttemptsRef.current = 0;
         }
@@ -179,7 +184,7 @@ export default function LoginScreen() {
         setSocialProvider(null);
       }
     },
-    [signInWithGoogle, signInWithApple, startLockout, isLoading, socialProvider]
+    [signInWithGoogle, signInWithApple, isLoading, socialProvider]
   );
 
   const AppleAuthenticationButton = appleModuleRef.current?.AppleAuthenticationButton;

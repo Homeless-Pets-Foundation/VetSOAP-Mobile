@@ -1,4 +1,5 @@
 const MAX_UPLOAD_INTENT_ID_LENGTH = 96;
+const MAX_UPLOAD_KEY_LENGTH = 128;
 
 /** Non-security identity: timestamp + Math.random is explicitly permitted. */
 export function createUploadIntentId(): string {
@@ -24,4 +25,45 @@ export function slotUploadIdempotencyKey(uploadIntentId: string): string {
 
 export function durableUploadIdempotencyKey(recordingId: string): string {
   return `recording-upload-v1:durable:${recordingId}`;
+}
+
+/** One-time replacement identity for an explicitly approved conflict restart. */
+export function createRestartUploadIdempotencyKey(): string {
+  return `recording-upload-v2:restart:${createUploadIntentId()}`;
+}
+
+export function effectiveUploadIdempotencyKey(input: {
+  uploadKeyOverride?: string | null;
+  durableRecordingId?: string | null;
+  uploadIntentId: string;
+  slotId: string;
+}): string {
+  if (
+    typeof input.uploadKeyOverride === 'string' &&
+    input.uploadKeyOverride.startsWith('recording-upload-v2:restart:') &&
+    input.uploadKeyOverride.length <= 128
+  ) {
+    return input.uploadKeyOverride;
+  }
+  return input.durableRecordingId
+    ? durableUploadIdempotencyKey(input.durableRecordingId)
+    : slotUploadIdempotencyKey(normalizeUploadIntentId(input.uploadIntentId, input.slotId));
+}
+
+export function normalizeUploadKeyOverride(value: unknown): string | null {
+  return typeof value === 'string' &&
+    value.startsWith('recording-upload-v2:restart:') &&
+    value.length <= MAX_UPLOAD_KEY_LENGTH &&
+    /^[\x21-\x7e]+$/.test(value)
+    ? value
+    : null;
+}
+
+export function normalizeSupersededUploadKey(value: unknown): string | null {
+  return typeof value === 'string' &&
+    value.startsWith('recording-upload-v') &&
+    value.length <= MAX_UPLOAD_KEY_LENGTH &&
+    /^[\x21-\x7e]+$/.test(value)
+    ? value
+    : null;
 }

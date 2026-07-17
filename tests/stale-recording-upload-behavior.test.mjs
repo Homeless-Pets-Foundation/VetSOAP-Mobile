@@ -20,13 +20,14 @@ async function loadPure(path) {
 }
 
 class ApiError extends Error {
-  constructor(message, status, isRetryable = false, details, code) {
+  constructor(message, status, isRetryable = false, details, code, data) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.isRetryable = isRetryable;
     this.details = details;
     this.code = code;
+    this.data = data;
   }
 }
 
@@ -45,7 +46,7 @@ async function loadHarness({
   const pimsPatientIdIntent = await loadPure('src/lib/pimsPatientIdIntent.ts');
   const apiClient = {
     post: async (...args) => {
-      events.push(['post', args[0]]);
+      events.push(['post', args[0], args[1], args[2]]);
       return post(...args);
     },
     get: async (...args) => {
@@ -274,17 +275,24 @@ test('a complete confirmation hint resumes without reading a missing local file'
   assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
 });
 
-test('confirm 409 probes and returns an already-committed recording without local audio', async () => {
+test('typed confirm conflict inspects and returns an already-committed recording without local audio', async () => {
   let fileReads = 0;
   const completed = { ...recording, status: 'completed' };
   const hint = {
     recordingId,
     fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata,
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 100 }],
   };
   const harness = await loadHarness({
     getInfoAsync: async () => { fileReads++; return { exists: false }; },
     post: async (path) => {
-      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      if (path.endsWith('/confirm-upload')) {
+        throw new ApiError('already committed', 409, false, undefined, 'UPLOAD_INTENT_CONFLICT', {
+          uploadConflict: { stage: 'confirm', reason: 'commit_state_changed', recoveryAction: 'inspect' },
+        });
+      }
+      if (path.endsWith('/upload-intent-recovery')) return { outcome: 'already_processed', recording: completed };
       throw new Error(`unexpected POST ${path}`);
     },
     get: async () => completed,
@@ -294,10 +302,10 @@ test('confirm 409 probes and returns an already-committed recording without loca
   });
   assert.equal(result.status, 'completed');
   assert.equal(fileReads, 0);
-  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post']);
 });
 
-test('confirm 409 accepts a server-supplied Patient ID when the submitted ID is blank', async () => {
+test('typed confirm conflict accepts a server-supplied Patient ID when the submitted ID is blank', async () => {
   let fileReads = 0;
   const completed = {
     ...recording,
@@ -308,11 +316,18 @@ test('confirm 409 accepts a server-supplied Patient ID when the submitted ID is 
   const hint = {
     recordingId,
     fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata: { ...metadata, pimsPatientId: null },
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 100 }],
   };
   const harness = await loadHarness({
     getInfoAsync: async () => { fileReads++; return { exists: false }; },
     post: async (path) => {
-      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      if (path.endsWith('/confirm-upload')) {
+        throw new ApiError('already committed', 409, false, undefined, 'UPLOAD_INTENT_CONFLICT', {
+          uploadConflict: { stage: 'confirm', reason: 'commit_state_changed', recoveryAction: 'inspect' },
+        });
+      }
+      if (path.endsWith('/upload-intent-recovery')) return { outcome: 'already_processed', recording: completed };
       throw new Error(`unexpected POST ${path}`);
     },
     get: async () => completed,
@@ -326,10 +341,10 @@ test('confirm 409 accepts a server-supplied Patient ID when the submitted ID is 
 
   assert.equal(result.pimsPatientId, 'server-chart-id');
   assert.equal(fileReads, 0);
-  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post']);
 });
 
-test('confirm 409 rejects a server Patient ID after the user explicitly cleared it', async () => {
+test('typed confirm conflict rejects a server Patient ID after the user explicitly cleared it', async () => {
   const completed = {
     ...recording,
     status: 'completed',
@@ -338,11 +353,18 @@ test('confirm 409 rejects a server Patient ID after the user explicitly cleared 
   const hint = {
     recordingId,
     fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+    metadata: { ...metadata, pimsPatientId: null },
+    files: [{ fileName: 'recording.m4a', contentType: 'audio/x-m4a', fileSizeBytes: 100 }],
   };
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: false }),
     post: async (path) => {
-      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      if (path.endsWith('/confirm-upload')) {
+        throw new ApiError('already committed', 409, false, undefined, 'UPLOAD_INTENT_CONFLICT', {
+          uploadConflict: { stage: 'confirm', reason: 'commit_state_changed', recoveryAction: 'inspect' },
+        });
+      }
+      if (path.endsWith('/upload-intent-recovery')) return { outcome: 'already_processed', recording: completed };
       throw new Error(`unexpected POST ${path}`);
     },
     get: async () => completed,
@@ -361,7 +383,52 @@ test('confirm 409 rejects a server Patient ID after the user explicitly cleared 
       error?.uploadPhase === 'patch_draft' &&
       /Could not sync the latest patient details/.test(error.message),
   );
-  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post']);
+});
+
+test('controlled restart uses the recovery endpoint and a replacement identity before PUT', async () => {
+  const oldKey = 'recording-upload-v1:slot:old-intent';
+  const replacementKey = 'recording-upload-v2:restart:new-intent';
+  const fileKey = `recordings/${orgId}/${recordingId}.m4a`;
+  const prepared = {
+    outcome: 'prepared',
+    recording: { ...recording, status: 'uploading' },
+    replacedRecordingId: recordingId,
+    uploads: [{
+      index: 0,
+      uploadUrl: 'https://storage.example/upload',
+      fileKey,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }],
+    warnings: [],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 100 }),
+    post: async (path, body, idempotencyKey) => {
+      if (path.endsWith('/upload-intent-recovery')) {
+        assert.equal(idempotencyKey, oldKey);
+        assert.equal(body.action, 'restart');
+        assert.equal(body.replacementIdempotencyKey, replacementKey);
+        return prepared;
+      }
+      if (path.endsWith('/confirm-upload')) return recording;
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///recording.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: replacementKey,
+      supersededIdempotencyKey: oldKey,
+      existingRecordingId: recordingId,
+    },
+  );
+
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
 test('confirmation rejects a different server Patient ID when the submitted ID is nonblank', async () => {

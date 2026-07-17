@@ -81,6 +81,52 @@ test('already outcomes reject upload URLs and retain server proof semantics', as
   assert.throws(() => validatePreparedUploadEnvelope(response({ outcome: 'already_processed' }), 1));
 });
 
+test('upload conflict validation enforces typed stage/reason pairs', async () => {
+  const { validateUploadIntentConflictDetails } = await loadPure('src/api/uploadPreparation.ts');
+  assert.equal(
+    validateUploadIntentConflictDetails({
+      stage: 'confirm',
+      reason: 'commit_state_changed',
+      recoveryAction: 'inspect',
+    }).reason,
+    'commit_state_changed',
+  );
+  assert.throws(() =>
+    validateUploadIntentConflictDetails({
+      stage: 'confirm',
+      reason: 'prepared_manifest_mismatch',
+      recoveryAction: 'inspect',
+    }),
+  );
+});
+
+test('upload recovery envelope validates restart availability and replacement manifests', async () => {
+  const { validateUploadIntentRecoveryEnvelope } = await loadPure('src/api/uploadPreparation.ts');
+  const conflict = {
+    stage: 'prepare',
+    reason: 'prepared_manifest_mismatch',
+    recoveryAction: 'inspect',
+  };
+  assert.equal(
+    validateUploadIntentRecoveryEnvelope({ outcome: 'restart_available', conflict }, 1).outcome,
+    'restart_available',
+  );
+  const prepared = {
+    outcome: 'prepared',
+    recording: response().recording,
+    replacedRecordingId: recordingId,
+    uploads: response().uploads,
+    warnings: [],
+  };
+  assert.equal(validateUploadIntentRecoveryEnvelope(prepared, 1).outcome, 'prepared');
+  assert.throws(() =>
+    validateUploadIntentRecoveryEnvelope(
+      { ...prepared, uploads: [{ ...prepared.uploads[0], index: 2 }] },
+      1,
+    ),
+  );
+});
+
 test('pending-confirm validation accepts minimal native proof and strips PHI fields', async () => {
   const { validatePendingConfirm, toNativePendingConfirmProof } = await loadPure('src/lib/pendingConfirm.ts');
   const pending = {
@@ -184,7 +230,7 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(api, /persistence\.settled[\s\S]*invokeClearHint/);
   assert.match(api, /committed_late_anchor/);
   assert.match(api, /if \(usingRefreshedUrl\)/);
-  assert.match(api, /error instanceof ApiError && error\.status === 409/);
+  assert.match(api, /error\.status !== 409 \|\| error\.code !== 'UPLOAD_INTENT_CONFLICT'/);
   assert.match(api, /isRouteLevelPrepare404\(error\)/);
   assert.match(api, /if \(!isRouteLevelPrepare404\(error\)\) throw error/);
   assert.match(api, /current\.status === 'draft' \|\| current\.status === 'uploading'|probedRecording\.status === 'draft'/);
@@ -197,8 +243,8 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(legacy, /createdForLegacyUpload/);
   assert.match(legacy, /orphan_pending_confirm/);
 
-  assert.match(record, /slotUploadIdempotencyKey\(/);
-  assert.match(record, /durableUploadIdempotencyKey\(/);
+  assert.match(record, /effectiveUploadIdempotencyKey\(/);
+  assert.match(record, /supersededIdempotencyKey/);
   assert.match(record, /await draftStorage\.updatePendingConfirm/);
   assert.match(record, /recordingsApi\.confirmPendingUpload/);
   assert.match(record, /if \(slot\.pendingConfirm\)/);

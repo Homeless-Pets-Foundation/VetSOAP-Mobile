@@ -215,6 +215,13 @@ async function loadDraftStorage(state, opts = {}) {
     },
     './uploadIntent': {
       normalizeUploadIntentId: (value, slotId) => value || `legacy:${slotId}`,
+      normalizeUploadKeyOverride: (value) => value || null,
+      normalizeSupersededUploadKey: (value) => value || null,
+      effectiveUploadIdempotencyKey: ({ uploadKeyOverride, durableRecordingId, uploadIntentId }) =>
+        uploadKeyOverride ||
+        (durableRecordingId
+          ? `recording-upload-v1:durable:${durableRecordingId}`
+          : `recording-upload-v1:slot:${uploadIntentId}`),
     },
     './pimsPatientIdIntent': {
       isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>

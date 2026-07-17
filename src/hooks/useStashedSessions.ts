@@ -318,7 +318,7 @@ export function useStashedSessions(userId: string | null) {
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return null;
 
       const convertToPatientSlots = (
-        stashedSlots: { id: string; uploadIntentId?: string; formData: PatientSlot['formData']; pimsPatientIdExplicitlyCleared?: boolean; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; pendingConfirm?: PatientSlot['pendingConfirm']; durable?: PatientSlot['durable'] }[]
+        stashedSlots: { id: string; uploadIntentId?: string; uploadKeyOverride?: string | null; supersededUploadKey?: string | null; formData: PatientSlot['formData']; pimsPatientIdExplicitlyCleared?: boolean; segments: { uri: string; duration: number; peakMetering?: number }[]; audioDuration: number; serverDraftId?: string | null; draftSlotId?: string | null; draftMetadataDirty?: boolean; pendingConfirm?: PatientSlot['pendingConfirm']; durable?: PatientSlot['durable'] }[]
       ): PatientSlot[] => {
         return stashedSlots.map((slot) => {
           // Rule 20 read site (3 of 3): restore the durable pointer so Resume of a
@@ -329,6 +329,9 @@ export function useStashedSessions(userId: string | null) {
           return {
             id: slot.id,
             uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
+            uploadKeyOverride: slot.uploadKeyOverride ?? null,
+            supersededUploadKey: slot.supersededUploadKey ?? null,
+            uploadRecovery: null,
             formData: { ...slot.formData },
             pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
               slot.formData.pimsPatientId,

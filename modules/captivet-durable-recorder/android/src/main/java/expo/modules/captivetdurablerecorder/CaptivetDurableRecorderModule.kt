@@ -72,6 +72,10 @@ class CaptivetDurableRecorderModule : Module() {
       DurableRecorderEngine.setPendingConfirm(requireContext(), input)
     }
 
+    AsyncFunction("resetUploadAttempt") { input: Map<String, Any?> ->
+      DurableRecorderEngine.resetUploadAttempt(requireContext(), input)
+    }
+
     AsyncFunction("markUploaded") { input: Map<String, Any?> ->
       DurableRecorderEngine.markUploaded(requireContext(), input)
     }

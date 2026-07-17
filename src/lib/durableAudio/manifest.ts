@@ -82,6 +82,8 @@ export interface DurableRecordingManifest {
   anchorsPending?: boolean; // transient: edit intent written, anchors not finalized
   pendingConfirm?: PendingConfirm; // complete post-PUT hint; never contains a URL
   pendingConfirmJson?: string; // native on-disk representation, hydrated by JS
+  uploadKeyOverride?: string; // controlled restart identity
+  supersededUploadKey?: string; // prior intent inspected by recovery
 }
 
 export type ManifestValidation =
@@ -162,6 +164,22 @@ export function validateManifestObject(
     } catch {
       return { ok: false, reason: 'invalid_pending_confirm' };
     }
+  }
+  if (
+    m.uploadKeyOverride !== undefined &&
+    (typeof m.uploadKeyOverride !== 'string' ||
+      !m.uploadKeyOverride.startsWith('recording-upload-v2:restart:') ||
+      m.uploadKeyOverride.length > 128)
+  ) {
+    return { ok: false, reason: 'invalid_upload_key_override' };
+  }
+  if (
+    m.supersededUploadKey !== undefined &&
+    (typeof m.supersededUploadKey !== 'string' ||
+      !m.supersededUploadKey.startsWith('recording-upload-v') ||
+      m.supersededUploadKey.length > 128)
+  ) {
+    return { ok: false, reason: 'invalid_superseded_upload_key' };
   }
 
   return { ok: true, manifest: m as unknown as DurableRecordingManifest };

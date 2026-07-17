@@ -9,7 +9,7 @@ import { measurePhase } from '../lib/monitoring';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 import { canRecordAppointments } from '../lib/recordingPermissions';
 import { useAuthUser } from './useAuth';
-import { durableUploadIdempotencyKey, slotUploadIdempotencyKey } from '../lib/uploadIntent';
+import { effectiveUploadIdempotencyKey } from '../lib/uploadIntent';
 
 const FAILURE_BACKOFF_MS = 2 * 60_000;
 
@@ -39,10 +39,16 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
         // serverRecordingId into the manifest as the death-surviving anchor so
         // the launch recovery scan can reconcile it against the server.
         const durableRecordingId = draft.durable?.recordingId;
+        const idempotencyKey = effectiveUploadIdempotencyKey({
+          uploadKeyOverride: draft.uploadKeyOverride,
+          durableRecordingId,
+          uploadIntentId: draft.uploadIntentId,
+          slotId: draft.slotId,
+        });
         if (durableRecordingId) {
           const created = await recordingsApi.create(draft.formData, {
             isDraft: true,
-            idempotencyKey: durableUploadIdempotencyKey(durableRecordingId),
+            idempotencyKey,
           });
           await durableRecorder
             .setServerRecordingId({ userId, recordingId: durableRecordingId, serverRecordingId: created.id })
@@ -51,7 +57,7 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
         }
         return recordingsApi.create(draft.formData, {
           isDraft: true,
-          idempotencyKey: slotUploadIdempotencyKey(draft.uploadIntentId),
+          idempotencyKey,
         });
       });
       if (result.failed > 0) {

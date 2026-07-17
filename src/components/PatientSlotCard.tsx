@@ -637,7 +637,11 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           <Card className="mb-4">
             <Text className="text-body-lg font-semibold text-content-primary mb-2">Submit</Text>
             <Text className="text-body-sm text-content-tertiary mb-4">
-              Upload this patient&apos;s recording and generate a SOAP note.
+              {slot.uploadRecovery
+                ? slot.uploadRecovery.canRestart
+                  ? 'The recording is preserved locally and can be restarted with a new upload identity.'
+                  : 'Check whether the server completed this upload before taking any further action.'
+                : 'Upload this patient’s recording and generate a SOAP note.'}
             </Text>
 
             {submitBlockedByLiveRecording && (
@@ -691,9 +695,23 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               onPress={handleSubmitSingle}
               loading={slot.uploadStatus === 'uploading'}
               disabled={!canSubmitSingle}
-              accessibilityLabel="Submit and generate SOAP note"
+              accessibilityLabel={
+                slot.uploadRecovery
+                  ? slot.uploadRecovery.canRestart
+                    ? 'Restart upload safely'
+                    : 'Check upload status'
+                  : 'Submit and generate SOAP note'
+              }
             >
-              {slot.uploadStatus === 'uploading' ? 'Uploading...' : slot.uploadStatus === 'error' ? 'Retry Upload' : 'Submit & Generate SOAP Note'}
+              {slot.uploadStatus === 'uploading'
+                ? 'Uploading...'
+                : slot.uploadRecovery
+                  ? slot.uploadRecovery.canRestart
+                    ? 'Restart Upload Safely'
+                    : 'Check Upload Status'
+                  : slot.uploadStatus === 'error'
+                    ? 'Retry Upload'
+                    : 'Submit & Generate SOAP Note'}
             </Button>
           </Card>
         </Animated.View>

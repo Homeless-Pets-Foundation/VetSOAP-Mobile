@@ -85,6 +85,12 @@ type NativeDurableRecorder = {
   /** Persist serverRecordingId into the manifest atomically (temp+rename). */
   setServerRecordingId(input: { userId: string; recordingId: string; serverRecordingId: string }): Promise<void>;
   setPendingConfirm?(input: { userId: string; recordingId: string; pendingConfirmJson: string | null }): Promise<void>;
+  resetUploadAttempt?(input: {
+    userId: string;
+    recordingId: string;
+    expectedOldKey: string;
+    replacementKey: string;
+  }): Promise<void>;
   /** Atomically mark the manifest uploaded + confirmedUploadAt. */
   markUploaded(input: { userId: string; recordingId: string; confirmedUploadAt: string }): Promise<void>;
   addListener(eventName: string, listener: (event: unknown) => void): EventSubscription;
@@ -204,6 +210,21 @@ export async function setPendingConfirm(input: {
     recordingId: input.recordingId,
     pendingConfirmJson: pending ? JSON.stringify(pending) : null,
   });
+}
+
+export async function resetUploadAttempt(input: {
+  userId: string;
+  recordingId: string;
+  expectedOldKey: string;
+  replacementKey: string;
+}): Promise<void> {
+  const mod = getNativeModule();
+  if (!mod || typeof mod.resetUploadAttempt !== 'function') {
+    throw new DurableRecorderUnavailableError(
+      'This app build cannot safely restart a durable upload. Please update the app.',
+    );
+  }
+  return mod.resetUploadAttempt(input);
 }
 
 function hydratePendingConfirm(

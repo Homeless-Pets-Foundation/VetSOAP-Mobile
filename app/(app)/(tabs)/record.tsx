@@ -39,9 +39,9 @@ import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryStat
 import { validatePendingConfirm } from '../../../src/lib/pendingConfirm';
 import { getSecureRandomHex } from '../../../src/lib/random';
 import {
-  durableUploadIdempotencyKey,
+  createRestartUploadIdempotencyKey,
+  effectiveUploadIdempotencyKey,
   normalizeUploadIntentId,
-  slotUploadIdempotencyKey,
 } from '../../../src/lib/uploadIntent';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
 import { useAuthUser } from '../../../src/hooks/useAuth';
@@ -55,6 +55,7 @@ import {
   recordingsApi,
   getUploadPhase,
   isTransientUploadError,
+  UploadIntentConflictError,
   type RecordingDeleteReason,
 } from '../../../src/api/recordings';
 import { ApiError } from '../../../src/api/client';
@@ -90,6 +91,15 @@ import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
 import { isPimsPatientIdExplicitlyCleared } from '../../../src/lib/pimsPatientIdIntent';
+
+function uploadKeyForSlot(slot: PatientSlot): string {
+  return effectiveUploadIdempotencyKey({
+    uploadKeyOverride: slot.uploadKeyOverride,
+    durableRecordingId: slot.durable?.recordingId,
+    uploadIntentId: slot.uploadIntentId,
+    slotId: slot.id,
+  });
+}
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
   const { scale } = useResponsive();
@@ -1988,7 +1998,12 @@ function RecordingSession() {
       // memoized child or an async caller) can pass in a slot object from
       // before the most recent `SET_DRAFT_IDS` dispatch — reading fresh here
       // guarantees we see `serverDraftId` / `draftMetadataDirty` / etc.
-      const slot = sessionRef.current.slots.find((s) => s.id === slotArg.id) ?? slotArg;
+      const latestSlot = sessionRef.current.slots.find((s) => s.id === slotArg.id);
+      const slot =
+        slotArg.supersededUploadKey &&
+        latestSlot?.uploadKeyOverride !== slotArg.uploadKeyOverride
+          ? slotArg
+          : (latestSlot ?? slotArg);
       if (!canRecordAppointments(user?.role)) {
         showRecordPermissionAlert();
         return null;
@@ -2063,6 +2078,7 @@ function RecordingSession() {
       let splitTempDir: string | null = null;
       let splitTempUris: string[] = [];
       let uploadSizeBytes = 0;
+      let localAudioAvailableForRestart = false;
 
       try {
         // Prefer the file-backed recovery engine while a complete local copy is
@@ -2096,6 +2112,7 @@ function RecordingSession() {
               }
             }
           }
+          localAudioAvailableForRestart = hasCompleteLocalAudio;
 
           if (!hasCompleteLocalAudio) {
             const onClearPendingConfirm = async () => {
@@ -2114,9 +2131,10 @@ function RecordingSession() {
               slot.formData,
               slot.pendingConfirm,
               {
-                idempotencyKey: durable
-                  ? durableUploadIdempotencyKey(durable.recordingId)
-                  : slotUploadIdempotencyKey(normalizeUploadIntentId(slot.uploadIntentId, slot.id)),
+                idempotencyKey: uploadKeyForSlot(slot),
+                ...(slot.supersededUploadKey
+                  ? { supersededIdempotencyKey: slot.supersededUploadKey }
+                  : {}),
                 pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
                   slot.formData.pimsPatientId,
                   slot.pimsPatientIdExplicitlyCleared,
@@ -2222,6 +2240,7 @@ function RecordingSession() {
             setUploadStatus(slot.id, 'error', { error: 'The recording audio was not found on this device.' });
             return null;
           }
+          localAudioAvailableForRestart = true;
           if (durableSizeBytes > 250 * 1024 * 1024) {
             trackEvent({ name: 'durable_aac_oversize_recovered', props: { size_bytes: durableSizeBytes } });
             setUploadStatus(slot.id, 'error', {
@@ -2297,7 +2316,10 @@ function RecordingSession() {
                 fileName: 'recording.aac',
                 // Deterministic key derived from the on-disk durable recordingId so
                 // a retried create() after a kill reuses the same server row.
-                idempotencyKey: durableUploadIdempotencyKey(durable.recordingId),
+                idempotencyKey: uploadKeyForSlot(slot),
+                ...(slot.supersededUploadKey
+                  ? { supersededIdempotencyKey: slot.supersededUploadKey }
+                  : {}),
                 // Persist serverRecordingId into the manifest BEFORE the R2 PUT.
                 // No-op for a recovered vault copy (no native manifest to anchor).
                 onRecordingPrepared: async (recordingId) => {
@@ -2473,6 +2495,7 @@ function RecordingSession() {
             if (size > 250 * 1024 * 1024) anyOversized = true;
           }
           uploadSizeBytes = totalBytes;
+          localAudioAvailableForRestart = true;
         } catch (err) {
           if (err instanceof Error && !(err as Error & { uploadPhase?: string }).uploadPhase) {
             (err as Error & { uploadPhase: 'preflight' }).uploadPhase = 'preflight';
@@ -2650,9 +2673,10 @@ function RecordingSession() {
               onRecordingPrepared,
               onClearPendingConfirm,
               resume: slot.pendingConfirm ?? undefined,
-              idempotencyKey: slotUploadIdempotencyKey(
-                normalizeUploadIntentId(slot.uploadIntentId, slot.id),
-              ),
+              idempotencyKey: uploadKeyForSlot(slot),
+              ...(slot.supersededUploadKey
+                ? { supersededIdempotencyKey: slot.supersededUploadKey }
+                : {}),
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
               metadataDirty: !!slot.draftMetadataDirty,
               pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
@@ -2676,9 +2700,10 @@ function RecordingSession() {
               onRecordingPrepared,
               onClearPendingConfirm,
               resume: slot.pendingConfirm ?? undefined,
-              idempotencyKey: slotUploadIdempotencyKey(
-                normalizeUploadIntentId(slot.uploadIntentId, slot.id),
-              ),
+              idempotencyKey: uploadKeyForSlot(slot),
+              ...(slot.supersededUploadKey
+                ? { supersededIdempotencyKey: slot.supersededUploadKey }
+                : {}),
               ...(useExistingDraft && serverDraftId ? { existingRecordingId: serverDraftId } : {}),
               metadataDirty: !!slot.draftMetadataDirty,
               pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
@@ -2741,6 +2766,44 @@ function RecordingSession() {
         if (error instanceof UploadCancelledByUser) {
           setUploadStatus(slot.id, 'pending');
           if (splitTempDir) safeDeleteDirectory(splitTempDir);
+          return null;
+        }
+
+        if (error instanceof UploadIntentConflictError) {
+          const msg = localAudioAvailableForRestart
+            ? 'The server found conflicting upload state. Your audio is safe on this device; restart this upload safely to continue.'
+            : 'The server found conflicting upload state. Check the upload status before taking any further action.';
+          dispatch({
+            type: 'SET_UPLOAD_RECOVERY',
+            slotId: slot.id,
+            recovery: {
+              conflict: error.conflict,
+              canRestart: localAudioAvailableForRestart,
+            },
+            error: msg,
+          });
+          reportClientError({
+            phase: error.uploadPhase,
+            severity: 'warning',
+            errorCode: error.code,
+            message: `Upload intent conflict during ${error.conflict.stage}.`,
+            recordingId: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
+            slotIndex,
+            segmentCount,
+            durationSeconds,
+            fileSizeBytes: uploadSizeBytes || undefined,
+            networkState: netState,
+            attemptNumber,
+            submitContext: baseSubmitDiagnostics,
+            uploadConflictStage: error.conflict.stage,
+            uploadConflictReason: error.conflict.reason,
+          });
+          breadcrumb('upload', 'upload_intent_conflict', {
+            slot_index: slotIndex,
+            conflict_stage: error.conflict.stage,
+            conflict_reason: error.conflict.reason,
+            can_restart: localAudioAvailableForRestart,
+          });
           return null;
         }
 
@@ -2927,17 +2990,10 @@ function RecordingSession() {
           // lands. Also persist serverRecordingId into the manifest as the
           // death-surviving anchor. Mirrors the submit path + usePendingDraftSync.
           const durableRecordingId = slot.durable?.recordingId;
-          const result = durableRecordingId
-            ? await recordingsApi.create(slot.formData, {
-                isDraft: true,
-                idempotencyKey: durableUploadIdempotencyKey(durableRecordingId),
-              })
-            : await recordingsApi.create(slot.formData, {
-                isDraft: true,
-                idempotencyKey: slotUploadIdempotencyKey(
-                  normalizeUploadIntentId(slot.uploadIntentId, slot.id),
-                ),
-              });
+          const result = await recordingsApi.create(slot.formData, {
+            isDraft: true,
+            idempotencyKey: uploadKeyForSlot(slot),
+          });
           serverId = result.id;
           if (durableRecordingId && user?.id) {
             await durableRecorder
@@ -3279,29 +3335,90 @@ function RecordingSession() {
     });
   }, []);
 
-  const handleSubmitSingle = useCallback(
-    (slotId: string) => {
-      const slot = sessionRef.current.slots.find((s) => s.id === slotId);
-      if (!slot) return;
-      if (finishingDraftSlotId === slotId) {
-        Alert.alert(
-          'Saving Recording',
-          'Please wait until the recording is saved before submitting.'
-        );
-        return;
-      }
-      if (!canRecordAppointments(user?.role)) {
-        showRecordPermissionAlert();
-        return;
-      }
-      if (slotHasLiveRecorder(slot)) {
-        Alert.alert(
-          'Finish Recording First',
-          'Finish or discard the active recording segment before submitting this patient.'
-        );
-        return;
+  const persistControlledUploadRestart = useCallback(
+    async (slot: PatientSlot): Promise<PatientSlot | null> => {
+      if (!slot.uploadRecovery?.canRestart) return null;
+      const expectedOldKey = uploadKeyForSlot(slot);
+      const replacementKey = createRestartUploadIdempotencyKey();
+      const draftSlotId = slot.draftSlotId ?? slot.id;
+
+      let persistedSlot = slot;
+      const existingDraft = await draftStorage.getDraft(draftSlotId);
+      if (!existingDraft) {
+        const saved = await draftStorage.saveDraft(slot);
+        persistedSlot = {
+          ...slot,
+          draftSlotId: saved.draftSlotId,
+          segments:
+            slot.durable || saved.promotedSegments.length !== slot.segments.length
+              ? slot.segments
+              : saved.promotedSegments,
+        };
       }
 
+      if (slot.durable && user?.id) {
+        const manifest = await durableRecorder
+          .getManifest({ userId: user.id, recordingId: slot.durable.recordingId })
+          .catch(() => null);
+        if (manifest) {
+          await durableRecorder.resetUploadAttempt({
+            userId: user.id,
+            recordingId: slot.durable.recordingId,
+            expectedOldKey,
+            replacementKey,
+          });
+        }
+      }
+
+      const draftReset = await draftStorage.resetUploadAttempt(
+        persistedSlot.draftSlotId ?? draftSlotId,
+        expectedOldKey,
+        replacementKey,
+      );
+      if (!draftReset) {
+        captureMessage('upload_restart_local_reset_failed', 'warning', {
+          tags: { phase: 'upload_recovery', mode: slot.durable ? 'durable' : 'standard' },
+        });
+        return null;
+      }
+
+      const restarted: PatientSlot = {
+        ...persistedSlot,
+        uploadKeyOverride: replacementKey,
+        supersededUploadKey: expectedOldKey,
+        uploadRecovery: null,
+        uploadStatus: 'pending',
+        uploadProgress: 0,
+        uploadError: null,
+        serverRecordingId: null,
+        serverDraftId: null,
+        pendingConfirm: null,
+        draftMetadataDirty: false,
+      };
+      dispatch({
+        type: 'RESET_UPLOAD_ATTEMPT',
+        slotId: slot.id,
+        uploadKeyOverride: replacementKey,
+        supersededUploadKey: expectedOldKey,
+      });
+      trackEvent({
+        name: 'upload_stale_recording_recovery',
+        props: {
+          stage: 'controlled_restart',
+          outcome: 'local_state_preserved',
+          attempt: 1,
+          segment_count: slot.durable ? 1 : slot.segments.length,
+          mode: slot.durable ? 'durable' : 'standard',
+        },
+      });
+      return restarted;
+    },
+    [dispatch, user?.id],
+  );
+
+  const runSingleSubmit = useCallback(
+    (slot: PatientSlot) => {
+      const slotId = slot.id;
       markSubmitIntent([slotId]);
       setSubmittingSlotId(slotId);
       setTotalSlotsToUpload(1);
@@ -3348,7 +3465,74 @@ function RecordingSession() {
         setTotalSlotsToUpload(0);
       });
     },
-    [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
+    [clearSubmitIntent, markSubmitIntent, recordSelectedSlotUploadNull, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath]
+  );
+
+  const handleSubmitSingle = useCallback(
+    (slotId: string) => {
+      const slot = sessionRef.current.slots.find((candidate) => candidate.id === slotId);
+      if (!slot) return;
+      if (finishingDraftSlotId === slotId) {
+        Alert.alert('Saving Recording', 'Please wait until the recording is saved before submitting.');
+        return;
+      }
+      if (!canRecordAppointments(user?.role)) {
+        showRecordPermissionAlert();
+        return;
+      }
+      if (slotHasLiveRecorder(slot)) {
+        Alert.alert(
+          'Finish Recording First',
+          'Finish or discard the active recording segment before submitting this patient.',
+        );
+        return;
+      }
+      if (!slot.uploadRecovery) {
+        runSingleSubmit(slot);
+        return;
+      }
+      if (!slot.uploadRecovery.canRestart) {
+        runSingleSubmit(slot);
+        return;
+      }
+
+      Alert.alert(
+        'Restart Upload Safely?',
+        'CaptiVet will preserve the recording on this device, create a new upload attempt, and leave the conflicted server attempt untouched.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Restart Upload',
+            onPress: () => {
+              persistControlledUploadRestart(slot)
+                .then((restarted) => {
+                  if (restarted) {
+                    runSingleSubmit(restarted);
+                    return;
+                  }
+                  Alert.alert(
+                    'Restart Not Started',
+                    'The local recovery state changed. Your audio is still saved; check the upload status again.',
+                  );
+                })
+                .catch(() => {
+                  Alert.alert(
+                    'Restart Not Started',
+                    'CaptiVet could not safely save the new upload attempt. Your audio remains on this device.',
+                  );
+                });
+            },
+          },
+        ],
+      );
+    },
+    [
+      finishingDraftSlotId,
+      persistControlledUploadRestart,
+      runSingleSubmit,
+      slotHasLiveRecorder,
+      user?.role,
+    ],
   );
 
   const handleSubmitAll = useCallback(() => {
@@ -3664,13 +3848,22 @@ function RecordingSession() {
             return;
           }
         }
-        let restoredPendingConfirm = validatePendingConfirm(draft.pendingConfirm);
-        if (!restoredPendingConfirm && draft.durable && user?.id) {
-          const nativeManifest = await durableRecorder.getManifest({
+        let nativeManifest: Awaited<ReturnType<typeof durableRecorder.getManifest>> = null;
+        if (draft.durable && user?.id) {
+          nativeManifest = await durableRecorder.getManifest({
             userId: user.id,
             recordingId: draft.durable.recordingId,
           }).catch(() => null);
+        }
+        let restoredPendingConfirm = validatePendingConfirm(draft.pendingConfirm);
+        if (!restoredPendingConfirm) {
           restoredPendingConfirm = validatePendingConfirm(nativeManifest?.pendingConfirm);
+        }
+        if (
+          nativeManifest?.uploadKeyOverride &&
+          nativeManifest.uploadKeyOverride !== draft.uploadKeyOverride
+        ) {
+          restoredPendingConfirm = null;
         }
         // Once R2 has accepted the bytes, confirmation no longer depends on a
         // local file. Only prompt to re-record when there is no valid proof.
@@ -3704,6 +3897,10 @@ function RecordingSession() {
         const restoredSlot: PatientSlot = {
           id: draft.slotId,
           uploadIntentId: normalizeUploadIntentId(draft.uploadIntentId, draft.slotId),
+          uploadKeyOverride: nativeManifest?.uploadKeyOverride ?? draft.uploadKeyOverride,
+          supersededUploadKey:
+            nativeManifest?.supersededUploadKey ?? draft.supersededUploadKey,
+          uploadRecovery: null,
           formData: draft.formData,
           pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
             draft.formData.pimsPatientId,
@@ -3720,7 +3917,11 @@ function RecordingSession() {
           uploadError: null,
           serverRecordingId: null,
           draftSlotId: draft.slotId,
-          serverDraftId: draft.serverDraftId,
+          serverDraftId:
+            nativeManifest?.uploadKeyOverride &&
+            nativeManifest.uploadKeyOverride !== draft.uploadKeyOverride
+              ? null
+              : draft.serverDraftId,
           // Fail closed after restart: if a local draft is attached to a server
           // draft, submit should send current formData with confirm-upload even
           // if an older build did not persist the dirty bit.

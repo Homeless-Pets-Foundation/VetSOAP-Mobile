@@ -60,6 +60,8 @@ export interface RecoverySegment {
 export interface RecoverySlot {
   id: string;
   uploadIntentId?: string;
+  uploadKeyOverride?: string | null;
+  supersededUploadKey?: string | null;
   formData: CreateRecording | null;
   pimsPatientIdExplicitlyCleared?: boolean;
   segments: RecoverySegment[];
@@ -298,6 +300,8 @@ async function buildItemFromSlots(
     slots: {
       id: string;
       uploadIntentId?: string;
+      uploadKeyOverride?: string | null;
+      supersededUploadKey?: string | null;
       formData: CreateRecording | null;
       pimsPatientIdExplicitlyCleared?: boolean;
       segments: { uri: string; duration?: number; peakMetering?: number }[];
@@ -368,6 +372,8 @@ async function buildItemFromSlots(
     recoveredSlots.push({
       id: slot.id,
       uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
+      uploadKeyOverride: slot.uploadKeyOverride ?? null,
+      supersededUploadKey: slot.supersededUploadKey ?? null,
       formData: slot.formData ? { ...slot.formData } : null,
       pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
         slot.formData?.pimsPatientId,
@@ -544,6 +550,8 @@ function draftToBuildSlot(draft: DraftMetadata) {
   return {
     id: draft.slotId,
     uploadIntentId: draft.uploadIntentId,
+    uploadKeyOverride: draft.uploadKeyOverride,
+    supersededUploadKey: draft.supersededUploadKey,
     formData: draft.formData,
     pimsPatientIdExplicitlyCleared: draft.pimsPatientIdExplicitlyCleared,
     segments: draft.segments,
@@ -559,6 +567,8 @@ function stashedSlotToBuildSlot(slot: StashedSlot) {
   return {
     id: slot.id,
     uploadIntentId: slot.uploadIntentId,
+    uploadKeyOverride: slot.uploadKeyOverride,
+    supersededUploadKey: slot.supersededUploadKey,
     formData: slot.formData,
     pimsPatientIdExplicitlyCleared: slot.pimsPatientIdExplicitlyCleared,
     segments: slot.segments,
@@ -659,6 +669,9 @@ function makeRestoredSlot(
   return {
     id: slotId,
     uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
+    uploadKeyOverride: reuseSourceUpload ? (slot.uploadKeyOverride ?? null) : null,
+    supersededUploadKey: reuseSourceUpload ? (slot.supersededUploadKey ?? null) : null,
+    uploadRecovery: null,
     formData,
     pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
       formData.pimsPatientId,

@@ -1,4 +1,5 @@
 import type { CreateRecording } from './index';
+import type { UploadIntentConflictDetails } from '../api/uploadPreparation';
 
 export interface AudioSegment {
   uri: string;
@@ -68,6 +69,16 @@ export interface DurableSlotRef {
 export interface PatientSlot {
   id: string;
   uploadIntentId: string;
+  // A controlled conflict restart keeps the original intent for inspection
+  // while all future upload calls use this persisted replacement identity.
+  uploadKeyOverride: string | null;
+  supersededUploadKey: string | null;
+  // Ephemeral presentation state. The durable restart identities above are
+  // persisted; this can be reconstructed by inspecting the server again.
+  uploadRecovery: {
+    conflict: UploadIntentConflictDetails;
+    canRestart: boolean;
+  } | null;
   formData: CreateRecording;
   // Distinguishes an untouched blank Patient ID (server enrichment allowed)
   // from one the user deliberately removed (server must preserve the clear).
@@ -119,6 +130,18 @@ export type SessionAction =
   | { type: 'UNBIND_RECORDER' }
   | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null; pendingConfirm?: PendingConfirm | null }
   | { type: 'SET_PENDING_CONFIRM'; slotId: string; pendingConfirm: PendingConfirm | null }
+  | {
+      type: 'SET_UPLOAD_RECOVERY';
+      slotId: string;
+      recovery: PatientSlot['uploadRecovery'];
+      error?: string | null;
+    }
+  | {
+      type: 'RESET_UPLOAD_ATTEMPT';
+      slotId: string;
+      uploadKeyOverride: string;
+      supersededUploadKey: string;
+    }
   | { type: 'RESET_SESSION'; defaultTemplateId?: string }
   | { type: 'RESTORE_SESSION'; slots: PatientSlot[] }
   | { type: 'UPDATE_SEGMENT'; slotId: string; segmentIndex: number; uri: string; duration: number; peakMetering?: number }

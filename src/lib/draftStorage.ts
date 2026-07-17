@@ -12,7 +12,12 @@ import type { CreateRecording } from '../types/index';
 import { isValidDurableId } from './durableAudio/paths';
 import { durableTombstone } from './durableAudio/tombstone';
 import { clonePendingConfirm } from './pendingConfirm';
-import { normalizeUploadIntentId } from './uploadIntent';
+import {
+  effectiveUploadIdempotencyKey,
+  normalizeSupersededUploadKey,
+  normalizeUploadIntentId,
+  normalizeUploadKeyOverride,
+} from './uploadIntent';
 import { isPimsPatientIdExplicitlyCleared } from './pimsPatientIdIntent';
 
 const STORE_OPTIONS = {
@@ -44,6 +49,8 @@ export interface DraftSegmentMetadata {
 export interface DraftMetadata {
   slotId: string;
   uploadIntentId: string;
+  uploadKeyOverride: string | null;
+  supersededUploadKey: string | null;
   savedAt: string;
   formData: CreateRecording;
   pimsPatientIdExplicitlyCleared: boolean;
@@ -452,6 +459,8 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
   return {
     slotId: parsed.slotId,
     uploadIntentId: normalizeUploadIntentId(parsed.uploadIntentId, parsed.slotId),
+    uploadKeyOverride: normalizeUploadKeyOverride(parsed.uploadKeyOverride),
+    supersededUploadKey: normalizeSupersededUploadKey(parsed.supersededUploadKey),
     savedAt: parsed.savedAt,
     formData: parsed.formData as CreateRecording,
     pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
@@ -600,6 +609,8 @@ export const draftStorage = {
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
         uploadIntentId: durableUploadIntentId,
+        uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
+        supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: durableDraftMetadataDirty,
@@ -782,6 +793,8 @@ export const draftStorage = {
       const metadata: DraftMetadata = {
         slotId: slot.id,
         uploadIntentId,
+        uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
+        supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: draftMetadataDirty,
@@ -849,6 +862,43 @@ export const draftStorage = {
       emitDraftFailure('draft_save_failed', error);
       throw error;
     }
+  },
+
+  /**
+   * Atomically detach local metadata from a conflicted server intent while
+   * preserving every local audio pointer. A false result means another writer
+   * changed the intent and the caller must inspect again instead of submitting.
+   */
+  async resetUploadAttempt(
+    slotId: string,
+    expectedOldKey: string,
+    replacementKey: string,
+  ): Promise<boolean> {
+    const userId = currentUserId;
+    if (!userId) return false;
+    const normalizedReplacement = normalizeUploadKeyOverride(replacementKey);
+    const normalizedOld = normalizeSupersededUploadKey(expectedOldKey);
+    if (!normalizedReplacement || !normalizedOld) return false;
+
+    const metadata = await readDraftChunks(userId, slotId);
+    if (!metadata) return false;
+    const currentKey = effectiveUploadIdempotencyKey({
+      uploadKeyOverride: metadata.uploadKeyOverride,
+      durableRecordingId: metadata.durable?.recordingId,
+      uploadIntentId: metadata.uploadIntentId,
+      slotId,
+    });
+    if (currentKey !== expectedOldKey) return false;
+
+    metadata.uploadKeyOverride = normalizedReplacement;
+    metadata.supersededUploadKey = normalizedOld;
+    metadata.serverDraftId = null;
+    metadata.pendingConfirm = null;
+    metadata.pendingSync = false;
+    metadata.draftMetadataDirty = false;
+    await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+    invalidateDraftsCache();
+    return true;
   },
 
   /**

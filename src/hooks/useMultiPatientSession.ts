@@ -61,6 +61,9 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
   return {
     id,
     uploadIntentId: createUploadIntentId(),
+    uploadKeyOverride: null,
+    supersededUploadKey: null,
+    uploadRecovery: null,
     formData: {
       pimsPatientId: '',
       patientName: '',
@@ -97,6 +100,9 @@ function invalidatePendingConfirmForAudioChange(slot: PatientSlot): Partial<Pati
   if (!slot.pendingConfirm) return { pendingConfirm: null };
   return {
     uploadIntentId: createUploadIntentId(),
+    uploadKeyOverride: null,
+    supersededUploadKey: null,
+    uploadRecovery: null,
     pendingConfirm: null,
     serverDraftId: null,
     serverRecordingId: null,
@@ -237,7 +243,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, uploadIntentId: createUploadIntentId(), segments: [], durable: null, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
+            ? { ...slot, uploadIntentId: createUploadIntentId(), uploadKeyOverride: null, supersededUploadKey: null, uploadRecovery: null, segments: [], durable: null, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
             : slot
         ),
       };
@@ -329,6 +335,43 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ),
       };
 
+    case 'SET_UPLOAD_RECOVERY':
+      return {
+        ...state,
+        slots: state.slots.map((slot) =>
+          slot.id === action.slotId
+            ? {
+                ...slot,
+                uploadRecovery: action.recovery,
+                uploadStatus: action.recovery ? 'error' : slot.uploadStatus,
+                uploadError: action.error ?? slot.uploadError,
+              }
+            : slot
+        ),
+      };
+
+    case 'RESET_UPLOAD_ATTEMPT':
+      return {
+        ...state,
+        slots: state.slots.map((slot) =>
+          slot.id === action.slotId
+            ? {
+                ...slot,
+                uploadKeyOverride: action.uploadKeyOverride,
+                supersededUploadKey: action.supersededUploadKey,
+                uploadRecovery: null,
+                uploadStatus: 'pending',
+                uploadProgress: 0,
+                uploadError: null,
+                serverRecordingId: null,
+                serverDraftId: null,
+                pendingConfirm: null,
+                draftMetadataDirty: false,
+              }
+            : slot
+        ),
+      };
+
     case 'RESET_SESSION':
       return createInitialState(action.defaultTemplateId);
 
@@ -350,6 +393,11 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             // A restored durable or segment recording is finished/parked.
             audioState: durable || validSegments.length > 0 ? 'stopped' : (slot.audioState ?? 'idle'),
             pendingConfirm: slot.pendingConfirm ?? null,
+            uploadKeyOverride:
+              typeof slot.uploadKeyOverride === 'string' ? slot.uploadKeyOverride : null,
+            supersededUploadKey:
+              typeof slot.supersededUploadKey === 'string' ? slot.supersededUploadKey : null,
+            uploadRecovery: null,
             // Preserve persisted fail-closed metadata state across local draft
             // and stash resume. If true, submit must send current formData with
             // confirm-upload rather than promoting stale server-draft metadata.

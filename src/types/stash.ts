@@ -10,6 +10,8 @@ export interface StashedSegment {
 export interface StashedSlot {
   id: string;
   uploadIntentId?: string;
+  uploadKeyOverride?: string | null;
+  supersededUploadKey?: string | null;
   formData: CreateRecording;
   // Optional for stashes written before explicit Patient ID clear intent was
   // persisted. Legacy null form values are interpreted fail-closed on restore.

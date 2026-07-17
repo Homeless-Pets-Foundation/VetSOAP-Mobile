@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect } from 'react';
 import { AppState, View } from 'react-native';
-import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react-native';
@@ -29,39 +28,39 @@ function providerWithModel(issue: ProviderIssue): string {
   return issue.primaryModel ? `${label} ${issue.primaryModel}` : label;
 }
 
+/**
+ * Lead with the user impact; provider/model/code jargon is demoted to a
+ * short trailing detail (2026-07 audit: the old message opened with
+ * "Z.ai GLM-4.6 needs attention… reported rate limit (code 429)").
+ */
 function messageForIssue(issue: ProviderIssue): string {
-  const fallback = issue.outcome === 'fallback_success' && issue.fallbackProvider
-    ? `${providerLabel(issue.fallbackProvider)} fallback is completing SOAP notes.`
-    : 'SOAP generation may not complete automatically until this is fixed.';
+  const impact = issue.outcome === 'fallback_success' && issue.fallbackProvider
+    ? 'SOAP notes may be delayed — a backup AI provider is completing them.'
+    : 'SOAP notes may be delayed — our AI provider is having issues.';
   const ownership = issue.actionableByOrgAdmin
     ? issue.recommendedAction
-    : 'CaptiVet operations has been notified.';
-  const code = issue.externalCode ? ` (code ${issue.externalCode})` : '';
-  return `${providerWithModel(issue)} needs attention. ${fallback} ${providerLabel(
-    issue.primaryProvider
-  )} reported ${errorClassLabel(issue.errorClass)}${code}. ${ownership}`;
+    : 'Captivet operations has been notified.';
+  const code = issue.externalCode ? ` (${issue.externalCode})` : '';
+  const detail = `Detail: ${providerWithModel(issue)} — ${errorClassLabel(issue.errorClass)}${code}.`;
+  return `${impact} ${ownership} ${detail}`;
 }
 
-export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
-  const router = useRouter();
-  const queryClient = useQueryClient();
+const PROVIDER_ISSUES_QUERY_KEY = ['organization', 'provider-issues', 'active'] as const;
+
+/**
+ * Active provider issue for owner/admin users (null otherwise). Exported so
+ * Home's banner-priority stack (WP30) can count this banner without
+ * rendering it; React Query dedupes the underlying fetch across consumers.
+ */
+export function useActiveProviderIssue(): ProviderIssue | null {
   const user = useAuthUser();
   const canView = user?.role === 'owner' || user?.role === 'admin';
-  const queryKey = ['organization', 'provider-issues', 'active'] as const;
 
   const { data, refetch } = useQuery({
-    queryKey,
+    queryKey: PROVIDER_ISSUES_QUERY_KEY,
     queryFn: () => providerIssuesApi.list({ status: 'active', days: 1 }),
     enabled: canView,
     staleTime: 60_000,
-  });
-
-  const acknowledgeMutation = useMutation({
-    mutationFn: (issueKey: string) => providerIssuesApi.acknowledge(issueKey),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['organization', 'provider-issues'] }).catch(() => {});
-      queryClient.invalidateQueries({ queryKey }).catch(() => {});
-    },
   });
 
   useFocusEffect(
@@ -84,7 +83,32 @@ export function ProviderIssueBanner({ location }: { location: 'home' | 'settings
   }, [canView, refetch]);
 
   if (!canView) return null;
-  const issue = data?.issues[0];
+  return data?.issues[0] ?? null;
+}
+
+/**
+ * Presentational half: renders an already-fetched issue. Home passes the
+ * issue from its own useActiveProviderIssue() call (banner-priority stack) —
+ * mounting the hook twice registered duplicate focus/AppState refetch
+ * listeners for the same endpoint (Codex P2, PR #143).
+ */
+export function ProviderIssueBannerContent({
+  location,
+  issue,
+}: {
+  location: 'home' | 'settings';
+  issue: ProviderIssue | null;
+}) {
+  const queryClient = useQueryClient();
+
+  const acknowledgeMutation = useMutation({
+    mutationFn: (issueKey: string) => providerIssuesApi.acknowledge(issueKey),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['organization', 'provider-issues'] }).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: PROVIDER_ISSUES_QUERY_KEY }).catch(() => {});
+    },
+  });
+
   if (!issue) return null;
 
   return (
@@ -101,12 +125,20 @@ export function ProviderIssueBanner({ location }: { location: 'home' | 'settings
                 onPress: () => acknowledgeMutation.mutate(issue.issueKey),
               }
             : {
-                label: 'Settings',
-                onPress: () => router.push('/settings' as never),
+                // Home offers the same server-side acknowledge Settings has —
+                // the component-local X used to look identical but silently
+                // reappear on next mount.
+                label: acknowledgeMutation.isPending ? 'Dismissing' : 'Dismiss',
+                onPress: () => acknowledgeMutation.mutate(issue.issueKey),
               }
         }
-        dismissible={location === 'home'}
       />
     </View>
   );
+}
+
+/** Query + presentation in one — for screens (Settings) without their own hook call. */
+export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
+  const issue = useActiveProviderIssue();
+  return <ProviderIssueBannerContent location={location} issue={issue} />;
 }

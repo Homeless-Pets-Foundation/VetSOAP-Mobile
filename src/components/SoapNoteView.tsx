@@ -5,7 +5,6 @@ import Animated, {
   useSharedValue,
   withTiming,
   FadeIn,
-  FadeOut,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useQueryClient } from '@tanstack/react-query';
@@ -17,6 +16,7 @@ import { SOAP_SECTION_ACTIONS } from '../constants/strings';
 import { trackEvent } from '../lib/analytics';
 import { soapNotesApi, type SoapNoteSection } from '../api/soapNotes';
 import { Button } from './ui/Button';
+import { CopiedToast } from './ui/CopiedToast';
 import { useThemeColors } from '../hooks/useThemeColors';
 
 type SoapAccent = 'subjective' | 'objective' | 'assessment' | 'plan';
@@ -57,18 +57,6 @@ function formatEditedAt(value: string | null | undefined): string | null {
     month: 'short',
     day: 'numeric',
   });
-}
-
-function CopiedToast() {
-  return (
-    <Animated.View
-      entering={FadeIn.duration(200)}
-      exiting={FadeOut.duration(200)}
-      className="absolute top-0 right-0 bg-toast-bg px-3 py-1.5 rounded-btn z-10"
-    >
-      <Text className="text-caption text-toast-fg font-medium">{SOAP_SECTION_ACTIONS.copied}</Text>
-    </Animated.View>
-  );
 }
 
 function AccordionSection({
@@ -196,7 +184,7 @@ function AccordionSection({
           entering={FadeIn.duration(200)}
           className="p-3 pt-0 relative"
         >
-          {showCopied && <CopiedToast />}
+          <CopiedToast visible={showCopied} />
           {isEditing ? (
             <View className="mt-2">
               <TextInput
@@ -240,44 +228,28 @@ function AccordionSection({
               </View>
               <View className="self-end mt-2.5 flex-row items-center gap-2">
                 {canEdit && (
-                  <Pressable
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<Pencil color={colors.contentSecondary} size={12} />}
+                    accessibilityLabel={`Edit ${label} section`}
                     onPress={() => {
                       setDraft(content ?? '');
                       setIsEditing(true);
                     }}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Edit ${label} section`}
-                    className="flex-row items-center gap-1.5 px-4 py-1.5 rounded border border-border-strong"
-                    style={{ minHeight: 44 }}
                   >
-                    <Pencil color={colors.contentSecondary} size={12} style={{ flexShrink: 0 }} />
-                    {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
-                    <Text
-                      className="text-caption text-content-secondary"
-                      allowFontScaling={false}
-                      style={{ flexShrink: 0, paddingRight: 2 }}
-                    >
-                      {`${SOAP_SECTION_ACTIONS.edit} `}
-                    </Text>
-                  </Pressable>
+                    {SOAP_SECTION_ACTIONS.edit}
+                  </Button>
                 )}
-                <Pressable
-                  onPress={() => { copySection().catch(() => {}); }}
-                  accessibilityRole="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<Copy color={colors.contentSecondary} size={12} />}
                   accessibilityLabel={`Copy ${label} section`}
-                  className="flex-row items-center gap-1.5 px-4 py-1.5 rounded border border-border-strong"
-                  style={{ minHeight: 44 }}
+                  onPress={() => { copySection().catch(() => {}); }}
                 >
-                  <Copy color={colors.contentSecondary} size={12} style={{ flexShrink: 0 }} />
-                  {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
-                  <Text
-                    className="text-caption text-content-secondary"
-                    allowFontScaling={false}
-                    style={{ flexShrink: 0, paddingRight: 2 }}
-                  >
-                    {`${SOAP_SECTION_ACTIONS.copy} `}
-                  </Text>
-                </Pressable>
+                  {SOAP_SECTION_ACTIONS.copy}
+                </Button>
               </View>
             </>
           )}
@@ -326,23 +298,16 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNot
         >
           SOAP Note
         </Text>
-        {showCopiedAll && <CopiedToast />}
-        <Pressable
-          onPress={() => { copyAll().catch(() => {}); }}
-          accessibilityRole="button"
+        <CopiedToast visible={showCopiedAll} />
+        <Button
+          variant="primary"
+          size="sm"
+          icon={<Copy color={colors.contentOnBrand} size={14} />}
           accessibilityLabel="Copy full SOAP note"
-          className="bg-brand-500 px-4 py-1.5 rounded-md flex-row items-center gap-1.5 min-h-[44px]"
+          onPress={() => { copyAll().catch(() => {}); }}
         >
-          <Copy color={colors.contentOnBrand} size={14} style={{ flexShrink: 0 }} />
-          {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
-          <Text
-            className="text-body-sm text-content-on-brand font-semibold"
-            allowFontScaling={false}
-            style={{ flexShrink: 0, paddingRight: 2 }}
-          >
-            {`${SOAP_SECTION_ACTIONS.copyAll} `}
-          </Text>
-        </Pressable>
+          {SOAP_SECTION_ACTIONS.copyAll}
+        </Button>
       </View>
 
       {SECTIONS.map(({ key, label, accent, Icon }) => {

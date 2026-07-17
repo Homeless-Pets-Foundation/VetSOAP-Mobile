@@ -483,6 +483,73 @@ test('typed confirm conflict rejects a server Patient ID after the user explicit
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post']);
 });
 
+test('untyped confirm 409 accepts a server-supplied Patient ID when submitted blank', async () => {
+  let fileReads = 0;
+  const completed = {
+    ...recording,
+    status: 'completed',
+    patientId: '33333333-3333-4333-8333-333333333333',
+    pimsPatientId: 'server-chart-id',
+  };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => completed,
+  });
+
+  const result = await harness.recordingsApi.confirmPendingUpload(
+    { ...metadata, pimsPatientId: '' },
+    hint,
+    { idempotencyKey: 'intent-untyped-patient-id' },
+  );
+
+  assert.equal(result.pimsPatientId, 'server-chart-id');
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
+test('untyped confirm 409 rejects a server Patient ID after an explicit clear', async () => {
+  const completed = {
+    ...recording,
+    status: 'completed',
+    pimsPatientId: 'server-chart-id',
+  };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: false }),
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) throw new ApiError('already committed', 409);
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => completed,
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.confirmPendingUpload(
+      { ...metadata, pimsPatientId: '' },
+      hint,
+      {
+        idempotencyKey: 'intent-untyped-explicit-clear',
+        pimsPatientIdExplicitlyCleared: true,
+      },
+    ),
+    (error) =>
+      error?.uploadPhase === 'patch_draft' &&
+      /Could not sync the latest patient details/.test(error.message),
+  );
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
 test('controlled restart uses the recovery endpoint and a replacement identity before PUT', async () => {
   const oldKey = 'recording-upload-v1:slot:old-intent';
   const replacementKey = 'recording-upload-v2:restart:new-intent';

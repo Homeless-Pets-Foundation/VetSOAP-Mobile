@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { ScrollView, Pressable, View, Text } from 'react-native';
+import { Alert, ScrollView, Pressable, View, Text } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -30,7 +30,7 @@ function statusLabel(audioState: PatientSlot['audioState'], uploadStatus: Patien
   if (uploadStatus === 'uploading') return 'uploading';
   if (audioState === 'recording') return 'recording';
   if (audioState === 'paused') return 'paused';
-  if (audioState === 'stopped') return 'complete';
+  if (audioState === 'stopped') return 'recorded, not submitted';
   return 'ready';
 }
 
@@ -38,7 +38,7 @@ function StatusDot({ audioState, uploadStatus }: Pick<PatientSlot, 'audioState' 
   if (uploadStatus === 'success') {
     return (
       <View
-        className="w-2 h-2 rounded-full bg-success-500 ml-1.5"
+        className="w-2 h-2 rounded-full bg-status-success-fg ml-1.5"
         accessibilityLabel="uploaded"
       />
     );
@@ -47,17 +47,19 @@ function StatusDot({ audioState, uploadStatus }: Pick<PatientSlot, 'audioState' 
     return <PulsingStatusDot />;
   }
   if (audioState === 'stopped') {
+    // Amber, not green: a recorded-but-unsubmitted patient must not read as
+    // already uploaded (matches the Home "Not Submitted" convention).
     return (
       <View
-        className="w-2 h-2 rounded-full bg-success-500 ml-1.5"
-        accessibilityLabel="recording complete"
+        className="w-2 h-2 rounded-full bg-status-warning-fg ml-1.5"
+        accessibilityLabel="recorded, not submitted"
       />
     );
   }
   if (audioState === 'paused') {
     return (
       <View
-        className="w-2 h-2 rounded-full bg-warning-500 ml-1.5"
+        className="w-2 h-2 rounded-full bg-status-warning-fg ml-1.5"
         accessibilityLabel="paused"
       />
     );
@@ -89,7 +91,7 @@ function PulsingStatusDot() {
 
   return (
     <Animated.View
-      className="w-2 h-2 rounded-full bg-danger-500 ml-1.5"
+      className="w-2 h-2 rounded-full bg-status-danger-fg ml-1.5"
       style={style}
       accessibilityLabel="recording in progress"
     />
@@ -126,6 +128,11 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
   const handleAddPress = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     onAddPatient();
+  };
+
+  const handleAtMaxPress = () => {
+    // ADD_SLOT silently no-ops at 10 — explain the ceiling instead.
+    Alert.alert('Session Full', 'A session can hold up to 10 patients. Submit or save this session to start another.');
   };
 
   return (
@@ -180,20 +187,29 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
         );
       })}
 
-      {/* Add patient button — hidden at max (10) */}
-      {slots.length < 10 && (
-        <Animated.View layout={TAB_LAYOUT_TRANSITION}>
-          <Pressable
-            onPress={handleAddPress}
-            accessibilityRole="button"
-            accessibilityLabel="Add patient"
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            className="w-[44px] h-[44px] items-center justify-center rounded-full border border-dashed border-border-strong bg-surface-raised"
-          >
-            <Plus color={colors.contentTertiary} size={18} />
-          </Pressable>
-        </Animated.View>
-      )}
+      {/* Add patient button — disabled (not hidden) at max so the limit is
+          explained instead of the control silently vanishing */}
+      <Animated.View layout={TAB_LAYOUT_TRANSITION}>
+        <Pressable
+          onPress={slots.length < 10 ? handleAddPress : handleAtMaxPress}
+          accessibilityRole="button"
+          accessibilityLabel={slots.length < 10 ? 'Add patient' : 'Add patient — session is full'}
+          // Deliberately NOT accessibilityState.disabled: the control stays
+          // tappable at the max so it can explain the limit, and a disabled
+          // state would make VoiceOver/TalkBack refuse to activate it.
+          accessibilityHint={
+            slots.length < 10
+              ? undefined
+              : 'A session can hold up to 10 patients. Activating explains the limit.'
+          }
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          className={`w-[44px] h-[44px] items-center justify-center rounded-full border border-dashed bg-surface-raised ${
+            slots.length < 10 ? 'border-border-strong' : 'border-border-default opacity-50'
+          }`}
+        >
+          <Plus color={colors.contentTertiary} size={18} />
+        </Pressable>
+      </Animated.View>
     </ScrollView>
   );
 }

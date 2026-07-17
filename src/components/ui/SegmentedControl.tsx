@@ -105,12 +105,9 @@ export function SegmentedControl<Value extends string = string>({
   );
 
   const content = scrollable ? (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      accessibilityRole="radiogroup"
-      accessibilityLabel={accessibilityLabel ?? label}
-    >
+    // No accessibilityRole here — the inner group View already carries
+    // radiogroup; duplicating it announced a nested empty group to readers.
+    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
       {group}
     </ScrollView>
   ) : (

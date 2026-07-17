@@ -62,6 +62,8 @@ export default function TabsLayout() {
           elevation: 4,
         },
         tabBarLabelStyle: {
+          // Deliberate exception to the semantic type scale: 11px is the
+          // platform-conventional tab-label size and four labels must fit.
           fontSize: 11,
           fontWeight: '600',
         },
@@ -98,7 +100,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="recordings"
         options={{
-          title: 'Records',
+          title: 'Recordings',
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={FileText} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'View all recordings',
         }}
@@ -110,11 +112,6 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Users} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Browse patients',
         }}
-      />
-      {/* Hide settings from tab bar */}
-      <Tabs.Screen
-        name="settings"
-        options={{ href: null }}
       />
     </Tabs>
   );

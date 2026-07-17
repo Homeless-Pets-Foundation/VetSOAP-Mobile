@@ -328,7 +328,7 @@ function ActiveAudioPlayer({
 }) {
   const colors = useThemeColors();
   const playback = useAudioPlayback();
-  const { isLoaded, isPlaying, duration, isBuffering, currentTimeSV, currentTimeRef } = playback;
+  const { isLoaded, isPlaying, duration, isBuffering, currentTimeSV, currentTimeRef, playbackRate, setPlaybackRate } = playback;
   const sanitizedInitialDuration =
     typeof initialDurationSeconds === 'number' &&
     Number.isFinite(initialDurationSeconds) &&
@@ -572,7 +572,6 @@ function ActiveAudioPlayer({
               {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
               <Text
                 className="text-caption text-content-secondary"
-                allowFontScaling={false}
                 style={{ flexShrink: 0, paddingRight: 2 }}
               >
                 {`${AUDIO_PLAYER_COPY.retry} `}
@@ -632,6 +631,31 @@ function ActiveAudioPlayer({
               onScrubCancel={handleScrubCancel}
               onSeekTo={handleSeekTo}
             />
+
+            <Pressable
+              onPress={() => {
+                // Cycle 1x -> 1.25x -> 1.5x -> 2x -> 1x. Reviewing a full
+                // consult at speed is the player's primary use.
+                const rates = [1, 1.25, 1.5, 2];
+                const next = rates[(rates.indexOf(playbackRate) + 1) % rates.length];
+                setPlaybackRate(next);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Playback speed, ${playbackRate}x. Tap to change.`}
+              className={`ml-2 px-2 items-center justify-center rounded-pill border ${
+                playbackRate !== 1 ? 'bg-surface-sunken border-brand-500' : 'border-border-strong'
+              }`}
+              style={{ minHeight: 44, minWidth: 44 }}
+            >
+              <Text
+                className={`text-caption font-semibold ${
+                  playbackRate !== 1 ? 'text-brand-600' : 'text-content-secondary'
+                }`}
+                style={{ fontVariant: ['tabular-nums'] }}
+              >
+                {AUDIO_PLAYER_COPY.speed(playbackRate)}
+              </Text>
+            </Pressable>
           </View>
 
           {segmentUrls.length > 1 && (
@@ -645,7 +669,7 @@ function ActiveAudioPlayer({
                   className={`px-3 py-1.5 rounded-pill border ${
                     i === activeSegment ? 'bg-surface-sunken border-brand-500' : 'border-border-strong'
                   }`}
-                  style={{ minHeight: 32 }}
+                  style={{ minHeight: 44, justifyContent: 'center' }}
                 >
                   <Text
                     className={`text-caption ${

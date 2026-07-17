@@ -9,6 +9,7 @@ import { copyWithAutoClear } from '../lib/secureClipboard';
 import { CLIENT_EMAIL_COPY } from '../constants/strings';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
+import { Toast } from './Toast';
 import { useThemeColors } from '../hooks/useThemeColors';
 
 const MAILTO_BODY_LIMIT = 1800;
@@ -27,18 +28,21 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
   const colors = useThemeColors();
   const [draft, setDraft] = useState<EmailDraftResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  // Success feedback = transient toast (audit theme D); errors stay inline.
+  const [toast, setToast] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<string | null>(null);
+  const [previewExpanded, setPreviewExpanded] = useState(false);
 
   const generate = useCallback(async () => {
     setLoading(true);
-    setStatus(null);
+    setErrorStatus(null);
     try {
       const nextDraft = await recordingsApi.generateEmailDraft(recordingId, { mode: 'visit_summary' });
       setDraft(nextDraft);
       trackEvent({ name: 'email_draft_generated', props: { recording_id: recordingId } });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (error) {
-      setStatus(emailDraftErrorMessage(error));
+      setErrorStatus(emailDraftErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -46,17 +50,21 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
 
   const copyDraft = useCallback(async () => {
     if (!draft) return;
+    // Clear a prior action failure so a successful retry doesn't show the
+    // success toast and a stale "copy failed" side by side (Codex P2, PR #143).
+    setErrorStatus(null);
     try {
       await copyWithAutoClear(`${draft.subject ?? ''}\n\n${draft.body ?? ''}`);
-      setStatus(CLIENT_EMAIL_COPY.copied);
+      setToast(CLIENT_EMAIL_COPY.copied);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch {
-      setStatus(CLIENT_EMAIL_COPY.copyFailed);
+      setErrorStatus(CLIENT_EMAIL_COPY.copyFailed);
     }
   }, [draft]);
 
   const openMail = useCallback(async () => {
     if (!draft) return;
+    setErrorStatus(null);
     const subject = draft.subject || 'Visit summary';
     const body = draft.body || '';
 
@@ -68,22 +76,23 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
         await Linking.openURL(mailtoUrl(subject, body));
       }
       trackEvent({ name: 'soap_exported', props: { target: 'email', recording_id: recordingId } });
-      setStatus(body.length > MAILTO_BODY_LIMIT ? CLIENT_EMAIL_COPY.fallbackCopied : null);
+      if (body.length > MAILTO_BODY_LIMIT) setToast(CLIENT_EMAIL_COPY.fallbackCopied);
     } catch {
       try {
         await copyWithAutoClear(body || subject);
         await Linking.openURL(mailtoUrl(subject));
         trackEvent({ name: 'soap_exported', props: { target: 'email', recording_id: recordingId } });
-        setStatus(body ? CLIENT_EMAIL_COPY.bodyCopied : CLIENT_EMAIL_COPY.fallbackCopied);
+        setToast(body ? CLIENT_EMAIL_COPY.bodyCopied : CLIENT_EMAIL_COPY.fallbackCopied);
       } catch {
         await copyWithAutoClear(body ? `${subject}\n\n${body}` : subject).catch(() => {});
-        setStatus(CLIENT_EMAIL_COPY.fallbackCopied);
+        setToast(CLIENT_EMAIL_COPY.fallbackCopied);
       }
     }
   }, [draft, recordingId]);
 
   const shareDraft = useCallback(async () => {
     if (!draft) return;
+    setErrorStatus(null);
     try {
       const subject = draft.subject ?? '';
       const body = draft.body ?? '';
@@ -95,7 +104,7 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
         trackEvent({ name: 'soap_exported', props: { target: 'email', recording_id: recordingId } });
       }
     } catch {
-      setStatus(CLIENT_EMAIL_COPY.shareFailed);
+      setErrorStatus(CLIENT_EMAIL_COPY.shareFailed);
     }
   }, [draft, recordingId]);
 
@@ -120,9 +129,17 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
       {draft && (
         <View className="border border-border-default rounded-input p-3 bg-surface">
           <Text className="text-body font-semibold text-content-primary mb-2">{draft.subject}</Text>
-          <Text className="text-body-sm text-content-body" numberOfLines={8}>
+          <Text className="text-body-sm text-content-body" numberOfLines={previewExpanded ? undefined : 8}>
             {draft.body}
           </Text>
+          <Button
+            variant="ghost"
+            size="sm"
+            onPress={() => setPreviewExpanded((value) => !value)}
+            accessibilityLabel={previewExpanded ? 'Collapse email preview' : 'Show the full email'}
+          >
+            {previewExpanded ? 'Show less' : 'Show more'}
+          </Button>
           <View className="flex-row flex-wrap gap-2 mt-3">
             <Button
               variant="secondary"
@@ -152,7 +169,12 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
         </View>
       )}
 
-      {status && <Text className="text-caption text-content-tertiary mt-2">{status}</Text>}
+      {errorStatus && (
+        <Text className="text-caption text-status-danger mt-2" accessibilityRole="alert">
+          {errorStatus}
+        </Text>
+      )}
+      <Toast message={toast ?? ''} visible={!!toast} onHide={() => setToast(null)} placement="inline" />
     </Card>
   );
 }

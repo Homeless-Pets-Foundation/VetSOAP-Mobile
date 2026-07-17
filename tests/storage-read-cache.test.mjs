@@ -227,6 +227,10 @@ async function loadDraftStorage(state, opts = {}) {
       isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
         persistedIntent === true || value === null,
     },
+    './pimsPatientIdIntent': {
+      isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
+        persistedIntent === true || value === null,
+    },
   });
   return { draftStorage: mod.draftStorage, ...store };
 }

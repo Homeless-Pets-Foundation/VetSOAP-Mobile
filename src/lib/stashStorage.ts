@@ -1,7 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
 
-const MAX_STASHES = 5;
+export const MAX_STASHES = 5;
 type Generation = 'a' | 'b';
 
 // Android SecureStore limit is 2048 bytes per value.

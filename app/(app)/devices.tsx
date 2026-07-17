@@ -19,6 +19,8 @@ import { EmptyState } from '../../src/components/ui/EmptyState';
 import { IconButton } from '../../src/components/ui/IconButton';
 import { ListItem } from '../../src/components/ui/ListItem';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
+import { Toast } from '../../src/components/Toast';
+import { friendlyErrorMessage } from '../../src/lib/errorCopy';
 
 function formatRelativeTime(isoDate: string): string {
   const date = new Date(isoDate);
@@ -32,7 +34,14 @@ function formatRelativeTime(isoDate: string): string {
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays === 1) return 'Yesterday';
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  // Include the year for anything outside the current one — "Mar 5" is
+  // ambiguous on exactly the stale rows users most need to revoke.
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
 }
 
 function getDeviceIcon(deviceType: string | null) {
@@ -110,6 +119,7 @@ export default function DevicesScreen() {
   const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [mfaToastVisible, setMfaToastVisible] = useState(false);
 
   useEffect(() => {
     secureStorage
@@ -129,11 +139,13 @@ export default function DevicesScreen() {
     },
     onError: (error: unknown) => {
       if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
+        // The global MFA flow takes over; show a breadcrumb so the tap
+        // doesn't appear dead if that flow is delayed.
+        setMfaToastVisible(true);
         return;
       }
-      const message =
-        error instanceof Error ? error.message : 'Could not revoke this device.';
-      Alert.alert('Revoke Failed', message);
+      if (__DEV__) console.error('[Devices] revoke failed:', error);
+      Alert.alert('Revoke Failed', friendlyErrorMessage(error));
     },
     onSettled: () => {
       setRevokingId(null);
@@ -272,6 +284,11 @@ export default function DevicesScreen() {
           )}
         </ScrollView>
       </View>
+      <Toast
+        message="Verify with MFA to revoke devices"
+        visible={mfaToastVisible}
+        onHide={() => setMfaToastVisible(false)}
+      />
     </SafeAreaView>
   );
 }

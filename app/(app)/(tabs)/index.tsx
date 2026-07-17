@@ -21,6 +21,10 @@ import { recordingsApi } from '../../../src/api/recordings';
 import { patientsApi } from '../../../src/api/patients';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { measurePhase } from '../../../src/lib/monitoring';
+import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
+import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
+import { ERROR_COPY } from '../../../src/constants/strings';
+import { HIT_SLOP } from '../../../src/components/ui/styles';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -32,7 +36,8 @@ import { SkeletonCard } from '../../../src/components/ui/Skeleton';
 import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
 import { Banner } from '../../../src/components/ui/Banner';
-import { ProviderIssueBanner } from '../../../src/components/ProviderIssueBanner';
+import { ProviderIssueBannerContent, useActiveProviderIssue } from '../../../src/components/ProviderIssueBanner';
+import { useDurableRecoveries } from '../../../src/hooks/useDurableRecoveries';
 import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -46,6 +51,20 @@ export default function HomeScreen() {
   const isTabFocused = useIsFocused();
   const { capacity } = useDeviceCapacity();
   const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
+  const durableRecoveries = useDurableRecoveries();
+  const activeProviderIssue = useActiveProviderIssue();
+  const [bannersExpanded, setBannersExpanded] = useState(false);
+  // Priority order (WP30): recovery > device limit > provider issue. The two
+  // global thin strips (device registration, offline) live in (app)/_layout.
+  const activeBannerKeys = useMemo(() => {
+    const keys: ('recovery' | 'deviceLimit' | 'providerIssue')[] = [];
+    if (durableRecoveries.length > 0) keys.push('recovery');
+    if (capacity && (capacity.isAtLimit || capacity.isNearLimit)) keys.push('deviceLimit');
+    if (activeProviderIssue) keys.push('providerIssue');
+    return keys;
+  }, [durableRecoveries.length, capacity, activeProviderIssue]);
+  const visibleBannerKeys = bannersExpanded ? activeBannerKeys : activeBannerKeys.slice(0, 1);
+  const hiddenBannerCount = activeBannerKeys.length - visibleBannerKeys.length;
   const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
 
   // Parallel fetch — useQueries fires both requests at once instead of letting
@@ -239,11 +258,12 @@ export default function HomeScreen() {
         </Text>
       </View>
 
-      {/* Durable crash-recovery banner (renders only when recordings recovered) */}
-      <DurableRecoveryBanner />
+      {/* In-page alerts, one at a time by priority (recovery > device limit >
+          provider issue) with a "+N more" expander — five uncoordinated
+          banners used to push the hero Record CTA below the fold (WP30). */}
+      {visibleBannerKeys.includes('recovery') && <DurableRecoveryBanner />}
 
-      {/* Device limit warning */}
-      {capacity && (capacity.isAtLimit || capacity.isNearLimit) ? (
+      {visibleBannerKeys.includes('deviceLimit') && capacity ? (
         <View className="mb-4">
           <Banner
             variant={capacity.isAtLimit ? 'error' : 'warning'}
@@ -264,7 +284,22 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      <ProviderIssueBanner location="home" />
+      {visibleBannerKeys.includes('providerIssue') && (
+        <ProviderIssueBannerContent location="home" issue={activeProviderIssue} />
+      )}
+
+      {hiddenBannerCount > 0 && (
+        <Pressable
+          onPress={() => setBannersExpanded(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`Show ${hiddenBannerCount} more alert${hiddenBannerCount > 1 ? 's' : ''}`}
+          className="mb-4 rounded-xl border border-border-default bg-surface-raised px-4 py-2.5 items-center"
+        >
+          <Text className="text-body-sm font-medium text-content-secondary">
+            {`+${hiddenBannerCount} more alert${hiddenBannerCount > 1 ? 's' : ''}`}
+          </Text>
+        </Pressable>
+      )}
 
       {/* Quick Action — hero CTA. Gradient + glow for premium depth; the
           gradient takes raw color values (not Tailwind classes) so stops pull
@@ -366,10 +401,10 @@ export default function HomeScreen() {
           <Text
             className={`text-display font-bold ${
               processingCount > 0
-                ? 'text-warning-500'
+                ? 'text-status-warning'
                 : draftCount > 0
-                  ? 'text-warning-500'
-                  : 'text-success-500'
+                  ? 'text-status-warning'
+                  : 'text-status-success'
             }`}
           >
             {processingCount > 0 ? processingCount : draftCount > 0 ? draftCount : '\u2713'}
@@ -400,10 +435,15 @@ export default function HomeScreen() {
           {totalRecordings > 5 && (
             <Pressable
               onPress={() => router.push('/recordings')}
-              accessibilityRole="button"
+              accessibilityRole="link"
               accessibilityLabel="View all recordings"
+              hitSlop={HIT_SLOP}
+              style={{ minHeight: 32, justifyContent: 'center' }}
             >
-              <Text className="text-body-sm text-brand-500 font-medium">View All</Text>
+              {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
+              <Text className="text-body-sm text-brand-500 font-medium" style={{ flexShrink: 0, paddingRight: 2 }}>
+                {'View All '}
+              </Text>
             </Pressable>
           )}
         </View>
@@ -414,21 +454,38 @@ export default function HomeScreen() {
             <SkeletonCard />
             <SkeletonCard />
           </View>
-        ) : isError ? (
+        ) : isError && recordings.length === 0 ? (
+          // Only replace the list with the error card when there is NO cached
+          // data. A persisted list hydrated offline keeps isError=true after
+          // the background refetch fails; showing the error card then would
+          // hide the usable cache on the default landing screen (Codex P2,
+          // PR #143).
           <Card className="items-center py-6">
             <FileText color={colors.danger600} size={iconLg} />
             <Text className="text-body text-content-secondary mt-3 text-center">
               Could not load recordings.
             </Text>
             {error ? (
-              <Text className="text-caption text-content-tertiary mt-2 text-center px-4" selectable>
-                [{error.name ?? 'Error'}{(error as { status?: number })?.status ? ` ${(error as { status?: number }).status}` : ''}] {error.message}
+              <Text className="text-caption text-content-tertiary mt-2 text-center px-4">
+                {friendlyErrorMessage(error, 'load')}
               </Text>
             ) : null}
-            <View className="mt-3">
+            <View className="mt-3 flex-row gap-2">
               <Button variant="secondary" size="sm" onPress={handleRefresh}>
                 Retry
               </Button>
+              {error ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => {
+                    // Raw detail goes to the clipboard for support, never on screen.
+                    copyWithAutoClear(technicalErrorDetails(error)).catch(() => {});
+                  }}
+                >
+                  {ERROR_COPY.copyDetails}
+                </Button>
+              ) : null}
             </View>
           </Card>
         ) : recordings.length === 0 ? (

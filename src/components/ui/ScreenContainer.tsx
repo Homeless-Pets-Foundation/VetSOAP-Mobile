@@ -1,6 +1,7 @@
 import React from 'react';
 import { ScrollView, RefreshControl, View, type ScrollViewProps } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useThemeColors } from '../../hooks/useThemeColors';
 
 /** Max content width (dp) for tablet/large-screen centering */
 export const CONTENT_MAX_WIDTH = 600;
@@ -19,6 +20,7 @@ export function ScreenContainer({
   scrollable = true,
   ...rest
 }: ScreenContainerProps) {
+  const colors = useThemeColors();
   if (!scrollable) {
     return (
       <SafeAreaView className="screen items-center">
@@ -35,7 +37,14 @@ export function ScreenContainer({
         className="flex-1 px-5 pt-5"
         refreshControl={
           onRefresh ? (
-            <RefreshControl refreshing={refreshing ?? false} onRefresh={onRefresh} />
+            <RefreshControl
+              refreshing={refreshing ?? false}
+              onRefresh={onRefresh}
+              // Themed spinner: the platform default ignored brand + dark mode.
+              tintColor={colors.brand500}
+              colors={[colors.brand500]}
+              progressBackgroundColor={colors.surfaceRaised}
+            />
           ) : undefined
         }
         {...rest}

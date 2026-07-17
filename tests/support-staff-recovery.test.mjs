@@ -472,7 +472,7 @@ test('restore is same-org, all-or-nothing, keeps only proof-backed server state,
 });
 
 test('settings and recovery screens use scoped recovery APIs and expose destructive fallback only on preserve failure', async () => {
-  const settings = await read('app/(app)/(tabs)/settings.tsx');
+  const settings = await read('app/(app)/settings.tsx');
   const recovery = await read('app/(app)/recording-recovery.tsx');
 
   assert.match(settings, /Recover Local Recordings/);
@@ -493,7 +493,9 @@ test('settings and recovery screens use scoped recovery APIs and expose destruct
   assert.match(recovery, /loadIdRef/);
   assert.match(recovery, /recording_recovery_watchdog_fired/);
   assert.match(recovery, /scanTimedOut/);
-  assert.match(recovery, /Only recovery copies saved during support staff sign-out can be restored automatically/);
+  // WP18: the empty-state copy is outcome-first and lives in RECOVERY_COPY
+  // (strings.ts); the screen references the catalog rather than inline text.
+  assert.match(recovery, /RECOVERY_COPY\.emptyBody/);
   assert.match(recovery, /restoreItemToCurrentUserDrafts\(user, item\.id, overrides\)/);
   assert.match(recovery, /deleteItem\(user, item\.id\)/);
   assert.match(recovery, /Patient Details Required/);

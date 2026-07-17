@@ -1,8 +1,24 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Application from 'expo-application';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { persistQueryClient, type Persister } from '@tanstack/react-query-persist-client';
 import { queryClient } from './queryClient';
+
+/**
+ * Resolve the app version through a guarded lazy require (rule 19). A static
+ * `import * as Application from 'expo-application'` is evaluated as
+ * AuthProvider loads and crashes older dev-client APKs that lack the native
+ * module — before startQueryPersistence()'s try/catch can protect it. Mirrors
+ * analytics.ts / monitoring.ts / telemetry.ts.
+ */
+function appVersion(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Application = require('expo-application') as typeof import('expo-application');
+    return Application.nativeApplicationVersion ?? 'dev';
+  } catch {
+    return 'dev';
+  }
+}
 
 /**
  * Offline persistence for completed clinical reads (2026-07 audit WP28).
@@ -175,8 +191,18 @@ export function startQueryPersistence(userId: string): void {
       maxAge: PERSIST_MAX_AGE_MS,
       // App version + user id: an app update or user switch invalidates the
       // snapshot wholesale rather than risking shape mismatches.
-      buster: `${Application.nativeApplicationVersion ?? 'dev'}:${userId}`,
+      buster: `${appVersion()}:${userId}`,
       dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
+      // Restored queries have no mounted observer at cold-launch, so they'd
+      // inherit queryClient's global 10-minute gcTime and be evicted long
+      // before a screen that reads them mounts — the per-screen
+      // PERSIST_GC_TIME_MS options aren't serialized into the snapshot. Give
+      // hydrated entries the full persistence lifetime so an offline user who
+      // lingers on Home can still open Patients / a cached detail (Codex P2,
+      // PR #143).
+      hydrateOptions: {
+        defaultOptions: { queries: { gcTime: PERSIST_GC_TIME_MS } },
+      },
     });
 
     // Rule 4: the restore promise must be observed — the synchronous try

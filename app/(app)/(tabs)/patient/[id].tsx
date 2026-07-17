@@ -150,6 +150,14 @@ export default function PatientDetailScreen() {
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({});
   const [dobError, setDobError] = useState<string | null>(null);
 
+  // A definitive 403 (revoked) / 404 (deleted) latches terminal so the cached
+  // profile + visits stop rendering and are evicted from the snapshot, mirror
+  // of recordings/[id] (Codex P1, PR #143).
+  const [accessRevoked, setAccessRevoked] = useState<{ status: number } | null>(null);
+  useEffect(() => {
+    setAccessRevoked(null);
+  }, [id]);
+
   const {
     data: patient,
     isLoading,
@@ -159,10 +167,22 @@ export default function PatientDetailScreen() {
   } = useQuery({
     queryKey: ['patient', id],
     queryFn: () => patientsApi.get(id!),
-    enabled: !!id,
+    enabled: !!id && !accessRevoked,
     // Survives into the persisted offline snapshot (WP28).
     gcTime: PERSIST_GC_TIME_MS,
   });
+
+  useEffect(() => {
+    if (accessRevoked) return;
+    if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+      setAccessRevoked({ status: error.status });
+    }
+  }, [error, accessRevoked]);
+
+  useEffect(() => {
+    if (!accessRevoked || !id) return;
+    queryClient.removeQueries({ queryKey: ['patient', id] }); // profile + visits pages
+  }, [accessRevoked, id, queryClient]);
 
   const [visitsLimit, setVisitsLimit] = useState(20);
   const {
@@ -174,7 +194,7 @@ export default function PatientDetailScreen() {
     queryKey: ['patient', id, 'recordings', visitsLimit],
     gcTime: PERSIST_GC_TIME_MS,
     queryFn: () => patientsApi.listRecordings(id!, { limit: visitsLimit }),
-    enabled: !!id && activeTab === 'visits',
+    enabled: !!id && activeTab === 'visits' && !accessRevoked,
     placeholderData: keepPreviousData,
   });
 
@@ -300,6 +320,19 @@ export default function PatientDetailScreen() {
       {isLoading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator color={colors.brand500} size="large" />
+        </View>
+      ) : accessRevoked ? (
+        // Revoked (403) / deleted (404): terminal even with cached data.
+        <View className="flex-1 items-center justify-center px-8">
+          <User color={colors.contentTertiary} size={48} />
+          <Text className="text-body font-medium text-content-primary mt-4 text-center">
+            {accessRevoked.status === 404
+              ? 'Patient not found'
+              : 'You no longer have access to this patient.'}
+          </Text>
+          <Button variant="secondary" onPress={() => router.back()} className="mt-4">
+            Go Back
+          </Button>
         </View>
       ) : error && !patient && !(error instanceof ApiError && error.status === 404) ? (
         <View className="flex-1 items-center justify-center px-8">

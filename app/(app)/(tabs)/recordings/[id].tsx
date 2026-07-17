@@ -101,6 +101,15 @@ export default function RecordingDetailScreen() {
   const appStateRef = useRef(AppState.currentState);
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
   const pollingStartedAtRef = useRef<number | null>(null);
+  // A definitive 403 (access revoked) or 404 (deleted) means the cached
+  // transcript/SOAP/audio must NOT keep showing — set once, then the query is
+  // disabled (so eviction below can't trigger a refetch loop) and the render
+  // falls to a terminal screen instead of the offline-cache fallback (Codex
+  // P1, PR #143).
+  const [accessRevoked, setAccessRevoked] = useState<{ status: number } | null>(null);
+  useEffect(() => {
+    setAccessRevoked(null); // reset when navigating to a different recording
+  }, [id]);
 
   // Completion celebration — fired ONCE on the prev !== 'completed' →
   // 'completed' transition (the query polls/refetches, so guard against the
@@ -122,7 +131,7 @@ export default function RecordingDetailScreen() {
   const { data: recording, isLoading, isError, error, refetch: refetchRecording, isRefetching: isRefetchingRecording } = useQuery({
     queryKey: ['recording', id],
     queryFn: () => recordingsApi.get(id!),
-    enabled: !!id,
+    enabled: !!id && !accessRevoked,
     // Survives into the persisted offline snapshot (WP28).
     gcTime: PERSIST_GC_TIME_MS,
     refetchInterval: (query) => {
@@ -148,6 +157,24 @@ export default function RecordingDetailScreen() {
       return Math.min(60_000, Math.max(5_000, elapsedMs / 4));
     },
   });
+
+  // Catch a definitive access-revoked / deleted response and latch it.
+  useEffect(() => {
+    if (accessRevoked) return;
+    if (isError && error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+      setAccessRevoked({ status: error.status });
+    }
+  }, [isError, error, accessRevoked]);
+
+  // Once latched, purge the revoked/deleted record from the cache (and the
+  // persisted snapshot) so it can't render offline on the next launch. The
+  // query is already disabled above, so this can't spawn a refetch loop.
+  useEffect(() => {
+    if (!accessRevoked || !id) return;
+    queryClient.removeQueries({ queryKey: ['recording', id] });
+    queryClient.removeQueries({ queryKey: ['soapNote', id] });
+    queryClient.removeQueries({ queryKey: ['recordingTasks', id] });
+  }, [accessRevoked, id, queryClient]);
 
   // Fire the celebration exactly on the transition into 'completed'.
   useEffect(() => {
@@ -626,9 +653,33 @@ export default function RecordingDetailScreen() {
     }
   }, [router, from]);
 
-  // Terminal error only when nothing is cached: with offline persistence a
-  // failed refetch coexists with restored data — render the recording, not
-  // the failure screen (Codex P1, PR #143).
+  // Access revoked (403) or deleted (404): terminal even with cached data —
+  // never keep rendering the cached transcript/SOAP/audio once the server has
+  // definitively denied access (Codex P1, PR #143). No Retry (it would just
+  // re-deny); the record is already evicted above.
+  if (accessRevoked) {
+    return (
+      <SafeAreaView className="screen justify-center items-center p-5">
+        <Animated.View entering={FadeIn.duration(300)} className="items-center">
+          <Text className="text-body-lg font-semibold text-status-danger mb-2">
+            {accessRevoked.status === 404 ? 'Recording not available' : 'Access unavailable'}
+          </Text>
+          <Text className="text-body text-content-tertiary text-center mb-4">
+            {accessRevoked.status === 404
+              ? 'This recording is no longer available. It may have been deleted.'
+              : 'You no longer have access to this recording.'}
+          </Text>
+          <Button variant="primary" onPress={goBack}>
+            Go Back
+          </Button>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
+
+  // Otherwise a terminal error only when nothing is cached: with offline
+  // persistence a transient/offline failed refetch coexists with restored data
+  // — render the recording, not the failure screen (Codex P1, PR #143).
   if (isError && !recording) {
     return (
       <SafeAreaView className="screen justify-center items-center p-5">

@@ -37,6 +37,20 @@ test('persistence is user-keyed, allowlisted, and success-only', async () => {
   assert.match(src, /catch \(error\) \{\s*\n\s*if \(__DEV__\)/);
 });
 
+test('expo-application is lazy-required, and restored queries get the persist gcTime', async () => {
+  const src = await read('src/lib/queryPersistence.ts');
+  // Rule 19: a static `import * as Application from 'expo-application'` crashes
+  // older dev-clients lacking the native module before the try/catch runs.
+  assert.doesNotMatch(src, /^import \* as Application from 'expo-application'/m);
+  assert.match(src, /require\('expo-application'\)/);
+  assert.match(src, /function appVersion\(\)/);
+  assert.match(src, /buster: `\$\{appVersion\(\)\}:\$\{userId\}`/);
+  // Hydrated queries with no observer must survive the full persistence window
+  // (they'd otherwise inherit the 10-minute global gcTime) (Codex P2 round 11).
+  assert.match(src, /hydrateOptions:/);
+  assert.match(src, /defaultOptions: \{ queries: \{ gcTime: PERSIST_GC_TIME_MS \} \}/);
+});
+
 test('a restore that outlives its persistence scope is discarded before hydration', async () => {
   const src = await read('src/lib/queryPersistence.ts');
   // persistQueryClient's async restore cannot be cancelled; if sign-out or a

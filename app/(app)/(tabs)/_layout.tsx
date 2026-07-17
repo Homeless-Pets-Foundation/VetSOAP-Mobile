@@ -98,7 +98,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="recordings"
         options={{
-          title: 'Records',
+          title: 'Recordings',
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={FileText} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'View all recordings',
         }}

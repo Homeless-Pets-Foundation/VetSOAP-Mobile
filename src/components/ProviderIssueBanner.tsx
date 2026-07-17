@@ -35,7 +35,7 @@ function messageForIssue(issue: ProviderIssue): string {
     : 'SOAP generation may not complete automatically until this is fixed.';
   const ownership = issue.actionableByOrgAdmin
     ? issue.recommendedAction
-    : 'CaptiVet operations has been notified.';
+    : 'Captivet operations has been notified.';
   const code = issue.externalCode ? ` (code ${issue.externalCode})` : '';
   return `${providerWithModel(issue)} needs attention. ${fallback} ${providerLabel(
     issue.primaryProvider

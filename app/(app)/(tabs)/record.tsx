@@ -19,13 +19,14 @@ import {
   RECORDER_TRANSITION_COPY,
   REPLACE_SESSION_COPY,
   SILENT_CHECK_COPY,
+  STASH_COPY,
   TEMPLATE_DEFAULT_COPY,
   UPLOAD_OVERLAY_COPY,
 } from '../../../src/constants/strings';
 import { Toast } from '../../../src/components/Toast';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
-import { stashStorage } from '../../../src/lib/stashStorage';
+import { stashStorage, MAX_STASHES } from '../../../src/lib/stashStorage';
 import { recoveryIntent, type RecoveryIntentReason } from '../../../src/lib/recoveryIntent';
 import {
   getRecordingPermissionsAsync,
@@ -493,11 +494,13 @@ function scheduleNonUrgentWork(
 }
 
 /** Promise-wrapped Alert.alert offering Upload Anyway when silence-check trips. */
-function confirmSilentUpload(): Promise<boolean> {
+function confirmSilentUpload(opts?: { durable?: boolean }): Promise<boolean> {
   return new Promise((resolve) => {
     Alert.alert(
       SILENT_CHECK_COPY.title,
-      SILENT_CHECK_COPY.body,
+      // Durable captures can't open Edit Recording, so the standard body's
+      // "verify in Edit Recording" instruction would be impossible to follow.
+      opts?.durable ? SILENT_CHECK_COPY.bodyDurable : SILENT_CHECK_COPY.body,
       [
         { text: SILENT_CHECK_COPY.cancel, style: 'cancel', onPress: () => resolve(false) },
         { text: SILENT_CHECK_COPY.upload, style: 'default', onPress: () => resolve(true) },
@@ -2293,7 +2296,7 @@ function RecordingSession() {
           // Silent-audio guard from the synthetic durable peak (fails closed).
           const durableSilence = await checkSilentAudio(slot);
           if (durableSilence.silent) {
-            const override = await confirmSilentUpload();
+            const override = await confirmSilentUpload({ durable: true });
             if (!override) {
               const silentErr = new Error(
                 'This recording appears silent. Please verify microphone input and record again before uploading.',
@@ -3299,10 +3302,7 @@ function RecordingSession() {
       releaseResumedStashIfAny();
       resetSession();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-      Alert.alert(
-        'Saved for Later',
-        "Your network was unstable, so we saved this for you. Open it from Saved Sessions and tap Resume once you're back online."
-      );
+      Alert.alert(STASH_COPY.autoSavedTitle, STASH_COPY.autoSavedBody);
       return true;
     },
     [
@@ -3607,7 +3607,7 @@ function RecordingSession() {
           releaseResumedStashIfAny();
           resetSession();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          Alert.alert('Session Saved', 'Your recordings have been saved. You can resume them anytime from this screen.');
+          Alert.alert(STASH_COPY.savedTitle, STASH_COPY.savedBody);
         } else {
           // Only show the error dialog when there are recordings to recover.
           // If no segments exist the recording failed at the native level and a
@@ -3620,12 +3620,12 @@ function RecordingSession() {
           // write fail) shows no feedback and the user thinks it saved.
           const hasRecordings = postFlushSession.slots.some(slotHasRecoverableAudio);
           if (hasRecordings) {
-            Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
+            Alert.alert(STASH_COPY.saveFailedTitle, STASH_COPY.saveFailedBody);
           }
         }
       } catch (error) {
         if (__DEV__) console.error('[Record] stash failed:', error);
-        Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
+        Alert.alert(STASH_COPY.saveFailedTitle, STASH_COPY.saveFailedBody);
       } finally {
         setIsStashing(false);
       }
@@ -3650,12 +3650,12 @@ function RecordingSession() {
     // If recorder is active, stop it first — the effect will trigger executeStash
     if (session.recorderBoundToSlotId && (recorder.state === 'recording' || recorder.state === 'paused')) {
       Alert.alert(
-        'Save for Later?',
-        'Your active recording will be saved. You can resume this session later to add more context.',
+        STASH_COPY.confirmStopTitle,
+        STASH_COPY.confirmStopBody,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: STASH_COPY.cancel, style: 'cancel' },
           {
-            text: 'Save',
+            text: STASH_COPY.confirmStopSave,
             onPress: () => {
               pendingStashRef.current = true;
               (async () => {
@@ -3675,14 +3675,9 @@ function RecordingSession() {
       return;
     }
 
-    Alert.alert(
-      'Save for Later?',
-      'Your recordings will be saved. You can resume this session later to add more context.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Save', onPress: executeStash },
-      ]
-    );
+    // No recorder is live: stashing is non-destructive and fully reversible,
+    // so save immediately — the success alert is the confirmation.
+    executeStash();
   }, [session.recorderBoundToSlotId, recorder, executeStash]);
 
   const loadDraft = useCallback(
@@ -4056,12 +4051,12 @@ function RecordingSession() {
   const handleDeleteStash = useCallback(
     (stashId: string) => {
       Alert.alert(
-        'Delete Saved Session?',
-        'Audio recordings will be permanently deleted. This cannot be undone.',
+        STASH_COPY.deleteTitle,
+        STASH_COPY.deleteBody,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: STASH_COPY.cancel, style: 'cancel' },
           {
-            text: 'Delete',
+            text: STASH_COPY.delete,
             style: 'destructive',
             onPress: () => {
               deleteStash(stashId).catch(() => {});
@@ -4271,12 +4266,21 @@ function RecordingSession() {
               <Button
                 variant="secondary"
                 size="sm"
-                onPress={handleStashSession}
-                disabled={isAtCapacity || isAnyUploading}
+                onPress={() => {
+                  // Stay tappable at capacity so the limit and remedy are
+                  // explained instead of a silently dead 'Saved Full' button.
+                  if (isAtCapacity) {
+                    Alert.alert(STASH_COPY.atCapacityTitle, STASH_COPY.atCapacityBody(MAX_STASHES));
+                    return;
+                  }
+                  handleStashSession();
+                }}
+                disabled={isAnyUploading}
                 loading={isStashing}
                 accessibilityLabel="Save session for later"
+                accessibilityState={{ disabled: isAnyUploading }}
               >
-                {isAtCapacity ? 'Saved Full' : 'Save for Later'}
+                {isAtCapacity ? STASH_COPY.savedFull(MAX_STASHES) : STASH_COPY.saveForLater}
               </Button>
             </View>
           )}
@@ -4287,7 +4291,7 @@ function RecordingSession() {
       {showStashList && (
         <View className="px-5 pb-2">
           <Text className="text-body-sm font-semibold text-content-secondary mb-2">
-            Saved Sessions ({stashCount})
+            {STASH_COPY.sectionTitle(stashCount)}
           </Text>
           {stashes.map((stash) => (
             <StashedSessionCard

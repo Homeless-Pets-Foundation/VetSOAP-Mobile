@@ -42,6 +42,10 @@ export const SILENT_CHECK_COPY = {
   body:
     'Your microphone signal looked very quiet. If you can hear the audio on playback in Edit Recording, ' +
     'tap Upload Anyway. Otherwise cancel and re-record.',
+  /** Durable captures can't open Edit Recording — don't reference it. */
+  bodyDurable:
+    "Your microphone signal looked very quiet. If you're sure the visit was captured, " +
+    'tap Upload Anyway. Otherwise cancel and re-record.',
   cancel: 'Cancel',
   upload: 'Upload Anyway',
 } as const;
@@ -119,6 +123,57 @@ export const REPLACE_SESSION_COPY = {
   replace: 'Replace',
 } as const;
 
+/**
+ * Saved-session ("stash") copy. User-facing vocabulary is consolidated on two
+ * concepts (2026-07 audit theme C): "Saved sessions" (stash) and
+ * "Not Submitted" (drafts) — don't introduce new synonyms.
+ */
+export const STASH_COPY = {
+  saveForLater: 'Save for Later',
+  savedFull: (max: number): string => `Saved Full (${max})`,
+  atCapacityTitle: 'Saved Sessions Full',
+  atCapacityBody: (max: number): string =>
+    `You can keep up to ${max} saved sessions. Resume or delete one to save another.`,
+  confirmStopTitle: 'Save for Later?',
+  confirmStopBody:
+    'Your active recording will be finished and saved. You can resume this session later to add more.',
+  confirmStopSave: 'Save',
+  cancel: 'Cancel',
+  savedTitle: 'Session Saved',
+  savedBody: 'Your recordings are under Saved Sessions on this screen. Resume them anytime.',
+  saveFailedTitle: 'Save Failed',
+  saveFailedBody:
+    'Could not save your session. Your recordings are still here — please try again or submit them now.',
+  autoSavedTitle: 'Saved for Later',
+  autoSavedBody:
+    "Your network was unstable, so we saved this for you. Open it from Saved Sessions and tap Resume once you're back online.",
+  deleteTitle: 'Delete Saved Session?',
+  deleteBody: 'Audio recordings will be permanently deleted. This cannot be undone.',
+  delete: 'Delete',
+  sectionTitle: (count: number): string => `Saved Sessions (${count})`,
+  audioMissingTitle: 'Audio Files Missing',
+  audioMissingBody: 'All audio files for this saved session have been deleted. It will be removed.',
+  someAudioMissingTitle: 'Some Audio Missing',
+  someAudioMissingBody: (missingCount: number): string =>
+    `${missingCount} audio segment(s) could not be found. Resume with available data?`,
+  resumeAnyway: 'Resume Anyway',
+  resumeFailedTitle: 'Resume Failed',
+  resumeFailedBody: 'Could not restore your session.',
+} as const;
+
+export const RECORDING_DETAIL_COPY = {
+  processingTitle: 'Processing…',
+  processingBody: 'This usually takes 1-2 minutes.',
+  processingFailedTitle: 'Processing Failed',
+  awaitingMetadataTitle: 'Awaiting Patient Details',
+  awaitingMetadataBody:
+    'This recording was imported and needs patient details before processing can begin. Complete the details on the web app.',
+  audioNotOnDeviceTitle: 'Audio Not on This Device',
+  audioNotOnDeviceBody:
+    'This draft was started on another device, or its local audio was cleared from this one. ' +
+    'Submit it from the device where you recorded it, or delete it here to clean up.',
+} as const;
+
 export const SUBMITTED_BANNER_COPY = {
   title: (count: number): string =>
     count === 1 ? 'Recording submitted' : `${count} recordings submitted`,
@@ -161,7 +216,7 @@ export const RECORDER_TRANSITION_COPY = {
 } as const;
 
 export const RECORD_BANNERS = {
-  pendingDraftOffline: 'Draft recording pending upload — connect to Wi-Fi to sync',
+  pendingDraftOffline: 'Draft recording pending upload — connect to the internet to sync',
   pendingDraftOnline: 'Draft saved locally — syncing to server…',
 } as const;
 

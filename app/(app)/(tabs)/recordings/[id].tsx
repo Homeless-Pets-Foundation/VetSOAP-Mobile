@@ -37,7 +37,7 @@ import { fileExists, safeDeleteFile } from '../../../../src/lib/fileOps';
 import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
 import { clonePendingConfirm } from '../../../../src/lib/pendingConfirm';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
-import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
+import { METADATA_REVIEW_COPY, RECORDING_DETAIL_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
 import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../../../../src/lib/recordingQueryCache';
 import {
@@ -860,10 +860,10 @@ export default function RecordingDetailScreen() {
         {isProcessing && (
           <Card className="mx-5 mb-4">
             <Text className="text-body-lg font-semibold text-content-primary mb-1">
-              Processing...
+              {RECORDING_DETAIL_COPY.processingTitle}
             </Text>
             <Text className="text-body-sm text-content-tertiary mb-2">
-              This usually takes 1-2 minutes.
+              {RECORDING_DETAIL_COPY.processingBody}
             </Text>
             <ProcessingStepper currentStatus={recording.status} />
           </Card>
@@ -903,10 +903,10 @@ export default function RecordingDetailScreen() {
               <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
               <View className="flex-1">
                 <Text className="text-body font-semibold text-status-warning mb-1">
-                  Awaiting Patient Details
+                  {RECORDING_DETAIL_COPY.awaitingMetadataTitle}
                 </Text>
                 <Text className="text-body-sm text-content-tertiary">
-                  This recording was imported and needs patient details before processing can begin. Complete the details on the web app.
+                  {RECORDING_DETAIL_COPY.awaitingMetadataBody}
                 </Text>
               </View>
             </View>
@@ -965,12 +965,10 @@ export default function RecordingDetailScreen() {
                 <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
                 <View className="flex-1">
                   <Text className="text-body font-semibold text-status-warning mb-1">
-                    Audio Not on This Device
+                    {RECORDING_DETAIL_COPY.audioNotOnDeviceTitle}
                   </Text>
                   <Text className="text-body-sm text-content-tertiary mb-3">
-                    This draft was started on another device, or its local audio
-                    was cleared from this one. Submit it from the device where
-                    you recorded it, or delete it here to clean up.
+                    {RECORDING_DETAIL_COPY.audioNotOnDeviceBody}
                   </Text>
                   <View className="self-start">
                     {recordingPermissions.canDelete ? (
@@ -1000,7 +998,7 @@ export default function RecordingDetailScreen() {
           <Animated.View entering={FadeInUp.duration(300)}>
             <Card className="mx-5 mb-4 border-status-danger">
               <Text className="text-body-lg font-semibold text-status-danger mb-1">
-                Processing Failed
+                {RECORDING_DETAIL_COPY.processingFailedTitle}
               </Text>
               {recording.errorMessage && (
                 <Text className="text-body-sm text-status-danger mb-3">

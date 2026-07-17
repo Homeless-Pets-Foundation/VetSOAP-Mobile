@@ -99,6 +99,11 @@ export default function RecordingDetailScreen() {
   const appStateRef = useRef(AppState.currentState);
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
   const pollingStartedAtRef = useRef<number | null>(null);
+  // Backoff attempts for the CURRENT poll session. query.state.dataUpdateCount
+  // counts every data update for the query's lifetime, so after a
+  // regenerate/reprocess the interval started near the 60s cap instead of 5s
+  // and the stepper felt frozen. Reset wherever pollingStartedAtRef resets.
+  const pollAttemptsRef = useRef(0);
 
   // Completion celebration — fired ONCE on the prev !== 'completed' →
   // 'completed' transition (the query polls/refetches, so guard against the
@@ -126,17 +131,22 @@ export default function RecordingDetailScreen() {
       const status = query.state.data?.status;
       if (!status || ['completed', 'failed', 'pending_metadata', 'draft'].includes(status)) {
         pollingStartedAtRef.current = null;
+        pollAttemptsRef.current = 0;
         return false;
       }
       if (!pollingStartedAtRef.current) {
         pollingStartedAtRef.current = Date.now();
+        pollAttemptsRef.current = 0;
       }
       const elapsedMs = Date.now() - pollingStartedAtRef.current;
       if (elapsedMs > 30 * 60 * 1000) {
         return false; // Stop polling — stale processing
       }
-      // Exponential backoff: 5s → 7.5s → 11.25s → … capped at 60s
-      const attempts = query.state.dataUpdateCount;
+      // Exponential backoff: 5s → 7.5s → 11.25s → … capped at 60s.
+      // Per-session attempts ref, NOT query.state.dataUpdateCount (lifetime
+      // counter — post-reprocess it started the interval near the cap).
+      const attempts = pollAttemptsRef.current;
+      pollAttemptsRef.current += 1;
       return Math.min(5_000 * Math.pow(1.5, attempts), 60_000);
     },
   });
@@ -265,6 +275,7 @@ export default function RecordingDetailScreen() {
         queryClient.setQueryData(['recording', id], updatedRecording);
         mergeRecordingIntoCachedLists(queryClient, updatedRecording);
         pollingStartedAtRef.current = null;
+        pollAttemptsRef.current = 0;
       }
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
       invalidateRecordingCaches(queryClient, 'processing_retry');
@@ -289,6 +300,7 @@ export default function RecordingDetailScreen() {
         queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
         invalidateRecordingCaches(queryClient, 'soap_regenerated');
         pollingStartedAtRef.current = null;
+        pollAttemptsRef.current = 0;
         setActiveNoteTab('soap');
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -599,6 +611,16 @@ export default function RecordingDetailScreen() {
     router.navigate(`/record?draftSlotId=${draftLocalSlotId}` as never);
   }, [draftLocalSlotId, router]);
 
+  // Back respects where the user came from (Home, patient history, post-submit)
+  // instead of always dumping them on the Recordings list.
+  const goBack = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/recordings');
+    }
+  }, [router]);
+
   if (isError) {
     return (
       <SafeAreaView className="screen justify-center items-center p-5">
@@ -610,7 +632,7 @@ export default function RecordingDetailScreen() {
             {error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'}
           </Text>
           <View className="flex-row gap-3">
-            <Button variant="primary" onPress={() => router.navigate('/recordings')}>
+            <Button variant="primary" onPress={goBack}>
               Go Back
             </Button>
             <Button variant="secondary" onPress={() => { refetchRecording().catch(() => {}); }}>
@@ -719,7 +741,7 @@ export default function RecordingDetailScreen() {
         {/* Header */}
         <View className="flex-row items-center px-5 pt-5">
           <Pressable
-            onPress={() => router.navigate('/recordings')}
+            onPress={goBack}
             accessibilityRole="button"
             accessibilityLabel="Go back"
             className="mr-3 w-11 h-11 items-center justify-center"
@@ -829,6 +851,7 @@ export default function RecordingDetailScreen() {
               recordingForeignLanguage={recording.foreignLanguage}
               onReprocessStarted={() => {
                 pollingStartedAtRef.current = Date.now();
+                pollAttemptsRef.current = 0;
               }}
             />
           )}

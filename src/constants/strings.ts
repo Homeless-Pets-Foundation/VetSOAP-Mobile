@@ -4,6 +4,8 @@ export const PROCESSING_STEP_LABELS = {
   transcribing: 'Transcribing',
   generating: 'Generating SOAP',
   completed: 'Complete',
+  /** Shown on the active step while status is retry_scheduled. */
+  retrying: 'Retrying…',
 } as const;
 
 export const PROCESSING_WARMTH = [

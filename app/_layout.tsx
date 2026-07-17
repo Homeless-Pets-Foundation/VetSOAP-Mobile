@@ -38,10 +38,21 @@ import '../global.css';
 // any explicit fontFamily still overrides). Wrapped in try/catch so a render
 // shape change can never throw at module load (rule 1) — worst case is the
 // system-font fallback. Verify weights on a physical device (UI Gotchas).
+//
+// The same patch injects a global maxFontSizeMultiplier cap (1.3). Dense
+// clinical layouts break above ~130% OS text scale; the previous per-site
+// answer was disabling font scaling outright, which froze text entirely for
+// low-vision users. The cap lets everything scale up to 1.3x while an
+// element's own explicit maxFontSizeMultiplier (or allowFontScaling) prop
+// always wins — set a smaller per-element cap where a pill genuinely breaks;
+// never disable scaling again (tests/font-scaling-guard fences this).
+const GLOBAL_MAX_FONT_SIZE_MULTIPLIER = 1.3;
 try {
   for (const Comp of [Text, TextInput] as const) {
     const target = Comp as unknown as {
-      render?: (...args: unknown[]) => React.ReactElement<{ style?: unknown }> | null;
+      render?: (
+        ...args: unknown[]
+      ) => React.ReactElement<{ style?: unknown; maxFontSizeMultiplier?: number }> | null;
       __interApplied?: boolean;
     };
     const baseRender = target.render;
@@ -51,6 +62,9 @@ try {
         if (!element) return element;
         return React.cloneElement(element, {
           style: [{ fontFamily: 'Inter' }, element.props.style],
+          ...(element.props.maxFontSizeMultiplier === undefined
+            ? { maxFontSizeMultiplier: GLOBAL_MAX_FONT_SIZE_MULTIPLIER }
+            : null),
         });
       };
       target.__interApplied = true;

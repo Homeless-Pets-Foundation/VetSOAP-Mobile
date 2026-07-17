@@ -358,7 +358,6 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
             <Text
               className="text-body-sm text-status-danger ml-1"
-              allowFontScaling={false}
               style={{ flexShrink: 0, paddingRight: 2 }}
             >
               {'Remove '}
@@ -500,7 +499,6 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                     {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
                     <Text
                       className="text-body-sm text-content-tertiary"
-                      allowFontScaling={false}
                       style={{ flexShrink: 0, paddingRight: 2 }}
                     >
                       {'Delete & Start Over '}
@@ -538,7 +536,6 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
                   <Text
                     className="text-body-sm text-content-tertiary"
-                    allowFontScaling={false}
                     style={{ flexShrink: 0, paddingRight: 2 }}
                   >
                     {'Delete & Start Over '}
@@ -569,7 +566,6 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
                   <Text
                     className="text-body-sm text-content-tertiary"
-                    allowFontScaling={false}
                     style={{ flexShrink: 0, paddingRight: 2 }}
                   >
                     {'Delete & Start Over '}
@@ -595,7 +591,6 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
                   <Text
                     className="text-body-sm text-content-tertiary"
-                    allowFontScaling={false}
                     style={{ flexShrink: 0, paddingRight: 2 }}
                   >
                     {'Delete & Start Over '}

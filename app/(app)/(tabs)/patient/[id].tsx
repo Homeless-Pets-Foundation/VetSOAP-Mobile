@@ -60,7 +60,6 @@ function AiSummaryText({ summary }: { summary: string }) {
           {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
           <Text
             className="text-body-sm font-medium text-brand-600"
-            allowFontScaling={false}
             style={{ flexShrink: 0, paddingRight: 2 }}
           >
             {`${expanded ? 'Show less' : 'Read more'} `}
@@ -307,7 +306,6 @@ export default function PatientDetailScreen() {
                         {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                         <Text
                           className="text-caption font-medium text-brand-600"
-                          allowFontScaling={false}
                           style={{ flexShrink: 0, paddingRight: 2 }}
                         >
                           {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'} `}
@@ -328,7 +326,6 @@ export default function PatientDetailScreen() {
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-caption font-medium text-brand-600"
-                        allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
                         {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'} `}
@@ -422,7 +419,6 @@ export default function PatientDetailScreen() {
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-body-sm text-brand-600 ml-1"
-                        allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
                         {'Edit '}
@@ -461,7 +457,6 @@ export default function PatientDetailScreen() {
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-body-sm text-content-tertiary"
-                        allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
                         {'Cancel '}

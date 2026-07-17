@@ -102,7 +102,6 @@ export function StatusBadge({ status }: StatusBadgeProps) {
       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph (e.g. "Uploadin"); do NOT remove. */}
       <Text
         className={`font-semibold ${config.inProgress ? 'text-body-sm' : 'text-caption'} ${v.text}`}
-        allowFontScaling={false}
         style={{ flexShrink: 0, paddingRight: 2 }}
       >
         {`${config.label} `}

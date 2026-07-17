@@ -204,7 +204,9 @@ test('Phase 5 SOAP edit action uses Android anti-clip pattern and removes dead o
 
   assert.match(soap, /SOAP_SECTION_ACTIONS\.edit/);
   assert.match(soap, /Android under-measures single-word Text and clips the last glyph/);
-  assert.match(soap, /allowFontScaling=\{false\}/);
+  // WP11: the anti-clip pattern no longer disables font scaling — the global
+  // 1.3x maxFontSizeMultiplier cap (app/_layout.tsx) covers scaling limits.
+  assert.doesNotMatch(soap, /allowFontScaling=\{false\}/);
   assert.match(soap, /style=\{\{ flexShrink: 0, paddingRight: 2 \}\}/);
   assert.doesNotMatch(soap, /onSaved/);
 });

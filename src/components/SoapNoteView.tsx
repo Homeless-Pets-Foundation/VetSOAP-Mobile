@@ -254,7 +254,6 @@ function AccordionSection({
                     {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                     <Text
                       className="text-caption text-content-secondary"
-                      allowFontScaling={false}
                       style={{ flexShrink: 0, paddingRight: 2 }}
                     >
                       {`${SOAP_SECTION_ACTIONS.edit} `}
@@ -272,7 +271,6 @@ function AccordionSection({
                   {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                   <Text
                     className="text-caption text-content-secondary"
-                    allowFontScaling={false}
                     style={{ flexShrink: 0, paddingRight: 2 }}
                   >
                     {`${SOAP_SECTION_ACTIONS.copy} `}
@@ -337,7 +335,6 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNot
           {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
           <Text
             className="text-body-sm text-content-on-brand font-semibold"
-            allowFontScaling={false}
             style={{ flexShrink: 0, paddingRight: 2 }}
           >
             {`${SOAP_SECTION_ACTIONS.copyAll} `}

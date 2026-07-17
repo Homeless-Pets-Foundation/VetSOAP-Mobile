@@ -572,7 +572,6 @@ function ActiveAudioPlayer({
               {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
               <Text
                 className="text-caption text-content-secondary"
-                allowFontScaling={false}
                 style={{ flexShrink: 0, paddingRight: 2 }}
               >
                 {`${AUDIO_PLAYER_COPY.retry} `}

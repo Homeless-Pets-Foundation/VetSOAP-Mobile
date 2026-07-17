@@ -36,7 +36,8 @@ import { SkeletonCard } from '../../../src/components/ui/Skeleton';
 import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
 import { Banner } from '../../../src/components/ui/Banner';
-import { ProviderIssueBanner } from '../../../src/components/ProviderIssueBanner';
+import { ProviderIssueBanner, useActiveProviderIssue } from '../../../src/components/ProviderIssueBanner';
+import { useDurableRecoveries } from '../../../src/hooks/useDurableRecoveries';
 import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -50,6 +51,20 @@ export default function HomeScreen() {
   const isTabFocused = useIsFocused();
   const { capacity } = useDeviceCapacity();
   const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
+  const durableRecoveries = useDurableRecoveries();
+  const activeProviderIssue = useActiveProviderIssue();
+  const [bannersExpanded, setBannersExpanded] = useState(false);
+  // Priority order (WP30): recovery > device limit > provider issue. The two
+  // global thin strips (device registration, offline) live in (app)/_layout.
+  const activeBannerKeys = useMemo(() => {
+    const keys: ('recovery' | 'deviceLimit' | 'providerIssue')[] = [];
+    if (durableRecoveries.length > 0) keys.push('recovery');
+    if (capacity && (capacity.isAtLimit || capacity.isNearLimit)) keys.push('deviceLimit');
+    if (activeProviderIssue) keys.push('providerIssue');
+    return keys;
+  }, [durableRecoveries.length, capacity, activeProviderIssue]);
+  const visibleBannerKeys = bannersExpanded ? activeBannerKeys : activeBannerKeys.slice(0, 1);
+  const hiddenBannerCount = activeBannerKeys.length - visibleBannerKeys.length;
   const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
 
   // Parallel fetch — useQueries fires both requests at once instead of letting
@@ -243,11 +258,12 @@ export default function HomeScreen() {
         </Text>
       </View>
 
-      {/* Durable crash-recovery banner (renders only when recordings recovered) */}
-      <DurableRecoveryBanner />
+      {/* In-page alerts, one at a time by priority (recovery > device limit >
+          provider issue) with a "+N more" expander — five uncoordinated
+          banners used to push the hero Record CTA below the fold (WP30). */}
+      {visibleBannerKeys.includes('recovery') && <DurableRecoveryBanner />}
 
-      {/* Device limit warning */}
-      {capacity && (capacity.isAtLimit || capacity.isNearLimit) ? (
+      {visibleBannerKeys.includes('deviceLimit') && capacity ? (
         <View className="mb-4">
           <Banner
             variant={capacity.isAtLimit ? 'error' : 'warning'}
@@ -268,7 +284,20 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      <ProviderIssueBanner location="home" />
+      {visibleBannerKeys.includes('providerIssue') && <ProviderIssueBanner location="home" />}
+
+      {hiddenBannerCount > 0 && (
+        <Pressable
+          onPress={() => setBannersExpanded(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`Show ${hiddenBannerCount} more alert${hiddenBannerCount > 1 ? 's' : ''}`}
+          className="mb-4 rounded-xl border border-border-default bg-surface-raised px-4 py-2.5 items-center"
+        >
+          <Text className="text-body-sm font-medium text-content-secondary">
+            {`+${hiddenBannerCount} more alert${hiddenBannerCount > 1 ? 's' : ''}`}
+          </Text>
+        </Pressable>
+      )}
 
       {/* Quick Action — hero CTA. Gradient + glow for premium depth; the
           gradient takes raw color values (not Tailwind classes) so stops pull

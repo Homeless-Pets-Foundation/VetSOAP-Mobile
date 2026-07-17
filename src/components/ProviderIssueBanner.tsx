@@ -45,25 +45,22 @@ function messageForIssue(issue: ProviderIssue): string {
   return `${impact} ${ownership} ${detail}`;
 }
 
-export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
-  const queryClient = useQueryClient();
+const PROVIDER_ISSUES_QUERY_KEY = ['organization', 'provider-issues', 'active'] as const;
+
+/**
+ * Active provider issue for owner/admin users (null otherwise). Exported so
+ * Home's banner-priority stack (WP30) can count this banner without
+ * rendering it; React Query dedupes the underlying fetch across consumers.
+ */
+export function useActiveProviderIssue(): ProviderIssue | null {
   const user = useAuthUser();
   const canView = user?.role === 'owner' || user?.role === 'admin';
-  const queryKey = ['organization', 'provider-issues', 'active'] as const;
 
   const { data, refetch } = useQuery({
-    queryKey,
+    queryKey: PROVIDER_ISSUES_QUERY_KEY,
     queryFn: () => providerIssuesApi.list({ status: 'active', days: 1 }),
     enabled: canView,
     staleTime: 60_000,
-  });
-
-  const acknowledgeMutation = useMutation({
-    mutationFn: (issueKey: string) => providerIssuesApi.acknowledge(issueKey),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['organization', 'provider-issues'] }).catch(() => {});
-      queryClient.invalidateQueries({ queryKey }).catch(() => {});
-    },
   });
 
   useFocusEffect(
@@ -86,7 +83,21 @@ export function ProviderIssueBanner({ location }: { location: 'home' | 'settings
   }, [canView, refetch]);
 
   if (!canView) return null;
-  const issue = data?.issues[0];
+  return data?.issues[0] ?? null;
+}
+
+export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
+  const queryClient = useQueryClient();
+  const issue = useActiveProviderIssue();
+
+  const acknowledgeMutation = useMutation({
+    mutationFn: (issueKey: string) => providerIssuesApi.acknowledge(issueKey),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['organization', 'provider-issues'] }).catch(() => {});
+      queryClient.invalidateQueries({ queryKey: PROVIDER_ISSUES_QUERY_KEY }).catch(() => {});
+    },
+  });
+
   if (!issue) return null;
 
   return (

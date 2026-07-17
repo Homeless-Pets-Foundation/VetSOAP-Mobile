@@ -4053,6 +4053,19 @@ function RecordingSession() {
             const slots = await resumeStashedSession(stashId);
             if (slots) {
               restoreSession(slots);
+              // Stashing DELETED each slot's local draft (the stash became the
+              // audio owner) and resume only restores the draftSlotId
+              // identifier for server-draft promotion — the stash dir now
+              // holds the ONLY copy. Mark every restored slot with audio as
+              // unsynced so discard/replace flows warn instead of trusting
+              // the retained draftSlotId as proof of a durable draft; the
+              // flag clears when a new draft commit or upload re-secures the
+              // audio (Codex P1, PR #143).
+              for (const restored of slots) {
+                if (slotHasRecoverableAudio(restored) && restored.uploadStatus !== 'success') {
+                  unsyncedDraftAudioRef.current.add(restored.id);
+                }
+              }
               // Pin the stash entry so orphan cleanup cannot delete the audio
               // directory the active session is still reading from. The pin is
               // released when the session is resolved (upload / discard / re-stash);

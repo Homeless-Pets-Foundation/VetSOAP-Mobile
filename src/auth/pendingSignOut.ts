@@ -29,16 +29,24 @@ export function trackPendingSignOut<T>(signOutPromise: Promise<T>): Promise<T> {
 
 /**
  * Resolve once any tracked sign-out settles, or after timeoutMs — the bound
- * keeps sign-in usable if GoTrue hangs permanently (rule 24); a permanently
- * hung sign-out never reaches session removal, so it cannot clobber anyway.
+ * keeps sign-in usable if GoTrue hangs (rule 24). Returns `true` when it is
+ * safe to authenticate (no pending sign-out, or it settled in time) and
+ * `false` on timeout with the sign-out STILL running — callers must then
+ * abort with a retryable error instead of authenticating: a sign-out that
+ * settles after the timeout would delete the just-established session, the
+ * exact race this module exists to prevent (Codex P2, PR #143).
  */
-export async function waitForPendingSignOut(timeoutMs: number): Promise<void> {
+export async function waitForPendingSignOut(timeoutMs: number): Promise<boolean> {
   const current = pending;
-  if (!current) return;
+  if (!current) return true;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let settledInTime = false;
   try {
     await Promise.race([
-      current,
+      // `current` is the settled-chain from trackPendingSignOut (never rejects).
+      current.then(() => {
+        settledInTime = true;
+      }),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, timeoutMs);
       }),
@@ -46,4 +54,5 @@ export async function waitForPendingSignOut(timeoutMs: number): Promise<void> {
   } finally {
     if (timer) clearTimeout(timer);
   }
+  return settledInTime;
 }

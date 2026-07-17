@@ -20,7 +20,7 @@ function chunkTranscript(text) {
   if (paragraphs.length > 1) {
     const chunks = [];
     let current = '';
-    for (const para of paragraphs) {
+    for (const para of paragraphs.flatMap(splitOversizedRun)) {
       if (current.length + para.length > FALLBACK_CHUNK_CHARS && current) {
         chunks.push(current);
         current = para;
@@ -44,6 +44,11 @@ function chunkTranscript(text) {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+function splitOversizedRun(run) {
+  if (run.length <= FALLBACK_CHUNK_CHARS) return [run];
+  return run.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
 }
 
 function hardSplitOversized(piece) {
@@ -111,6 +116,24 @@ test('punctuation-less walls of text still hard-split (Codex P2, PR #143)', () =
   }
 });
 
+test('an oversized paragraph is split before accumulation (Codex P2 round 4, PR #143)', () => {
+  // Short heading + one 7,500-char punctuation-less STT paragraph: the
+  // paragraph branch must not pass the giant paragraph through as one chunk.
+  const giantPara = Array.from({ length: 1500 }, (_, i) => `w${i}`).join(' ');
+  const text = `Heading.\n\n${giantPara}`;
+  assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
+  const chunks = chunkTranscript(text);
+  assert.ok(chunks.length > 2, 'giant paragraph must be split');
+  for (const chunk of chunks) {
+    assert.ok(chunk.length <= FALLBACK_CHUNK_CHARS + 10, `chunk too large: ${chunk.length}`);
+  }
+  // No content dropped (joins may differ inside the split paragraph).
+  assert.equal(
+    chunks.join(' ').replace(/\s+/g, ' '),
+    text.replace(/\s+/g, ' ')
+  );
+});
+
 test('a single unbroken token gets sliced at hard char boundaries', () => {
   const text = 'x'.repeat(7000);
   const chunks = chunkTranscript(text);
@@ -124,7 +147,9 @@ test('source component matches this mirror and renders per-chunk selectable Text
   assert.match(src, /const FALLBACK_CHUNK_CHARS = 1_500;/);
   assert.match(src, /export function chunkTranscript/);
   assert.match(src, /function hardSplitOversized/);
+  assert.match(src, /function splitOversizedRun/);
   assert.match(src, /\.flatMap\(hardSplitOversized\)/);
+  assert.match(src, /paragraphs\.flatMap\(splitOversizedRun\)/);
   assert.match(src, /chunks\.map\(\(chunk, i\) => \(/);
   assert.match(src, /selectable/);
 });

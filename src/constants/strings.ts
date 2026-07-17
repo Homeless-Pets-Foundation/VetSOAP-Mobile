@@ -67,6 +67,8 @@ export const LOGIN_COPY = {
   lockout: (seconds: number): string =>
     `Too many failed attempts. Please try again in ${seconds}s.`,
   networkError: 'A network error occurred. Please check your connection and try again.',
+  signOutStillPending:
+    'Still finishing the previous sign-out. Please try again in a moment.',
 } as const;
 
 export const PASSWORD_RESET_COPY = {

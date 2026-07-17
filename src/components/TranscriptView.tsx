@@ -35,9 +35,14 @@ export function chunkTranscript(text: string): string[] {
   const paragraphs = text.split(/\n{2,}/);
   if (paragraphs.length > 1) {
     // Merge tiny paragraphs so we don't render thousands of Text nodes.
+    // Oversized paragraphs are split FIRST (sentence, then hard boundaries):
+    // a short heading followed by one 10,000-char speech-to-text paragraph
+    // would otherwise ride through this branch as a single giant Text — the
+    // exact Android layout/selection ANR this chunking exists to prevent
+    // (Codex P2, PR #143).
     const chunks: string[] = [];
     let current = '';
-    for (const para of paragraphs) {
+    for (const para of paragraphs.flatMap(splitOversizedRun)) {
       if (current.length + para.length > FALLBACK_CHUNK_CHARS && current) {
         chunks.push(current);
         current = para;
@@ -66,6 +71,12 @@ export function chunkTranscript(text: string): string[] {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+/** Split an oversized run at sentence boundaries first, hard boundaries last. */
+function splitOversizedRun(run: string): string[] {
+  if (run.length <= FALLBACK_CHUNK_CHARS) return [run];
+  return run.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
 }
 
 /** Split a punctuation-less run at whitespace (hard char boundary as last resort). */

@@ -40,11 +40,19 @@ const PERSISTED_KEY_ROOTS = new Set([
 
 // Structural param type: npm may nest a second @tanstack/query-core under
 // query-persist-client-core, and the two nominal Query types don't unify.
-function shouldPersistQuery(query: { queryKey: readonly unknown[]; state: { status: string } }): boolean {
+function shouldPersistQuery(query: {
+  queryKey: readonly unknown[];
+  state: { status: string; data?: unknown };
+}): boolean {
   const root = query.queryKey[0];
   if (typeof root !== 'string' || !PERSISTED_KEY_ROOTS.has(root)) return false;
-  // Only successful data is worth a disk write; errors/refetch state are not.
-  return query.state.status === 'success';
+  // Persist any query still holding usable data — NOT just status==='success'.
+  // A hydrated query's automatic offline refetch fails and flips status to
+  // 'error' with the restored data intact; requiring 'success' made the next
+  // persistence write drop it, so a second offline launch lost everything
+  // (Codex P2, PR #143). Queries with no data (pending, or errored before
+  // ever succeeding) are still skipped.
+  return query.state.data !== undefined;
 }
 
 interface ActivePersistence {

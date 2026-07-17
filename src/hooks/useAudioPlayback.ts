@@ -176,7 +176,13 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
           try {
             player.setPlaybackRate(playbackRateRef.current, 'high');
           } catch {
-            // non-fatal; playback continues at 1x
+            // Non-fatal — native playback continues at the 1x replace() reset
+            // to. Sync the displayed speed and the 60Hz interpolation to match,
+            // or the button reads "2x" while audio plays 1x and the playhead
+            // advances at double speed (Codex P2, PR #143).
+            playbackRateRef.current = 1;
+            playbackRateSV.value = 1;
+            setPlaybackRateState(1);
           }
         }
       } catch (error) {
@@ -188,7 +194,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
         throw error;
       }
     },
-    [player, ensurePlaybackMode, resetPlaybackStateForNewSource]
+    [player, ensurePlaybackMode, resetPlaybackStateForNewSource, playbackRateSV]
   );
 
   const play = useCallback(() => {

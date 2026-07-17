@@ -504,6 +504,16 @@ test('durable slots are counted in the unsaved leave/reset guards', async () => 
   assert.match(rec, /const isSlotTrulyUnsaved = useCallback\([\s\S]*?isTrulyUnsavedSlot\(s\) \|\|[\s\S]*?unsyncedDraftAudioRef\.current\.has\(s\.id\)/);
   assert.match(rec, /const unsavedCount = session\.slots\.filter\(isSlotTrulyUnsaved\)/);
   assert.match(rec, /const trulyUnsaved = currentSlots\.some\(isSlotTrulyUnsaved\)/);
+  // Resumed stash slots must be marked unsynced right after restoreSession:
+  // stashing deleted their local drafts (stash owns the audio), so the
+  // retained draftSlotId is NOT proof of a durable draft — without the mark,
+  // loading another draft/stash skips the replace warning and discard deletes
+  // the only copy (Codex P1 round 4).
+  const resumeIdx = rec.indexOf('const slots = await resumeStashedSession(stashId);');
+  assert.ok(resumeIdx >= 0, 'stash resume must exist');
+  const resumeWindow = rec.slice(resumeIdx, resumeIdx + 1600);
+  assert.match(resumeWindow, /restoreSession\(slots\)/);
+  assert.match(resumeWindow, /unsyncedDraftAudioRef\.current\.add\(restored\.id\)/);
   // Orphan server-recording deletion must stay inside the preserve gate — a
   // preserved draft's pendingConfirm points at that row (Codex P1).
   const gateIdx = rec.indexOf("if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {");

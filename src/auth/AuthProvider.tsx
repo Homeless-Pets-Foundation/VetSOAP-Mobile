@@ -8,6 +8,7 @@ import { usePathname, useRouter } from 'expo-router';
 import { safeDeleteFile } from '../lib/fileOps';
 import { supabase } from './supabase';
 import { trackPendingSignOut, waitForPendingSignOut } from './pendingSignOut';
+import { LOGIN_COPY } from '../constants/strings';
 import { API_URL } from '../config';
 import { validateRequestUrl } from '../lib/sslPinning';
 import {
@@ -1865,8 +1866,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // A timed-out sign-out (recovery-cancel, handleSignOut) may still be
     // running; let it settle first so its late _removeSession() can't delete
-    // the session this sign-in is about to establish. Bounded (rule 24).
-    await waitForPendingSignOut(10_000);
+    // the session this sign-in is about to establish. Bounded (rule 24) — and
+    // on timeout with the sign-out STILL pending, abort with a retryable
+    // error rather than authenticate into the race.
+    if (!(await waitForPendingSignOut(10_000))) {
+      if (__DEV__) console.log('[Auth] signIn: pending sign-out unresolved, aborting');
+      return { error: LOGIN_COPY.signOutStillPending };
+    }
 
     let { error } = await supabase.auth.signInWithPassword({ email, password });
     let retryUsed = false;
@@ -1913,7 +1919,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signInWithGoogle = useCallback(async () => {
     if (__DEV__) console.log('[Auth] signInWithGoogle: attempting');
     trackEvent({ name: 'sign_in_attempted', props: { auth_method: 'google' } });
-    await waitForPendingSignOut(10_000); // see signIn — stale sign-out isolation
+    // See signIn — abort rather than authenticate into a stale sign-out race.
+    if (!(await waitForPendingSignOut(10_000))) {
+      return { error: LOGIN_COPY.signOutStillPending };
+    }
     const result = await signInWithGoogleNative();
     if (!result.error && !result.cancelled) {
       if (__DEV__) console.log('[Auth] signInWithGoogle: success');
@@ -1930,7 +1939,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signInWithApple = useCallback(async () => {
     if (__DEV__) console.log('[Auth] signInWithApple: attempting');
     trackEvent({ name: 'sign_in_attempted', props: { auth_method: 'apple' } });
-    await waitForPendingSignOut(10_000); // see signIn — stale sign-out isolation
+    // See signIn — abort rather than authenticate into a stale sign-out race.
+    if (!(await waitForPendingSignOut(10_000))) {
+      return { error: LOGIN_COPY.signOutStillPending };
+    }
     const result = await signInWithAppleNative();
     if (!result.error && !result.cancelled) {
       if (__DEV__) console.log('[Auth] signInWithApple: success');

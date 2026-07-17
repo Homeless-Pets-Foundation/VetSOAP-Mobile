@@ -13,7 +13,12 @@ test('persistence is user-keyed, allowlisted, and success-only', async () => {
   const src = await read('src/lib/queryPersistence.ts');
   assert.match(src, /captivet_rq_cache_\$\{userId\}/);
   assert.match(src, /shouldDehydrateQuery: shouldPersistQuery/);
-  assert.match(src, /query\.state\.status === 'success'/);
+  // Persist on data-present, NOT status==='success': an offline refetch of a
+  // hydrated query flips status to 'error' with data intact, and requiring
+  // 'success' made the next write drop the only usable cached data (Codex P2
+  // round 4). Queries that never held data are still excluded.
+  assert.match(src, /query\.state\.data !== undefined/);
+  assert.doesNotMatch(src, /query\.state\.status === 'success'/);
   for (const allowed of ['recordings', 'recording', 'soapNote', 'patients', 'patient']) {
     assert.ok(src.includes(`'${allowed}'`), `${allowed} should be persistable`);
   }

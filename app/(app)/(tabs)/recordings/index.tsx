@@ -27,6 +27,9 @@ import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { EmptyState } from '../../../../src/components/ui/EmptyState';
 import { Select } from '../../../../src/components/ui/Select';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
+import { displayPatientName } from '../../../../src/lib/recordingDisplay';
+import { StatusBadge } from '../../../../src/components/StatusBadge';
+import { SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
 
@@ -477,11 +480,27 @@ export default function RecordingsListScreen() {
               accessibilityRole="summary"
             >
               <Text className="text-body-sm font-semibold text-brand-700 dark:text-brand-500">
-                {submittedIds.length} of {submittedIds.length} submitted
+                {SUBMITTED_BANNER_COPY.title(submittedIds.length)}
               </Text>
-              <Text className="text-caption text-content-tertiary mt-1">
-                IDs {submittedIds.map((id) => id.slice(0, 8)).join(', ')}
-              </Text>
+              {/* Per-recording rows: patient name + live processing status —
+                  the old constant "N of N submitted" + raw UUID list could
+                  never show partial progress and meant nothing to a vet. */}
+              {submittedIds.map((submittedId) => {
+                const submittedRecording = submittedRecordingsById.get(submittedId);
+                return (
+                  <View key={submittedId} className="flex-row items-center justify-between mt-1.5">
+                    <Text
+                      className="text-body-sm text-content-body flex-1 mr-2"
+                      numberOfLines={1}
+                    >
+                      {submittedRecording
+                        ? displayPatientName(submittedRecording)
+                        : SUBMITTED_BANNER_COPY.loadingRow}
+                    </Text>
+                    {submittedRecording ? <StatusBadge status={submittedRecording.status} /> : null}
+                  </View>
+                );
+              })}
             </View>
           ) : null
         }

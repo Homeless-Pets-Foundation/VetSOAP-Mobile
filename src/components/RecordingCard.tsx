@@ -35,9 +35,10 @@ function DraftLocationChip({ isOnDevice }: { isOnDevice: boolean }) {
       accessibilityRole="text"
       accessibilityLabel={isOnDevice ? 'Draft audio is saved on this device' : 'Draft audio is not saved on this device'}
     >
-      <Icon color={iconColor} size={12} style={{ marginRight: 4 }} />
-      <Text className={`text-caption font-semibold ${textClass}`}>
-        {label}
+      <Icon color={iconColor} size={12} style={{ marginRight: 4, flexShrink: 0 }} />
+      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text in self-end flex-rows and clips the last glyph; do NOT remove. */}
+      <Text className={`text-caption font-semibold ${textClass}`} style={{ flexShrink: 0, paddingRight: 2 }}>
+        {`${label} `}
       </Text>
     </View>
   );
@@ -51,9 +52,10 @@ function AiLabeledChip() {
       accessibilityRole="text"
       accessibilityLabel={METADATA_REVIEW_COPY.aiLabeled}
     >
-      <Sparkles color={colors.brand500} size={12} style={{ marginRight: 4 }} />
-      <Text className="text-caption font-semibold text-brand-700 dark:text-brand-500">
-        {METADATA_REVIEW_COPY.aiLabeled}
+      <Sparkles color={colors.brand500} size={12} style={{ marginRight: 4, flexShrink: 0 }} />
+      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text in self-end flex-rows and clips the last glyph; do NOT remove. */}
+      <Text className="text-caption font-semibold text-brand-700 dark:text-brand-500" style={{ flexShrink: 0, paddingRight: 2 }}>
+        {`${METADATA_REVIEW_COPY.aiLabeled} `}
       </Text>
     </View>
   );
@@ -138,7 +140,7 @@ export const RecordingCard = React.memo(function RecordingCard({
         }
       }}
       accessibilityRole="button"
-      accessibilityLabel={`Recording from ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
+      accessibilityLabel={`${patientLabel}${clientLabel ? `, client ${clientLabel}` : ''}, ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
       className={`card mb-2 ${highlighted ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}`}
       style={({ pressed }) => ({ opacity: pressed ? 0.96 : 1 })}
     >
@@ -227,6 +229,11 @@ export const RecordingCard = React.memo(function RecordingCard({
   prev.recording.species === next.recording.species &&
   prev.recording.breed === next.recording.breed &&
   prev.recording.createdAt === next.recording.createdAt &&
+  // Without these, linking a recording to a patient (metadata confirm updates
+  // cached lists in place) never surfaces the patient-history link until a
+  // full refetch replaces object identity.
+  prev.recording.patientId === next.recording.patientId &&
+  prev.recording.pimsPatientId === next.recording.pimsPatientId &&
   getRecordingReviewStatus(prev.recording) === getRecordingReviewStatus(next.recording) &&
   prev.recording.aiExtractedMetadata?.review === next.recording.aiExtractedMetadata?.review &&
   (prev.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) ===

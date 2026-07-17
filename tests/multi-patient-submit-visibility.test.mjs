@@ -110,7 +110,12 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(list, /const pinSubmitted = \(items: Recording\[\]\): Recording\[\] =>/);
   assert.match(list, /\}, \[debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById\]\)/);
   assert.match(list, /highlighted=\{submittedIdSet\.has\(item\.id\)\}/);
-  assert.match(list, /\{submittedIds\.length\} of \{submittedIds\.length\} submitted/);
+  // WP9: the banner shows per-recording rows (patient name + live status)
+  // instead of the constant "N of N submitted" + raw UUID list.
+  assert.match(list, /SUBMITTED_BANNER_COPY\.title\(submittedIds\.length\)/);
+  assert.match(list, /submittedRecordingsById\.get\(submittedId\)/);
+  assert.match(list, /<StatusBadge status=\{submittedRecording\.status\} \/>/);
+  assert.ok(!/IDs \{submittedIds\.map/.test(list), 'raw UUID list must not be shown to users');
 
   assert.match(card, /highlighted\?: boolean/);
   assert.match(card, /highlighted = false/);

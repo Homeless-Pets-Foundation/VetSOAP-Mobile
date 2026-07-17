@@ -119,6 +119,12 @@ export const REPLACE_SESSION_COPY = {
   replace: 'Replace',
 } as const;
 
+export const SUBMITTED_BANNER_COPY = {
+  title: (count: number): string =>
+    count === 1 ? 'Recording submitted' : `${count} recordings submitted`,
+  loadingRow: 'Loading…',
+} as const;
+
 export const SOAP_SECTION_ACTIONS = {
   edit: 'Edit',
   copy: 'Copy',

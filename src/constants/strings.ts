@@ -48,6 +48,25 @@ export const OVERSIZED_CONFIRM_COPY = {
   upload: 'Upload',
 } as const;
 
+export const PASSWORD_RESET_COPY = {
+  sendFailed:
+    "Couldn't send the reset email. Check the address and your connection, then try again.",
+  sendRateLimited: 'Too many attempts — wait a minute and try again.',
+  updateFailed:
+    "Couldn't update the password. Your reset link may have expired — request a new one from the sign-in screen.",
+  passwordTooShort: 'Password must be at least 8 characters.',
+  passwordMismatch: 'Both password fields must match.',
+  resend: 'Resend email',
+  resendCooldown: (seconds: number): string => `Resend email (${seconds}s)`,
+  tapLink:
+    "Tap the link in the email to reset your password. If you don't see the email, check your spam folder.",
+} as const;
+
+export const MFA_BOOTSTRAP_COPY = {
+  failed: "Couldn't load verification. Check your connection and try again.",
+  retry: 'Try Again',
+} as const;
+
 export const DISCARD_SESSION_COPY = {
   title: 'Discard Recordings?',
   /** Body when every at-risk slot is truly unsaved (no drafts involved). */

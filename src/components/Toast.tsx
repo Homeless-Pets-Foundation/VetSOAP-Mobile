@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { AccessibilityInfo, Text } from 'react-native';
+import { AccessibilityInfo, Platform, Text } from 'react-native';
 import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -30,9 +30,12 @@ export function Toast({ message, visible, onHide, durationMs }: ToastProps) {
     return () => clearTimeout(id);
   }, [visible, effectiveDuration, onHide]);
 
-  // accessibilityLiveRegion is Android-only; announce for iOS VoiceOver too.
+  // accessibilityLiveRegion is Android-only, so announce explicitly on iOS.
+  // Android must NOT also announce here or TalkBack speaks every toast twice.
   useEffect(() => {
-    if (visible && message) AccessibilityInfo.announceForAccessibility(message);
+    if (Platform.OS === 'ios' && visible && message) {
+      AccessibilityInfo.announceForAccessibility(message);
+    }
   }, [visible, message]);
 
   if (!visible) return null;

@@ -100,6 +100,10 @@ export default function LoginScreen() {
   const isLockedOut = lockoutRemaining > 0;
 
   const handleSignIn = useCallback(async () => {
+    // Single-flight: the keyboard Go action bypasses the disabled Sign In
+    // button, so repeated presses could start concurrent Supabase sign-ins
+    // with competing auth-state transitions (Codex P2, PR #143).
+    if (isLoading || socialProvider !== null) return;
     if (lockoutUntilRef.current > Date.now()) return;
 
     // Validate email format
@@ -140,13 +144,14 @@ export default function LoginScreen() {
     } finally {
       setIsLoading(false);
     }
-  }, [email, password, signIn, startLockout]);
+  }, [email, password, signIn, startLockout, isLoading, socialProvider]);
 
   const handleSocial = useCallback(
     async (provider: 'google' | 'apple') => {
       // Respect the same brute-force lockout that guards the password form.
       // A cancelled social prompt is a silent no-op and does not count against
       // the attempt budget (socialAuth returns { error: null } on cancel).
+      if (isLoading || socialProvider !== null) return;
       if (lockoutUntilRef.current > Date.now()) return;
 
       setError(null);
@@ -174,7 +179,7 @@ export default function LoginScreen() {
         setSocialProvider(null);
       }
     },
-    [signInWithGoogle, signInWithApple, startLockout]
+    [signInWithGoogle, signInWithApple, startLockout, isLoading, socialProvider]
   );
 
   const AppleAuthenticationButton = appleModuleRef.current?.AppleAuthenticationButton;
@@ -255,6 +260,7 @@ export default function LoginScreen() {
             autoCorrect={false}
             autoComplete="email"
             textContentType="username"
+            editable={!isLoading && socialProvider === null}
             returnKeyType="next"
             onSubmitEditing={() => passwordInputRef.current?.focus()}
             blurOnSubmit={false}
@@ -269,6 +275,7 @@ export default function LoginScreen() {
             secureTextEntry={!showPassword}
             autoComplete="current-password"
             textContentType="password"
+            editable={!isLoading && socialProvider === null}
             returnKeyType="go"
             onSubmitEditing={() => { handleSignIn().catch(() => {}); }}
             rightAccessory={

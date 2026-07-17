@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { AccessibilityInfo, Text } from 'react-native';
+import { AccessibilityInfo, Platform, Text } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { SOAP_SECTION_ACTIONS } from '../../constants/strings';
 import { cx } from './styles';
@@ -21,8 +21,10 @@ interface CopiedToastProps {
  * so iOS VoiceOver users otherwise never hear that the copy succeeded).
  */
 export function CopiedToast({ visible, label = SOAP_SECTION_ACTIONS.copied, className }: CopiedToastProps) {
+  // Android's polite live region below already announces; doubling up made
+  // TalkBack speak every confirmation twice. iOS has no live regions.
   useEffect(() => {
-    if (visible) AccessibilityInfo.announceForAccessibility(label);
+    if (Platform.OS === 'ios' && visible) AccessibilityInfo.announceForAccessibility(label);
   }, [visible, label]);
 
   if (!visible) return null;

@@ -86,9 +86,20 @@ export function useActiveProviderIssue(): ProviderIssue | null {
   return data?.issues[0] ?? null;
 }
 
-export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
+/**
+ * Presentational half: renders an already-fetched issue. Home passes the
+ * issue from its own useActiveProviderIssue() call (banner-priority stack) —
+ * mounting the hook twice registered duplicate focus/AppState refetch
+ * listeners for the same endpoint (Codex P2, PR #143).
+ */
+export function ProviderIssueBannerContent({
+  location,
+  issue,
+}: {
+  location: 'home' | 'settings';
+  issue: ProviderIssue | null;
+}) {
   const queryClient = useQueryClient();
-  const issue = useActiveProviderIssue();
 
   const acknowledgeMutation = useMutation({
     mutationFn: (issueKey: string) => providerIssuesApi.acknowledge(issueKey),
@@ -124,4 +135,10 @@ export function ProviderIssueBanner({ location }: { location: 'home' | 'settings
       />
     </View>
   );
+}
+
+/** Query + presentation in one — for screens (Settings) without their own hook call. */
+export function ProviderIssueBanner({ location }: { location: 'home' | 'settings' }) {
+  const issue = useActiveProviderIssue();
+  return <ProviderIssueBannerContent location={location} issue={issue} />;
 }

@@ -101,8 +101,8 @@ export function UploadOverlay({
   // 100% uploadProgress must contribute zero here or the batch total counts
   // it twice (progress jumping past the truth, >100% at the end).
   const currentSlot = slots.find((s) => s.id === currentSlotId);
-  const currentProgress =
-    currentSlot && currentSlot.uploadStatus !== 'success' ? currentSlot.uploadProgress ?? 0 : 0;
+  const currentSlotSucceeded = currentSlot?.uploadStatus === 'success';
+  const currentProgress = currentSlot && !currentSlotSucceeded ? currentSlot.uploadProgress ?? 0 : 0;
 
   const totalSlotsToUpload = batchSlotIds.length;
   const uploadsCompleted = Math.min(countBatchCompleted(slots, batchSlotIds), totalSlotsToUpload);
@@ -119,7 +119,10 @@ export function UploadOverlay({
     );
     currentUploadIndex = uploadsCompleted + 1;
   } else {
-    overallProgress = currentProgress;
+    // Single-slot batch: a successful slot must read 100%, not the zeroed
+    // currentProgress above (the overlay stays visible until the submit
+    // handler clears submittingSlotId — dropping to 0% read as a restart).
+    overallProgress = currentSlotSucceeded ? 100 : currentProgress;
     currentUploadIndex = 1;
   }
 

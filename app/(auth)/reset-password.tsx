@@ -28,14 +28,18 @@ export default function ResetPasswordScreen() {
     // — recovery deliberately skips fetchUser). Sign the recovery session
     // out FIRST, then clear the flag and land on Login explicitly (the deep
     // link may have an empty back stack, so no router.back()).
+    //
+    // Rule 24: this gates the UI, and GoTrue's signOut can hang on a stale
+    // AbortController — race it against a hard timeout so Cancel always
+    // reaches Login even if the network call never settles.
     setIsLoading(true);
-    supabase.auth
-      .signOut()
-      .catch(() => {})
-      .finally(() => {
-        clearPasswordRecovery();
-        router.replace('/(auth)/login');
-      });
+    Promise.race([
+      supabase.auth.signOut().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]).finally(() => {
+      clearPasswordRecovery();
+      router.replace('/(auth)/login');
+    });
   };
 
   const handleResetPassword = async () => {

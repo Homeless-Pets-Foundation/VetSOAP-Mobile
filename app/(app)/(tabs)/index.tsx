@@ -36,7 +36,7 @@ import { SkeletonCard } from '../../../src/components/ui/Skeleton';
 import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
 import { Banner } from '../../../src/components/ui/Banner';
-import { ProviderIssueBanner, useActiveProviderIssue } from '../../../src/components/ProviderIssueBanner';
+import { ProviderIssueBannerContent, useActiveProviderIssue } from '../../../src/components/ProviderIssueBanner';
 import { useDurableRecoveries } from '../../../src/hooks/useDurableRecoveries';
 import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
 
@@ -284,7 +284,9 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      {visibleBannerKeys.includes('providerIssue') && <ProviderIssueBanner location="home" />}
+      {visibleBannerKeys.includes('providerIssue') && (
+        <ProviderIssueBannerContent location="home" issue={activeProviderIssue} />
+      )}
 
       {hiddenBannerCount > 0 && (
         <Pressable

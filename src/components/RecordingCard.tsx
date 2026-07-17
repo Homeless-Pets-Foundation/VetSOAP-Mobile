@@ -141,6 +141,23 @@ export const RecordingCard = React.memo(function RecordingCard({
       }}
       accessibilityRole="button"
       accessibilityLabel={`${patientLabel}${clientLabel ? `, client ${clientLabel}` : ''}, ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
+      // Nested Pressables (patient-history link, review chip) are unreliable
+      // for screen readers inside a parent Pressable — surface them as custom
+      // actions on the card instead; the inner controls are hidden from the
+      // a11y tree below.
+      accessibilityActions={[
+        ...(recording.patientId ? [{ name: 'open_patient_history', label: 'Open patient history' }] : []),
+        ...(showReviewChip
+          ? [{ name: 'toggle_reviewed', label: reviewStatus === 'reviewed' ? 'Mark as needs review' : 'Mark as reviewed' }]
+          : []),
+      ]}
+      onAccessibilityAction={(event) => {
+        if (event.nativeEvent.actionName === 'open_patient_history' && recording.patientId) {
+          router.push(`/patient/${recording.patientId}` as `/patient/${string}`);
+        } else if (event.nativeEvent.actionName === 'toggle_reviewed' && showReviewChip) {
+          reviewMutation.mutate(reviewStatus !== 'reviewed');
+        }
+      }}
       className={`card mb-2 ${highlighted ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}`}
       style={({ pressed }) => ({ opacity: pressed ? 0.96 : 1 })}
     >
@@ -153,9 +170,9 @@ export const RecordingCard = React.memo(function RecordingCard({
                   e.stopPropagation();
                   router.push(`/patient/${recording.patientId}` as `/patient/${string}`);
                 }}
-                hitSlop={4}
-                accessibilityRole="link"
-                accessibilityLabel={`View patient history for ${patientLabel}`}
+                hitSlop={12}
+                accessible={false}
+                importantForAccessibility="no-hide-descendants"
                 className="shrink"
               >
                 <Text

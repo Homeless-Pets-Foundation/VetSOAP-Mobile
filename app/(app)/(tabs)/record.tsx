@@ -1142,6 +1142,24 @@ function RecordingSession() {
     if (recorder.state === 'recording') setDurableInterruptionNotice(false);
   }, [recorder.state]);
 
+  // Announce recorder transitions for screen readers. The on-card badges use
+  // accessibilityLiveRegion, which is Android-only — iOS VoiceOver users got
+  // no feedback that recording started/paused/resumed/finished (WP29).
+  const prevRecorderStateRef = useRef(recorder.state);
+  useEffect(() => {
+    const prev = prevRecorderStateRef.current;
+    const next = recorder.state;
+    prevRecorderStateRef.current = next;
+    if (prev === next) return;
+    if (next === 'recording') {
+      AccessibilityInfo.announceForAccessibility(prev === 'paused' ? 'Recording resumed' : 'Recording started');
+    } else if (next === 'paused') {
+      AccessibilityInfo.announceForAccessibility('Recording paused');
+    } else if (next === 'stopped' && (prev === 'recording' || prev === 'paused')) {
+      AccessibilityInfo.announceForAccessibility('Recording finished');
+    }
+  }, [recorder.state]);
+
   // Android audio-focus interruption bridge.
   //
   // expo-audio on Android does not surface AudioFocus loss as `hasError`

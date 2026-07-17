@@ -14,7 +14,7 @@ interface TextInputFieldProps extends Omit<TextInputProps, 'style'> {
   containerClassName?: string;
 }
 
-export function TextInputField({
+export const TextInputField = React.forwardRef<TextInput, TextInputFieldProps>(function TextInputField({
   label,
   required = false,
   error,
@@ -25,7 +25,7 @@ export function TextInputField({
   className,
   containerClassName,
   ...rest
-}: TextInputFieldProps) {
+}, ref) {
   const colors = useThemeColors();
   const [isFocused, setIsFocused] = useState(false);
 
@@ -56,6 +56,7 @@ export function TextInputField({
       {rightAccessory ? (
         <View className={cx('input-base min-h-[44px] flex-row items-center', borderClass, className)}>
           <TextInput
+            ref={ref}
             placeholderTextColor={colors.contentTertiary}
             accessibilityLabel={label}
             accessibilityHint={required ? 'Required field' : undefined}
@@ -68,6 +69,7 @@ export function TextInputField({
         </View>
       ) : (
         <TextInput
+          ref={ref}
           placeholderTextColor={colors.contentTertiary}
           accessibilityLabel={label}
           accessibilityHint={required ? 'Required field' : undefined}
@@ -79,4 +81,4 @@ export function TextInputField({
       )}
     </FormField>
   );
-}
+});

@@ -48,6 +48,15 @@ export const OVERSIZED_CONFIRM_COPY = {
   upload: 'Upload',
 } as const;
 
+export const LOGIN_COPY = {
+  forgotPassword: 'Forgot password?',
+  continueWithGoogle: 'Continue with Google',
+  orContinueWith: 'or continue with',
+  lockout: (seconds: number): string =>
+    `Too many failed attempts. Please try again in ${seconds}s.`,
+  networkError: 'A network error occurred. Please check your connection and try again.',
+} as const;
+
 export const PASSWORD_RESET_COPY = {
   sendFailed:
     "Couldn't send the reset email. Check the address and your connection, then try again.",

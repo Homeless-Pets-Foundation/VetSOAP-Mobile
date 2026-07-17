@@ -119,10 +119,25 @@ function googleTokenDiagnostics(idToken: string): Record<string, unknown> {
   };
 }
 
-function isGoogleSignInConfiguredForCurrentPlatform(): boolean {
+export function isGoogleSignInConfiguredForCurrentPlatform(): boolean {
   if (!GOOGLE_WEB_CLIENT_ID) return false;
   if (Platform.OS === 'ios' && !GOOGLE_IOS_CLIENT_ID) return false;
   return true;
+}
+
+/**
+ * Whether native Apple Sign-In can be offered on this device. iOS-only;
+ * lazy-requires expo-apple-authentication (CLAUDE.md rule 19 — old
+ * dev-clients without the module must not crash) and never throws.
+ */
+export async function isAppleSignInAvailable(): Promise<boolean> {
+  if (Platform.OS !== 'ios') return false;
+  try {
+    const AppleAuthentication = getAppleAuthentication();
+    return await AppleAuthentication.isAvailableAsync();
+  } catch {
+    return false;
+  }
 }
 
 async function persistAppleProfileMetadata(

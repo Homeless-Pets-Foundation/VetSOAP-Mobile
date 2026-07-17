@@ -20,6 +20,7 @@ import {
   REPLACE_SESSION_COPY,
   SILENT_CHECK_COPY,
   TEMPLATE_DEFAULT_COPY,
+  UPLOAD_OVERLAY_COPY,
 } from '../../../src/constants/strings';
 import { Toast } from '../../../src/components/Toast';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
@@ -87,7 +88,7 @@ import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../../src/components/SubmitPanel';
 import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
-import { UploadOverlay } from '../../../src/components/UploadOverlay';
+import { UploadOverlay, countBatchCompleted } from '../../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
 import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
@@ -534,6 +535,7 @@ function RecordingSession() {
   const user = useAuthUser();
   const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
   const recorder = useAudioRecorder();
+  const colors = useThemeColors();
   const { width: screenWidth } = useWindowDimensions();
   const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
   const [preferredTemplateId, setPreferredTemplateId] = useState<string | null | undefined>(undefined);
@@ -647,7 +649,10 @@ function RecordingSession() {
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
-  const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
+  // Slot ids in the current submit batch — UploadOverlay scopes its
+  // progress math to these (WP6: cross-batch counting inflated progress).
+  const [batchSlotIds, setBatchSlotIds] = useState<string[]>([]);
+  const [uploadOverlayHidden, setUploadOverlayHidden] = useState(false);
   const [isStashing, setIsStashing] = useState(false);
   const [finishingDraftSlotId, setFinishingDraftSlotId] = useState<string | null>(null);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
@@ -3347,7 +3352,7 @@ function RecordingSession() {
 
       markSubmitIntent([slotId]);
       setSubmittingSlotId(slotId);
-      setTotalSlotsToUpload(1);
+      setBatchSlotIds([slotId]);
 
       (async () => {
         try {
@@ -3383,12 +3388,12 @@ function RecordingSession() {
         } finally {
           clearSubmitIntent([slotId]);
           setSubmittingSlotId(null);
-          setTotalSlotsToUpload(0);
+          setBatchSlotIds([]);
         }
       })().catch(() => {
         clearSubmitIntent([slotId]);
         setSubmittingSlotId(null);
-        setTotalSlotsToUpload(0);
+        setBatchSlotIds([]);
       });
     },
     [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
@@ -3445,7 +3450,7 @@ function RecordingSession() {
     const slotIdsToUpload = slotsToUpload.map((slot) => slot.id);
     markSubmitIntent(slotIdsToUpload);
     setIsSubmittingAll(true);
-    setTotalSlotsToUpload(slotsToUpload.length);
+    setBatchSlotIds(slotIdsToUpload);
     trackEvent({ name: 'submit_all_attempted', props: { slot_count: slotsToUpload.length } });
 
     // Track NetInfo transitions only during the active upload loop. Each
@@ -3530,7 +3535,7 @@ function RecordingSession() {
         clearSubmitIntent(slotIdsToUpload);
         setIsSubmittingAll(false);
         setSubmittingSlotId(null);
-        setTotalSlotsToUpload(0);
+        setBatchSlotIds([]);
         try { netUnsub(); } catch { /* noop */ }
         setSessionActivity('idle');
       }
@@ -3538,7 +3543,7 @@ function RecordingSession() {
       clearSubmitIntent(slotIdsToUpload);
       setIsSubmittingAll(false);
       setSubmittingSlotId(null);
-      setTotalSlotsToUpload(0);
+      setBatchSlotIds([]);
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
@@ -4150,6 +4155,11 @@ function RecordingSession() {
   // Upload overlay visibility
   const showOverlay = isSubmittingAll || submittingSlotId !== null || session.slots.some((s) => s.uploadStatus === 'uploading');
 
+  // Un-hide for the next batch once the current one fully resolves.
+  useEffect(() => {
+    if (!showOverlay && uploadOverlayHidden) setUploadOverlayHidden(false);
+  }, [showOverlay, uploadOverlayHidden]);
+
   // Pagination indicator
   const paginationText =
     session.slots.length > 6
@@ -4290,6 +4300,27 @@ function RecordingSession() {
         </View>
       )}
 
+      {/* Compact progress banner while the upload overlay is hidden */}
+      {showOverlay && uploadOverlayHidden && (
+        <Pressable
+          onPress={() => setUploadOverlayHidden(false)}
+          accessibilityRole="button"
+          accessibilityLabel={UPLOAD_OVERLAY_COPY.backgroundProgress(
+            countBatchCompleted(session.slots, batchSlotIds),
+            Math.max(batchSlotIds.length, 1)
+          )}
+          className="mx-5 mb-2 px-3 py-3 bg-brand-50 dark:bg-surface-sunken border border-brand-300 dark:border-border-default rounded-lg flex-row items-center"
+        >
+          <ActivityIndicator size="small" color={colors.brand500} />
+          <Text className="text-body-sm font-medium text-content-body flex-1 ml-3" numberOfLines={2}>
+            {UPLOAD_OVERLAY_COPY.backgroundProgress(
+              countBatchCompleted(session.slots, batchSlotIds),
+              Math.max(batchSlotIds.length, 1)
+            )}
+          </Text>
+        </Pressable>
+      )}
+
       {/* Pending Drafts Banner */}
       {hasPendingDrafts && (
         <View className="mx-5 mb-2 px-3 py-2 bg-status-warning border border-status-warning rounded-lg flex-row items-center">
@@ -4398,11 +4429,12 @@ function RecordingSession() {
 
       {/* Upload overlay */}
       <UploadOverlay
-        visible={showOverlay}
+        visible={showOverlay && !uploadOverlayHidden}
         slots={session.slots}
         currentSlotId={submittingSlotId}
-        totalSlotsToUpload={totalSlotsToUpload}
+        batchSlotIds={batchSlotIds}
         isMulti={isSubmittingAll}
+        onHide={() => setUploadOverlayHidden(true)}
       />
       <Toast message={pauseToast ?? ''} visible={pauseToast !== null} onHide={hidePauseToast} />
     </SafeAreaView>

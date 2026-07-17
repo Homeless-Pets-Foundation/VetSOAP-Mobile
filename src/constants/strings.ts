@@ -24,6 +24,12 @@ export const UPLOAD_OVERLAY_COPY = {
   phaseStarting: 'Preparing…',
   phaseUploading: 'Uploading…',
   phaseProcessing: 'Processing…',
+  hide: 'Hide',
+  /** Compact banner shown while the overlay is hidden but uploads continue. */
+  backgroundProgress: (done: number, total: number): string =>
+    `Uploading ${Math.min(done + 1, total)} of ${total}… Tap to view`,
+  announceSingle: 'Upload in progress',
+  announceMulti: (total: number): string => `Uploading ${total} recordings`,
 } as const;
 
 export const STALE_RECORDING_UPLOAD_COPY =

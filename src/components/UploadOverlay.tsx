@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import Animated, {
   FadeIn,
   FadeOut,
@@ -21,16 +21,31 @@ interface UploadOverlayProps {
   visible: boolean;
   slots: PatientSlot[];
   currentSlotId: string | null;
-  totalSlotsToUpload: number;
+  /** Slot ids in the CURRENT submit batch — progress math is scoped to these. */
+  batchSlotIds: string[];
   isMulti: boolean;
+  /** Optional escape hatch: lets the user hide the full-screen scrim while uploads continue. */
+  onHide?: () => void;
+}
+
+/**
+ * Completed-count for the current batch only. Counting every session slot
+ * with uploadStatus === 'success' inflated progress when a Submit All
+ * followed a single submit (started at 50%, showed "Recording 2 of 2").
+ */
+export function countBatchCompleted(slots: PatientSlot[], batchSlotIds: string[]): number {
+  if (batchSlotIds.length === 0) return 0;
+  const batch = new Set(batchSlotIds);
+  return slots.filter((s) => batch.has(s.id) && s.uploadStatus === 'success').length;
 }
 
 export function UploadOverlay({
   visible,
   slots,
   currentSlotId,
-  totalSlotsToUpload,
+  batchSlotIds,
   isMulti,
+  onHide,
 }: UploadOverlayProps) {
   const colors = useThemeColors();
   const progressWidth = useSharedValue(0);
@@ -55,8 +70,10 @@ export function UploadOverlay({
   // Per-slot "<Patient> uploaded" toast — fires as each slot confirms.
   const [slotToast, setSlotToast] = useState<string | null>(null);
   const confirmedIdsRef = useRef<Set<string>>(new Set());
+  const prevVisibleRef = useRef(false);
   useEffect(() => {
     if (!visible) {
+      prevVisibleRef.current = false;
       confirmedIdsRef.current = new Set();
       // Clear any pending toast too — else a slow 2s timer that never fired
       // leaves a stale "<old patient> uploaded" that remounts on the next
@@ -64,21 +81,27 @@ export function UploadOverlay({
       setSlotToast(null);
       return;
     }
+    // On open, seed the set with slots that were ALREADY uploaded before this
+    // batch so they don't fire stale "<old patient> uploaded" toasts.
+    const justOpened = !prevVisibleRef.current;
+    prevVisibleRef.current = true;
     for (const s of slots) {
       if (s.uploadStatus === 'success' && !confirmedIdsRef.current.has(s.id)) {
         confirmedIdsRef.current.add(s.id);
-        const name = s.formData.patientName?.trim() || 'Recording';
-        setSlotToast(`${name} uploaded`);
+        if (!justOpened) {
+          const name = s.formData.patientName?.trim() || 'Recording';
+          setSlotToast(`${name} uploaded`);
+        }
       }
     }
   }, [slots, visible]);
 
-  // Compute progress
+  // Compute progress — scoped to the current batch.
   const currentSlot = slots.find((s) => s.id === currentSlotId);
   const currentProgress = currentSlot?.uploadProgress ?? 0;
 
-  const completedCount = slots.filter((s) => s.uploadStatus === 'success').length;
-  const uploadsCompleted = Math.min(completedCount, totalSlotsToUpload);
+  const totalSlotsToUpload = batchSlotIds.length;
+  const uploadsCompleted = Math.min(countBatchCompleted(slots, batchSlotIds), totalSlotsToUpload);
 
   let overallProgress: number;
   let currentUploadIndex: number;
@@ -143,7 +166,14 @@ export function UploadOverlay({
       className="justify-center items-center px-6"
       accessibilityRole="alert"
       accessibilityLiveRegion="assertive"
-      accessibilityLabel={`Upload in progress. ${phaseText} ${overallProgress}%`}
+      // Announce the upload once — the live percentage moved to the
+      // progressbar's accessibilityValue so screen readers aren't re-announced
+      // assertively on every tick.
+      accessibilityLabel={
+        isMulti && totalSlotsToUpload > 1
+          ? UPLOAD_OVERLAY_COPY.announceMulti(totalSlotsToUpload)
+          : UPLOAD_OVERLAY_COPY.announceSingle
+      }
     >
       <Animated.View
         entering={FadeInUp.duration(300)}
@@ -158,7 +188,7 @@ export function UploadOverlay({
         </View>
 
         {/* Title */}
-        <Text className="text-lg font-bold text-content-primary mb-1 text-center">
+        <Text className="text-heading font-bold text-content-primary mb-1 text-center">
           {isMulti && totalSlotsToUpload > 1
             ? UPLOAD_OVERLAY_COPY.titleMulti
             : UPLOAD_OVERLAY_COPY.title}
@@ -166,8 +196,8 @@ export function UploadOverlay({
 
         {/* Phase + percentage row */}
         <View className="flex-row justify-between w-full mb-2 mt-3">
-          <Text className="text-sm text-content-secondary">{phaseText}</Text>
-          <Text className="text-sm font-semibold text-brand-500">
+          <Text className="text-body-sm text-content-secondary">{phaseText}</Text>
+          <Text className="text-body-sm font-semibold text-brand-500">
             {overallProgress}%
           </Text>
         </View>
@@ -186,7 +216,7 @@ export function UploadOverlay({
 
         {/* Multi-patient counter */}
         {isMulti && totalSlotsToUpload > 1 && (
-          <Text className="text-xs text-content-tertiary">
+          <Text className="text-caption text-content-tertiary">
             Recording {Math.min(currentUploadIndex, totalSlotsToUpload)} of{' '}
             {totalSlotsToUpload}
           </Text>
@@ -194,9 +224,31 @@ export function UploadOverlay({
 
         {/* Reassurance text — no horizontal padding: centered captions in this
             narrow card clipped on Android with the old longer copy. */}
-        <Text className="text-xs text-content-tertiary mt-3 text-center">
+        <Text className="text-caption text-content-tertiary mt-3 text-center">
           {UPLOAD_OVERLAY_COPY.reassurance}
         </Text>
+
+        {/* Escape hatch: uploads of up to 10 slots on cellular can take many
+            minutes; without this the only way out of the scrim is killing the
+            app. Hiding never cancels — the loop lives in record.tsx. */}
+        {onHide && (
+          <Pressable
+            onPress={onHide}
+            accessibilityRole="button"
+            accessibilityLabel={UPLOAD_OVERLAY_COPY.hide}
+            hitSlop={10}
+            className="mt-4 px-4"
+            style={{ minHeight: 44, justifyContent: 'center' }}
+          >
+            {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
+            <Text
+              className="text-body-sm font-semibold text-brand-500"
+              style={{ flexShrink: 0, paddingRight: 2 }}
+            >
+              {`${UPLOAD_OVERLAY_COPY.hide} `}
+            </Text>
+          </Pressable>
+        )}
       </Animated.View>
       <Toast
         message={slotToast ?? ''}

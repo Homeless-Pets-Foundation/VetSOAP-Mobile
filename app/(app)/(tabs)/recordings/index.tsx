@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Alert, View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { Alert, View, Text, TextInput, FlatList, Platform, Pressable, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
-import { Search, Mic } from 'lucide-react-native';
+import { Search, Mic, X } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
 import {
@@ -182,23 +182,18 @@ export default function RecordingsListScreen() {
     }
     return map;
   }, [recordings, submittedIdSet, submittedRecordingQueries]);
-  const hasReviewStatusInLoadedRecordings = useMemo(
-    () => recordings.some((recording) => getRecordingReviewStatus(recording) !== null),
-    [recordings]
-  );
+  // Always offer Needs Review: gating it on the loaded pages made the filter
+  // menu's contents shift as pagination progressed (an option a vet saw
+  // yesterday could vanish today).
   const statusFilterOptions = useMemo(
-    () => (
-      hasReviewStatusInLoadedRecordings || selectedStatusFilter === 'needs_review'
-        ? [
-            STATUS_FILTER_OPTIONS[0],
-            STATUS_FILTER_OPTIONS[1],
-            NEEDS_REVIEW_STATUS_FILTER_OPTION,
-            STATUS_FILTER_OPTIONS[2],
-            STATUS_FILTER_OPTIONS[3],
-          ]
-        : STATUS_FILTER_OPTIONS
-    ),
-    [hasReviewStatusInLoadedRecordings, selectedStatusFilter]
+    () => [
+      STATUS_FILTER_OPTIONS[0],
+      STATUS_FILTER_OPTIONS[1],
+      NEEDS_REVIEW_STATUS_FILTER_OPTION,
+      STATUS_FILTER_OPTIONS[2],
+      STATUS_FILTER_OPTIONS[3],
+    ],
+    []
   );
   const activeStatusFilterLabel = statusFilterOptions.find(
     (option) => option.value === selectedStatusFilter
@@ -428,11 +423,24 @@ export default function RecordingsListScreen() {
               onChangeText={setSearch}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
-              placeholder="Search by patient name..."
+              placeholder="Search patient or client…"
               placeholderTextColor={colors.contentTertiary}
-              accessibilityLabel="Search recordings by patient name"
+              accessibilityLabel="Search recordings by patient or client name"
               className="flex-1 p-3 text-body text-content-primary"
+              returnKeyType="search"
+              clearButtonMode="while-editing"
             />
+            {/* Android has no clearButtonMode — provide an explicit clear-X. */}
+            {Platform.OS === 'android' && search.length > 0 && (
+              <Pressable
+                onPress={() => setSearch('')}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                hitSlop={10}
+              >
+                <X color={colors.contentTertiary} size={iconSm} />
+              </Pressable>
+            )}
           </View>
 
           <Select
@@ -451,6 +459,7 @@ export default function RecordingsListScreen() {
       <FlatList
         data={displayRecordings}
         keyExtractor={keyExtractor}
+        keyboardShouldPersistTaps="handled"
         renderItem={({ item }) => (
           <RecordingCard
             recording={item}

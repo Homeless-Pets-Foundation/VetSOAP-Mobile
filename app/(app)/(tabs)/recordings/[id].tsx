@@ -720,7 +720,7 @@ export default function RecordingDetailScreen() {
       </View>
       <Text
         className="text-body text-content-primary mt-0.5"
-        numberOfLines={field === 'clientName' ? 1 : undefined}
+        numberOfLines={field === 'clientName' ? 2 : undefined}
       >
         {value}
       </Text>

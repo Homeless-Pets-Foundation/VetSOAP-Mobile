@@ -37,8 +37,9 @@ test('review workflow is wired through list filter, card chip, detail toggle, an
   assert.match(api, /reviewStatus\?: ReviewStatus/);
   assert.match(api, /patch\(`\/api\/recordings\/\$\{recordingId\}\/review`/);
   assert.match(list, /value: 'needs_review'/);
-  assert.match(list, /hasReviewStatusInLoadedRecordings/);
-  assert.match(list, /getRecordingReviewStatus\(recording\) !== null/);
+  // WP22: the Needs Review option is always present — visibility no longer
+  // shifts with which pages happen to be loaded.
+  assert.match(list, /NEEDS_REVIEW_STATUS_FILTER_OPTION/);
   assert.match(list, /options=\{statusFilterOptions\}/);
   assert.match(list, /reviewStatus: reviewStatusFilter/);
   assert.match(card, /ReviewStatusChip/);

@@ -77,9 +77,19 @@ interface StatusBadgeProps {
   status: RecordingStatus;
 }
 
+/** Title-cased raw status for values the config doesn't know yet. */
+function neutralFallback(status: string): { label: string; variant: 'info'; inProgress: false } {
+  const label = status
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return { label, variant: 'info', inProgress: false };
+}
+
 export function StatusBadge({ status }: StatusBadgeProps) {
   const colors = useThemeColors();
-  const config = STATUS_CONFIG[status] || STATUS_CONFIG.uploading;
+  // Unknown/future server statuses used to fall back to a pulsing
+  // "Uploading" badge — actively misleading. Render them neutrally instead.
+  const config = STATUS_CONFIG[status] || neutralFallback(status);
   const v = variantClasses[config.variant];
   const dotColor = {
     info: colors.statusInfoFg,

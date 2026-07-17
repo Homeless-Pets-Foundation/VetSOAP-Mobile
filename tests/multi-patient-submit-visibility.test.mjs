@@ -22,7 +22,7 @@ test('dirty server draft metadata is applied through strict preparation and conf
   assert.match(api, /metadata: PendingConfirmMetadata/);
   assert.match(api, /metadata,\s*files/);
   assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata\)/);
-  assert.match(api, /const AI_ENRICHABLE_METADATA_FIELDS = new Set/);
+  assert.match(api, /const SERVER_ENRICHABLE_BLANK_METADATA_FIELDS = new Set/);
   assert.match(api, /function assertRecordingMatchesMetadataPayload\([\s\S]*allowServerEnrichedBlankFields/);
   assert.match(api, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
   assert.match(api, /assertRecordingMatchesMetadataPayload\(value\.recording, metadataAsPayload\(metadata\)/);

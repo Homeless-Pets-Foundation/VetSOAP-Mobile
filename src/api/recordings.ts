@@ -277,7 +277,14 @@ export interface EmailDraftResult {
 type RecordingPayload = Record<string, string | boolean | null>;
 
 const createRecordingPartialSchema = createRecordingSchema.partial();
-const AI_ENRICHABLE_METADATA_FIELDS = new Set(['patientName', 'clientName', 'species', 'breed', 'appointmentType']);
+const SERVER_ENRICHABLE_BLANK_METADATA_FIELDS = new Set([
+  'patientName',
+  'clientName',
+  'species',
+  'breed',
+  'appointmentType',
+  'pimsPatientId',
+]);
 const DRAFT_NULLABLE_FIELDS = new Set<keyof CreateRecording>([
   'pimsPatientId',
   'clientName',
@@ -357,7 +364,7 @@ function recordingMatchesMetadataPayload(
     const recordingValue = recordingData[key] ?? null;
     if (
       opts.allowServerEnrichedBlankFields &&
-      AI_ENRICHABLE_METADATA_FIELDS.has(key) &&
+      SERVER_ENRICHABLE_BLANK_METADATA_FIELDS.has(key) &&
       (value === null || value === '') &&
       recordingValue !== null &&
       recordingValue !== ''

@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Edit2, User } from 'lucide-react-native';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { patientsApi } from '../../../../src/api/patients';
@@ -144,14 +144,17 @@ export default function PatientDetailScreen() {
     gcTime: PERSIST_GC_TIME_MS,
   });
 
+  const [visitsLimit, setVisitsLimit] = useState(20);
   const {
     data: recordingsData,
     isLoading: recordingsLoading,
+    isFetching: recordingsFetching,
   } = useQuery({
-    queryKey: ['patient', id, 'recordings'],
+    queryKey: ['patient', id, 'recordings', visitsLimit],
     gcTime: PERSIST_GC_TIME_MS,
-    queryFn: () => patientsApi.listRecordings(id!, { limit: 20 }),
+    queryFn: () => patientsApi.listRecordings(id!, { limit: visitsLimit }),
     enabled: !!id && activeTab === 'visits',
+    placeholderData: keepPreviousData,
   });
 
   const updateMutation = useMutation({
@@ -417,6 +420,23 @@ export default function PatientDetailScreen() {
                     </Pressable>
                   );
                 })
+              )}
+              {/* The flat limit silently truncated long-term patients' history
+                  (WP31) — surface the total and let the user load the rest. */}
+              {(recordingsData?.pagination?.total ?? 0) > (recordingsData?.data.length ?? 0) && (
+                <View className="items-center mb-3">
+                  <Text className="text-caption text-content-tertiary mb-2">
+                    Showing {recordingsData?.data.length} of {recordingsData?.pagination?.total} visits
+                  </Text>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={recordingsFetching}
+                    onPress={() => setVisitsLimit((limit) => limit + 20)}
+                  >
+                    Load more visits
+                  </Button>
+                </View>
               )}
             </View>
           )}

@@ -19,6 +19,10 @@ interface SheetProps {
   contentClassName?: string;
 }
 
+// Future polish (deliberate v1 scope): no drag handle / swipe-to-dismiss, and
+// Modal animationType="slide" slides the scrim with the panel. If upgrading,
+// split scrim (fade) from panel (slide) with reanimated — don't add a gesture
+// library for this alone.
 export function Sheet({
   visible,
   onClose,

@@ -595,6 +595,41 @@ test('controlled restart uses the recovery endpoint and a replacement identity b
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
+test('controlled restart fails closed when the recovery route is unavailable', async () => {
+  const oldKey = 'recording-upload-v1:slot:old-intent';
+  const replacementKey = 'recording-upload-v2:restart:new-intent';
+  let legacyMutations = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 100 }),
+    post: async (path) => {
+      if (path.endsWith('/upload-intent-recovery')) {
+        throw new ApiError('route unavailable', 404);
+      }
+      if (path === '/api/recordings' || path.endsWith('/upload-url')) {
+        legacyMutations++;
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(
+      metadata,
+      'file:///recording.m4a',
+      'audio/x-m4a',
+      {
+        idempotencyKey: replacementKey,
+        supersededIdempotencyKey: oldKey,
+        existingRecordingId: recordingId,
+      },
+    ),
+    (error) => error instanceof ApiError && error.status === 404,
+  );
+
+  assert.equal(legacyMutations, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
+});
+
 test('controlled restart inspects the replacement identity after a typed confirm conflict', async () => {
   const oldKey = 'recording-upload-v1:slot:old-intent';
   const replacementKey = 'recording-upload-v2:restart:new-intent';

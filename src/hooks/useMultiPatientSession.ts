@@ -102,7 +102,13 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
  * already processed without uploading the new audio.
  */
 function invalidatePendingConfirmForAudioChange(slot: PatientSlot): Partial<PatientSlot> {
-  if (!slot.pendingConfirm) return { pendingConfirm: null };
+  // A controlled restart reserves its replacement row before the PUT begins.
+  // If upload then fails before `pendingConfirm` exists, Continue/Edit still
+  // changes the bytes covered by that replacement manifest. Rotate whenever
+  // *any* recovery identity is active, not only after R2 proof was persisted.
+  if (!slot.pendingConfirm && !slot.uploadKeyOverride && !slot.supersededUploadKey) {
+    return { pendingConfirm: null };
+  }
   return {
     uploadIntentId: createUploadIntentId(),
     uploadKeyOverride: null,

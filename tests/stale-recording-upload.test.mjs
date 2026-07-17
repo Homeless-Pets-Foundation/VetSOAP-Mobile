@@ -202,7 +202,10 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
   assert.match(clear, /uploadIntentId: createUploadIntentId\(\)/);
   assert.doesNotMatch(update, /createUploadIntentId|pendingConfirm: null/);
   assert.match(reducer, /function invalidatePendingConfirmForAudioChange/);
-  assert.match(reducer, /if \(!slot\.pendingConfirm\) return \{ pendingConfirm: null \}/);
+  assert.match(
+    reducer,
+    /if \(!slot\.pendingConfirm && !slot\.uploadKeyOverride && !slot\.supersededUploadKey\)/,
+  );
   assert.match(reducer, /uploadIntentId: createUploadIntentId\(\)/);
   for (const action of ['SAVE_AUDIO', 'CONTINUE_RECORDING', 'UPDATE_SEGMENT', 'DELETE_SEGMENT', 'REPLACE_ALL_SEGMENTS']) {
     const start = reducer.indexOf(`case '${action}'`);
@@ -252,6 +255,15 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(api, /error\.status !== 409 \|\| error\.code !== 'UPLOAD_INTENT_CONFLICT'/);
   assert.match(api, /isRouteLevelPrepare404\(error\)/);
   assert.match(api, /if \(!isRouteLevelPrepare404\(error\)\) throw error/);
+  const prepareFallback = execute.slice(
+    execute.indexOf('if (!isRouteLevelPrepare404(error)) throw error'),
+    execute.indexOf('if (legacy.replacedMissingRecordingId)'),
+  );
+  assert.match(prepareFallback, /if \(options\.supersededIdempotencyKey\) throw error/);
+  assert.ok(
+    prepareFallback.indexOf('if (options.supersededIdempotencyKey) throw error') <
+      prepareFallback.indexOf('legacyUpload('),
+  );
   assert.match(api, /current\.status === 'draft' \|\| current\.status === 'uploading'|probedRecording\.status === 'draft'/);
   assert.match(api, /if \(staleRestartUsed\)/);
   assert.match(api, /staleRestartUsed = true/);
@@ -273,6 +285,22 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     /if \(slot\.supersededUploadKey \|\| uploadRestartSlotIdsRef\.current\.has\(slotId\)\) return/,
   );
   assert.match(record, /markSubmitIntent\(\[slot\.id\]\)[\s\S]*persistControlledUploadRestart/);
+  const controlledRestart = record.slice(
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+    record.indexOf('const runSingleSubmit = useCallback('),
+  );
+  assert.match(controlledRestart, /UPLOAD_RESTART_LOCAL_TIMEOUT_MS/);
+  assert.match(controlledRestart, /Promise\.race\(\[transaction, timeoutResult\]\)/);
+  assert.match(controlledRestart, /upload_restart_local_watchdog_fired/);
+  assert.match(controlledRestart, /if \(watchdog\) clearTimeout\(watchdog\)/);
+  assert.ok(
+    controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot)') <
+      controlledRestart.indexOf('beginUploadAttemptReset('),
+  );
+  assert.match(
+    controlledRestart,
+    /saved\.promotedSegments\.length !== slot\.segments\.length/,
+  );
   assert.match(
     record,
     /beginUploadAttemptReset[\s\S]*durableRecorder\.resetUploadAttempt[\s\S]*commitUploadAttemptReset/,

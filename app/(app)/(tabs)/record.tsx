@@ -108,6 +108,8 @@ function uploadKeyForSlot(slot: PatientSlot): string {
   });
 }
 
+const UPLOAD_RESTART_LOCAL_TIMEOUT_MS = 15_000;
+
 /**
  * "Truly unsaved" = work that would actually be lost if the session were
  * discarded: in-memory audio with no committed draft, or a live/paused
@@ -3570,137 +3572,180 @@ function RecordingSession() {
       const expectedOldKey = uploadKeyForSlot(slot);
       const replacementKey = createRestartUploadIdempotencyKey();
       const draftSlotId = slot.draftSlotId ?? slot.id;
+      let timedOut = false;
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
 
       try {
-        let persistedSlot = slot;
-        const existingDraft = await draftStorage.getDraft(draftSlotId);
-        if (!existingDraft) {
-          const saved = await draftStorage.saveDraft(slot);
-          persistedSlot = {
+        const transaction = (async (): Promise<PatientSlot | null> => {
+          const awaitStep = async <T,>(promise: Promise<T>): Promise<T> => {
+            const value = await promise;
+            if (timedOut) {
+              throw new Error('Upload restart persistence timed out');
+            }
+            return value;
+          };
+
+          // Always persist the exact current audio snapshot before rotating the
+          // identity. An existing draft can lag behind an edit/Continue save, so
+          // merely checking that metadata exists could restore older bytes after
+          // process death under the new replacement key.
+          const snapshotSlot =
+            draftSlotId === slot.id ? slot : { ...slot, id: draftSlotId };
+          const saved = await awaitStep(draftStorage.saveDraft(snapshotSlot));
+          if (!slot.durable && saved.promotedSegments.length !== slot.segments.length) {
+            throw new Error('Draft storage did not preserve every current audio segment');
+          }
+          const persistedSlot: PatientSlot = {
             ...slot,
             draftSlotId: saved.draftSlotId,
-            segments:
-              slot.durable || saved.promotedSegments.length !== slot.segments.length
-                ? slot.segments
-                : saved.promotedSegments,
+            segments: slot.durable ? slot.segments : saved.promotedSegments,
           };
-        }
 
-        let draftReset = false;
-        if (slot.durable && user?.id) {
-          const manifest = await durableRecorder
-            .getManifest({ userId: user.id, recordingId: slot.durable.recordingId })
-            .catch(() => null);
-          if (manifest) {
-            const began = await draftStorage.beginUploadAttemptReset(
-              persistedSlot.draftSlotId ?? draftSlotId,
-              expectedOldKey,
-              replacementKey,
-            );
-            if (!began) return null;
-            try {
-              await durableRecorder.resetUploadAttempt({
-                userId: user.id,
-                recordingId: slot.durable.recordingId,
-                expectedOldKey,
-                replacementKey,
-              });
-            } catch (error) {
-              // A native bridge may reject after the atomic manifest rename
-              // already committed. Re-read the authoritative manifest before
-              // compensating; blindly rolling back SecureStore here would
-              // recreate the split-brain state this protocol prevents.
-              const manifestAfterError = await durableRecorder
+          let draftReset = false;
+          if (slot.durable && user?.id) {
+            const manifest = await awaitStep(
+              durableRecorder
                 .getManifest({ userId: user.id, recordingId: slot.durable.recordingId })
-                .catch(() => null);
-              const reconciliation = manifestAfterError
-                ? await draftStorage
-                    .reconcileUploadAttemptReset(
-                      persistedSlot.draftSlotId ?? draftSlotId,
-                      manifestAfterError.uploadKeyOverride,
-                      manifestAfterError.supersededUploadKey,
-                    )
-                    .catch(() => 'blocked' as const)
-                : 'blocked';
-              if (reconciliation !== 'committed') throw error;
-              captureMessage('upload_restart_native_response_lost_after_commit', 'warning', {
-                tags: { phase: 'upload_recovery', mode: 'durable' },
-              });
-              draftReset = true;
-            }
-            // The native manifest is the durable commit point. If SecureStore
-            // finalization fails, the phase-1 marker continues blocking every
-            // background create and the next explicit callback/load reconciles.
-            if (!draftReset) {
-              draftReset = await draftStorage
-                .commitUploadAttemptReset(
+                .catch(() => null),
+            );
+            if (manifest) {
+              const began = await awaitStep(
+                draftStorage.beginUploadAttemptReset(
                   persistedSlot.draftSlotId ?? draftSlotId,
                   expectedOldKey,
                   replacementKey,
-                )
-                .catch(() => false);
-            }
-            if (!draftReset) {
-              captureMessage('upload_restart_draft_finalize_deferred', 'warning', {
+                ),
+              );
+              if (!began) return null;
+              try {
+                await awaitStep(
+                  durableRecorder.resetUploadAttempt({
+                    userId: user.id,
+                    recordingId: slot.durable.recordingId,
+                    expectedOldKey,
+                    replacementKey,
+                  }),
+                );
+              } catch (error) {
+                if (timedOut) throw error;
+                // A native bridge may reject after the atomic manifest rename
+                // already committed. Re-read the authoritative manifest before
+                // compensating; blindly rolling back SecureStore here would
+                // recreate the split-brain state this protocol prevents.
+                const manifestAfterError = await awaitStep(
+                  durableRecorder
+                    .getManifest({ userId: user.id, recordingId: slot.durable.recordingId })
+                    .catch(() => null),
+                );
+                const reconciliation = manifestAfterError
+                  ? await awaitStep(
+                      draftStorage
+                        .reconcileUploadAttemptReset(
+                          persistedSlot.draftSlotId ?? draftSlotId,
+                          manifestAfterError.uploadKeyOverride,
+                          manifestAfterError.supersededUploadKey,
+                        )
+                        .catch(() => 'blocked' as const),
+                    )
+                  : 'blocked';
+                if (reconciliation !== 'committed') throw error;
+                captureMessage('upload_restart_native_response_lost_after_commit', 'warning', {
+                  tags: { phase: 'upload_recovery', mode: 'durable' },
+                });
+                draftReset = true;
+              }
+              // The native manifest is the durable commit point. If SecureStore
+              // finalization fails, the phase-1 marker continues blocking every
+              // background create and the next explicit callback/load reconciles.
+              if (!draftReset) {
+                draftReset = await awaitStep(
+                  draftStorage
+                    .commitUploadAttemptReset(
+                      persistedSlot.draftSlotId ?? draftSlotId,
+                      expectedOldKey,
+                      replacementKey,
+                    )
+                    .catch(() => false),
+                );
+              }
+              if (!draftReset) {
+                captureMessage('upload_restart_draft_finalize_deferred', 'warning', {
+                  tags: { phase: 'upload_recovery', mode: 'durable' },
+                });
+                draftReset = true;
+              }
+            } else if (!slot.durable.recoveredAudioUri) {
+              captureMessage('upload_restart_native_manifest_unavailable', 'warning', {
                 tags: { phase: 'upload_recovery', mode: 'durable' },
               });
-              draftReset = true;
+              return null;
             }
-          } else if (!slot.durable.recoveredAudioUri) {
-            captureMessage('upload_restart_native_manifest_unavailable', 'warning', {
-              tags: { phase: 'upload_recovery', mode: 'durable' },
+          } else if (slot.durable && !slot.durable.recoveredAudioUri) {
+            return null;
+          }
+
+          if (!draftReset) {
+            draftReset = await awaitStep(
+              draftStorage.resetUploadAttempt(
+                persistedSlot.draftSlotId ?? draftSlotId,
+                expectedOldKey,
+                replacementKey,
+              ),
+            );
+          }
+          if (!draftReset) {
+            captureMessage('upload_restart_local_reset_failed', 'warning', {
+              tags: { phase: 'upload_recovery', mode: slot.durable ? 'durable' : 'standard' },
             });
             return null;
           }
-        } else if (slot.durable && !slot.durable.recoveredAudioUri) {
-          return null;
-        }
 
-        if (!draftReset) {
-          draftReset = await draftStorage.resetUploadAttempt(
-            persistedSlot.draftSlotId ?? draftSlotId,
-            expectedOldKey,
-            replacementKey,
-          );
-        }
-        if (!draftReset) {
-          captureMessage('upload_restart_local_reset_failed', 'warning', {
-            tags: { phase: 'upload_recovery', mode: slot.durable ? 'durable' : 'standard' },
+          if (timedOut) return null;
+          const restarted: PatientSlot = {
+            ...persistedSlot,
+            uploadKeyOverride: replacementKey,
+            supersededUploadKey: expectedOldKey,
+            uploadRecovery: null,
+            uploadStatus: 'pending',
+            uploadProgress: 0,
+            uploadError: null,
+            serverRecordingId: null,
+            serverDraftId: null,
+            pendingConfirm: null,
+            draftMetadataDirty: false,
+          };
+          dispatch({
+            type: 'RESET_UPLOAD_ATTEMPT',
+            slotId: slot.id,
+            uploadKeyOverride: replacementKey,
+            supersededUploadKey: expectedOldKey,
           });
-          return null;
-        }
+          trackEvent({
+            name: 'upload_stale_recording_recovery',
+            props: {
+              stage: 'controlled_restart',
+              outcome: 'local_state_preserved',
+              attempt: 1,
+              segment_count: slot.durable ? 1 : slot.segments.length,
+              mode: slot.durable ? 'durable' : 'standard',
+            },
+          });
+          return restarted;
+        })();
 
-        const restarted: PatientSlot = {
-          ...persistedSlot,
-          uploadKeyOverride: replacementKey,
-          supersededUploadKey: expectedOldKey,
-          uploadRecovery: null,
-          uploadStatus: 'pending',
-          uploadProgress: 0,
-          uploadError: null,
-          serverRecordingId: null,
-          serverDraftId: null,
-          pendingConfirm: null,
-          draftMetadataDirty: false,
-        };
-        dispatch({
-          type: 'RESET_UPLOAD_ATTEMPT',
-          slotId: slot.id,
-          uploadKeyOverride: replacementKey,
-          supersededUploadKey: expectedOldKey,
+        const timeoutResult = new Promise<null>((resolve) => {
+          watchdog = setTimeout(() => {
+            timedOut = true;
+            captureMessage('upload_restart_local_watchdog_fired', 'warning', {
+              tags: { phase: 'upload_recovery', mode: slot.durable ? 'durable' : 'standard' },
+            });
+            resolve(null);
+          }, UPLOAD_RESTART_LOCAL_TIMEOUT_MS);
         });
-        trackEvent({
-          name: 'upload_stale_recording_recovery',
-          props: {
-            stage: 'controlled_restart',
-            outcome: 'local_state_preserved',
-            attempt: 1,
-            segment_count: slot.durable ? 1 : slot.segments.length,
-            mode: slot.durable ? 'durable' : 'standard',
-          },
-        });
-        return restarted;
+        return await Promise.race([transaction, timeoutResult]);
       } finally {
+        timedOut = true;
+        if (watchdog) clearTimeout(watchdog);
         uploadRestartSlotIdsRef.current.delete(slot.id);
       }
     },

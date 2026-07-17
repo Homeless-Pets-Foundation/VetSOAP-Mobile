@@ -1137,6 +1137,11 @@ async function executeResilientUpload(
       }
     } catch (error) {
       if (!isRouteLevelPrepare404(error)) throw error;
+      // A controlled restart must be authorized by the recovery transaction.
+      // Falling back to the legacy create/upload route here would bypass the
+      // server's proof that the superseded attempt is safe to retire and could
+      // duplicate an upload during a rolling API deployment.
+      if (options.supersededIdempotencyKey) throw error;
       const legacy = await legacyUpload(data, files, metadata, options, idempotencyKey, persistPrepared);
       if (legacy.replacedMissingRecordingId) staleRestartUsed = true;
       return persistHintAndConfirm(legacy.hint, true);

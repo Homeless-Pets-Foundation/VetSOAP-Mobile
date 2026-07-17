@@ -27,7 +27,6 @@ import { initMonitoring, captureException, measurePhase } from '../src/lib/monit
 import { initAnalytics, trackEvent } from '../src/lib/analytics';
 import { getSessionActivity } from '../src/lib/sessionActivity';
 import { getThemePreference } from '../src/lib/themePreference';
-import { useThemeColors } from '../src/hooks/useThemeColors';
 import { DARK_THEME_COLORS, LIGHT_THEME_COLORS } from '../src/constants/colors';
 import { useAuthMfa, useAuthReadiness, useAuthUser } from '../src/hooks/useAuth';
 import '../global.css';

@@ -5,7 +5,6 @@ import Animated, {
   useSharedValue,
   withTiming,
   FadeIn,
-  FadeOut,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useQueryClient } from '@tanstack/react-query';
@@ -17,6 +16,7 @@ import { SOAP_SECTION_ACTIONS } from '../constants/strings';
 import { trackEvent } from '../lib/analytics';
 import { soapNotesApi, type SoapNoteSection } from '../api/soapNotes';
 import { Button } from './ui/Button';
+import { CopiedToast } from './ui/CopiedToast';
 import { useThemeColors } from '../hooks/useThemeColors';
 
 type SoapAccent = 'subjective' | 'objective' | 'assessment' | 'plan';
@@ -57,18 +57,6 @@ function formatEditedAt(value: string | null | undefined): string | null {
     month: 'short',
     day: 'numeric',
   });
-}
-
-function CopiedToast() {
-  return (
-    <Animated.View
-      entering={FadeIn.duration(200)}
-      exiting={FadeOut.duration(200)}
-      className="absolute top-0 right-0 bg-toast-bg px-3 py-1.5 rounded-btn z-10"
-    >
-      <Text className="text-caption text-toast-fg font-medium">{SOAP_SECTION_ACTIONS.copied}</Text>
-    </Animated.View>
-  );
 }
 
 function AccordionSection({
@@ -196,7 +184,7 @@ function AccordionSection({
           entering={FadeIn.duration(200)}
           className="p-3 pt-0 relative"
         >
-          {showCopied && <CopiedToast />}
+          <CopiedToast visible={showCopied} />
           {isEditing ? (
             <View className="mt-2">
               <TextInput
@@ -324,7 +312,7 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNot
         >
           SOAP Note
         </Text>
-        {showCopiedAll && <CopiedToast />}
+        <CopiedToast visible={showCopiedAll} />
         <Pressable
           onPress={() => { copyAll().catch(() => {}); }}
           accessibilityRole="button"

@@ -60,6 +60,7 @@ export default function LoginScreen() {
       .then((available) => {
         if (!available) return;
         try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy native module (CLAUDE.md rule 19)
           appleModuleRef.current = require('expo-apple-authentication');
           setAppleAvailable(true);
         } catch {

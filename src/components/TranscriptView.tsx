@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Copy } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { copyWithAutoClear } from '../lib/secureClipboard';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { CopiedToast } from './ui/CopiedToast';
 import { TRANSCRIPT_COPY } from '../constants/strings';
 
 interface TranscriptViewProps {
@@ -39,15 +39,7 @@ export function TranscriptView({ transcript }: TranscriptViewProps) {
 
   return (
     <View className="border border-border-default rounded-input p-3 relative">
-      {showCopied && (
-        <Animated.View
-          entering={FadeIn.duration(200)}
-          exiting={FadeOut.duration(200)}
-          className="absolute top-2 right-2 bg-toast-bg px-3 py-1.5 rounded-btn z-10"
-        >
-          <Text className="text-caption text-toast-fg font-medium">{TRANSCRIPT_COPY.copied}</Text>
-        </Animated.View>
-      )}
+      <CopiedToast visible={showCopied} label={TRANSCRIPT_COPY.copied} className="top-2 right-2" />
       <Text selectable className="text-body text-content-body leading-relaxed">
         {transcript ?? ''}
       </Text>

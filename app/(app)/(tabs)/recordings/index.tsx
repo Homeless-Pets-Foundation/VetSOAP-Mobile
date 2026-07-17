@@ -29,7 +29,7 @@ import { Select } from '../../../../src/components/ui/Select';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { displayPatientName } from '../../../../src/lib/recordingDisplay';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
-import { SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
+import { RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
@@ -426,9 +426,9 @@ export default function RecordingsListScreen() {
               onChangeText={setSearch}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
-              placeholder="Search patient or client…"
+              placeholder={RECORDINGS_LIST_COPY.searchPlaceholder}
               placeholderTextColor={colors.contentTertiary}
-              accessibilityLabel="Search recordings by patient or client name"
+              accessibilityLabel={RECORDINGS_LIST_COPY.searchAccessibilityLabel}
               className="flex-1 p-3 text-body text-content-primary"
               returnKeyType="search"
               clearButtonMode="while-editing"

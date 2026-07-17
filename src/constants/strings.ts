@@ -197,6 +197,11 @@ export const RECORDING_DETAIL_COPY = {
     'Submit it from the device where you recorded it, or delete it here to clean up.',
 } as const;
 
+export const RECORDINGS_LIST_COPY = {
+  searchPlaceholder: 'Search patient or client…',
+  searchAccessibilityLabel: 'Search recordings by patient or client name',
+} as const;
+
 export const SUBMITTED_BANNER_COPY = {
   title: (count: number): string =>
     count === 1 ? 'Recording submitted' : `${count} recordings submitted`,

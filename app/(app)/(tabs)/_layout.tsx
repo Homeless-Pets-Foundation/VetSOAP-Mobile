@@ -62,6 +62,8 @@ export default function TabsLayout() {
           elevation: 4,
         },
         tabBarLabelStyle: {
+          // Deliberate exception to the semantic type scale: 11px is the
+          // platform-conventional tab-label size and four labels must fit.
           fontSize: 11,
           fontWeight: '600',
         },

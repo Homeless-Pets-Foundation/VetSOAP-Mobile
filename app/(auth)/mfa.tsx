@@ -16,6 +16,7 @@ import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
+import { CopiedToast } from '../../src/components/ui/CopiedToast';
 import { isSetupApprovalCodeError, mfaErrorMessage } from '../../src/auth/mfaPolicy';
 import { copyWithAutoClear } from '../../src/lib/secureClipboard';
 import { MFA_BOOTSTRAP_COPY } from '../../src/constants/strings';
@@ -399,6 +400,7 @@ export default function MfaScreen() {
                             {enrollment.secret}
                           </Text>
                           <View className="mt-3">
+                            <CopiedToast visible={setupKeyCopied} className="-top-1 right-0" />
                             <Button
                               variant="secondary"
                               size="sm"
@@ -412,7 +414,7 @@ export default function MfaScreen() {
                                   .catch(() => {});
                               }}
                             >
-                              {setupKeyCopied ? 'Copied!' : 'Copy setup key'}
+                              Copy setup key
                             </Button>
                           </View>
                         </View>

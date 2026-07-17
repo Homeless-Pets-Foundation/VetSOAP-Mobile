@@ -222,14 +222,19 @@ export const RecordingCard = React.memo(function RecordingCard({
             <StatusBadge status={recording.status} />
             {showAiLabeledChip ? <AiLabeledChip /> : null}
             {showReviewChip ? (
-              <ReviewStatusChip
-                status={reviewStatus}
-                loading={reviewMutation.isPending}
-                onPress={(event) => {
-                  event.stopPropagation();
-                  reviewMutation.mutate(reviewStatus !== 'reviewed');
-                }}
-              />
+              /* Hidden from the a11y tree like the history link above — the
+                 card's toggle_reviewed custom action covers it, and a nested
+                 accessible Pressable double-focuses under TalkBack. */
+              <View accessible={false} importantForAccessibility="no-hide-descendants">
+                <ReviewStatusChip
+                  status={reviewStatus}
+                  loading={reviewMutation.isPending}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    reviewMutation.mutate(reviewStatus !== 'reviewed');
+                  }}
+                />
+              </View>
             ) : null}
             {isDraft ? <DraftLocationChip isOnDevice={hasLocalDraftAudio} /> : null}
           </View>

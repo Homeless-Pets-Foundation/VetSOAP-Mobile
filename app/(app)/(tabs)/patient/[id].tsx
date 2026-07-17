@@ -14,6 +14,7 @@ import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tansta
 import { ChevronLeft, Edit2, User } from 'lucide-react-native';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { patientsApi } from '../../../../src/api/patients';
+import { ApiError } from '../../../../src/api/client';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { Button } from '../../../../src/components/ui/Button';
 import { friendlyErrorMessage } from '../../../../src/lib/errorCopy';
@@ -261,7 +262,7 @@ export default function PatientDetailScreen() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator color={colors.brand500} size="large" />
         </View>
-      ) : error ? (
+      ) : error && !(error instanceof ApiError && error.status === 404) ? (
         <View className="flex-1 items-center justify-center px-8">
           <User color={colors.contentTertiary} size={48} />
           <Text className="text-body font-medium text-content-primary mt-4 text-center">
@@ -276,7 +277,7 @@ export default function PatientDetailScreen() {
             </Button>
           </View>
         </View>
-      ) : !patient ? (
+      ) : !patient || (error instanceof ApiError && error.status === 404) ? (
         <View className="flex-1 items-center justify-center px-8">
           <User color={colors.contentTertiary} size={48} />
           <Text className="text-body font-medium text-content-primary mt-4">Patient not found</Text>
@@ -289,7 +290,13 @@ export default function PatientDetailScreen() {
           className="flex-1"
           contentContainerStyle={{ padding: 20, maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={() => { refetch().catch(() => {}); }} tintColor={colors.brand500} />
+            <RefreshControl
+              refreshing={isRefetching}
+              onRefresh={() => { refetch().catch(() => {}); }}
+              tintColor={colors.brand500}
+              colors={[colors.brand500]}
+              progressBackgroundColor={colors.surfaceRaised}
+            />
           }
         >
           {/* SUMMARY TAB */}

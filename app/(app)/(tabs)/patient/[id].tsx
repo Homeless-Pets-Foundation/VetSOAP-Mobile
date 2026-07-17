@@ -298,19 +298,16 @@ export default function PatientDetailScreen() {
                           })()}
                         </Text>
                       )}
-                      <Pressable
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onPress={() => regenerateSummaryMutation.mutate()}
                         disabled={regenerateSummaryMutation.isPending}
-                        hitSlop={8}
+                        loading={regenerateSummaryMutation.isPending}
+                        accessibilityLabel="Regenerate AI summary"
                       >
-                        {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
-                        <Text
-                          className="text-caption font-medium text-brand-600"
-                          style={{ flexShrink: 0, paddingRight: 2 }}
-                        >
-                          {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'} `}
-                        </Text>
-                      </Pressable>
+                        {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Regenerate'}
+                      </Button>
                     </View>
                   </>
                 ) : (
@@ -318,19 +315,16 @@ export default function PatientDetailScreen() {
                     <Text className="text-body text-content-tertiary italic mb-2">
                       No summary yet. Summaries are generated automatically after completed visits.
                     </Text>
-                    <Pressable
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onPress={() => regenerateSummaryMutation.mutate()}
                       disabled={regenerateSummaryMutation.isPending}
-                      hitSlop={8}
+                      loading={regenerateSummaryMutation.isPending}
+                      accessibilityLabel="Generate AI summary now"
                     >
-                      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
-                      <Text
-                        className="text-caption font-medium text-brand-600"
-                        style={{ flexShrink: 0, paddingRight: 2 }}
-                      >
-                        {`${regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'} `}
-                      </Text>
-                    </Pressable>
+                      {regenerateSummaryMutation.isPending ? 'Queuing…' : 'Trigger manually'}
+                    </Button>
                   </>
                 )}
               </Card>

@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Redirect, Stack, useRouter } from 'expo-router';
 import { useAuthActions, useAuthMfa, useAuthReadiness, useAuthUser } from '../../src/hooks/useAuth';
-import { View, Text, ActivityIndicator, Pressable, Alert } from 'react-native';
+import { View, Text, ActivityIndicator, Alert } from 'react-native';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
 import { DeviceRegistrationBanner } from '../../src/components/DeviceRegistrationBanner';
+import { Button } from '../../src/components/ui/Button';
 import { OfflineBanner } from '../../src/components/OfflineBanner';
 import { ACCOUNT_LOAD_ERROR_COPY } from '../../src/constants/strings';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
@@ -127,30 +128,20 @@ export default function AppLayout() {
   if (isHalfAuth && halfAuthTimedOut) {
     return (
       <View className="flex-1 justify-center items-center bg-surface px-8">
-        <Text className="text-2xl font-semibold text-content-primary text-center mb-3">
+        <Text className="text-display font-semibold text-content-primary text-center mb-3">
           Still Loading Account
         </Text>
-        <Text className="text-base text-content-secondary text-center mb-8">
+        <Text className="text-body-lg text-content-secondary text-center mb-8">
           We could not finish loading your account profile. Stay signed in and retry if this tablet may have unsent local recordings.
         </Text>
-        <Pressable
-          onPress={handleRetry}
-          disabled={isRetrying}
-          className="w-full bg-brand-500 rounded-lg py-4 mb-3 items-center"
-          style={{ opacity: isRetrying ? 0.6 : 1 }}
-        >
-          {isRetrying ? (
-            <ActivityIndicator color={colors.contentOnBrand} />
-          ) : (
-            <Text className="text-content-on-brand font-semibold text-base">Retry</Text>
-          )}
-        </Pressable>
-        <Pressable
-          onPress={handleSignOut}
-          className="w-full border border-border-strong rounded-lg py-4 items-center"
-        >
-          <Text className="text-content-body font-medium text-base">Sign out</Text>
-        </Pressable>
+        <View className="w-full gap-3">
+          <Button variant="primary" size="lg" onPress={handleRetry} loading={isRetrying} disabled={isRetrying}>
+            Retry
+          </Button>
+          <Button variant="secondary" size="lg" onPress={handleSignOut}>
+            Sign out
+          </Button>
+        </View>
       </View>
     );
   }
@@ -178,35 +169,20 @@ export default function AppLayout() {
   if (!user && userFetchState === 'error') {
     return (
       <View className="flex-1 justify-center items-center bg-surface px-8">
-        <Text className="text-2xl font-semibold text-content-primary text-center mb-3">
+        <Text className="text-display font-semibold text-content-primary text-center mb-3">
           {ACCOUNT_LOAD_ERROR_COPY.title}
         </Text>
-        <Text className="text-base text-content-secondary text-center mb-8">
+        <Text className="text-body-lg text-content-secondary text-center mb-8">
           {ACCOUNT_LOAD_ERROR_COPY.body}
         </Text>
-        <Pressable
-          onPress={handleRetry}
-          disabled={isRetrying}
-          className="w-full bg-brand-500 rounded-lg py-4 mb-4 items-center"
-          style={{ opacity: isRetrying ? 0.6 : 1 }}
-        >
-          {isRetrying ? (
-            <ActivityIndicator color={colors.contentOnBrand} />
-          ) : (
-            <Text className="text-content-on-brand font-semibold text-base">{ACCOUNT_LOAD_ERROR_COPY.retry}</Text>
-          )}
-        </Pressable>
-        <Pressable onPress={handleSignOut} className="py-3 px-4" style={{ minHeight: 44 }}>
-          {/* Trailing space + flexShrink:0/paddingRight stop Android from
-              under-measuring this short underlined label and clipping it to
-              "Sign" (see UI Gotchas — single-word/short-label clip). */}
-          <Text
-            className="text-content-tertiary text-body-sm underline text-center"
-            style={{ flexShrink: 0, paddingRight: 2 }}
-          >
-            {`${ACCOUNT_LOAD_ERROR_COPY.signOut} `}
-          </Text>
-        </Pressable>
+        <View className="w-full gap-3">
+          <Button variant="primary" size="lg" onPress={handleRetry} loading={isRetrying} disabled={isRetrying}>
+            {ACCOUNT_LOAD_ERROR_COPY.retry}
+          </Button>
+          <Button variant="ghost" onPress={handleSignOut}>
+            {ACCOUNT_LOAD_ERROR_COPY.signOut}
+          </Button>
+        </View>
         {userFetchError ? (
           <Text className="text-caption text-content-tertiary text-center mt-6" numberOfLines={3}>
             {ACCOUNT_LOAD_ERROR_COPY.detailsPrefix}

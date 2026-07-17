@@ -201,15 +201,15 @@ test('Phase 5 copy is centralized for profile subscription account deletion and 
   assert.doesNotMatch(record, /'Default Not Saved'/);
 });
 
-test('Phase 5 SOAP edit action uses Android anti-clip pattern and removes dead onSaved prop', async () => {
+test('Phase 5 SOAP edit action uses shared Button (anti-clip lives in Button) and removes dead onSaved prop', async () => {
   const soap = await read('src/components/SoapNoteView.tsx');
 
   assert.match(soap, /SOAP_SECTION_ACTIONS\.edit/);
-  assert.match(soap, /Android under-measures single-word Text and clips the last glyph/);
-  // WP11: the anti-clip pattern no longer disables font scaling — the global
-  // 1.3x maxFontSizeMultiplier cap (app/_layout.tsx) covers scaling limits.
+  // WP17: section actions use the shared Button, which owns the Android
+  // anti-clip mitigation (tests/ui-clip-guard) and haptics; no raw Pressable
+  // copies of the pattern remain here.
+  assert.match(soap, /<Button\s+variant="secondary"\s+size="sm"\s+icon=\{<Pencil/);
   assert.doesNotMatch(soap, /allowFontScaling=\{false\}/);
-  assert.match(soap, /style=\{\{ flexShrink: 0, paddingRight: 2 \}\}/);
   assert.doesNotMatch(soap, /onSaved/);
 });
 

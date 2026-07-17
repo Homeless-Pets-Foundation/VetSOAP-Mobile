@@ -24,6 +24,7 @@ import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
 import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
 import { ERROR_COPY } from '../../../src/constants/strings';
+import { HIT_SLOP } from '../../../src/components/ui/styles';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -403,10 +404,15 @@ export default function HomeScreen() {
           {totalRecordings > 5 && (
             <Pressable
               onPress={() => router.push('/recordings')}
-              accessibilityRole="button"
+              accessibilityRole="link"
               accessibilityLabel="View all recordings"
+              hitSlop={HIT_SLOP}
+              style={{ minHeight: 32, justifyContent: 'center' }}
             >
-              <Text className="text-body-sm text-brand-500 font-medium">View All</Text>
+              {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
+              <Text className="text-body-sm text-brand-500 font-medium" style={{ flexShrink: 0, paddingRight: 2 }}>
+                {'View All '}
+              </Text>
             </Pressable>
           )}
         </View>

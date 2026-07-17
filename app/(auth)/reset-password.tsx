@@ -23,12 +23,19 @@ export default function ResetPasswordScreen() {
   const [isLoading, setIsLoading] = useState(false);
 
   const leaveToLogin = () => {
-    // The recovery deep link may have an empty back stack, and while
-    // isPasswordRecovery is set the (auth) layout suppresses the
-    // authenticated redirect — plain router.back() strands the user in the
-    // auth stack. Clear the flag and go somewhere explicit.
-    clearPasswordRecovery();
-    router.replace('/(auth)/login');
+    // The PASSWORD_RECOVERY session is authenticated, so clearing the flag
+    // first would let the (auth) layout redirect to '/' (a half-auth spinner
+    // — recovery deliberately skips fetchUser). Sign the recovery session
+    // out FIRST, then clear the flag and land on Login explicitly (the deep
+    // link may have an empty back stack, so no router.back()).
+    setIsLoading(true);
+    supabase.auth
+      .signOut()
+      .catch(() => {})
+      .finally(() => {
+        clearPasswordRecovery();
+        router.replace('/(auth)/login');
+      });
   };
 
   const handleResetPassword = async () => {

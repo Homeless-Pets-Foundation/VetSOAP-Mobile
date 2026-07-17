@@ -151,6 +151,7 @@ export function DeviceLimitModal() {
           onPress: () => {
             (async () => {
               setRevokingId(device.id);
+              setRetryFailed(false);
               try {
                 await devicesApi.revoke(device.id);
                 Haptics.notificationAsync(
@@ -171,6 +172,12 @@ export function DeviceLimitModal() {
                     .invalidateQueries({ queryKey: ['device-sessions'] })
                     .catch(() => {});
                   invalidateRecordingCaches(queryClient, 'device_registration_recovered');
+                } else {
+                  // The revoke worked but registration still failed (e.g.
+                  // connectivity died) — surface it exactly like the manual
+                  // retry path, or the next apparent action is revoking
+                  // ANOTHER working device unnecessarily.
+                  setRetryFailed(true);
                 }
               } catch (error) {
                 // Never surface raw API error text to users; keep the detail

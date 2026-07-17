@@ -31,7 +31,7 @@ function chunkTranscript(text) {
     if (current) chunks.push(current);
     return chunks;
   }
-  const sentences = text.split(/(?<=[.!?])\s+/);
+  const sentences = text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
   const chunks = [];
   let current = '';
   for (const sentence of sentences) {
@@ -44,6 +44,33 @@ function chunkTranscript(text) {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+function hardSplitOversized(piece) {
+  if (piece.length <= FALLBACK_CHUNK_CHARS) return [piece];
+  const words = piece.split(/\s+/);
+  const out = [];
+  let current = '';
+  for (const word of words) {
+    if (word.length > FALLBACK_CHUNK_CHARS) {
+      if (current) {
+        out.push(current);
+        current = '';
+      }
+      for (let i = 0; i < word.length; i += FALLBACK_CHUNK_CHARS) {
+        out.push(word.slice(i, i + FALLBACK_CHUNK_CHARS));
+      }
+      continue;
+    }
+    if (current.length + word.length + 1 > FALLBACK_CHUNK_CHARS && current) {
+      out.push(current);
+      current = word;
+    } else {
+      current = current ? `${current} ${word}` : word;
+    }
+  }
+  if (current) out.push(current);
+  return out;
 }
 
 test('short transcripts stay a single chunk (whole-text selection preserved)', () => {
@@ -72,11 +99,32 @@ test('wall-of-text transcripts fall back to sentence chunks without loss', () =>
   assert.equal(chunks.join(' '), text, 'sentence join must round-trip');
 });
 
+test('punctuation-less walls of text still hard-split (Codex P2, PR #143)', () => {
+  // Degraded speech-to-text: no blank lines, no sentence punctuation at all.
+  const text = Array.from({ length: 2000 }, (_, i) => `word${i}`).join(' ');
+  assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
+  const chunks = chunkTranscript(text);
+  assert.ok(chunks.length > 1, 'must not come back as one giant chunk');
+  assert.equal(chunks.join(' '), text, 'whitespace hard-split must round-trip');
+  for (const chunk of chunks) {
+    assert.ok(chunk.length <= FALLBACK_CHUNK_CHARS + 10, `chunk too large: ${chunk.length}`);
+  }
+});
+
+test('a single unbroken token gets sliced at hard char boundaries', () => {
+  const text = 'x'.repeat(7000);
+  const chunks = chunkTranscript(text);
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.join(''), text, 'char slicing must preserve every character');
+});
+
 test('source component matches this mirror and renders per-chunk selectable Text', async () => {
   const src = await readFile(path.join(root, 'src/components/TranscriptView.tsx'), 'utf8');
   assert.match(src, /const CHUNK_THRESHOLD_CHARS = 6_000;/);
   assert.match(src, /const FALLBACK_CHUNK_CHARS = 1_500;/);
   assert.match(src, /export function chunkTranscript/);
+  assert.match(src, /function hardSplitOversized/);
+  assert.match(src, /\.flatMap\(hardSplitOversized\)/);
   assert.match(src, /chunks\.map\(\(chunk, i\) => \(/);
   assert.match(src, /selectable/);
 });

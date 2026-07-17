@@ -193,8 +193,15 @@ export function PatientTabStrip({ slots, activeIndex, onSelectIndex, onAddPatien
         <Pressable
           onPress={slots.length < 10 ? handleAddPress : handleAtMaxPress}
           accessibilityRole="button"
-          accessibilityLabel={slots.length < 10 ? 'Add patient' : 'Maximum 10 patients per session'}
-          accessibilityState={{ disabled: slots.length >= 10 }}
+          accessibilityLabel={slots.length < 10 ? 'Add patient' : 'Add patient — session is full'}
+          // Deliberately NOT accessibilityState.disabled: the control stays
+          // tappable at the max so it can explain the limit, and a disabled
+          // state would make VoiceOver/TalkBack refuse to activate it.
+          accessibilityHint={
+            slots.length < 10
+              ? undefined
+              : 'A session can hold up to 10 patients. Activating explains the limit.'
+          }
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           className={`w-[44px] h-[44px] items-center justify-center rounded-full border border-dashed bg-surface-raised ${
             slots.length < 10 ? 'border-border-strong' : 'border-border-default opacity-50'

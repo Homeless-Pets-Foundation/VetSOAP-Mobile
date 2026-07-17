@@ -491,8 +491,16 @@ test('durable slots are counted in the unsaved leave/reset guards', async () => 
   // pending-confirm-only slots while excluding committed drafts (durable on
   // disk + server; preserved via preserveDraftSlotIds on discard).
   assert.match(rec, /function isTrulyUnsavedSlot\(s: PatientSlot\): boolean \{[\s\S]*?slotHasRecoverableAudio\(s\) && !s\.draftSlotId && s\.uploadStatus !== 'success'/);
-  assert.match(rec, /const unsavedCount = session\.slots\.filter\(isTrulyUnsavedSlot\)/);
-  assert.match(rec, /const trulyUnsaved = currentSlots\.some\(isTrulyUnsavedSlot\)/);
+  // Component predicate extends the module one with the unsynced-draft-audio
+  // check (draftSlotId only proves an OLDER snapshot was saved — Codex P1).
+  assert.match(rec, /const isSlotTrulyUnsaved = useCallback\([\s\S]*?isTrulyUnsavedSlot\(s\) \|\|[\s\S]*?unsyncedDraftAudioRef\.current\.has\(s\.id\)/);
+  assert.match(rec, /const unsavedCount = session\.slots\.filter\(isSlotTrulyUnsaved\)/);
+  assert.match(rec, /const trulyUnsaved = currentSlots\.some\(isSlotTrulyUnsaved\)/);
+  // Orphan server-recording deletion must stay inside the preserve gate — a
+  // preserved draft's pendingConfirm points at that row (Codex P1).
+  const gateIdx = rec.indexOf("if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {");
+  const orphanIdx = rec.indexOf('deleteOrphanServerRecording(slot);');
+  assert.ok(gateIdx >= 0 && orphanIdx > gateIdx, 'deleteOrphanServerRecording must be inside the preserve gate');
   // Discard paths must thread the preserve list so drafted slots survive.
   assert.match(rec, /preserveDraftSlotIds: collectPreserveDraftSlotIds\(sessionRef\.current\.slots\)/);
   assert.match(rec, /await discardCurrentSession\(\{ preserveDraftSlotIds \}\)/);

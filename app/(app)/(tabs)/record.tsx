@@ -715,6 +715,13 @@ function RecordingSession() {
   const pendingStashRef = useRef(false);
   // Track pending draft for "stop recorder then auto-save draft" flow
   const pendingDraftSlotIdRef = useRef<string | null>(null);
+  // Slot ids whose CURRENT audio has not yet been persisted by autoSaveDraft
+  // (save in flight, save failed, or save still pending in the deferred
+  // effect). draftSlotId alone only proves an older snapshot was saved —
+  // treating it as safe let a discard silently drop a freshly recorded
+  // segment (Codex P1, PR #143). Cleared per-slot on save success and
+  // wholesale on session reset/discard.
+  const unsyncedDraftAudioRef = useRef<Set<string>>(new Set());
   const pendingDraftMinSegmentCountRef = useRef<number>(0);
   const pendingDraftRecoveryReasonRef = useRef<Map<string, RecoveryIntentReason>>(new Map());
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
@@ -1339,14 +1346,16 @@ function RecordingSession() {
           safeDeleteFile(seg.uri);
         }
       });
-      // Best-effort delete any server recording left mid-confirm — the user is
-      // abandoning this session entirely.
-      deleteOrphanServerRecording(slot);
-      // Also delete the auto-saved draft (local + server) so the discarded
-      // recording doesn't linger as a "Not Submitted" row on Home — unless
-      // the caller asked us to keep it (e.g. resume-from-Home is about to
-      // load that draft and would otherwise read a freshly-deleted key).
+      // Delete the auto-saved draft (local + server) and any mid-confirm
+      // server recording so the discarded work doesn't linger as a "Not
+      // Submitted" row on Home — unless the caller asked us to keep the
+      // draft (e.g. resume-from-Home is about to load it). The orphan
+      // server-recording delete MUST stay inside this preserve gate: a
+      // preserved draft's pendingConfirm points at that server row, and for
+      // proof-only recovery drafts with no local audio the upload can never
+      // be restarted once the row is gone (Codex P1, PR #143).
       if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {
+        deleteOrphanServerRecording(slot);
         // A FINISHED durable slot keeps its audio in the native audio.aac; the
         // recorder.reset() above only discards the still-BOUND live recorder, so
         // an unbound finished durable slot would survive on disk and the launch
@@ -1370,13 +1379,24 @@ function RecordingSession() {
     // segment refs are gone, but releaseResumedStash works off the stored id.
     releaseResumedStashIfAny();
 
+    unsyncedDraftAudioRef.current.clear();
     resetSession();
   }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft, user?.id]);
 
   // Navigation guard: only active when there are truly unsaved recordings.
   // Drafted slots (draftSlotId set) are durable on disk + server and survive
-  // discard via the preserve list below, so they don't arm the guard.
-  const unsavedCount = session.slots.filter(isTrulyUnsavedSlot).length;
+  // discard via the preserve list below, so they don't arm the guard —
+  // UNLESS their newest audio is still waiting on autoSaveDraft (see
+  // unsyncedDraftAudioRef).
+  const isSlotTrulyUnsaved = useCallback(
+    (s: PatientSlot): boolean =>
+      isTrulyUnsavedSlot(s) ||
+      (slotHasRecoverableAudio(s) &&
+        s.uploadStatus !== 'success' &&
+        (unsyncedDraftAudioRef.current.has(s.id) || pendingDraftSlotIdRef.current === s.id)),
+    []
+  );
+  const unsavedCount = session.slots.filter(isSlotTrulyUnsaved).length;
   const draftedSlotCount = session.slots.filter((s) => s.draftSlotId).length;
 
   usePreventRemove(unsavedCount > 0 && !isSubmittingAll, ({ data }) => {
@@ -3119,6 +3139,10 @@ function RecordingSession() {
 
   const autoSaveDraft = useCallback(
     async (slot: PatientSlot) => {
+      // Guard bookkeeping: while this save is in flight (or after it fails),
+      // the slot's newest audio exists only in session state, so the
+      // discard/replace guards must not treat draftSlotId as proof of safety.
+      unsyncedDraftAudioRef.current.add(slot.id);
       try {
         // Phase 1: persist the local draft (audio + metadata). Always runs
         // regardless of connectivity so the user can resume offline.
@@ -3162,6 +3186,9 @@ function RecordingSession() {
           reason: recoveryReason,
         });
         invalidateRecordingCaches(queryClient, 'draft_changed');
+
+        // Local persistence succeeded — the current audio snapshot is durable.
+        unsyncedDraftAudioRef.current.delete(slot.id);
 
         if (completedUploadSlotIdsRef.current.has(slot.id)) {
           deleteLocalSlotDraft(slot);
@@ -3829,7 +3856,7 @@ function RecordingSession() {
     // Drafted slots are durable on disk + server, so loading a different
     // draft doesn't lose them — we skip the warning dialog and let the
     // preserve list keep their rows intact (see isTrulyUnsavedSlot).
-    const trulyUnsaved = currentSlots.some(isTrulyUnsavedSlot);
+    const trulyUnsaved = currentSlots.some(isSlotTrulyUnsaved);
 
     if (trulyUnsaved) {
       Alert.alert(
@@ -4036,7 +4063,7 @@ function RecordingSession() {
 
       const currentSlots = sessionRef.current.slots;
       const preserveDraftSlotIds = collectPreserveDraftSlotIds(currentSlots);
-      const trulyUnsaved = currentSlots.some(isTrulyUnsavedSlot);
+      const trulyUnsaved = currentSlots.some(isSlotTrulyUnsaved);
 
       if (trulyUnsaved) {
         Alert.alert(
@@ -4068,7 +4095,7 @@ function RecordingSession() {
         doResume();
       }
     },
-    [hasUnsavedRecordings, discardCurrentSession, resumeStashedSession, markResumed, restoreSession]
+    [hasUnsavedRecordings, isSlotTrulyUnsaved, discardCurrentSession, resumeStashedSession, markResumed, restoreSession]
   );
 
   const handleDeleteStash = useCallback(

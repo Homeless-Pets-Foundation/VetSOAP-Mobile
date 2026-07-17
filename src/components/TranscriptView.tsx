@@ -49,8 +49,11 @@ export function chunkTranscript(text: string): string[] {
     return chunks;
   }
 
-  // No paragraph breaks — accumulate sentences.
-  const sentences = text.split(/(?<=[.!?])\s+/);
+  // No paragraph breaks — accumulate sentences, hard-splitting any single
+  // "sentence" that itself exceeds the target (degraded speech-to-text can
+  // produce 6,000+ chars with no punctuation at all, which would otherwise
+  // come back as ONE chunk and reintroduce the Android single-TextView ANR).
+  const sentences = text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
   const chunks: string[] = [];
   let current = '';
   for (const sentence of sentences) {
@@ -63,6 +66,35 @@ export function chunkTranscript(text: string): string[] {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+/** Split a punctuation-less run at whitespace (hard char boundary as last resort). */
+function hardSplitOversized(piece: string): string[] {
+  if (piece.length <= FALLBACK_CHUNK_CHARS) return [piece];
+  const words = piece.split(/\s+/);
+  const out: string[] = [];
+  let current = '';
+  for (const word of words) {
+    // A single unbroken token longer than the target gets sliced outright.
+    if (word.length > FALLBACK_CHUNK_CHARS) {
+      if (current) {
+        out.push(current);
+        current = '';
+      }
+      for (let i = 0; i < word.length; i += FALLBACK_CHUNK_CHARS) {
+        out.push(word.slice(i, i + FALLBACK_CHUNK_CHARS));
+      }
+      continue;
+    }
+    if (current.length + word.length + 1 > FALLBACK_CHUNK_CHARS && current) {
+      out.push(current);
+      current = word;
+    } else {
+      current = current ? `${current} ${word}` : word;
+    }
+  }
+  if (current) out.push(current);
+  return out;
 }
 
 /**

@@ -96,9 +96,13 @@ export function UploadOverlay({
     }
   }, [slots, visible]);
 
-  // Compute progress — scoped to the current batch.
+  // Compute progress — scoped to the current batch. A slot that just
+  // reached 'success' is already counted in uploadsCompleted, so its lingering
+  // 100% uploadProgress must contribute zero here or the batch total counts
+  // it twice (progress jumping past the truth, >100% at the end).
   const currentSlot = slots.find((s) => s.id === currentSlotId);
-  const currentProgress = currentSlot?.uploadProgress ?? 0;
+  const currentProgress =
+    currentSlot && currentSlot.uploadStatus !== 'success' ? currentSlot.uploadProgress ?? 0 : 0;
 
   const totalSlotsToUpload = batchSlotIds.length;
   const uploadsCompleted = Math.min(countBatchCompleted(slots, batchSlotIds), totalSlotsToUpload);
@@ -107,10 +111,12 @@ export function UploadOverlay({
   let currentUploadIndex: number;
 
   if (isMulti && totalSlotsToUpload > 1) {
-    overallProgress =
+    overallProgress = Math.min(
+      100,
       totalSlotsToUpload > 0
         ? Math.round(((uploadsCompleted * 100 + currentProgress) / (totalSlotsToUpload * 100)) * 100)
-        : 0;
+        : 0
+    );
     currentUploadIndex = uploadsCompleted + 1;
   } else {
     overallProgress = currentProgress;

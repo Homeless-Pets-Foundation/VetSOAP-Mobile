@@ -83,6 +83,25 @@ function ProfileField({ label, value }: { label: string; value: string | null | 
   );
 }
 
+/**
+ * Strict calendar-date check. `new Date('2020-02-31')` NORMALIZES to Mar 2
+ * instead of failing, so regex + isNaN let nonexistent dates through —
+ * round-trip the components against the resulting UTC date instead.
+ */
+function isValidCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
 function EditableField({
   label,
   value,
@@ -262,7 +281,7 @@ export default function PatientDetailScreen() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator color={colors.brand500} size="large" />
         </View>
-      ) : error && !(error instanceof ApiError && error.status === 404) ? (
+      ) : error && !patient && !(error instanceof ApiError && error.status === 404) ? (
         <View className="flex-1 items-center justify-center px-8">
           <User color={colors.contentTertiary} size={48} />
           <Text className="text-body font-medium text-content-primary mt-4 text-center">
@@ -571,8 +590,8 @@ export default function PatientDetailScreen() {
                   <Button
                     onPress={() => {
                       const dob = profileDraft.dateOfBirth;
-                      if (dob && (!/^\d{4}-\d{2}-\d{2}$/.test(dob) || isNaN(new Date(dob).getTime()))) {
-                        setDobError('Enter the date as YYYY-MM-DD (e.g., 2020-03-15).');
+                      if (dob && !isValidCalendarDate(dob)) {
+                        setDobError('Enter a real date as YYYY-MM-DD (e.g., 2020-03-15).');
                         return;
                       }
                       updateMutation.mutate(profileDraft);

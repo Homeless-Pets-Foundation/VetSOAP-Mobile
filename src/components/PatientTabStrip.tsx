@@ -38,7 +38,7 @@ function StatusDot({ audioState, uploadStatus }: Pick<PatientSlot, 'audioState' 
   if (uploadStatus === 'success') {
     return (
       <View
-        className="w-2 h-2 rounded-full bg-success-500 ml-1.5"
+        className="w-2 h-2 rounded-full bg-status-success-fg ml-1.5"
         accessibilityLabel="uploaded"
       />
     );
@@ -49,7 +49,7 @@ function StatusDot({ audioState, uploadStatus }: Pick<PatientSlot, 'audioState' 
   if (audioState === 'stopped') {
     return (
       <View
-        className="w-2 h-2 rounded-full bg-success-500 ml-1.5"
+        className="w-2 h-2 rounded-full bg-status-success-fg ml-1.5"
         accessibilityLabel="recording complete"
       />
     );
@@ -57,7 +57,7 @@ function StatusDot({ audioState, uploadStatus }: Pick<PatientSlot, 'audioState' 
   if (audioState === 'paused') {
     return (
       <View
-        className="w-2 h-2 rounded-full bg-warning-500 ml-1.5"
+        className="w-2 h-2 rounded-full bg-status-warning-fg ml-1.5"
         accessibilityLabel="paused"
       />
     );
@@ -89,7 +89,7 @@ function PulsingStatusDot() {
 
   return (
     <Animated.View
-      className="w-2 h-2 rounded-full bg-danger-500 ml-1.5"
+      className="w-2 h-2 rounded-full bg-status-danger-fg ml-1.5"
       style={style}
       accessibilityLabel="recording in progress"
     />

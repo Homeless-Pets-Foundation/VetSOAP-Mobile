@@ -19,7 +19,7 @@ export const LIGHT_THEME_COLORS = {
   contentPrimary: '#1c1917',
   contentBody: '#44403c',
   contentSecondary: '#57534e',
-  contentTertiary: '#a8a29e',
+  contentTertiary: '#78716c', // stone-500 (light) — AA fix, mirrors global.css
   contentInverse: '#ffffff',
   contentOnBrand: '#ffffff',
   borderDefault: '#e7e5e4',

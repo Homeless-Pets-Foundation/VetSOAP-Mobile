@@ -4339,7 +4339,7 @@ function RecordingSession() {
           accessibilityLiveRegion="assertive"
           accessibilityRole="alert"
         >
-          <View className="w-2 h-2 rounded-full bg-warning-500 mr-3" />
+          <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-3" />
           <Text className="text-body-sm font-semibold text-status-warning flex-1">
             {interruptionPendingResume
               ? RECORDER_TRANSITION_COPY.interruptedPaused

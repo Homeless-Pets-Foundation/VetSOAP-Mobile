@@ -270,7 +270,7 @@ export default function PatientDetailScreen() {
               <Card className="mb-4">
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center">
-                    <View className="w-2 h-2 rounded-full bg-warning-500 mr-2" />
+                    <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-2" />
                     <Text className="text-body-sm font-semibold text-content-body">AI Patient Summary</Text>
                   </View>
                   {patient.aiHistoryUpdatedAt && (() => { const d = new Date(patient.aiHistoryUpdatedAt); return !isNaN(d.getTime()) && Date.now() - d.getTime() > 30 * 24 * 60 * 60 * 1000; })() && (

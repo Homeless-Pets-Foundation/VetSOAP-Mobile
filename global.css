@@ -11,7 +11,7 @@
     --color-content-primary: 28 25 23; /* stone-900 */
     --color-content-body: 68 64 60; /* stone-700 */
     --color-content-secondary: 87 83 78; /* stone-600 */
-    --color-content-tertiary: 168 162 158; /* stone-400 */
+    --color-content-tertiary: 120 113 108; /* stone-500 — stone-400 measured 2.4:1 on surface (WCAG AA needs 4.5:1) across ~120 real-content usages */
     --color-content-inverse: 255 255 255; /* white */
     --content-on-brand: 255 255 255; /* white */
     --color-border-default: 231 229 228; /* stone-200 */

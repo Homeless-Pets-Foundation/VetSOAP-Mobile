@@ -96,7 +96,9 @@ test('startup branding expands to near-2x without exceeding the Android splash s
   assert.doesNotMatch(rootLayout, /Animated\.Image/);
   assert.match(rootLayout, /setMinimumDisplayComplete\(true\)/);
   assert.match(rootLayout, /\(!isLoading && minimumDisplayComplete\)/);
-  assert.match(rootLayout, /const style = isLoading \? 'dark'/);
+  // WP12: SplashGate is theme-aware, so only iOS (white native splash)
+  // pins dark icons while loading.
+  assert.match(rootLayout, /isLoading && Platform\.OS !== 'android'/);
 });
 
 test('local Android testing installs beside the Play-signed production app', async () => {
@@ -221,12 +223,14 @@ test('record-first blank-field analytics emits only for first segment', async ()
   assert.ok(firstSegmentGuardIndex < eventIndex, 'first-segment guard should wrap analytics event');
 });
 
-test('root status bar omits Android backgroundColor', async () => {
+test('root status bar omits backgroundColor entirely', async () => {
   const rootLayout = await read('app/_layout.tsx');
   const statusBar = rootLayout.match(/<StatusBar[\s\S]*?\/>/);
 
   assert.ok(statusBar, 'ThemedStatusBar should render StatusBar');
-  assert.match(rootLayout, /Platform\.OS === 'android' \? \{\} : \{ backgroundColor: colors\.surface \}/);
+  // WP12: the prop was Android-only in expo-status-bar and the old code
+  // passed it only on iOS — dead on both platforms. It must stay gone.
+  assert.doesNotMatch(statusBar[0], /backgroundColor/);
   assert.match(statusBar[0], /style=\{style\}/);
 });
 

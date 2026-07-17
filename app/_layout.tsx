@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import {
+  Appearance,
   Image,
   View,
   Text,
@@ -27,6 +28,7 @@ import { initAnalytics, trackEvent } from '../src/lib/analytics';
 import { getSessionActivity } from '../src/lib/sessionActivity';
 import { getThemePreference } from '../src/lib/themePreference';
 import { useThemeColors } from '../src/hooks/useThemeColors';
+import { DARK_THEME_COLORS, LIGHT_THEME_COLORS } from '../src/constants/colors';
 import { useAuthMfa, useAuthReadiness, useAuthUser } from '../src/hooks/useAuth';
 import '../global.css';
 
@@ -133,6 +135,17 @@ try {
   // noop — splash auto-hides, worst case is the old double transition (rule 1)
 }
 
+// Pre-provider theme read for boot-path UI (ErrorBoundary, SplashGate):
+// nativewind's hook isn't available before the providers mount, and the
+// ErrorBoundary is a class component. Appearance is sync and never throws.
+function bootThemeColors() {
+  try {
+    return Appearance.getColorScheme() === 'dark' ? DARK_THEME_COLORS : LIGHT_THEME_COLORS;
+  } catch {
+    return LIGHT_THEME_COLORS;
+  }
+}
+
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; error: Error | null; eventId?: string }
@@ -169,10 +182,11 @@ class ErrorBoundary extends React.Component<
         ? (this.state.error?.message || 'An unexpected error occurred.')
         : 'Something unexpected happened. Please try again.';
 
+      const boot = bootThemeColors();
       return (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: boot.surface }}>
           <View style={{ width: '100%', maxWidth: 640, alignItems: 'center', paddingHorizontal: 16 }}>
-            <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 8, textAlign: 'center', paddingHorizontal: 4 }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 8, textAlign: 'center', paddingHorizontal: 4, color: boot.contentPrimary }}>
               Something went wrong
             </Text>
             <Text
@@ -180,7 +194,7 @@ class ErrorBoundary extends React.Component<
                 width: '100%',
                 fontSize: 14,
                 lineHeight: 22,
-                color: '#78716c',
+                color: boot.contentSecondary,
                 textAlign: 'center',
                 marginBottom: 16,
                 paddingHorizontal: 8,
@@ -192,14 +206,14 @@ class ErrorBoundary extends React.Component<
             <Pressable
               onPress={() => this.setState({ hasError: false, error: null, eventId: undefined })}
               style={{
-                backgroundColor: '#0d8775',
+                backgroundColor: boot.brand500,
                 paddingHorizontal: 20,
                 paddingVertical: 10,
                 borderRadius: 8,
                 minWidth: 128,
               }}
             >
-              <Text style={{ color: '#fff', fontWeight: '600', textAlign: 'center', paddingHorizontal: 2 }}>
+              <Text style={{ color: boot.contentOnBrand, fontWeight: '600', textAlign: 'center', paddingHorizontal: 2 }}>
                 Try Again
               </Text>
             </Pressable>
@@ -270,7 +284,7 @@ function SplashGate() {
         elevation: 1000,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: '#ffffff',
+        backgroundColor: bootThemeColors().surface,
       }}
     >
       <Image
@@ -355,16 +369,20 @@ function ThemePreferenceHydrator() {
 function ThemedStatusBar() {
   const { colorScheme } = useColorScheme();
   const { isLoading } = useAuthReadiness();
-  const colors = useThemeColors();
-  // The native and React loading layers are white on both themes.
-  const style = isLoading ? 'dark' : colorScheme === 'dark' ? 'light' : 'dark';
+  // iOS: the native splash stays white on both themes, so keep dark icons
+  // while loading. Android's SplashGate is theme-aware (bootThemeColors), so
+  // the bar can follow the scheme immediately.
+  const style =
+    isLoading && Platform.OS !== 'android'
+      ? 'dark'
+      : colorScheme === 'dark'
+        ? 'light'
+        : 'dark';
 
-  return (
-    <StatusBar
-      style={style}
-      {...(Platform.OS === 'android' ? {} : { backgroundColor: colors.surface })}
-    />
-  );
+  // No backgroundColor prop: it's Android-only in expo-status-bar, and SDK 55
+  // edge-to-edge keeps the bar transparent over the themed surface anyway —
+  // the old iOS-only pass was dead code on both platforms.
+  return <StatusBar style={style} />;
 }
 
 export default function RootLayout() {

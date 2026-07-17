@@ -95,7 +95,7 @@ function PulsingDot() {
 
   return (
     <Animated.View
-      className="w-2.5 h-2.5 rounded-full bg-danger-500 mr-2"
+      className="w-2.5 h-2.5 rounded-full bg-status-danger-fg mr-2"
       style={style}
     />
   );

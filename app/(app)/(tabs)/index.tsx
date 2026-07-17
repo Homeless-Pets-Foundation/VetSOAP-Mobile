@@ -366,10 +366,10 @@ export default function HomeScreen() {
           <Text
             className={`text-display font-bold ${
               processingCount > 0
-                ? 'text-warning-500'
+                ? 'text-status-warning'
                 : draftCount > 0
-                  ? 'text-warning-500'
-                  : 'text-success-500'
+                  ? 'text-status-warning'
+                  : 'text-status-success'
             }`}
           >
             {processingCount > 0 ? processingCount : draftCount > 0 ? draftCount : '\u2713'}

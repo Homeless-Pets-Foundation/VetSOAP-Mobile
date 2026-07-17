@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { ChevronLeft, FileClock, Trash2 } from 'lucide-react-native';
@@ -15,6 +15,8 @@ import { useResponsive } from '../../src/hooks/useResponsive';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
 import { Button } from '../../src/components/ui/Button';
+import { RECOVERY_COPY } from '../../src/constants/strings';
+import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Card } from '../../src/components/ui/Card';
 import { IconButton } from '../../src/components/ui/IconButton';
 import { captureMessage } from '../../src/lib/monitoring';
@@ -268,7 +270,7 @@ export default function RecordingRecoveryScreen() {
               Local Recovery
             </Text>
             <Text className="text-body-sm text-content-tertiary mt-0.5">
-              Recover recordings protected during support staff sign-out.
+              {RECOVERY_COPY.subtitle}
             </Text>
           </View>
         </View>
@@ -293,9 +295,7 @@ export default function RecordingRecoveryScreen() {
                 {scanTimedOut ? 'Recovery Check Timed Out' : 'No Recoverable Recordings'}
               </Text>
               <Text className="text-body text-content-tertiary text-center mb-6">
-                {scanTimedOut
-                  ? 'This tablet did not finish checking local recovery storage. Try again while staying signed in.'
-                  : 'Only recovery copies saved during support staff sign-out can be restored automatically. Older leftover files are hidden unless the app can verify they came from this organization.'}
+                {scanTimedOut ? RECOVERY_COPY.timedOutBody : RECOVERY_COPY.emptyBody}
               </Text>
               <Button variant="secondary" onPress={() => loadItems().catch(() => {})}>
                 Check Again
@@ -333,37 +333,32 @@ export default function RecordingRecoveryScreen() {
                       <Text className="text-body-sm font-semibold text-content-body mb-2">
                         Details for audio {index + 1}
                       </Text>
-                      <TextInput
+                      <TextInputField
+                        label="Patient name"
+                        required
                         value={form.patientName}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'patientName', value)}
                         placeholder="Patient name"
-                        placeholderTextColor={colors.contentTertiary}
-                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary mb-2"
-                        accessibilityLabel="Patient name"
                       />
-                      <TextInput
+                      <TextInputField
+                        label="Client name"
+                        required
                         value={form.clientName ?? ''}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'clientName', value)}
                         placeholder="Client name"
-                        placeholderTextColor={colors.contentTertiary}
-                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary mb-2"
-                        accessibilityLabel="Client name"
                       />
-                      <TextInput
+                      <TextInputField
+                        label="Species"
+                        required
                         value={form.species ?? ''}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'species', value)}
-                        placeholder="Species"
-                        placeholderTextColor={colors.contentTertiary}
-                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary mb-2"
-                        accessibilityLabel="Species"
+                        placeholder="e.g., Canine, Feline"
                       />
-                      <TextInput
+                      <TextInputField
+                        label="Appointment type"
                         value={form.appointmentType ?? ''}
                         onChangeText={(value) => updateForm(item.id, slot.id, 'appointmentType', value)}
-                        placeholder="Appointment type"
-                        placeholderTextColor={colors.contentTertiary}
-                        className="bg-surface-raised border border-border-strong rounded-input px-3 py-3 text-body text-content-primary"
-                        accessibilityLabel="Appointment type"
+                        placeholder="e.g., Wellness Exam"
                       />
                     </View>
                   );

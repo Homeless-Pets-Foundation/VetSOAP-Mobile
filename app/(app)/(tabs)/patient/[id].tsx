@@ -5,8 +5,7 @@ import {
   ScrollView,
   Pressable,
   RefreshControl,
-  ActivityIndicator,
-  TextInput,
+  ActivityIndicator, 
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,6 +15,8 @@ import { ChevronLeft, Edit2, User } from 'lucide-react-native';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
 import { patientsApi } from '../../../../src/api/patients';
 import { Button } from '../../../../src/components/ui/Button';
+import { friendlyErrorMessage } from '../../../../src/lib/errorCopy';
+import { TextInputField } from '../../../../src/components/ui/TextInputField';
 import { Card } from '../../../../src/components/ui/Card';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
@@ -86,28 +87,33 @@ function EditableField({
   onChangeText,
   placeholder,
   multiline,
+  keyboardType,
+  error,
 }: {
   label: string;
   value: string;
   onChangeText: (v: string) => void;
   placeholder?: string;
   multiline?: boolean;
+  keyboardType?: 'default' | 'numbers-and-punctuation';
+  error?: string;
 }) {
-  const colors = useThemeColors();
+  // Thin wrapper over the shared TextInputField (WP18) — the previous local
+  // reimplementation lacked accessibilityLabel, focus borders, and the error
+  // contract. textAlignVertical is a TextInput prop on Android.
   return (
-    <View className="mb-3.5">
-      <Text className="text-body-sm font-medium text-content-body mb-1.5">{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={colors.contentTertiary}
-        multiline={multiline}
-        numberOfLines={multiline ? 3 : 1}
-        className={`input-base min-h-[44px] text-body text-content-primary ${multiline ? 'py-2' : ''}`}
-        style={multiline ? { height: 80, textAlignVertical: 'top' } : undefined}
-      />
-    </View>
+    <TextInputField
+      label={label}
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      multiline={multiline}
+      numberOfLines={multiline ? 3 : 1}
+      keyboardType={keyboardType}
+      error={error}
+      textAlignVertical={multiline ? 'top' : undefined}
+      className={multiline ? 'min-h-[80px] py-2' : undefined}
+    />
   );
 }
 
@@ -121,6 +127,7 @@ export default function PatientDetailScreen() {
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const [editMode, setEditMode] = useState(false);
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({});
+  const [dobError, setDobError] = useState<string | null>(null);
 
   const {
     data: patient,
@@ -247,7 +254,22 @@ export default function PatientDetailScreen() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator color={colors.brand500} size="large" />
         </View>
-      ) : error || !patient ? (
+      ) : error ? (
+        <View className="flex-1 items-center justify-center px-8">
+          <User color={colors.contentTertiary} size={48} />
+          <Text className="text-body font-medium text-content-primary mt-4 text-center">
+            {friendlyErrorMessage(error, 'load')}
+          </Text>
+          <View className="mt-4 flex-row gap-2">
+            <Button variant="primary" onPress={() => { refetch().catch(() => {}); }}>
+              Retry
+            </Button>
+            <Button variant="secondary" onPress={() => router.back()}>
+              Go Back
+            </Button>
+          </View>
+        </View>
+      ) : !patient ? (
         <View className="flex-1 items-center justify-center px-8">
           <User color={colors.contentTertiary} size={48} />
           <Text className="text-body font-medium text-content-primary mt-4">Patient not found</Text>
@@ -465,6 +487,12 @@ export default function PatientDetailScreen() {
                     placeholder="Patient name"
                   />
                   <EditableField
+                    label="Species"
+                    value={profileDraft.species ?? ''}
+                    onChangeText={(v) => setProfileDraft((p) => ({ ...p, species: v || null }))}
+                    placeholder="e.g., Canine, Feline"
+                  />
+                  <EditableField
                     label="Breed"
                     value={profileDraft.breed ?? ''}
                     onChangeText={(v) => setProfileDraft((p) => ({ ...p, breed: v || null }))}
@@ -473,8 +501,13 @@ export default function PatientDetailScreen() {
                   <EditableField
                     label="Date of Birth (YYYY-MM-DD)"
                     value={profileDraft.dateOfBirth ?? ''}
-                    onChangeText={(v) => setProfileDraft((p) => ({ ...p, dateOfBirth: v || null }))}
+                    onChangeText={(v) => {
+                      setDobError(null);
+                      setProfileDraft((p) => ({ ...p, dateOfBirth: v || null }));
+                    }}
                     placeholder="e.g., 2020-03-15"
+                    keyboardType="numbers-and-punctuation"
+                    error={dobError ?? undefined}
                   />
                   <EditableField
                     label="Known Allergies"
@@ -499,15 +532,20 @@ export default function PatientDetailScreen() {
                   />
 
                   {updateMutation.error && (
-                    <Text className="text-body-sm text-status-danger mb-3">
-                      {updateMutation.error instanceof Error
-                        ? updateMutation.error.message
-                        : 'Failed to save changes.'}
+                    <Text className="text-body-sm text-status-danger mb-3" accessibilityRole="alert">
+                      {friendlyErrorMessage(updateMutation.error)}
                     </Text>
                   )}
 
                   <Button
-                    onPress={() => updateMutation.mutate(profileDraft)}
+                    onPress={() => {
+                      const dob = profileDraft.dateOfBirth;
+                      if (dob && (!/^\d{4}-\d{2}-\d{2}$/.test(dob) || isNaN(new Date(dob).getTime()))) {
+                        setDobError('Enter the date as YYYY-MM-DD (e.g., 2020-03-15).');
+                        return;
+                      }
+                      updateMutation.mutate(profileDraft);
+                    }}
                     loading={updateMutation.isPending}
                     disabled={updateMutation.isPending}
                   >

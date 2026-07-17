@@ -175,6 +175,15 @@ export const ERROR_COPY = {
   detailsCopied: 'Details copied',
 } as const;
 
+export const RECOVERY_COPY = {
+  subtitle: 'Recordings saved when a staff member signed out of this device.',
+  emptyBody:
+    'Nothing to recover here. Recordings are saved to this screen when a staff member signs out ' +
+    'with unsent work; restore them to your drafts to review and submit.',
+  timedOutBody:
+    'This device did not finish checking local recovery storage. Try again while staying signed in.',
+} as const;
+
 export const RECORDING_DETAIL_COPY = {
   processingTitle: 'Processing…',
   processingBody: 'This usually takes 1-2 minutes.',

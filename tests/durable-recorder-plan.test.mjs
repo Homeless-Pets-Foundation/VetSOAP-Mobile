@@ -511,16 +511,27 @@ test('durable slots are counted in the unsaved leave/reset guards', async () => 
   // the only copy (Codex P1 round 4).
   const resumeIdx = rec.indexOf('const slots = await resumeStashedSession(stashId);');
   assert.ok(resumeIdx >= 0, 'stash resume must exist');
-  const resumeWindow = rec.slice(resumeIdx, resumeIdx + 1600);
+  const resumeWindow = rec.slice(resumeIdx, resumeIdx + 2400);
   assert.match(resumeWindow, /restoreSession\(slots\)/);
   assert.match(resumeWindow, /unsyncedDraftAudioRef\.current\.add\(restored\.id\)/);
+  // ...and excluded from discard preserve lists until a fresh autoSaveDraft
+  // commits: their retained draftSlotId doesn't map to a surviving local
+  // draft, and preserving it strands the server draft row audio-less after
+  // the stash release deletes the only copy (Codex P2 round 5).
+  assert.match(resumeWindow, /stashResumedSlotIdsRef\.current\.add\(restored\.id\)/);
+  assert.match(rec, /function collectPreserveDraftSlotIds\(\s*slots: PatientSlot\[\],\s*excludeSlotIds\?: ReadonlySet<string>\s*\)/);
+  assert.doesNotMatch(rec, /collectPreserveDraftSlotIds\((?:currentSlots|sessionRef\.current\.slots)\)/);
+  // A fresh draft commit makes the retained id real again.
+  const saveOkIdx = rec.indexOf('unsyncedDraftAudioRef.current.delete(slot.id);');
+  assert.ok(saveOkIdx >= 0);
+  assert.match(rec.slice(saveOkIdx, saveOkIdx + 200), /stashResumedSlotIdsRef\.current\.delete\(slot\.id\)/);
   // Orphan server-recording deletion must stay inside the preserve gate — a
   // preserved draft's pendingConfirm points at that row (Codex P1).
   const gateIdx = rec.indexOf("if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {");
   const orphanIdx = rec.indexOf('deleteOrphanServerRecording(slot);');
   assert.ok(gateIdx >= 0 && orphanIdx > gateIdx, 'deleteOrphanServerRecording must be inside the preserve gate');
   // Discard paths must thread the preserve list so drafted slots survive.
-  assert.match(rec, /preserveDraftSlotIds: collectPreserveDraftSlotIds\(sessionRef\.current\.slots\)/);
+  assert.match(rec, /preserveDraftSlotIds: collectPreserveDraftSlotIds\(\s*sessionRef\.current\.slots,\s*stashResumedSlotIdsRef\.current\s*\)/);
   assert.match(rec, /await discardCurrentSession\(\{ preserveDraftSlotIds \}\)/);
 });
 

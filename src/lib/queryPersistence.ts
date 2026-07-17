@@ -64,11 +64,13 @@ interface ActivePersistence {
 let active: ActivePersistence | null = null;
 // Bumped on every start/stop. persistQueryClient kicks off an async restore
 // (AsyncStorage read + hydrate) that cannot be cancelled; if sign-out or a
-// user switch happens while it is still pending, the outgoing user's clinical
-// queries would hydrate the shared client AFTER queryClient.clear() ran —
-// exposing them on the login screen / to the next user on a shared tablet
-// (Codex P1, PR #143). A stale generation at resolve time wipes whatever the
-// late restore hydrated.
+// user switch happens while the read is still pending, the outgoing user's
+// clinical queries would hydrate the shared client AFTER queryClient.clear()
+// ran — exposing them on the login screen / to the next user on a shared
+// tablet (Codex P1, PR #143). The guarded persister below checks this at
+// restore-resolve time and discards the stale payload BEFORE hydration —
+// never by clearing the shared client afterwards, which would wipe (and then
+// persist an empty snapshot over) a successor scope's data (Codex P2 round 5).
 let generation = 0;
 
 function storageKeyForUser(userId: string): string {
@@ -93,24 +95,28 @@ export function startQueryPersistence(userId: string): void {
       throttleTime: 2000,
     });
 
-    const [unsubscribe, restorePromise] = persistQueryClient({
+    // Guard the restore payload at the moment the AsyncStorage read resolves:
+    // a stale generation (scope torn down mid-read) returns undefined so
+    // persistQueryClient skips hydration entirely — the payload never touches
+    // the shared client.
+    const guardedPersister: Persister = {
+      persistClient: (client) => persister.persistClient(client),
+      restoreClient: async () => {
+        const restored = await persister.restoreClient();
+        return generation === restoreGeneration ? restored : undefined;
+      },
+      removeClient: () => persister.removeClient(),
+    };
+
+    const [unsubscribe] = persistQueryClient({
       queryClient,
-      persister,
+      persister: guardedPersister,
       maxAge: PERSIST_MAX_AGE_MS,
       // App version + user id: an app update or user switch invalidates the
       // snapshot wholesale rather than risking shape mismatches.
       buster: `${Application.nativeApplicationVersion ?? 'dev'}:${userId}`,
       dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
     });
-
-    // If this persistence scope was torn down before the restore settled, the
-    // hydration above just landed after sign-out's queryClient.clear(). Clear
-    // again: an empty cache (next user refetches) beats leaked clinical data.
-    restorePromise
-      .then(() => {
-        if (generation !== restoreGeneration) queryClient.clear();
-      })
-      .catch(() => {});
 
     active = { userId, unsubscribe, persister };
   } catch (error) {

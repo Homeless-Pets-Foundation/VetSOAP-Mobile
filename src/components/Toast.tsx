@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { AccessibilityInfo, Platform, Text } from 'react-native';
 import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,11 +24,18 @@ export function Toast({ message, visible, onHide, durationMs }: ToastProps) {
   const insets = useSafeAreaInsets();
   const effectiveDuration = durationMs ?? defaultDurationMs(message);
 
+  // Latest-callback ref: callers pass inline onHide closures whose identity
+  // changes every parent render (UploadOverlay re-renders on each progress
+  // tick), and depending on it restarted this timer continually — a success
+  // toast could stay pinned for an entire long upload instead of
+  // auto-dismissing (Codex P2, PR #143).
+  const onHideRef = useRef(onHide);
+  onHideRef.current = onHide;
   useEffect(() => {
     if (!visible) return;
-    const id = setTimeout(onHide, effectiveDuration);
+    const id = setTimeout(() => onHideRef.current(), effectiveDuration);
     return () => clearTimeout(id);
-  }, [visible, effectiveDuration, onHide]);
+  }, [visible, effectiveDuration]);
 
   // accessibilityLiveRegion is Android-only, so announce explicitly on iOS.
   // Android must NOT also announce here or TalkBack speaks every toast twice.

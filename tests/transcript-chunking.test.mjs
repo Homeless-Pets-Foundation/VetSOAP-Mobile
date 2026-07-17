@@ -20,35 +20,43 @@ function chunkTranscript(text) {
   if (paragraphs.length > 1) {
     const chunks = [];
     let current = '';
-    for (const para of paragraphs.flatMap(splitOversizedRun)) {
-      if (current.length + para.length > FALLBACK_CHUNK_CHARS && current) {
-        chunks.push(current);
-        current = para;
-      } else {
-        current = current ? `${current}\n\n${para}` : para;
+    for (const para of paragraphs) {
+      let firstPieceOfPara = true;
+      for (const piece of splitOversizedRun(para)) {
+        const sep = firstPieceOfPara ? '\n\n' : ' ';
+        firstPieceOfPara = false;
+        if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
+          chunks.push(current);
+          current = piece;
+        } else {
+          current = current ? `${current}${sep}${piece}` : piece;
+        }
       }
     }
     if (current) chunks.push(current);
     return chunks;
   }
-  const sentences = text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
-  const chunks = [];
-  let current = '';
-  for (const sentence of sentences) {
-    if (current.length + sentence.length > FALLBACK_CHUNK_CHARS && current) {
-      chunks.push(current);
-      current = sentence;
-    } else {
-      current = current ? `${current} ${sentence}` : sentence;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
+  return accumulateWithSpaces(text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized));
 }
 
 function splitOversizedRun(run) {
   if (run.length <= FALLBACK_CHUNK_CHARS) return [run];
-  return run.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
+  return accumulateWithSpaces(run.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized));
+}
+
+function accumulateWithSpaces(pieces) {
+  const out = [];
+  let current = '';
+  for (const piece of pieces) {
+    if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
+      out.push(current);
+      current = piece;
+    } else {
+      current = current ? `${current} ${piece}` : piece;
+    }
+  }
+  if (current) out.push(current);
+  return out;
 }
 
 function hardSplitOversized(piece) {
@@ -134,6 +142,31 @@ test('an oversized paragraph is split before accumulation (Codex P2 round 4, PR 
   );
 });
 
+test('sentence spacing preserved inside oversized paragraphs (Codex P2 round 5)', () => {
+  // A long PUNCTUATED paragraph must not be rejoined with a blank line after
+  // every sentence — '\n\n' belongs only at boundaries present in the source.
+  const sentence = 'This is a normal sentence from the visit transcript.';
+  const giantPara = Array.from({ length: 150 }, () => sentence).join(' ');
+  const text = `Heading.\n\n${giantPara}\n\nFooter.`;
+  assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
+  const chunks = chunkTranscript(text);
+  assert.ok(chunks.length > 2, 'giant paragraph must be split');
+  const blankLineJoins = chunks
+    .map((c) => (c.match(/\n\n/g) ?? []).length)
+    .reduce((a, b) => a + b, 0);
+  assert.ok(blankLineJoins <= 2, `fake blank lines inserted: ${blankLineJoins}`);
+  for (const chunk of chunks) {
+    assert.ok(
+      chunk.length <= FALLBACK_CHUNK_CHARS + sentence.length + 10,
+      `chunk too large: ${chunk.length}`
+    );
+  }
+  assert.equal(
+    chunks.join(' ').replace(/\s+/g, ' '),
+    text.replace(/\s+/g, ' ')
+  );
+});
+
 test('a single unbroken token gets sliced at hard char boundaries', () => {
   const text = 'x'.repeat(7000);
   const chunks = chunkTranscript(text);
@@ -148,8 +181,11 @@ test('source component matches this mirror and renders per-chunk selectable Text
   assert.match(src, /export function chunkTranscript/);
   assert.match(src, /function hardSplitOversized/);
   assert.match(src, /function splitOversizedRun/);
+  assert.match(src, /function accumulateWithSpaces/);
   assert.match(src, /\.flatMap\(hardSplitOversized\)/);
-  assert.match(src, /paragraphs\.flatMap\(splitOversizedRun\)/);
+  assert.match(src, /splitOversizedRun\(para\)/);
+  // '\n\n' only at source paragraph boundaries; split pieces rejoin with ' '.
+  assert.match(src, /firstPieceOfPara \? '\\n\\n' : ' '/);
   assert.match(src, /chunks\.map\(\(chunk, i\) => \(/);
   assert.match(src, /selectable/);
 });

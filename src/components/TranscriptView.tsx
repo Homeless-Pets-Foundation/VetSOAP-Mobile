@@ -39,15 +39,22 @@ export function chunkTranscript(text: string): string[] {
     // a short heading followed by one 10,000-char speech-to-text paragraph
     // would otherwise ride through this branch as a single giant Text — the
     // exact Android layout/selection ANR this chunking exists to prevent
-    // (Codex P2, PR #143).
+    // (Codex P2, PR #143). '\n\n' is used ONLY at boundaries that existed in
+    // the source; pieces of a split paragraph rejoin with a space so the
+    // transcript isn't inflated with fake blank lines (Codex P2 round 5).
     const chunks: string[] = [];
     let current = '';
-    for (const para of paragraphs.flatMap(splitOversizedRun)) {
-      if (current.length + para.length > FALLBACK_CHUNK_CHARS && current) {
-        chunks.push(current);
-        current = para;
-      } else {
-        current = current ? `${current}\n\n${para}` : para;
+    for (const para of paragraphs) {
+      let firstPieceOfPara = true;
+      for (const piece of splitOversizedRun(para)) {
+        const sep = firstPieceOfPara ? '\n\n' : ' ';
+        firstPieceOfPara = false;
+        if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
+          chunks.push(current);
+          current = piece;
+        } else {
+          current = current ? `${current}${sep}${piece}` : piece;
+        }
       }
     }
     if (current) chunks.push(current);
@@ -58,25 +65,33 @@ export function chunkTranscript(text: string): string[] {
   // "sentence" that itself exceeds the target (degraded speech-to-text can
   // produce 6,000+ chars with no punctuation at all, which would otherwise
   // come back as ONE chunk and reintroduce the Android single-TextView ANR).
-  const sentences = text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
-  const chunks: string[] = [];
-  let current = '';
-  for (const sentence of sentences) {
-    if (current.length + sentence.length > FALLBACK_CHUNK_CHARS && current) {
-      chunks.push(current);
-      current = sentence;
-    } else {
-      current = current ? `${current} ${sentence}` : sentence;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
+  return accumulateWithSpaces(text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized));
 }
 
-/** Split an oversized run at sentence boundaries first, hard boundaries last. */
+/**
+ * Split an oversized run at sentence boundaries first (hard boundaries last),
+ * re-accumulated into ~target-size pieces so callers get few, bounded pieces
+ * rather than one element per sentence.
+ */
 function splitOversizedRun(run: string): string[] {
   if (run.length <= FALLBACK_CHUNK_CHARS) return [run];
-  return run.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized);
+  return accumulateWithSpaces(run.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized));
+}
+
+/** Merge pieces into ~FALLBACK_CHUNK_CHARS chunks, space-joined. */
+function accumulateWithSpaces(pieces: string[]): string[] {
+  const out: string[] = [];
+  let current = '';
+  for (const piece of pieces) {
+    if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
+      out.push(current);
+      current = piece;
+    } else {
+      current = current ? `${current} ${piece}` : piece;
+    }
+  }
+  if (current) out.push(current);
+  return out;
 }
 
 /** Split a punctuation-less run at whitespace (hard char boundary as last resort). */

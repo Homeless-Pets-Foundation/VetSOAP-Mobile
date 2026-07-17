@@ -46,6 +46,16 @@ test('UploadOverlay uses batch-scoped counting and seeds the toast set on open',
   assert.ok(!/accessibilityLabel=\{`Upload in progress\. \$\{phaseText\} \$\{overallProgress\}%`\}/.test(src));
 });
 
+test('Toast dismissal timer survives parent re-renders (Codex P2 round 5)', async () => {
+  const toast = await read('src/components/Toast.tsx');
+  // Inline onHide closures change identity on every parent render (upload
+  // progress ticks) — the timer effect must read the callback through a ref,
+  // not restart on identity change, or success toasts never auto-dismiss.
+  assert.match(toast, /const onHideRef = useRef\(onHide\);/);
+  assert.match(toast, /setTimeout\(\(\) => onHideRef\.current\(\), effectiveDuration\)/);
+  assert.match(toast, /\}, \[visible, effectiveDuration\]\);/);
+});
+
 test('record.tsx passes the batch slot ids and offers Hide', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
   assert.match(rec, /batchSlotIds=\{batchSlotIds\}/);

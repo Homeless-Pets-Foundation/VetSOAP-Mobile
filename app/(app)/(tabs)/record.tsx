@@ -112,11 +112,21 @@ function isTrulyUnsavedSlot(s: PatientSlot): boolean {
   );
 }
 
-/** Draft ids for every slot committed as a draft — the preserve list for discardCurrentSession. */
-function collectPreserveDraftSlotIds(slots: PatientSlot[]): string[] {
+/**
+ * Draft ids for every slot committed as a draft — the preserve list for
+ * discardCurrentSession. `excludeSlotIds` drops slots whose draftSlotId does
+ * NOT identify a surviving local draft (resumed-from-stash slots until a
+ * fresh autoSaveDraft commits): preserving those made discard skip
+ * deleteSlotDraft, stranding the server draft as a "Not Submitted" row with
+ * no audio after the stash release deleted the only copy (Codex P2, PR #143).
+ */
+function collectPreserveDraftSlotIds(
+  slots: PatientSlot[],
+  excludeSlotIds?: ReadonlySet<string>
+): string[] {
   const ids: string[] = [];
   for (const s of slots) {
-    if (s.draftSlotId) ids.push(s.draftSlotId);
+    if (s.draftSlotId && !excludeSlotIds?.has(s.id)) ids.push(s.draftSlotId);
   }
   return ids;
 }
@@ -722,6 +732,14 @@ function RecordingSession() {
   // segment (Codex P1, PR #143). Cleared per-slot on save success and
   // wholesale on session reset/discard.
   const unsyncedDraftAudioRef = useRef<Set<string>>(new Set());
+  // Slot ids restored from a stash whose retained draftSlotId does NOT map to
+  // a surviving local draft (stashing deleted it — the stash owns the audio).
+  // Distinct from unsyncedDraftAudioRef: an in-flight/failed autoSaveDraft
+  // still has an OLDER durable snapshot worth preserving on discard, whereas
+  // these slots have none — preserving their draftSlotId strands the server
+  // draft row as an audio-less "Not Submitted" card (Codex P2, PR #143).
+  // Cleared per-slot on autoSaveDraft success, wholesale on discard.
+  const stashResumedSlotIdsRef = useRef<Set<string>>(new Set());
   const pendingDraftMinSegmentCountRef = useRef<number>(0);
   const pendingDraftRecoveryReasonRef = useRef<Map<string, RecoveryIntentReason>>(new Map());
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
@@ -1387,6 +1405,7 @@ function RecordingSession() {
     releaseResumedStashIfAny();
 
     unsyncedDraftAudioRef.current.clear();
+    stashResumedSlotIdsRef.current.clear();
     resetSession();
   }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft, user?.id]);
 
@@ -1420,7 +1439,10 @@ function RecordingSession() {
           onPress: () => {
             (async () => {
               await discardCurrentSession({
-                preserveDraftSlotIds: collectPreserveDraftSlotIds(sessionRef.current.slots),
+                preserveDraftSlotIds: collectPreserveDraftSlotIds(
+                  sessionRef.current.slots,
+                  stashResumedSlotIdsRef.current
+                ),
               });
               navigation.dispatch(data.action);
             })().catch(() => {});
@@ -3194,8 +3216,10 @@ function RecordingSession() {
         });
         invalidateRecordingCaches(queryClient, 'draft_changed');
 
-        // Local persistence succeeded — the current audio snapshot is durable.
+        // Local persistence succeeded — the current audio snapshot is durable
+        // and draftSlotId identifies a real local draft again.
         unsyncedDraftAudioRef.current.delete(slot.id);
+        stashResumedSlotIdsRef.current.delete(slot.id);
 
         if (completedUploadSlotIdsRef.current.has(slot.id)) {
           deleteLocalSlotDraft(slot);
@@ -3846,7 +3870,12 @@ function RecordingSession() {
     // the others (they were never the user's intent to throw away).
     const preserveIds = new Set<string>([draftSlotId]);
     for (const s of currentSlots) {
-      if (s.draftSlotId) preserveIds.add(s.draftSlotId);
+      // Resumed-stash slots are excluded: their retained draftSlotId doesn't
+      // map to a surviving local draft (see stashResumedSlotIdsRef), and
+      // preserving it would strand the server row audio-less on discard.
+      if (s.draftSlotId && !stashResumedSlotIdsRef.current.has(s.id)) {
+        preserveIds.add(s.draftSlotId);
+      }
     }
     const preserveList = Array.from(preserveIds);
 
@@ -4053,6 +4082,11 @@ function RecordingSession() {
             const slots = await resumeStashedSession(stashId);
             if (slots) {
               restoreSession(slots);
+              // RESTORE_SESSION replaced every slot — flags for the previous
+              // session's slot ids are moot (and must not leak onto restored
+              // slots if an id ever recurs).
+              unsyncedDraftAudioRef.current.clear();
+              stashResumedSlotIdsRef.current.clear();
               // Stashing DELETED each slot's local draft (the stash became the
               // audio owner) and resume only restores the draftSlotId
               // identifier for server-draft promotion — the stash dir now
@@ -4064,6 +4098,12 @@ function RecordingSession() {
               for (const restored of slots) {
                 if (slotHasRecoverableAudio(restored) && restored.uploadStatus !== 'success') {
                   unsyncedDraftAudioRef.current.add(restored.id);
+                }
+                // Any retained draftSlotId points at a draft that stashing
+                // deleted — exclude it from discard preserve lists until a
+                // fresh autoSaveDraft commits (see stashResumedSlotIdsRef).
+                if (restored.draftSlotId && restored.uploadStatus !== 'success') {
+                  stashResumedSlotIdsRef.current.add(restored.id);
                 }
               }
               // Pin the stash entry so orphan cleanup cannot delete the audio
@@ -4082,7 +4122,10 @@ function RecordingSession() {
       };
 
       const currentSlots = sessionRef.current.slots;
-      const preserveDraftSlotIds = collectPreserveDraftSlotIds(currentSlots);
+      const preserveDraftSlotIds = collectPreserveDraftSlotIds(
+        currentSlots,
+        stashResumedSlotIdsRef.current
+      );
       const trulyUnsaved = currentSlots.some(isSlotTrulyUnsaved);
 
       if (trulyUnsaved) {

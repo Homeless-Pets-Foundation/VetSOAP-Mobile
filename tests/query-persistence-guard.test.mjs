@@ -29,14 +29,20 @@ test('persistence is user-keyed, allowlisted, and success-only', async () => {
   assert.match(src, /catch \(error\) \{\s*\n\s*if \(__DEV__\)/);
 });
 
-test('a restore that outlives its persistence scope is wiped, not leaked', async () => {
+test('a restore that outlives its persistence scope is discarded before hydration', async () => {
   const src = await read('src/lib/queryPersistence.ts');
-  // persistQueryClient's async restore cannot be cancelled; if sign-out ran
-  // before it settled, the late hydration must be cleared so the outgoing
-  // user's clinical data never survives into the next session (Codex P1).
-  assert.match(src, /const \[unsubscribe, restorePromise\] = persistQueryClient\(/);
+  // persistQueryClient's async restore cannot be cancelled; if sign-out or a
+  // user switch happened while the AsyncStorage read was in flight, the stale
+  // payload must be discarded BEFORE hydration (returning undefined from the
+  // guarded persister) — never by clearing the shared client afterwards,
+  // which would wipe a successor scope's live data and then persist the empty
+  // cache over that user's snapshot (Codex P1 + P2 round 5).
   assert.match(src, /const restoreGeneration = \+\+generation/);
-  assert.match(src, /if \(generation !== restoreGeneration\) queryClient\.clear\(\)/);
+  assert.match(src, /const guardedPersister: Persister = \{/);
+  assert.match(src, /return generation === restoreGeneration \? restored : undefined/);
+  assert.match(src, /persister: guardedPersister/);
+  assert.doesNotMatch(src, /restorePromise/);
+  assert.doesNotMatch(src, /generation !== restoreGeneration\) queryClient\.clear\(\)/);
   // Stop must invalidate any in-flight restore.
   const stopStart = src.indexOf('export function stopQueryPersistence');
   assert.match(src.slice(stopStart, stopStart + 300), /generation \+= 1/);

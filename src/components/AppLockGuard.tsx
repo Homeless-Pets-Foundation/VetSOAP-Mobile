@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
-import { View, Text, Image, AppState, Alert } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, View, Text, Image, AppState, Alert } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { biometrics } from '../lib/biometrics';
 import { AuthContext } from '../auth/AuthProvider';
 import { captureMessage } from '../lib/monitoring';
 import { Button } from './ui/Button';
+import { useThemeColors } from '../hooks/useThemeColors';
 
 const BACKGROUND_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
 
@@ -24,6 +25,8 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   const [isLocked, setIsLocked] = useState(true);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  const [unlockHint, setUnlockHint] = useState<string | null>(null);
+  const colors = useThemeColors();
   const backgroundedAtRef = useRef<number | null>(null);
   const isAuthenticatingRef = useRef(false);
   // Cached "biometric lock is active" state. Drives the bg-resume path so we can
@@ -48,6 +51,10 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     );
   }, [signOut]);
 
+  useEffect(() => {
+    if (isReady && isLocked) AccessibilityInfo.announceForAccessibility('App locked');
+  }, [isReady, isLocked]);
+
   const attemptUnlock = useCallback(async () => {
     if (isAuthenticatingRef.current) return;
     isAuthenticatingRef.current = true;
@@ -56,6 +63,11 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
       const success = await biometrics.authenticate('Verify your identity to continue');
       if (success) {
         setIsLocked(false);
+        setUnlockHint(null);
+      } else {
+        // Cancelled or failed — without this the lock screen gives no
+        // feedback at all, just the same Unlock button.
+        setUnlockHint('Authentication cancelled — try again.');
       }
     } catch (error) {
       if (__DEV__) console.error('[AppLockGuard] attemptUnlock failed:', error);
@@ -194,10 +206,21 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     return () => subscription.remove();
   }, []);
 
-  // While checking biometric state on cold start, show nothing (prevents flash)
+  // While checking biometric state on cold start, show branding + a spinner
+  // (no PHI). A fully blank view read as a frozen app for up to the 12s
+  // watchdog when the biometric bridge stalled.
   if (!isReady && isLocked) {
     return (
-      <View className="flex-1 bg-surface" />
+      <View className="flex-1 justify-center items-center bg-surface">
+        <Image
+          source={require('../../assets/logo-wordmark.png')}
+          style={{ width: '60%', maxWidth: 280, aspectRatio: 600 / 139 }}
+          resizeMode="contain"
+          accessibilityLabel="Captivet"
+          className="mb-6"
+        />
+        <ActivityIndicator size="large" color={colors.brand500} accessibilityLabel="Loading" />
+      </View>
     );
   }
 
@@ -217,6 +240,15 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
         <Text className="text-body-sm text-content-tertiary text-center mb-6">
           Authenticate to continue using the app.
         </Text>
+        {unlockHint && (
+          <Text
+            className="text-body-sm text-status-warning text-center mb-4"
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+          >
+            {unlockHint}
+          </Text>
+        )}
         <Button
           variant="primary"
           size="lg"

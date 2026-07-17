@@ -490,6 +490,7 @@ export const DEVICE_REGISTRATION_BANNER_COPY = {
   body: 'Some features may not work until your device is registered.',
   retry: 'Retry',
   retrying: 'Retrying…',
+  retryFailed: 'Retry failed — check your connection and try again.',
 } as const;
 
 export const THEME_COPY = {

@@ -12,7 +12,7 @@ export default function AuthLayout() {
   if (isLoading) {
     return (
       <View className="flex-1 justify-center items-center bg-surface">
-        <ActivityIndicator size="large" color={colors.brand500} />
+        <ActivityIndicator size="large" color={colors.brand500} accessibilityLabel="Loading" />
       </View>
     );
   }

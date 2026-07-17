@@ -3,7 +3,12 @@ import type { CreateRecording } from '../types';
 import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot, SessionAction, SessionState, AudioSegment, DurableSlotRef } from '../types/multiPatient';
 import { isValidDurableId } from '../lib/durableAudio/paths';
-import { createUploadIntentId, normalizeUploadIntentId } from '../lib/uploadIntent';
+import {
+  createUploadIntentId,
+  normalizeSupersededUploadKey,
+  normalizeUploadIntentId,
+  normalizeUploadKeyOverride,
+} from '../lib/uploadIntent';
 import {
   isPimsPatientIdExplicitlyCleared,
   nextPimsPatientIdExplicitlyCleared,
@@ -393,10 +398,8 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             // A restored durable or segment recording is finished/parked.
             audioState: durable || validSegments.length > 0 ? 'stopped' : (slot.audioState ?? 'idle'),
             pendingConfirm: slot.pendingConfirm ?? null,
-            uploadKeyOverride:
-              typeof slot.uploadKeyOverride === 'string' ? slot.uploadKeyOverride : null,
-            supersededUploadKey:
-              typeof slot.supersededUploadKey === 'string' ? slot.supersededUploadKey : null,
+            uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
+            supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
             uploadRecovery: null,
             // Preserve persisted fail-closed metadata state across local draft
             // and stash resume. If true, submit must send current formData with

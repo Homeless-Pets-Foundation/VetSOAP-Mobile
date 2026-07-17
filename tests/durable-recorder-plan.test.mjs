@@ -371,7 +371,10 @@ test('recovered durable draft preserves the death-surviving server anchor', asyn
   // while a rotated audio intent is allowed to clear an obsolete disk anchor.
   assert.match(draft, /const resolvedServerDraftId = durableIntentRotated[\s\S]*existingDurable\?\.serverDraftId \?\? slot\.serverDraftId \?\? null/);
   assert.match(draft, /serverDraftId: resolvedServerDraftId/);
-  assert.match(draft, /pendingSync: !durableIntentRotated && existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/);
+  assert.match(
+    draft,
+    /pendingSync: supersededUploadKey \|\| uploadRestartPending\s*\?\s*false\s*:\s*!durableIntentRotated && existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/,
+  );
 });
 
 test('native self-heal scan returns confirmed-uploaded-but-not-purged manifests', async () => {

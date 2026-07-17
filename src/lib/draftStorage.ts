@@ -46,11 +46,22 @@ export interface DraftSegmentMetadata {
   peakMetering?: number;
 }
 
+export interface DraftUploadRestartPending {
+  expectedOldKey: string;
+  replacementKey: string;
+  previousPendingSync: boolean;
+}
+
 export interface DraftMetadata {
   slotId: string;
   uploadIntentId: string;
   uploadKeyOverride: string | null;
   supersededUploadKey: string | null;
+  // Two-phase marker for durable restart. While present, background draft
+  // creation is blocked. The native manifest can commit the replacement key
+  // before SecureStore finalization without leaving an ordinary sync path able
+  // to bypass server recovery.
+  uploadRestartPending: DraftUploadRestartPending | null;
   savedAt: string;
   formData: CreateRecording;
   pimsPatientIdExplicitlyCleared: boolean;
@@ -105,6 +116,29 @@ function cloneDraftMetadata(d: DraftMetadata): DraftMetadata {
     formData: { ...d.formData },
     segments: d.segments.map((s) => ({ ...s })),
     pendingConfirm: clonePendingConfirm(d.pendingConfirm),
+    uploadRestartPending: d.uploadRestartPending
+      ? { ...d.uploadRestartPending }
+      : null,
+  };
+}
+
+function normalizeUploadRestartPending(raw: unknown): DraftUploadRestartPending | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Partial<DraftUploadRestartPending>;
+  const expectedOldKey = normalizeSupersededUploadKey(value.expectedOldKey);
+  const replacementKey = normalizeUploadKeyOverride(value.replacementKey);
+  if (
+    !expectedOldKey ||
+    !replacementKey ||
+    expectedOldKey === replacementKey ||
+    typeof value.previousPendingSync !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    expectedOldKey,
+    replacementKey,
+    previousPendingSync: value.previousPendingSync,
   };
 }
 
@@ -461,6 +495,7 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
     uploadIntentId: normalizeUploadIntentId(parsed.uploadIntentId, parsed.slotId),
     uploadKeyOverride: normalizeUploadKeyOverride(parsed.uploadKeyOverride),
     supersededUploadKey: normalizeSupersededUploadKey(parsed.supersededUploadKey),
+    uploadRestartPending: normalizeUploadRestartPending(parsed.uploadRestartPending),
     savedAt: parsed.savedAt,
     formData: parsed.formData as CreateRecording,
     pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
@@ -606,11 +641,17 @@ export const draftStorage = {
           (!durableIntentRotated &&
             existingDurable?.serverDraftId === resolvedServerDraftId &&
             existingDurable.draftMetadataDirty));
+      const uploadKeyOverride = normalizeUploadKeyOverride(slot.uploadKeyOverride);
+      const supersededUploadKey = normalizeSupersededUploadKey(slot.supersededUploadKey);
+      const uploadRestartPending = supersededUploadKey
+        ? null
+        : (existingDurable?.uploadRestartPending ?? null);
       const durableMetadata: DraftMetadata = {
         slotId: slot.id,
         uploadIntentId: durableUploadIntentId,
-        uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
-        supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
+        uploadKeyOverride,
+        supersededUploadKey,
+        uploadRestartPending,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: durableDraftMetadataDirty,
@@ -630,9 +671,11 @@ export const draftStorage = {
         // An existing local draft keeps its own pendingSync. A recovery-supplied
         // anchor means the server row already exists (no create needed) → synced;
         // no anchor at all means we still owe a server-draft create → pending.
-        pendingSync: !durableIntentRotated && existingDurable?.serverDraftId
-          ? existingDurable.pendingSync
-          : !resolvedServerDraftId,
+        pendingSync: supersededUploadKey || uploadRestartPending
+          ? false
+          : !durableIntentRotated && existingDurable?.serverDraftId
+            ? existingDurable.pendingSync
+            : !resolvedServerDraftId,
       };
       await writeDraftChunks(userId, slot.id, JSON.stringify(durableMetadata));
       const index = await readDraftIndex();
@@ -790,11 +833,17 @@ export const draftStorage = {
       const draftMetadataDirty =
         !!resolvedServerDraftId &&
         (slot.draftMetadataDirty || (!uploadIntentRotated && (existing?.draftMetadataDirty ?? false)));
+      const uploadKeyOverride = normalizeUploadKeyOverride(slot.uploadKeyOverride);
+      const supersededUploadKey = normalizeSupersededUploadKey(slot.supersededUploadKey);
+      const uploadRestartPending = supersededUploadKey
+        ? null
+        : (existing?.uploadRestartPending ?? null);
       const metadata: DraftMetadata = {
         slotId: slot.id,
         uploadIntentId,
-        uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
-        supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
+        uploadKeyOverride,
+        supersededUploadKey,
+        uploadRestartPending,
         savedAt: new Date().toISOString(),
         formData: normalizeDraftFormDataForStorage(slot.formData, {
           preserveClearedNullableFields: draftMetadataDirty,
@@ -810,9 +859,11 @@ export const draftStorage = {
         serverDraftId: resolvedServerDraftId,
         draftMetadataDirty,
         pendingConfirm,
-        pendingSync: resolvedServerDraftId
-          ? (uploadIntentRotated ? false : (existing?.pendingSync ?? false))
-          : true,
+        pendingSync: supersededUploadKey || uploadRestartPending
+          ? false
+          : resolvedServerDraftId
+            ? (uploadIntentRotated ? false : (existing?.pendingSync ?? false))
+            : true,
       };
 
       await writeDraftChunks(userId, slot.id, JSON.stringify(metadata));
@@ -865,6 +916,105 @@ export const draftStorage = {
   },
 
   /**
+   * Phase 1 of a durable upload restart. Preserve the old server proof but
+   * disable background sync before mutating the native manifest.
+   */
+  async beginUploadAttemptReset(
+    slotId: string,
+    expectedOldKey: string,
+    replacementKey: string,
+  ): Promise<boolean> {
+    const userId = currentUserId;
+    if (!userId) return false;
+    const normalizedReplacement = normalizeUploadKeyOverride(replacementKey);
+    const normalizedOld = normalizeSupersededUploadKey(expectedOldKey);
+    if (!normalizedReplacement || !normalizedOld) return false;
+
+    const metadata = await readDraftChunks(userId, slotId);
+    if (!metadata) return false;
+    const currentKey = effectiveUploadIdempotencyKey({
+      uploadKeyOverride: metadata.uploadKeyOverride,
+      durableRecordingId: metadata.durable?.recordingId,
+      uploadIntentId: metadata.uploadIntentId,
+      slotId,
+    });
+    if (currentKey !== normalizedOld) return false;
+
+    metadata.uploadRestartPending = {
+      expectedOldKey: normalizedOld,
+      replacementKey: normalizedReplacement,
+      previousPendingSync: metadata.pendingSync,
+    };
+    metadata.pendingSync = false;
+    await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+    invalidateDraftsCache();
+    return true;
+  },
+
+  /**
+   * Phase 2 of a durable upload restart, called after the native manifest has
+   * committed the replacement key. If this write fails, the phase-1 marker
+   * remains and continues blocking ordinary background creation.
+   */
+  async commitUploadAttemptReset(
+    slotId: string,
+    expectedOldKey: string,
+    replacementKey: string,
+  ): Promise<boolean> {
+    const userId = currentUserId;
+    if (!userId) return false;
+    const normalizedReplacement = normalizeUploadKeyOverride(replacementKey);
+    const normalizedOld = normalizeSupersededUploadKey(expectedOldKey);
+    if (!normalizedReplacement || !normalizedOld) return false;
+
+    const metadata = await readDraftChunks(userId, slotId);
+    const pending = metadata?.uploadRestartPending;
+    if (
+      !metadata ||
+      !pending ||
+      pending.expectedOldKey !== normalizedOld ||
+      pending.replacementKey !== normalizedReplacement
+    ) {
+      return false;
+    }
+
+    metadata.uploadKeyOverride = normalizedReplacement;
+    metadata.supersededUploadKey = normalizedOld;
+    metadata.uploadRestartPending = null;
+    metadata.serverDraftId = null;
+    metadata.pendingConfirm = null;
+    metadata.pendingSync = false;
+    metadata.draftMetadataDirty = false;
+    await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+    invalidateDraftsCache();
+    return true;
+  },
+
+  /** Roll back phase 1 when the native compare-and-set did not commit. */
+  async cancelUploadAttemptReset(
+    slotId: string,
+    expectedOldKey: string,
+    replacementKey: string,
+  ): Promise<void> {
+    const userId = currentUserId;
+    if (!userId) return;
+    const metadata = await readDraftChunks(userId, slotId);
+    const pending = metadata?.uploadRestartPending;
+    if (
+      !metadata ||
+      !pending ||
+      pending.expectedOldKey !== expectedOldKey ||
+      pending.replacementKey !== replacementKey
+    ) {
+      return;
+    }
+    metadata.uploadRestartPending = null;
+    metadata.pendingSync = pending.previousPendingSync;
+    await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
+    invalidateDraftsCache();
+  },
+
+  /**
    * Atomically detach local metadata from a conflicted server intent while
    * preserving every local audio pointer. A false result means another writer
    * changed the intent and the caller must inspect again instead of submitting.
@@ -892,6 +1042,7 @@ export const draftStorage = {
 
     metadata.uploadKeyOverride = normalizedReplacement;
     metadata.supersededUploadKey = normalizedOld;
+    metadata.uploadRestartPending = null;
     metadata.serverDraftId = null;
     metadata.pendingConfirm = null;
     metadata.pendingSync = false;
@@ -921,6 +1072,12 @@ export const draftStorage = {
         return;
       }
 
+      if (metadata.uploadRestartPending) {
+        metadata.uploadKeyOverride = metadata.uploadRestartPending.replacementKey;
+        metadata.supersededUploadKey = metadata.uploadRestartPending.expectedOldKey;
+        metadata.uploadRestartPending = null;
+        metadata.pendingConfirm = null;
+      }
       metadata.serverDraftId = serverId;
       metadata.pendingSync = false;
       metadata.draftMetadataDirty = false;
@@ -951,6 +1108,11 @@ export const draftStorage = {
       if (!metadata) return;
       const normalized = clonePendingConfirm(pendingConfirm);
       if (pendingConfirm && !normalized) return;
+      if (serverDraftId && metadata.uploadRestartPending) {
+        metadata.uploadKeyOverride = metadata.uploadRestartPending.replacementKey;
+        metadata.supersededUploadKey = metadata.uploadRestartPending.expectedOldKey;
+        metadata.uploadRestartPending = null;
+      }
       metadata.pendingConfirm = normalized;
       if (serverDraftId) {
         metadata.serverDraftId = serverDraftId;
@@ -1462,6 +1624,10 @@ export const draftStorage = {
 
       for (const draft of drafts) {
         if (!draft.pendingSync) continue;
+        // A controlled restart must establish its replacement through the
+        // recovery transaction, never the ordinary background draft-create
+        // path. Leave it for the explicit user submit.
+        if (draft.supersededUploadKey || draft.uploadRestartPending) continue;
         result.attempted++;
 
         try {

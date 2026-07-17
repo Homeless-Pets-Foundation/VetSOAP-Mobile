@@ -2770,7 +2770,9 @@ function RecordingSession() {
         }
 
         if (error instanceof UploadIntentConflictError) {
-          const msg = localAudioAvailableForRestart
+          const canRestart =
+            error.recoveryOutcome === 'restart_available' && localAudioAvailableForRestart;
+          const msg = canRestart
             ? 'The server found conflicting upload state. Your audio is safe on this device; restart this upload safely to continue.'
             : 'The server found conflicting upload state. Check the upload status before taking any further action.';
           dispatch({
@@ -2778,7 +2780,7 @@ function RecordingSession() {
             slotId: slot.id,
             recovery: {
               conflict: error.conflict,
-              canRestart: localAudioAvailableForRestart,
+              canRestart,
             },
             error: msg,
           });
@@ -2802,7 +2804,8 @@ function RecordingSession() {
             slot_index: slotIndex,
             conflict_stage: error.conflict.stage,
             conflict_reason: error.conflict.reason,
-            can_restart: localAudioAvailableForRestart,
+            recovery_outcome: error.recoveryOutcome ?? 'not_inspected',
+            can_restart: canRestart,
           });
           return null;
         }
@@ -2945,6 +2948,10 @@ function RecordingSession() {
         if (!canRecordAppointments(user?.role)) return;
         const slot = sessionRef.current.slots.find((s) => s.id === slotId);
         if (!slot) return;
+        // Replacement identities are valid only through the controlled
+        // upload-intent recovery endpoint. Background draft creation would
+        // bypass reconciliation with the superseded server attempt.
+        if (slot.supersededUploadKey) return;
         if (completedUploadSlotIdsRef.current.has(slotId)) {
           draftStorage.deleteDraft(slotId).catch(() => {});
           recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
@@ -3356,25 +3363,62 @@ function RecordingSession() {
         };
       }
 
+      let draftReset = false;
       if (slot.durable && user?.id) {
         const manifest = await durableRecorder
           .getManifest({ userId: user.id, recordingId: slot.durable.recordingId })
           .catch(() => null);
         if (manifest) {
-          await durableRecorder.resetUploadAttempt({
-            userId: user.id,
-            recordingId: slot.durable.recordingId,
+          const began = await draftStorage.beginUploadAttemptReset(
+            persistedSlot.draftSlotId ?? draftSlotId,
             expectedOldKey,
             replacementKey,
-          });
+          );
+          if (!began) return null;
+          try {
+            await durableRecorder.resetUploadAttempt({
+              userId: user.id,
+              recordingId: slot.durable.recordingId,
+              expectedOldKey,
+              replacementKey,
+            });
+          } catch (error) {
+            await draftStorage
+              .cancelUploadAttemptReset(
+                persistedSlot.draftSlotId ?? draftSlotId,
+                expectedOldKey,
+                replacementKey,
+              )
+              .catch(() => {});
+            throw error;
+          }
+          // The native manifest is the durable commit point. A failed
+          // SecureStore finalization leaves the phase-1 marker in place, which
+          // blocks background draft creation; the explicit submit or next load
+          // can finish reconciliation from the native replacement identity.
+          draftReset = await draftStorage
+            .commitUploadAttemptReset(
+              persistedSlot.draftSlotId ?? draftSlotId,
+              expectedOldKey,
+              replacementKey,
+            )
+            .catch(() => false);
+          if (!draftReset) {
+            captureMessage('upload_restart_draft_finalize_deferred', 'warning', {
+              tags: { phase: 'upload_recovery', mode: 'durable' },
+            });
+            draftReset = true;
+          }
         }
       }
 
-      const draftReset = await draftStorage.resetUploadAttempt(
-        persistedSlot.draftSlotId ?? draftSlotId,
-        expectedOldKey,
-        replacementKey,
-      );
+      if (!draftReset) {
+        draftReset = await draftStorage.resetUploadAttempt(
+          persistedSlot.draftSlotId ?? draftSlotId,
+          expectedOldKey,
+          replacementKey,
+        );
+      }
       if (!draftReset) {
         captureMessage('upload_restart_local_reset_failed', 'warning', {
           tags: { phase: 'upload_recovery', mode: slot.durable ? 'durable' : 'standard' },
@@ -3504,18 +3548,24 @@ function RecordingSession() {
           {
             text: 'Restart Upload',
             onPress: () => {
+              // Block any already-scheduled draft sync before the two-phase
+              // local restart begins. runSingleSubmit keeps this marker set
+              // until the recovery request finishes.
+              markSubmitIntent([slot.id]);
               persistControlledUploadRestart(slot)
                 .then((restarted) => {
                   if (restarted) {
                     runSingleSubmit(restarted);
                     return;
                   }
+                  clearSubmitIntent([slot.id]);
                   Alert.alert(
                     'Restart Not Started',
                     'The local recovery state changed. Your audio is still saved; check the upload status again.',
                   );
                 })
                 .catch(() => {
+                  clearSubmitIntent([slot.id]);
                   Alert.alert(
                     'Restart Not Started',
                     'CaptiVet could not safely save the new upload attempt. Your audio remains on this device.',
@@ -3527,7 +3577,9 @@ function RecordingSession() {
       );
     },
     [
+      clearSubmitIntent,
       finishingDraftSlotId,
+      markSubmitIntent,
       persistControlledUploadRestart,
       runSingleSubmit,
       slotHasLiveRecorder,

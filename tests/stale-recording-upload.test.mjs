@@ -181,11 +181,21 @@ test('Patient ID clear intent distinguishes untouched blanks, explicit clears, a
 });
 
 test('stable upload intents rotate when audio changes after R2 completion', async () => {
-  const { normalizeUploadIntentId, slotUploadIdempotencyKey, durableUploadIdempotencyKey } = await loadPure('src/lib/uploadIntent.ts');
+  const {
+    normalizeUploadIntentId,
+    normalizeUploadKeyOverride,
+    normalizeSupersededUploadKey,
+    slotUploadIdempotencyKey,
+    durableUploadIdempotencyKey,
+  } = await loadPure('src/lib/uploadIntent.ts');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');
   assert.equal(slotUploadIdempotencyKey('legacy:slot-7'), 'recording-upload-v1:slot:legacy:slot-7');
   assert.equal(durableUploadIdempotencyKey('native-9'), 'recording-upload-v1:durable:native-9');
+  assert.equal(normalizeUploadKeyOverride('recording-upload-v2:restart:valid'), 'recording-upload-v2:restart:valid');
+  assert.equal(normalizeUploadKeyOverride('recording-upload-v2:restart:bad\nheader'), null);
+  assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:valid'), 'recording-upload-v1:slot:valid');
+  assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:bad\rheader'), null);
   const reducer = await read('src/hooks/useMultiPatientSession.ts');
   const clear = reducer.slice(reducer.indexOf("case 'CLEAR_AUDIO'"), reducer.indexOf("case 'CONTINUE_RECORDING'"));
   const update = reducer.slice(reducer.indexOf("case 'UPDATE_FORM'"), reducer.indexOf("case 'SET_AUDIO_STATE'"));
@@ -199,6 +209,15 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
     const end = reducer.indexOf("case '", start + 6);
     assert.match(reducer.slice(start, end === -1 ? undefined : end), /invalidatePendingConfirmForAudioChange/);
   }
+  const restore = reducer.slice(
+    reducer.indexOf("case 'RESTORE_SESSION'"),
+    reducer.indexOf("case 'UPDATE_SEGMENT'"),
+  );
+  assert.match(restore, /uploadKeyOverride: normalizeUploadKeyOverride\(slot\.uploadKeyOverride\)/);
+  assert.match(
+    restore,
+    /supersededUploadKey: normalizeSupersededUploadKey\(slot\.supersededUploadKey\)/,
+  );
 
   const draftStorage = await read('src/lib/draftStorage.ts');
   assert.match(draftStorage, /uploadIntentRotated[\s\S]*slot\.serverDraftId \?\? null/);
@@ -245,6 +264,16 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
 
   assert.match(record, /effectiveUploadIdempotencyKey\(/);
   assert.match(record, /supersededIdempotencyKey/);
+  assert.match(
+    record,
+    /error\.recoveryOutcome === 'restart_available' && localAudioAvailableForRestart/,
+  );
+  assert.match(record, /if \(slot\.supersededUploadKey\) return/);
+  assert.match(record, /markSubmitIntent\(\[slot\.id\]\)[\s\S]*persistControlledUploadRestart/);
+  assert.match(
+    record,
+    /beginUploadAttemptReset[\s\S]*durableRecorder\.resetUploadAttempt[\s\S]*commitUploadAttemptReset/,
+  );
   assert.match(record, /await draftStorage\.updatePendingConfirm/);
   assert.match(record, /recordingsApi\.confirmPendingUpload/);
   assert.match(record, /if \(slot\.pendingConfirm\)/);
@@ -285,7 +314,14 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     record.indexOf('const scheduleDraftSync = useCallback('),
   );
   assert.doesNotMatch(draftSync, /deleteRecordingWithRetry\(serverId/);
+  assert.match(draftSync, /if \(slot\.supersededUploadKey\) return/);
   assert.match(strings, /We couldn't finish the upload\. The recording is still saved on this device/);
+
+  const pendingDraftSync = await read('src/hooks/usePendingDraftSync.ts');
+  assert.match(
+    pendingDraftSync,
+    /draft\.supersededUploadKey \|\| draft\.uploadRestartPending/,
+  );
 });
 
 test('native durable manifests persist and hydrate only non-PHI confirmation proof', async () => {

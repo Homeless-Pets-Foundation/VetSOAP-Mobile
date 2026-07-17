@@ -305,6 +305,103 @@ test('typed confirm conflict inspects and returns an already-committed recording
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post']);
 });
 
+test('typed confirm conflict inspects a minimal native proof without local descriptors', async () => {
+  let fileReads = 0;
+  const completed = { ...recording, status: 'completed' };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path, body, idempotencyKey) => {
+      if (path.endsWith('/confirm-upload')) {
+        throw new ApiError('already committed', 409, false, undefined, 'UPLOAD_INTENT_CONFLICT', {
+          uploadConflict: { stage: 'confirm', reason: 'commit_state_changed', recoveryAction: 'inspect' },
+        });
+      }
+      if (path.endsWith('/upload-intent-recovery')) {
+        assert.equal(idempotencyKey, 'intent-minimal-proof');
+        assert.equal(body.action, 'inspect');
+        assert.equal(body.files.length, 0);
+        assert.equal(body.pendingConfirm.recordingId, recordingId);
+        assert.equal(body.pendingConfirm.fileKey, hint.fileKey);
+        return { outcome: 'already_processed', recording: completed };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  const result = await harness.recordingsApi.confirmPendingUpload(metadata, hint, {
+    idempotencyKey: 'intent-minimal-proof',
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post']);
+});
+
+test('untyped confirm conflict retains the proven-completed GET fallback', async () => {
+  let fileReads = 0;
+  const completed = { ...recording, status: 'completed' };
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => { fileReads++; return { exists: false }; },
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) {
+        throw new ApiError('legacy conflict', 409);
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+    get: async () => completed,
+  });
+
+  const result = await harness.recordingsApi.confirmPendingUpload(metadata, hint, {
+    idempotencyKey: 'intent-untyped-conflict',
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(fileReads, 0);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
+});
+
+test('unresolved inspection remains non-restartable in the typed error', async () => {
+  const hint = {
+    recordingId,
+    fileKey: `recordings/${orgId}/${recordingId}.m4a`,
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: false }),
+    post: async (path) => {
+      if (path.endsWith('/confirm-upload')) {
+        throw new ApiError('conflict', 409, false, undefined, 'UPLOAD_INTENT_CONFLICT', {
+          uploadConflict: { stage: 'confirm', reason: 'commit_state_changed', recoveryAction: 'inspect' },
+        });
+      }
+      if (path.endsWith('/upload-intent-recovery')) {
+        return {
+          outcome: 'unresolved',
+          conflict: { stage: 'recovery', reason: 'source_ambiguous', recoveryAction: 'inspect' },
+        };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.confirmPendingUpload(metadata, hint, {
+      idempotencyKey: 'intent-unresolved',
+    }),
+    (error) =>
+      error?.code === 'UPLOAD_INTENT_CONFLICT' &&
+      error?.recoveryOutcome === 'unresolved' &&
+      error?.conflict?.reason === 'source_ambiguous',
+  );
+});
+
 test('typed confirm conflict accepts a server-supplied Patient ID when the submitted ID is blank', async () => {
   let fileReads = 0;
   const completed = {
@@ -429,6 +526,59 @@ test('controlled restart uses the recovery endpoint and a replacement identity b
 
   assert.equal(result.id, recordingId);
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('controlled restart inspects the replacement identity after a typed confirm conflict', async () => {
+  const oldKey = 'recording-upload-v1:slot:old-intent';
+  const replacementKey = 'recording-upload-v2:restart:new-intent';
+  const fileKey = `recordings/${orgId}/${recordingId}.m4a`;
+  const replacementPrepared = {
+    outcome: 'prepared',
+    recording: { ...recording, status: 'uploading' },
+    replacedRecordingId: recordingId,
+    uploads: [{
+      index: 0,
+      uploadUrl: 'https://storage.example/upload',
+      fileKey,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }],
+    warnings: [],
+  };
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 100 }),
+    post: async (path, body, idempotencyKey) => {
+      if (path.endsWith('/upload-intent-recovery') && body.action === 'restart') {
+        assert.equal(idempotencyKey, oldKey);
+        return replacementPrepared;
+      }
+      if (path.endsWith('/confirm-upload')) {
+        throw new ApiError('commit raced', 409, false, undefined, 'UPLOAD_INTENT_CONFLICT', {
+          uploadConflict: { stage: 'confirm', reason: 'commit_state_changed', recoveryAction: 'inspect' },
+        });
+      }
+      if (path.endsWith('/upload-intent-recovery') && body.action === 'inspect') {
+        assert.equal(idempotencyKey, replacementKey);
+        assert.equal(body.pendingConfirm.recordingId, recordingId);
+        assert.equal(body.pendingConfirm.fileKey, fileKey);
+        return { outcome: 'already_uploaded', recording };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///recording.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: replacementKey,
+      supersededIdempotencyKey: oldKey,
+      existingRecordingId: recordingId,
+    },
+  );
+
+  assert.equal(result.id, recordingId);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post', 'post']);
 });
 
 test('confirmation rejects a different server Patient ID when the submitted ID is nonblank', async () => {

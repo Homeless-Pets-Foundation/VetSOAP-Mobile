@@ -4263,6 +4263,18 @@ function RecordingSession() {
   // Upload overlay visibility
   const showOverlay = isSubmittingAll || submittingSlotId !== null || session.slots.some((s) => s.uploadStatus === 'uploading');
 
+  // 1-based position of the slot currently uploading within the batch. The
+  // completed count can NOT stand in for this: it only counts successes, so
+  // after a failed slot it stalls and the hidden-overlay banner would keep
+  // announcing "Uploading 1 of N" for every later slot (Codex P2, PR #143).
+  const activeBatchPosition = (() => {
+    if (submittingSlotId) {
+      const idx = batchSlotIds.indexOf(submittingSlotId);
+      if (idx >= 0) return idx + 1;
+    }
+    return countBatchCompleted(session.slots, batchSlotIds) + 1;
+  })();
+
   // Un-hide for the next batch once the current one fully resolves.
   useEffect(() => {
     if (!showOverlay && uploadOverlayHidden) setUploadOverlayHidden(false);
@@ -4423,7 +4435,7 @@ function RecordingSession() {
           onPress={() => setUploadOverlayHidden(false)}
           accessibilityRole="button"
           accessibilityLabel={UPLOAD_OVERLAY_COPY.backgroundProgress(
-            countBatchCompleted(session.slots, batchSlotIds),
+            activeBatchPosition,
             Math.max(batchSlotIds.length, 1)
           )}
           className="mx-5 mb-2 px-3 py-3 bg-brand-50 dark:bg-surface-sunken border border-brand-300 dark:border-border-default rounded-lg flex-row items-center"
@@ -4431,7 +4443,7 @@ function RecordingSession() {
           <ActivityIndicator size="small" color={colors.brand500} />
           <Text className="text-body-sm font-medium text-content-body flex-1 ml-3" numberOfLines={2}>
             {UPLOAD_OVERLAY_COPY.backgroundProgress(
-              countBatchCompleted(session.slots, batchSlotIds),
+              activeBatchPosition,
               Math.max(batchSlotIds.length, 1)
             )}
           </Text>

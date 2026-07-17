@@ -102,13 +102,21 @@ export function startQueryPersistence(userId: string): void {
     const guardedPersister: Persister = {
       persistClient: (client) => persister.persistClient(client),
       restoreClient: async () => {
-        const restored = await persister.restoreClient();
+        // Never throw (rule 1): a corrupted/unreadable snapshot means "no
+        // cache", not a crash — the app just fetches from the network.
+        let restored;
+        try {
+          restored = await persister.restoreClient();
+        } catch (error) {
+          if (__DEV__) console.error('[queryPersistence] restore read failed:', error);
+          return undefined;
+        }
         return generation === restoreGeneration ? restored : undefined;
       },
       removeClient: () => persister.removeClient(),
     };
 
-    const [unsubscribe] = persistQueryClient({
+    const [unsubscribe, restorePromise] = persistQueryClient({
       queryClient,
       persister: guardedPersister,
       maxAge: PERSIST_MAX_AGE_MS,
@@ -116,6 +124,13 @@ export function startQueryPersistence(userId: string): void {
       // snapshot wholesale rather than risking shape mismatches.
       buster: `${Application.nativeApplicationVersion ?? 'dev'}:${userId}`,
       dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
+    });
+
+    // Rule 4: the restore promise must be observed — the synchronous try
+    // around this function can't catch an async rejection, and an unhandled
+    // rejection crashes Hermes release builds.
+    Promise.resolve(restorePromise).catch((error) => {
+      if (__DEV__) console.error('[queryPersistence] restore failed:', error);
     });
 
     active = { userId, unsubscribe, persister };

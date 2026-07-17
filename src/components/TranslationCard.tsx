@@ -169,7 +169,7 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
           {errorStatus}
         </Text>
       )}
-      <Toast message={toast ?? ''} visible={!!toast} onHide={() => setToast(null)} />
+      <Toast message={toast ?? ''} visible={!!toast} onHide={() => setToast(null)} placement="inline" />
     </Card>
   );
 }

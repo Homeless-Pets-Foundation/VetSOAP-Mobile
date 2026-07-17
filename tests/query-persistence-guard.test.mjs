@@ -41,8 +41,14 @@ test('a restore that outlives its persistence scope is discarded before hydratio
   assert.match(src, /const guardedPersister: Persister = \{/);
   assert.match(src, /return generation === restoreGeneration \? restored : undefined/);
   assert.match(src, /persister: guardedPersister/);
-  assert.doesNotMatch(src, /restorePromise/);
   assert.doesNotMatch(src, /generation !== restoreGeneration\) queryClient\.clear\(\)/);
+  // Rule 4: the restore promise MUST be observed — persistQueryClient returns
+  // the restore as the second tuple item, and discarding it leaves any
+  // rejection (AsyncStorage I/O failure) unhandled → Hermes release crash
+  // (Codex P1 round 6). The guarded persister also swallows read errors.
+  assert.match(src, /const \[unsubscribe, restorePromise\] = persistQueryClient\(/);
+  assert.match(src, /Promise\.resolve\(restorePromise\)\.catch\(/);
+  assert.match(src, /restore read failed/);
   // Stop must invalidate any in-flight restore.
   const stopStart = src.indexOf('export function stopQueryPersistence');
   assert.match(src.slice(stopStart, stopStart + 300), /generation \+= 1/);

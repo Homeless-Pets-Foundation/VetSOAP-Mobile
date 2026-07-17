@@ -15,28 +15,32 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHUNK_THRESHOLD_CHARS = 6_000;
 const FALLBACK_CHUNK_CHARS = 1_500;
 function chunkTranscript(text) {
-  if (text.length <= CHUNK_THRESHOLD_CHARS) return [text];
+  if (text.length <= CHUNK_THRESHOLD_CHARS) return [{ text, startsSourceParagraph: true }];
   const paragraphs = text.split(/\n{2,}/);
   if (paragraphs.length > 1) {
     const chunks = [];
     let current = '';
+    let currentStartsParagraph = true;
     for (const para of paragraphs) {
       let firstPieceOfPara = true;
       for (const piece of splitOversizedRun(para)) {
         const sep = firstPieceOfPara ? '\n\n' : ' ';
         firstPieceOfPara = false;
         if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
-          chunks.push(current);
+          chunks.push({ text: current, startsSourceParagraph: currentStartsParagraph });
           current = piece;
+          currentStartsParagraph = sep === '\n\n';
         } else {
           current = current ? `${current}${sep}${piece}` : piece;
         }
       }
     }
-    if (current) chunks.push(current);
+    if (current) chunks.push({ text: current, startsSourceParagraph: currentStartsParagraph });
     return chunks;
   }
-  return accumulateWithSpaces(text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized));
+  return accumulateWithSpaces(text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized)).map(
+    (t, i) => ({ text: t, startsSourceParagraph: i === 0 })
+  );
 }
 
 function splitOversizedRun(run) {
@@ -88,17 +92,20 @@ function hardSplitOversized(piece) {
 
 test('short transcripts stay a single chunk (whole-text selection preserved)', () => {
   const short = 'S: Bella presented for annual wellness.\n\nO: BAR, BCS 5/9.';
-  assert.deepEqual(chunkTranscript(short), [short]);
-  assert.deepEqual(chunkTranscript(''), ['']);
+  assert.deepEqual(chunkTranscript(short), [{ text: short, startsSourceParagraph: true }]);
+  assert.deepEqual(chunkTranscript(''), [{ text: '', startsSourceParagraph: true }]);
 });
 
 test('paragraph transcripts chunk on blank lines without content loss', () => {
   const para = 'Sentence one. Sentence two.';
   const text = Array.from({ length: 400 }, (_, i) => `${para} #${i}`).join('\n\n');
   assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
-  const chunks = chunkTranscript(text);
+  const result = chunkTranscript(text);
+  const chunks = result.map((c) => c.text);
   assert.ok(chunks.length > 1, 'expected multiple chunks');
   assert.equal(chunks.join('\n\n'), text, 'paragraph join must round-trip');
+  // Small paragraphs only — every chunk starts at a source blank line.
+  assert.ok(result.every((c) => c.startsSourceParagraph));
   for (const chunk of chunks) {
     assert.ok(chunk.length <= FALLBACK_CHUNK_CHARS + para.length + 8, 'chunks stay near the target size');
   }
@@ -107,16 +114,19 @@ test('paragraph transcripts chunk on blank lines without content loss', () => {
 test('wall-of-text transcripts fall back to sentence chunks without loss', () => {
   const text = Array.from({ length: 500 }, (_, i) => `Sentence number ${i} of the visit.`).join(' ');
   assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
-  const chunks = chunkTranscript(text);
+  const result = chunkTranscript(text);
+  const chunks = result.map((c) => c.text);
   assert.ok(chunks.length > 1);
   assert.equal(chunks.join(' '), text, 'sentence join must round-trip');
+  // One source paragraph — only the first chunk may claim a boundary.
+  assert.ok(result.slice(1).every((c) => !c.startsSourceParagraph));
 });
 
 test('punctuation-less walls of text still hard-split (Codex P2, PR #143)', () => {
   // Degraded speech-to-text: no blank lines, no sentence punctuation at all.
   const text = Array.from({ length: 2000 }, (_, i) => `word${i}`).join(' ');
   assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
-  const chunks = chunkTranscript(text);
+  const chunks = chunkTranscript(text).map((c) => c.text);
   assert.ok(chunks.length > 1, 'must not come back as one giant chunk');
   assert.equal(chunks.join(' '), text, 'whitespace hard-split must round-trip');
   for (const chunk of chunks) {
@@ -130,7 +140,7 @@ test('an oversized paragraph is split before accumulation (Codex P2 round 4, PR 
   const giantPara = Array.from({ length: 1500 }, (_, i) => `w${i}`).join(' ');
   const text = `Heading.\n\n${giantPara}`;
   assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
-  const chunks = chunkTranscript(text);
+  const chunks = chunkTranscript(text).map((c) => c.text);
   assert.ok(chunks.length > 2, 'giant paragraph must be split');
   for (const chunk of chunks) {
     assert.ok(chunk.length <= FALLBACK_CHUNK_CHARS + 10, `chunk too large: ${chunk.length}`);
@@ -149,8 +159,13 @@ test('sentence spacing preserved inside oversized paragraphs (Codex P2 round 5)'
   const giantPara = Array.from({ length: 150 }, () => sentence).join(' ');
   const text = `Heading.\n\n${giantPara}\n\nFooter.`;
   assert.ok(text.length > CHUNK_THRESHOLD_CHARS);
-  const chunks = chunkTranscript(text);
+  const result = chunkTranscript(text);
+  const chunks = result.map((c) => c.text);
   assert.ok(chunks.length > 2, 'giant paragraph must be split');
+  // Size-split continuation chunks must NOT claim a paragraph boundary —
+  // the renderer keys its mt-3 paragraph gap off this flag (Codex P2 round 6).
+  const boundaryChunks = result.filter((c) => c.startsSourceParagraph).length;
+  assert.ok(boundaryChunks <= 3, `too many boundary chunks: ${boundaryChunks}`);
   const blankLineJoins = chunks
     .map((c) => (c.match(/\n\n/g) ?? []).length)
     .reduce((a, b) => a + b, 0);
@@ -169,7 +184,7 @@ test('sentence spacing preserved inside oversized paragraphs (Codex P2 round 5)'
 
 test('a single unbroken token gets sliced at hard char boundaries', () => {
   const text = 'x'.repeat(7000);
-  const chunks = chunkTranscript(text);
+  const chunks = chunkTranscript(text).map((c) => c.text);
   assert.ok(chunks.length > 1);
   assert.equal(chunks.join(''), text, 'char slicing must preserve every character');
 });
@@ -186,6 +201,10 @@ test('source component matches this mirror and renders per-chunk selectable Text
   assert.match(src, /splitOversizedRun\(para\)/);
   // '\n\n' only at source paragraph boundaries; split pieces rejoin with ' '.
   assert.match(src, /firstPieceOfPara \? '\\n\\n' : ' '/);
+  // The renderer applies the paragraph gap (mt-3) only where the SOURCE had a
+  // blank line — size-split continuation chunks carry the flag as false.
+  assert.match(src, /startsSourceParagraph: boolean/);
+  assert.match(src, /i > 0 && chunk\.startsSourceParagraph \? 'mt-3' : ''/);
   assert.match(src, /chunks\.map\(\(chunk, i\) => \(/);
   assert.match(src, /selectable/);
 });

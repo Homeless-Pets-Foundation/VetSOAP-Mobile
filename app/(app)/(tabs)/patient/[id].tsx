@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -176,6 +176,22 @@ export default function PatientDetailScreen() {
     enabled: !!id && activeTab === 'visits',
     placeholderData: keepPreviousData,
   });
+
+  // Each "Load more visits" press creates a NEW query key (limit 20/40/60…)
+  // while the superseded pages stay cached — and persisted — for 7 days,
+  // storing the same visits quadratically (Codex P2, PR #143). Once the
+  // expanded page has data, drop the smaller snapshots. Runs after
+  // keepPreviousData has already handed the old page over, so no flicker.
+  useEffect(() => {
+    if (!id || !recordingsData) return;
+    queryClient.removeQueries({
+      queryKey: ['patient', id, 'recordings'],
+      predicate: (query) => {
+        const limit = query.queryKey[3];
+        return typeof limit === 'number' && limit < visitsLimit;
+      },
+    });
+  }, [id, recordingsData, visitsLimit, queryClient]);
 
   const updateMutation = useMutation({
     mutationFn: (draft: ProfileDraft) => {

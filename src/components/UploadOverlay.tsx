@@ -117,7 +117,11 @@ export function UploadOverlay({
         ? Math.round(((uploadsCompleted * 100 + currentProgress) / (totalSlotsToUpload * 100)) * 100)
         : 0
     );
-    currentUploadIndex = uploadsCompleted + 1;
+    // Position of the ACTIVE slot in the batch — the completed count stalls
+    // after a failed slot (it only counts successes), which left the counter
+    // one behind for every later upload (Codex P2, PR #143).
+    const activeIndexInBatch = currentSlotId ? batchSlotIds.indexOf(currentSlotId) : -1;
+    currentUploadIndex = activeIndexInBatch >= 0 ? activeIndexInBatch + 1 : uploadsCompleted + 1;
   } else {
     // Single-slot batch: a successful slot must read 100%, not the zeroed
     // currentProgress above (the overlay stays visible until the submit

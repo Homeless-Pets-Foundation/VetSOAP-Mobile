@@ -53,7 +53,38 @@ test('Toast dismissal timer survives parent re-renders (Codex P2 round 5)', asyn
   // not restart on identity change, or success toasts never auto-dismiss.
   assert.match(toast, /const onHideRef = useRef\(onHide\);/);
   assert.match(toast, /setTimeout\(\(\) => onHideRef\.current\(\), effectiveDuration\)/);
-  assert.match(toast, /\}, \[visible, effectiveDuration\]\);/);
+  // message IS a dep: replacing a visible toast's content must restart the
+  // timer even when both messages produce the same duration (Codex P2 round 6).
+  assert.match(toast, /\}, \[visible, effectiveDuration, message\]\);/);
+});
+
+test('batch position tracks the ACTIVE slot, not the completed count (Codex P2 round 6)', async () => {
+  // countBatchCompleted only counts successes, so after a failed slot it
+  // stalls — the banner and overlay counter must index the current slot in
+  // batchSlotIds instead.
+  const rec = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(rec, /const activeBatchPosition = /);
+  assert.match(rec, /batchSlotIds\.indexOf\(submittingSlotId\)/);
+  assert.match(rec, /backgroundProgress\(\s*activeBatchPosition,/);
+  const overlay = await read('src/components/UploadOverlay.tsx');
+  assert.match(overlay, /batchSlotIds\.indexOf\(currentSlotId\)/);
+  assert.match(overlay, /activeIndexInBatch >= 0 \? activeIndexInBatch \+ 1 : uploadsCompleted \+ 1/);
+});
+
+test('in-card toasts render inline, not absolutely against the card (Codex P2 round 6)', async () => {
+  // Toast's viewport placement is absolute — inside a Card that resolves
+  // against the CARD and overlays its content. Card hosts must use inline.
+  const toast = await read('src/components/Toast.tsx');
+  assert.match(toast, /placement\?: 'viewport' \| 'inline'/);
+  assert.match(toast, /placement === 'inline'/);
+  for (const card of [
+    'src/components/ClientEmailCard.tsx',
+    'src/components/TranslationCard.tsx',
+    'src/components/ExportSheet.tsx',
+  ]) {
+    const src = await read(card);
+    assert.match(src, /placement="inline"/, `${card} must use inline toast placement`);
+  }
 });
 
 test('record.tsx passes the batch slot ids and offers Hide', async () => {

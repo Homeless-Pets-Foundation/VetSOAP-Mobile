@@ -23,14 +23,25 @@ const CHUNK_THRESHOLD_CHARS = 6_000;
 /** Fallback chunk size when the text has no blank-line paragraph breaks. */
 const FALLBACK_CHUNK_CHARS = 1_500;
 
+/** A render chunk plus whether it begins at a blank-line boundary from the SOURCE. */
+export interface TranscriptChunk {
+  text: string;
+  /**
+   * True when this chunk starts a paragraph that existed in the source text.
+   * Chunks created purely for sizing (a split oversized paragraph's tail)
+   * are false so the renderer doesn't draw a paragraph-sized gap where the
+   * source had none (Codex P2, PR #143).
+   */
+  startsSourceParagraph: boolean;
+}
+
 /**
  * Split a long transcript into render chunks on blank-line boundaries,
  * falling back to sentence-accumulated ~1,500-char chunks for wall-of-text
- * transcripts. Join with '\n\n' round-trips the paragraph case; no content
- * is ever dropped. Exported for tests.
+ * transcripts. No content is ever dropped. Exported for tests.
  */
-export function chunkTranscript(text: string): string[] {
-  if (text.length <= CHUNK_THRESHOLD_CHARS) return [text];
+export function chunkTranscript(text: string): TranscriptChunk[] {
+  if (text.length <= CHUNK_THRESHOLD_CHARS) return [{ text, startsSourceParagraph: true }];
 
   const paragraphs = text.split(/\n{2,}/);
   if (paragraphs.length > 1) {
@@ -42,22 +53,24 @@ export function chunkTranscript(text: string): string[] {
     // (Codex P2, PR #143). '\n\n' is used ONLY at boundaries that existed in
     // the source; pieces of a split paragraph rejoin with a space so the
     // transcript isn't inflated with fake blank lines (Codex P2 round 5).
-    const chunks: string[] = [];
+    const chunks: TranscriptChunk[] = [];
     let current = '';
+    let currentStartsParagraph = true;
     for (const para of paragraphs) {
       let firstPieceOfPara = true;
       for (const piece of splitOversizedRun(para)) {
         const sep = firstPieceOfPara ? '\n\n' : ' ';
         firstPieceOfPara = false;
         if (current.length + piece.length > FALLBACK_CHUNK_CHARS && current) {
-          chunks.push(current);
+          chunks.push({ text: current, startsSourceParagraph: currentStartsParagraph });
           current = piece;
+          currentStartsParagraph = sep === '\n\n';
         } else {
           current = current ? `${current}${sep}${piece}` : piece;
         }
       }
     }
-    if (current) chunks.push(current);
+    if (current) chunks.push({ text: current, startsSourceParagraph: currentStartsParagraph });
     return chunks;
   }
 
@@ -65,7 +78,9 @@ export function chunkTranscript(text: string): string[] {
   // "sentence" that itself exceeds the target (degraded speech-to-text can
   // produce 6,000+ chars with no punctuation at all, which would otherwise
   // come back as ONE chunk and reintroduce the Android single-TextView ANR).
-  return accumulateWithSpaces(text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized));
+  return accumulateWithSpaces(text.split(/(?<=[.!?])\s+/).flatMap(hardSplitOversized)).map(
+    (t, i) => ({ text: t, startsSourceParagraph: i === 0 })
+  );
 }
 
 /**
@@ -173,9 +188,13 @@ export function TranscriptView({ transcript }: TranscriptViewProps) {
         <Text
           key={i}
           selectable
-          className={`text-body text-content-body leading-relaxed ${i > 0 ? 'mt-3' : ''}`}
+          // mt-3 only at boundaries the SOURCE had — size-split continuation
+          // chunks would otherwise render fake paragraph gaps.
+          className={`text-body text-content-body leading-relaxed ${
+            i > 0 && chunk.startsSourceParagraph ? 'mt-3' : ''
+          }`}
         >
-          {chunk}
+          {chunk.text}
         </Text>
       ))}
     </View>

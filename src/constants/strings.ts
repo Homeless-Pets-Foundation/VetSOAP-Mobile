@@ -27,9 +27,14 @@ export const UPLOAD_OVERLAY_COPY = {
   phaseUploading: 'Uploading…',
   phaseProcessing: 'Processing…',
   hide: 'Hide',
-  /** Compact banner shown while the overlay is hidden but uploads continue. */
-  backgroundProgress: (done: number, total: number): string =>
-    `Uploading ${Math.min(done + 1, total)} of ${total}… Tap to view`,
+  /**
+   * Compact banner shown while the overlay is hidden but uploads continue.
+   * `active` is the 1-based position of the slot currently uploading —
+   * derived from its index in the batch, NOT from the completed count, which
+   * stops advancing after a failed slot (Codex P2, PR #143).
+   */
+  backgroundProgress: (active: number, total: number): string =>
+    `Uploading ${Math.min(Math.max(active, 1), total)} of ${total}… Tap to view`,
   announceSingle: 'Upload in progress',
   announceMulti: (total: number): string => `Uploading ${total} recordings`,
 } as const;

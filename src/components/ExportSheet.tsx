@@ -175,7 +175,7 @@ export function ExportSheet({
           {errorStatus}
         </Text>
       )}
-      <Toast message={toast ?? ''} visible={!!toast} onHide={() => setToast(null)} />
+      <Toast message={toast ?? ''} visible={!!toast} onHide={() => setToast(null)} placement="inline" />
     </Card>
   );
 }

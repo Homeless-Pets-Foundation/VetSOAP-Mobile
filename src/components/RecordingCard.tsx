@@ -173,6 +173,9 @@ export const RecordingCard = React.memo(function RecordingCard({
                 hitSlop={12}
                 accessible={false}
                 importantForAccessibility="no-hide-descendants"
+                // Android-only above; VoiceOver needs the iOS equivalent or it
+                // still walks the descendant text/control tree.
+                accessibilityElementsHidden
                 className="shrink"
               >
                 <Text
@@ -225,7 +228,11 @@ export const RecordingCard = React.memo(function RecordingCard({
               /* Hidden from the a11y tree like the history link above — the
                  card's toggle_reviewed custom action covers it, and a nested
                  accessible Pressable double-focuses under TalkBack. */
-              <View accessible={false} importantForAccessibility="no-hide-descendants">
+              <View
+                accessible={false}
+                importantForAccessibility="no-hide-descendants"
+                accessibilityElementsHidden
+              >
                 <ReviewStatusChip
                   status={reviewStatus}
                   loading={reviewMutation.isPending}

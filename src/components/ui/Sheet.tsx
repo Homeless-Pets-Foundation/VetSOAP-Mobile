@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
 import { useThemeColors } from '../../hooks/useThemeColors';
@@ -46,7 +46,13 @@ export function Sheet({
       onRequestClose={close}
       statusBarTranslucent
     >
-      <View className="flex-1 justify-end bg-scrim">
+      {/* iOS needs explicit keyboard avoidance for bottom-anchored sheets
+          (MetadataReviewCard puts five inputs in one); Android adjustResize
+          handles it natively. */}
+      <KeyboardAvoidingView
+        className="flex-1 justify-end bg-scrim"
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
         {closeOnBackdropPress ? (
           <Pressable
             className="absolute inset-0"
@@ -77,10 +83,15 @@ export function Sheet({
               haptic={false}
             />
           </View>
-          <ScrollView className={cx('px-5 py-3', contentClassName)}>{children}</ScrollView>
+          <ScrollView
+            className={cx('px-5 py-3', contentClassName)}
+            keyboardShouldPersistTaps="handled"
+          >
+            {children}
+          </ScrollView>
           {footer ? <View className="px-5 pt-3 border-t border-border-default">{footer}</View> : null}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

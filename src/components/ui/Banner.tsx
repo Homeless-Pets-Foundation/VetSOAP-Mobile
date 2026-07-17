@@ -10,6 +10,7 @@ import * as Haptics from 'expo-haptics';
 import { X, type LucideIcon } from 'lucide-react-native';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors } from '../../hooks/useThemeColors';
+import { HIT_SLOP } from './styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -104,11 +105,19 @@ export function Banner({
           }}
           accessibilityRole="button"
           accessibilityLabel={cta.label}
-          hitSlop={8}
-          className="ml-2"
+          hitSlop={HIT_SLOP}
+          className="ml-2 justify-center min-h-[44px]"
           style={ctaAnimStyle}
         >
-          <Text className={`text-body-sm font-semibold ${v.ctaText}`}>{cta.label}</Text>
+          {/* Trailing space + flexShrink:0 — Android under-measures single-word
+              Text ("Manage", "Retry") in flex-rows and clips the last glyph;
+              fixing it here covers every Banner call site. Do NOT remove. */}
+          <Text
+            className={`text-body-sm font-semibold ${v.ctaText}`}
+            style={{ flexShrink: 0, paddingRight: 2 }}
+          >
+            {`${cta.label} `}
+          </Text>
         </AnimatedPressable>
       ) : null}
       {dismissible ? (
@@ -116,8 +125,8 @@ export function Banner({
           onPress={() => setDismissed(true)}
           accessibilityRole="button"
           accessibilityLabel="Dismiss"
-          hitSlop={8}
-          className="ml-2"
+          hitSlop={HIT_SLOP}
+          className="ml-2 justify-center min-h-[44px]"
         >
           <X color={iconColor} size={iconSm} />
         </Pressable>

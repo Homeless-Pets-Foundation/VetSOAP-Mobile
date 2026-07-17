@@ -387,7 +387,7 @@ export const REPROCESS_MODELS_COPY = {
   transcriptionLabel: 'Transcription model',
   soapLabel: 'SOAP note model',
   currentPrefix: 'Last used: ',
-  confirm: 'Reprocess ', // trailing space: prevents Android single-word clipping in flex-row (CLAUDE.md UI gotcha)
+  confirm: 'Reprocess', // clipping mitigation now lives inside ui/Button — plain label here
   cancel: 'Cancel',
   failure: 'Could not start reprocessing. Please try again.',
   invalidModel: 'That model is not available for your organization.',

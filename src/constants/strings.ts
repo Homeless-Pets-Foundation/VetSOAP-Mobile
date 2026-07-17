@@ -224,6 +224,7 @@ export const AUDIO_PLAYER_COPY = {
   disabledWhileRecording:
     'Playback is paused while a recording is in progress. Finish the recording to listen.',
   part: (n: number): string => `Part ${n}`,
+  speed: (rate: number): string => `${rate}x`,
 } as const;
 
 export const RECORDER_TRANSITION_COPY = {

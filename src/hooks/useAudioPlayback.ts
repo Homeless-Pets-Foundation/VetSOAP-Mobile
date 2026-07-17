@@ -18,6 +18,10 @@ export interface UseAudioPlaybackReturn {
   toggle: () => void;
   seekTo: (seconds: number) => Promise<void>;
   loadSource: (uri: string) => Promise<void>;
+  /** Current playback rate (1 = normal). */
+  playbackRate: number;
+  /** Set playback rate with high-quality pitch correction; persists across source swaps. */
+  setPlaybackRate: (rate: number) => void;
 }
 
 export function useAudioPlayback(): UseAudioPlaybackReturn {
@@ -50,6 +54,12 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [duration, setDuration] = useState(0);
+  const [playbackRate, setPlaybackRateState] = useState(1);
+  const playbackRateRef = useRef(1);
+  // The 60 Hz interpolation below extrapolates real seconds between native
+  // ticks — at 2x the media position advances twice per wall-clock second,
+  // so the worklet must scale by the rate.
+  const playbackRateSV = useSharedValue(1);
 
   // Manual event subscription — avoids useAudioPlayerStatus triggering re-renders every 100ms
   useEffect(() => {
@@ -103,7 +113,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
     if (!isPlayingSV.value) return;
     if (anchorFrameTimestampSV.value === 0) return;
     const elapsed = (frame.timestamp - anchorFrameTimestampSV.value) / 1000;
-    const interpolated = lastStatusTimeSV.value + elapsed;
+    const interpolated = lastStatusTimeSV.value + elapsed * playbackRateSV.value;
     const dur = durationSV.value;
     currentTimeSV.value = dur > 0 ? Math.min(dur, interpolated) : interpolated;
   }, true);
@@ -161,6 +171,14 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
       await ensurePlaybackMode();
       try {
         player.replace({ uri });
+        // replace() resets the native rate — re-apply for multi-part recordings.
+        if (playbackRateRef.current !== 1) {
+          try {
+            player.setPlaybackRate(playbackRateRef.current, 'high');
+          } catch {
+            // non-fatal; playback continues at 1x
+          }
+        }
       } catch (error) {
         if (__DEV__) console.error('[Playback] loadSource failed:', error);
         // Rethrow so callers can distinguish "source swapped" from "player
@@ -232,6 +250,22 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
     [player, currentTimeSV, lastStatusTimeSV]
   );
 
+  const setPlaybackRate = useCallback(
+    (rate: number) => {
+      const clamped = Math.max(0.5, Math.min(rate, 2));
+      try {
+        // Native audio ops can throw on interrupted sessions (rule 6 spirit).
+        player.setPlaybackRate(clamped, 'high');
+        playbackRateRef.current = clamped;
+        playbackRateSV.value = clamped;
+        setPlaybackRateState(clamped);
+      } catch (error) {
+        if (__DEV__) console.error('[Playback] setPlaybackRate failed:', error);
+      }
+    },
+    [player, playbackRateSV]
+  );
+
   return {
     isLoaded,
     isPlaying,
@@ -244,5 +278,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
     toggle,
     seekTo,
     loadSource,
+    playbackRate,
+    setPlaybackRate,
   };
 }

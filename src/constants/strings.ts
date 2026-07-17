@@ -161,6 +161,20 @@ export const STASH_COPY = {
   resumeFailedBody: 'Could not restore your session.',
 } as const;
 
+export const ERROR_COPY = {
+  network: 'No internet connection. Please check your network and try again.',
+  server: 'Something went wrong on our end. Please try again in a moment.',
+  timeout: 'The request timed out. Check your connection and try again.',
+  rateLimited: 'Too many requests — wait a moment and try again.',
+  permission: "You don't have permission to do that.",
+  loadFailed: "Couldn't load this right now. Check your connection and try again.",
+  uploadGeneric: 'Upload failed. Please try again.',
+  processingFailedBody:
+    'Something went wrong while generating this note. Retry processing, or copy the details for support.',
+  copyDetails: 'Copy details for support',
+  detailsCopied: 'Details copied',
+} as const;
+
 export const RECORDING_DETAIL_COPY = {
   processingTitle: 'Processing…',
   processingBody: 'This usually takes 1-2 minutes.',

@@ -33,11 +33,12 @@ import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { stashStorage } from '../../../../src/lib/stashStorage';
+import { copyWithAutoClear } from '../../../../src/lib/secureClipboard';
 import { fileExists, safeDeleteFile } from '../../../../src/lib/fileOps';
 import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
 import { clonePendingConfirm } from '../../../../src/lib/pendingConfirm';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
-import { METADATA_REVIEW_COPY, RECORDING_DETAIL_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
+import { ERROR_COPY, METADATA_REVIEW_COPY, RECORDING_DETAIL_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
 import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../../../../src/lib/recordingQueryCache';
 import {
@@ -1000,12 +1001,10 @@ export default function RecordingDetailScreen() {
               <Text className="text-body-lg font-semibold text-status-danger mb-1">
                 {RECORDING_DETAIL_COPY.processingFailedTitle}
               </Text>
-              {recording.errorMessage && (
-                <Text className="text-body-sm text-status-danger mb-3">
-                  {recording.errorMessage.slice(0, 200)}
-                </Text>
-              )}
-              <View className="self-start">
+              <Text className="text-body-sm text-status-danger mb-3">
+                {ERROR_COPY.processingFailedBody}
+              </Text>
+              <View className="self-start flex-row gap-2">
                 <Button
                   variant="primary"
                   size="sm"
@@ -1015,6 +1014,19 @@ export default function RecordingDetailScreen() {
                 >
                   Retry
                 </Button>
+                {recording.errorMessage ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onPress={() => {
+                      // Raw server error text stays off-screen (can be
+                      // technical/PHI-adjacent); support gets it via clipboard.
+                      copyWithAutoClear(recording.errorMessage ?? '').catch(() => {});
+                    }}
+                  >
+                    {ERROR_COPY.copyDetails}
+                  </Button>
+                ) : null}
               </View>
             </Card>
           </Animated.View>

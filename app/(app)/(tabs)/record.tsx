@@ -75,6 +75,7 @@ import { breadcrumb, captureException, captureMessage, measurePhase } from '../.
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
+import { friendlyErrorMessage } from '../../../src/lib/errorCopy';
 import { recordingActivity } from '../../../src/lib/recordingActivity';
 import { recordSubmitAttempt } from '../../../src/lib/submitTiming';
 import { setSessionActivity } from '../../../src/lib/sessionActivity';
@@ -2795,13 +2796,17 @@ function RecordingSession() {
           return null;
         }
 
+        // Errors crafted at our own tagged throw sites (silent_check, presign,
+        // r2_put, confirm, create_draft) carry user-facing messages — keep
+        // them. Everything else (native uploader internals, unexpected
+        // shapes) maps to safe copy; raw detail stays in telemetry below.
         let msg: string;
-        if (error instanceof TypeError && /network/i.test(error.message)) {
-          msg = 'No internet connection. Please check your network and try again.';
-        } else if (error instanceof Error) {
+        if (error instanceof ApiError || error instanceof TypeError) {
+          msg = friendlyErrorMessage(error, 'upload');
+        } else if (error instanceof Error && getUploadPhase(error) !== 'unknown') {
           msg = error.message;
         } else {
-          msg = 'Upload failed. Please try again.';
+          msg = friendlyErrorMessage(error, 'upload');
         }
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
 

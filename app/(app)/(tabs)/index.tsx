@@ -21,6 +21,9 @@ import { recordingsApi } from '../../../src/api/recordings';
 import { patientsApi } from '../../../src/api/patients';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { measurePhase } from '../../../src/lib/monitoring';
+import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
+import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
+import { ERROR_COPY } from '../../../src/constants/strings';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -421,14 +424,26 @@ export default function HomeScreen() {
               Could not load recordings.
             </Text>
             {error ? (
-              <Text className="text-caption text-content-tertiary mt-2 text-center px-4" selectable>
-                [{error.name ?? 'Error'}{(error as { status?: number })?.status ? ` ${(error as { status?: number }).status}` : ''}] {error.message}
+              <Text className="text-caption text-content-tertiary mt-2 text-center px-4">
+                {friendlyErrorMessage(error, 'load')}
               </Text>
             ) : null}
-            <View className="mt-3">
+            <View className="mt-3 flex-row gap-2">
               <Button variant="secondary" size="sm" onPress={handleRefresh}>
                 Retry
               </Button>
+              {error ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => {
+                    // Raw detail goes to the clipboard for support, never on screen.
+                    copyWithAutoClear(technicalErrorDetails(error)).catch(() => {});
+                  }}
+                >
+                  {ERROR_COPY.copyDetails}
+                </Button>
+              ) : null}
             </View>
           </Card>
         ) : recordings.length === 0 ? (

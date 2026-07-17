@@ -77,9 +77,19 @@ interface StatusBadgeProps {
   status: RecordingStatus;
 }
 
+/** Title-cased raw status for values the config doesn't know yet. */
+function neutralFallback(status: string): { label: string; variant: 'info'; inProgress: false } {
+  const label = status
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return { label, variant: 'info', inProgress: false };
+}
+
 export function StatusBadge({ status }: StatusBadgeProps) {
   const colors = useThemeColors();
-  const config = STATUS_CONFIG[status] || STATUS_CONFIG.uploading;
+  // Unknown/future server statuses used to fall back to a pulsing
+  // "Uploading" badge — actively misleading. Render them neutrally instead.
+  const config = STATUS_CONFIG[status] || neutralFallback(status);
   const v = variantClasses[config.variant];
   const dotColor = {
     info: colors.statusInfoFg,
@@ -102,7 +112,6 @@ export function StatusBadge({ status }: StatusBadgeProps) {
       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph (e.g. "Uploadin"); do NOT remove. */}
       <Text
         className={`font-semibold ${config.inProgress ? 'text-body-sm' : 'text-caption'} ${v.text}`}
-        allowFontScaling={false}
         style={{ flexShrink: 0, paddingRight: 2 }}
       >
         {`${config.label} `}

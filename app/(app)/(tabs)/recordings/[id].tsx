@@ -33,13 +33,14 @@ import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
 import { draftStorage } from '../../../../src/lib/draftStorage';
 import { recoveryIntent } from '../../../../src/lib/recoveryIntent';
 import { stashStorage } from '../../../../src/lib/stashStorage';
+import { copyWithAutoClear } from '../../../../src/lib/secureClipboard';
 import { fileExists, safeDeleteFile } from '../../../../src/lib/fileOps';
 import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
 import { clonePendingConfirm } from '../../../../src/lib/pendingConfirm';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
-import { METADATA_REVIEW_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
+import { ERROR_COPY, METADATA_REVIEW_COPY, RECORDING_DETAIL_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
-import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../../../../src/lib/recordingQueryCache';
+import { invalidateRecordingCaches, mergeRecordingIntoCachedLists, removeRecordingFromCachedLists } from '../../../../src/lib/recordingQueryCache';
 import {
   shouldEmitExtractionObserved,
   buildExtractionObservedProps,
@@ -55,6 +56,7 @@ import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import type { RecordingMetadataField, UpdateRecordingMetadata } from '../../../../src/types';
 
 function DetailSkeleton() {
@@ -88,7 +90,7 @@ function DetailSkeleton() {
 }
 
 export default function RecordingDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, from } = useLocalSearchParams<{ id: string; from?: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
   const { iconMd } = useResponsive();
@@ -99,6 +101,15 @@ export default function RecordingDetailScreen() {
   const appStateRef = useRef(AppState.currentState);
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
   const pollingStartedAtRef = useRef<number | null>(null);
+  // A definitive 403 (access revoked) or 404 (deleted) means the cached
+  // transcript/SOAP/audio must NOT keep showing — set once, then the query is
+  // disabled (so eviction below can't trigger a refetch loop) and the render
+  // falls to a terminal screen instead of the offline-cache fallback (Codex
+  // P1, PR #143).
+  const [accessRevoked, setAccessRevoked] = useState<{ status: number } | null>(null);
+  useEffect(() => {
+    setAccessRevoked(null); // reset when navigating to a different recording
+  }, [id]);
 
   // Completion celebration — fired ONCE on the prev !== 'completed' →
   // 'completed' transition (the query polls/refetches, so guard against the
@@ -120,7 +131,9 @@ export default function RecordingDetailScreen() {
   const { data: recording, isLoading, isError, error, refetch: refetchRecording, isRefetching: isRefetchingRecording } = useQuery({
     queryKey: ['recording', id],
     queryFn: () => recordingsApi.get(id!),
-    enabled: !!id,
+    enabled: !!id && !accessRevoked,
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
     refetchInterval: (query) => {
       if (!isAppActive) return false;
       const status = query.state.data?.status;
@@ -135,11 +148,36 @@ export default function RecordingDetailScreen() {
       if (elapsedMs > 30 * 60 * 1000) {
         return false; // Stop polling — stale processing
       }
-      // Exponential backoff: 5s → 7.5s → 11.25s → … capped at 60s
-      const attempts = query.state.dataUpdateCount;
-      return Math.min(5_000 * Math.pow(1.5, attempts), 60_000);
+      // Time-based backoff derived from the poll session's start: 5s for the
+      // first ~20s, then elapsed/4, capped at 60s. React Query re-evaluates
+      // this callback on unrelated observer/state updates, so a mutating
+      // attempts counter (and before it, lifetime dataUpdateCount) advanced
+      // the backoff without any actual poll (Codex P2, PR #143); elapsed time
+      // is deterministic no matter how often this runs.
+      return Math.min(60_000, Math.max(5_000, elapsedMs / 4));
     },
   });
+
+  // Catch a definitive access-revoked / deleted response and latch it.
+  useEffect(() => {
+    if (accessRevoked) return;
+    if (isError && error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+      setAccessRevoked({ status: error.status });
+    }
+  }, [isError, error, accessRevoked]);
+
+  // Once latched, purge the revoked/deleted record from the cache (and the
+  // persisted snapshot) so it can't render offline on the next launch. The
+  // query is already disabled above, so this can't spawn a refetch loop.
+  useEffect(() => {
+    if (!accessRevoked || !id) return;
+    queryClient.removeQueries({ queryKey: ['recording', id] });
+    queryClient.removeQueries({ queryKey: ['soapNote', id] });
+    queryClient.removeQueries({ queryKey: ['recordingTasks', id] });
+    // Also strip it from cached list pages, or its patient/client metadata
+    // still renders offline in the Recordings list (Codex P1, PR #143).
+    removeRecordingFromCachedLists(queryClient, id);
+  }, [accessRevoked, id, queryClient]);
 
   // Fire the celebration exactly on the transition into 'completed'.
   useEffect(() => {
@@ -175,6 +213,7 @@ export default function RecordingDetailScreen() {
     queryKey: ['soapNote', id],
     queryFn: () => recordingsApi.getSoapNote(id!),
     enabled: !!id && recording?.status === 'completed',
+    gcTime: PERSIST_GC_TIME_MS,
     retry: 3,
     retryDelay: 2000,
   });
@@ -187,6 +226,7 @@ export default function RecordingDetailScreen() {
     queryKey: ['recordingTasks', id],
     queryFn: () => recordingsApi.getRecordingTasks(id!),
     enabled: !!id && recording?.status === 'completed',
+    gcTime: PERSIST_GC_TIME_MS,
     // Tasks are generated asynchronously a few seconds after completion. Refetch
     // on remount + poll briefly while empty so the card self-heals instead of
     // caching an empty list during that window. See getTasksRefetchInterval.
@@ -265,7 +305,7 @@ export default function RecordingDetailScreen() {
         queryClient.setQueryData(['recording', id], updatedRecording);
         mergeRecordingIntoCachedLists(queryClient, updatedRecording);
         pollingStartedAtRef.current = null;
-      }
+              }
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
       invalidateRecordingCaches(queryClient, 'processing_retry');
     },
@@ -289,7 +329,7 @@ export default function RecordingDetailScreen() {
         queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
         invalidateRecordingCaches(queryClient, 'soap_regenerated');
         pollingStartedAtRef.current = null;
-        setActiveNoteTab('soap');
+                setActiveNoteTab('soap');
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     },
@@ -599,7 +639,51 @@ export default function RecordingDetailScreen() {
     router.navigate(`/record?draftSlotId=${draftLocalSlotId}` as never);
   }, [draftLocalSlotId, router]);
 
-  if (isError) {
+  // Back respects where the user came from (Home, patient history) instead of
+  // always dumping them on the Recordings list. Exception: a post-submit push
+  // (`from=submit`) sits on top of the just-reset Record form, so a plain
+  // router.back() would land on an empty form — route those to the recordings
+  // list explicitly (Codex P2, PR #143).
+  const goBack = useCallback(() => {
+    if (from === 'submit') {
+      router.replace('/recordings');
+      return;
+    }
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/recordings');
+    }
+  }, [router, from]);
+
+  // Access revoked (403) or deleted (404): terminal even with cached data —
+  // never keep rendering the cached transcript/SOAP/audio once the server has
+  // definitively denied access (Codex P1, PR #143). No Retry (it would just
+  // re-deny); the record is already evicted above.
+  if (accessRevoked) {
+    return (
+      <SafeAreaView className="screen justify-center items-center p-5">
+        <Animated.View entering={FadeIn.duration(300)} className="items-center">
+          <Text className="text-body-lg font-semibold text-status-danger mb-2">
+            {accessRevoked.status === 404 ? 'Recording not available' : 'Access unavailable'}
+          </Text>
+          <Text className="text-body text-content-tertiary text-center mb-4">
+            {accessRevoked.status === 404
+              ? 'This recording is no longer available. It may have been deleted.'
+              : 'You no longer have access to this recording.'}
+          </Text>
+          <Button variant="primary" onPress={goBack}>
+            Go Back
+          </Button>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
+
+  // Otherwise a terminal error only when nothing is cached: with offline
+  // persistence a transient/offline failed refetch coexists with restored data
+  // — render the recording, not the failure screen (Codex P1, PR #143).
+  if (isError && !recording) {
     return (
       <SafeAreaView className="screen justify-center items-center p-5">
         <Animated.View entering={FadeIn.duration(300)} className="items-center">
@@ -610,7 +694,7 @@ export default function RecordingDetailScreen() {
             {error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'}
           </Text>
           <View className="flex-row gap-3">
-            <Button variant="primary" onPress={() => router.navigate('/recordings')}>
+            <Button variant="primary" onPress={goBack}>
               Go Back
             </Button>
             <Button variant="secondary" onPress={() => { refetchRecording().catch(() => {}); }}>
@@ -697,7 +781,7 @@ export default function RecordingDetailScreen() {
       </View>
       <Text
         className="text-body text-content-primary mt-0.5"
-        numberOfLines={field === 'clientName' ? 1 : undefined}
+        numberOfLines={field === 'clientName' ? 2 : undefined}
       >
         {value}
       </Text>
@@ -719,7 +803,7 @@ export default function RecordingDetailScreen() {
         {/* Header */}
         <View className="flex-row items-center px-5 pt-5">
           <Pressable
-            onPress={() => router.navigate('/recordings')}
+            onPress={goBack}
             accessibilityRole="button"
             accessibilityLabel="Go back"
             className="mr-3 w-11 h-11 items-center justify-center"
@@ -829,7 +913,7 @@ export default function RecordingDetailScreen() {
               recordingForeignLanguage={recording.foreignLanguage}
               onReprocessStarted={() => {
                 pollingStartedAtRef.current = Date.now();
-              }}
+                              }}
             />
           )}
 
@@ -837,10 +921,10 @@ export default function RecordingDetailScreen() {
         {isProcessing && (
           <Card className="mx-5 mb-4">
             <Text className="text-body-lg font-semibold text-content-primary mb-1">
-              Processing...
+              {RECORDING_DETAIL_COPY.processingTitle}
             </Text>
             <Text className="text-body-sm text-content-tertiary mb-2">
-              This usually takes 1-2 minutes.
+              {RECORDING_DETAIL_COPY.processingBody}
             </Text>
             <ProcessingStepper currentStatus={recording.status} />
           </Card>
@@ -880,10 +964,10 @@ export default function RecordingDetailScreen() {
               <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
               <View className="flex-1">
                 <Text className="text-body font-semibold text-status-warning mb-1">
-                  Awaiting Patient Details
+                  {RECORDING_DETAIL_COPY.awaitingMetadataTitle}
                 </Text>
                 <Text className="text-body-sm text-content-tertiary">
-                  This recording was imported and needs patient details before processing can begin. Complete the details on the web app.
+                  {RECORDING_DETAIL_COPY.awaitingMetadataBody}
                 </Text>
               </View>
             </View>
@@ -942,12 +1026,10 @@ export default function RecordingDetailScreen() {
                 <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
                 <View className="flex-1">
                   <Text className="text-body font-semibold text-status-warning mb-1">
-                    Audio Not on This Device
+                    {RECORDING_DETAIL_COPY.audioNotOnDeviceTitle}
                   </Text>
                   <Text className="text-body-sm text-content-tertiary mb-3">
-                    This draft was started on another device, or its local audio
-                    was cleared from this one. Submit it from the device where
-                    you recorded it, or delete it here to clean up.
+                    {RECORDING_DETAIL_COPY.audioNotOnDeviceBody}
                   </Text>
                   <View className="self-start">
                     {recordingPermissions.canDelete ? (
@@ -977,14 +1059,12 @@ export default function RecordingDetailScreen() {
           <Animated.View entering={FadeInUp.duration(300)}>
             <Card className="mx-5 mb-4 border-status-danger">
               <Text className="text-body-lg font-semibold text-status-danger mb-1">
-                Processing Failed
+                {RECORDING_DETAIL_COPY.processingFailedTitle}
               </Text>
-              {recording.errorMessage && (
-                <Text className="text-body-sm text-status-danger mb-3">
-                  {recording.errorMessage.slice(0, 200)}
-                </Text>
-              )}
-              <View className="self-start">
+              <Text className="text-body-sm text-status-danger mb-3">
+                {ERROR_COPY.processingFailedBody}
+              </Text>
+              <View className="self-start flex-row gap-2">
                 <Button
                   variant="primary"
                   size="sm"
@@ -994,6 +1074,19 @@ export default function RecordingDetailScreen() {
                 >
                   Retry
                 </Button>
+                {recording.errorMessage ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onPress={() => {
+                      // Raw server error text stays off-screen (can be
+                      // technical/PHI-adjacent); support gets it via clipboard.
+                      copyWithAutoClear(recording.errorMessage ?? '').catch(() => {});
+                    }}
+                  >
+                    {ERROR_COPY.copyDetails}
+                  </Button>
+                ) : null}
               </View>
             </Card>
           </Animated.View>

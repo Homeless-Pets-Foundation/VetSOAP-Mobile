@@ -185,7 +185,7 @@ export function ReprocessSheet({
           onPress={() => {
             Alert.alert(REPROCESS_MODELS_COPY.confirmTitle, REPROCESS_MODELS_COPY.confirmBody, [
               { text: REPROCESS_MODELS_COPY.cancel, style: 'cancel' },
-              { text: REPROCESS_MODELS_COPY.confirm.trim(), onPress: () => mutation.mutate() },
+              { text: REPROCESS_MODELS_COPY.confirm, onPress: () => mutation.mutate() },
             ]);
           }}
         >

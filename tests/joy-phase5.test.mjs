@@ -37,8 +37,9 @@ test('review workflow is wired through list filter, card chip, detail toggle, an
   assert.match(api, /reviewStatus\?: ReviewStatus/);
   assert.match(api, /patch\(`\/api\/recordings\/\$\{recordingId\}\/review`/);
   assert.match(list, /value: 'needs_review'/);
-  assert.match(list, /hasReviewStatusInLoadedRecordings/);
-  assert.match(list, /getRecordingReviewStatus\(recording\) !== null/);
+  // WP22: the Needs Review option is always present — visibility no longer
+  // shifts with which pages happen to be loaded.
+  assert.match(list, /NEEDS_REVIEW_STATUS_FILTER_OPTION/);
   assert.match(list, /options=\{statusFilterOptions\}/);
   assert.match(list, /reviewStatus: reviewStatusFilter/);
   assert.match(card, /ReviewStatusChip/);
@@ -96,7 +97,9 @@ test('startup branding expands to near-2x without exceeding the Android splash s
   assert.doesNotMatch(rootLayout, /Animated\.Image/);
   assert.match(rootLayout, /setMinimumDisplayComplete\(true\)/);
   assert.match(rootLayout, /\(!isLoading && minimumDisplayComplete\)/);
-  assert.match(rootLayout, /const style = isLoading \? 'dark'/);
+  // WP12: SplashGate is theme-aware, so only iOS (white native splash)
+  // pins dark icons while loading.
+  assert.match(rootLayout, /isLoading && Platform\.OS !== 'android'/);
 });
 
 test('local Android testing installs beside the Play-signed production app', async () => {
@@ -118,7 +121,7 @@ test('local Android testing installs beside the Play-signed production app', asy
 test('theme preference has dark vars, root hydration, and active settings selector', async () => {
   const css = await read('global.css');
   const rootLayout = await read('app/_layout.tsx');
-  const settings = await read('app/(app)/(tabs)/settings.tsx');
+  const settings = await read('app/(app)/settings.tsx');
   const preference = await read('src/lib/themePreference.ts');
   const preferenceHook = await read('src/hooks/useThemePreference.ts');
   const hook = await read('src/hooks/useThemeColors.ts');
@@ -199,13 +202,15 @@ test('Phase 5 copy is centralized for profile subscription account deletion and 
   assert.doesNotMatch(record, /'Default Not Saved'/);
 });
 
-test('Phase 5 SOAP edit action uses Android anti-clip pattern and removes dead onSaved prop', async () => {
+test('Phase 5 SOAP edit action uses shared Button (anti-clip lives in Button) and removes dead onSaved prop', async () => {
   const soap = await read('src/components/SoapNoteView.tsx');
 
   assert.match(soap, /SOAP_SECTION_ACTIONS\.edit/);
-  assert.match(soap, /Android under-measures single-word Text and clips the last glyph/);
-  assert.match(soap, /allowFontScaling=\{false\}/);
-  assert.match(soap, /style=\{\{ flexShrink: 0, paddingRight: 2 \}\}/);
+  // WP17: section actions use the shared Button, which owns the Android
+  // anti-clip mitigation (tests/ui-clip-guard) and haptics; no raw Pressable
+  // copies of the pattern remain here.
+  assert.match(soap, /<Button\s+variant="secondary"\s+size="sm"\s+icon=\{<Pencil/);
+  assert.doesNotMatch(soap, /allowFontScaling=\{false\}/);
   assert.doesNotMatch(soap, /onSaved/);
 });
 
@@ -219,12 +224,14 @@ test('record-first blank-field analytics emits only for first segment', async ()
   assert.ok(firstSegmentGuardIndex < eventIndex, 'first-segment guard should wrap analytics event');
 });
 
-test('root status bar omits Android backgroundColor', async () => {
+test('root status bar omits backgroundColor entirely', async () => {
   const rootLayout = await read('app/_layout.tsx');
   const statusBar = rootLayout.match(/<StatusBar[\s\S]*?\/>/);
 
   assert.ok(statusBar, 'ThemedStatusBar should render StatusBar');
-  assert.match(rootLayout, /Platform\.OS === 'android' \? \{\} : \{ backgroundColor: colors\.surface \}/);
+  // WP12: the prop was Android-only in expo-status-bar and the old code
+  // passed it only on iOS — dead on both platforms. It must stay gone.
+  assert.doesNotMatch(statusBar[0], /backgroundColor/);
   assert.match(statusBar[0], /style=\{style\}/);
 });
 
@@ -233,5 +240,7 @@ test('client email subject-only mail retry reports copied body', async () => {
   const strings = await read('src/constants/strings.ts');
 
   assert.match(strings, /bodyCopied: 'Email body copied — paste it into your message\.'/);
-  assert.match(card, /setStatus\(body \? CLIENT_EMAIL_COPY\.bodyCopied : CLIENT_EMAIL_COPY\.fallbackCopied\)/);
+  // WP27: success feedback moved from the persistent status caption to the
+  // transient Toast.
+  assert.match(card, /setToast\(body \? CLIENT_EMAIL_COPY\.bodyCopied : CLIENT_EMAIL_COPY\.fallbackCopied\)/);
 });

@@ -124,6 +124,20 @@ test('recording controls cannot mutate a slot while its upload owns the audio', 
 
   assert.match(src, /const isSlotUploadActive = useCallback/);
   assert.match(src, /uploadingSlotIdsRef\.current\.has\(slotId\)/);
+  // Queued Submit All slots (tracked only via submit intent, uploadStatus
+  // still 'pending') must be locked too — with the overlay hidden, mutating a
+  // queued slot makes the batch loop upload stale/deleted audio (Codex P1).
+  const predicateStart = src.indexOf('const isSlotUploadActive = useCallback');
+  const predicateBody = src.slice(predicateStart, predicateStart + 1100);
+  assert.match(predicateBody, /submitIntentSlotIdsRef\.current\.has\(slotId\)/);
+  // A Submit All batch freezes the WHOLE session — even slots not in the batch
+  // must be locked, or a new slot recorded mid-batch is discarded by the
+  // post-batch resetSession() (Codex P1 round 12).
+  assert.match(predicateBody, /if \(isSubmittingAllRef\.current\) return true;/);
+  assert.match(src, /const isSubmittingAllRef = useRef\(false\);/);
+  // handleAddPatient is blocked during the batch too.
+  const addStart = src.indexOf('const handleAddPatient = useCallback');
+  assert.match(src.slice(addStart, addStart + 300), /if \(isSubmittingAllRef\.current\)/);
   assert.match(src, /function showUploadInProgressAlert\(\): void/);
   for (const handler of ['handleStart', 'handleContinueRecording', 'handleRecordAgain', 'handleRemove', 'handleEditRecording']) {
     const start = src.indexOf(`const ${handler} = useCallback`);
@@ -488,9 +502,44 @@ test('discarding a live durable capture discards its native files before reset',
 test('durable slots are counted in the unsaved leave/reset guards', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
   // Both unsavedCount (leave guard) and trulyUnsaved (draft-load reset) use the
-  // shared predicate, which covers durable and pending-confirm-only slots.
-  assert.match(rec, /const unsavedCount = session\.slots\.filter\([\s\S]*?slotHasRecoverableAudio\(s\) && s\.uploadStatus !== 'success'/);
-  assert.match(rec, /const trulyUnsaved = currentSlots\.some\([\s\S]*?slotHasRecoverableAudio\(s\) && !s\.draftSlotId && s\.uploadStatus !== 'success'/);
+  // shared isTrulyUnsavedSlot predicate, which covers durable and
+  // pending-confirm-only slots while excluding committed drafts (durable on
+  // disk + server; preserved via preserveDraftSlotIds on discard).
+  assert.match(rec, /function isTrulyUnsavedSlot\(s: PatientSlot\): boolean \{[\s\S]*?slotHasRecoverableAudio\(s\) && !s\.draftSlotId && s\.uploadStatus !== 'success'/);
+  // Component predicate extends the module one with the unsynced-draft-audio
+  // check (draftSlotId only proves an OLDER snapshot was saved — Codex P1).
+  assert.match(rec, /const isSlotTrulyUnsaved = useCallback\([\s\S]*?isTrulyUnsavedSlot\(s\) \|\|[\s\S]*?unsyncedDraftAudioRef\.current\.has\(s\.id\)/);
+  assert.match(rec, /const unsavedCount = session\.slots\.filter\(isSlotTrulyUnsaved\)/);
+  assert.match(rec, /const trulyUnsaved = currentSlots\.some\(isSlotTrulyUnsaved\)/);
+  // Resumed stash slots must be marked unsynced right after restoreSession:
+  // stashing deleted their local drafts (stash owns the audio), so the
+  // retained draftSlotId is NOT proof of a durable draft — without the mark,
+  // loading another draft/stash skips the replace warning and discard deletes
+  // the only copy (Codex P1 round 4).
+  const resumeIdx = rec.indexOf('const slots = await resumeStashedSession(stashId);');
+  assert.ok(resumeIdx >= 0, 'stash resume must exist');
+  const resumeWindow = rec.slice(resumeIdx, resumeIdx + 2400);
+  assert.match(resumeWindow, /restoreSession\(slots\)/);
+  assert.match(resumeWindow, /unsyncedDraftAudioRef\.current\.add\(restored\.id\)/);
+  // ...and excluded from discard preserve lists until a fresh autoSaveDraft
+  // commits: their retained draftSlotId doesn't map to a surviving local
+  // draft, and preserving it strands the server draft row audio-less after
+  // the stash release deletes the only copy (Codex P2 round 5).
+  assert.match(resumeWindow, /stashResumedSlotIdsRef\.current\.add\(restored\.id\)/);
+  assert.match(rec, /function collectPreserveDraftSlotIds\(\s*slots: PatientSlot\[\],\s*excludeSlotIds\?: ReadonlySet<string>\s*\)/);
+  assert.doesNotMatch(rec, /collectPreserveDraftSlotIds\((?:currentSlots|sessionRef\.current\.slots)\)/);
+  // A fresh draft commit makes the retained id real again.
+  const saveOkIdx = rec.indexOf('unsyncedDraftAudioRef.current.delete(slot.id);');
+  assert.ok(saveOkIdx >= 0);
+  assert.match(rec.slice(saveOkIdx, saveOkIdx + 200), /stashResumedSlotIdsRef\.current\.delete\(slot\.id\)/);
+  // Orphan server-recording deletion must stay inside the preserve gate — a
+  // preserved draft's pendingConfirm points at that row (Codex P1).
+  const gateIdx = rec.indexOf("if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {");
+  const orphanIdx = rec.indexOf('deleteOrphanServerRecording(slot);');
+  assert.ok(gateIdx >= 0 && orphanIdx > gateIdx, 'deleteOrphanServerRecording must be inside the preserve gate');
+  // Discard paths must thread the preserve list so drafted slots survive.
+  assert.match(rec, /preserveDraftSlotIds: collectPreserveDraftSlotIds\(\s*sessionRef\.current\.slots,\s*stashResumedSlotIdsRef\.current\s*\)/);
+  assert.match(rec, /await discardCurrentSession\(\{ preserveDraftSlotIds \}\)/);
 });
 
 test('deleteDraft removes a recovered durable AAC but not shared native audio', async () => {

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Alert } from 'react-native';
-import { stashStorage } from '../lib/stashStorage';
+import { stashStorage, MAX_STASHES } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
+import { STASH_COPY } from '../constants/strings';
 import { draftStorage } from '../lib/draftStorage';
 import { recoveryIntent } from '../lib/recoveryIntent';
 import { safeDeleteFile } from '../lib/fileOps';
@@ -383,10 +384,7 @@ export function useStashedSessions(userId: string | null) {
           const allMissing = missingCount === totalSegments + totalDurableRecovered;
 
           if (allMissing) {
-            Alert.alert(
-              'Audio Files Missing',
-              'All audio files for this stash have been deleted. The stash will be removed.'
-            );
+            Alert.alert(STASH_COPY.audioMissingTitle, STASH_COPY.audioMissingBody);
             await stashAudioManager.deleteStashedAudio(stashId);
             await stashStorage.removeStashedSession(stashId);
             await refreshStashes();
@@ -396,16 +394,16 @@ export function useStashedSessions(userId: string | null) {
           // Partial — let user decide
           return new Promise((resolve) => {
             Alert.alert(
-              'Some Audio Missing',
-              `${missingCount} audio segment(s) could not be found. Resume with available data?`,
+              STASH_COPY.someAudioMissingTitle,
+              STASH_COPY.someAudioMissingBody(missingCount),
               [
                 {
-                  text: 'Cancel',
+                  text: STASH_COPY.cancel,
                   style: 'cancel',
                   onPress: () => resolve(null),
                 },
                 {
-                  text: 'Resume Anyway',
+                  text: STASH_COPY.resumeAnyway,
                   onPress: () => {
                     resolve(convertToPatientSlots(validSlots));
                   },
@@ -418,7 +416,7 @@ export function useStashedSessions(userId: string | null) {
         return convertToPatientSlots(validSlots);
       } catch (error) {
         if (__DEV__) console.error('[Stash] resumeSession failed:', error);
-        Alert.alert('Resume Failed', 'Could not restore your session.');
+        Alert.alert(STASH_COPY.resumeFailedTitle, STASH_COPY.resumeFailedBody);
         return null;
       }
     },
@@ -466,7 +464,7 @@ export function useStashedSessions(userId: string | null) {
     stashes: visibleStashes,
     isLoading,
     stashCount: visibleStashes.length,
-    isAtCapacity: allStashes.length >= 5,
+    isAtCapacity: allStashes.length >= MAX_STASHES,
     stashSession,
     resumeSession,
     markResumed,

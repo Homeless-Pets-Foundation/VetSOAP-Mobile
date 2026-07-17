@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Alert, View, Text, TextInput, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { Alert, View, Text, TextInput, FlatList, Platform, Pressable, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
-import { Search, Mic } from 'lucide-react-native';
+import { Search, Mic, X } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
 import {
@@ -27,6 +27,10 @@ import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { EmptyState } from '../../../../src/components/ui/EmptyState';
 import { Select } from '../../../../src/components/ui/Select';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
+import { displayPatientName } from '../../../../src/lib/recordingDisplay';
+import { StatusBadge } from '../../../../src/components/StatusBadge';
+import { RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
+import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
 
@@ -124,6 +128,8 @@ export default function RecordingsListScreen() {
     isStale,
   } = useInfiniteQuery({
     queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', reviewStatusFilter ?? 'any', 'submittedAt-desc'],
+    // Survives into the persisted offline snapshot (WP28).
+    gcTime: PERSIST_GC_TIME_MS,
     queryFn: ({ pageParam = 1 }) =>
       recordingsApi.list({
         search: debouncedSearch || undefined,
@@ -157,6 +163,7 @@ export default function RecordingsListScreen() {
     () => sortRecordingsBySubmittedAt(data?.pages.flatMap((page) => page.data) ?? [], 'desc'),
     [data]
   );
+  const listedRecordingIds = useMemo(() => new Set(recordings.map((r) => r.id)), [recordings]);
   const submittedRecordingQueries = useQueries({
     queries: submittedIds.map((id) => ({
       queryKey: ['recording', id],
@@ -164,6 +171,18 @@ export default function RecordingsListScreen() {
       enabled: canLoadServerData && submittedIds.length > 0,
       staleTime: 0,
       refetchOnMount: 'always' as const,
+      // When a search/status filter excludes a submitted id from the polled
+      // list, this detail query becomes the banner's only data source — and
+      // a fetch-once query would freeze it at Uploading/Transcribing. Poll
+      // while it's still processing AND the list doesn't cover it; the list's
+      // own 10s polling is authoritative otherwise (Codex P2, PR #143).
+      refetchInterval: (query: { state: { data?: { id?: string; status?: string } } }) => {
+        if (!isTabFocused) return false;
+        const rec = query.state.data;
+        if (!rec?.id || listedRecordingIds.has(rec.id)) return false;
+        const processing = !['completed', 'failed', 'pending_metadata'].includes(rec.status ?? '');
+        return processing ? 10000 : false;
+      },
     })),
   });
   const submittedRecordingsById = useMemo(() => {
@@ -175,27 +194,28 @@ export default function RecordingsListScreen() {
     }
     for (const query of submittedRecordingQueries) {
       const recording = query.data;
-      if (recording?.id && submittedIdSet.has(recording.id)) map.set(recording.id, recording);
+      // Fallback ONLY for ids the polled list doesn't contain yet: the list
+      // refetches processing recordings every 10s while these detail queries
+      // fetch once on mount, so letting the detail result win froze banner
+      // rows at their initial Uploading/Transcribing state (Codex P2, PR #143).
+      if (recording?.id && submittedIdSet.has(recording.id) && !map.has(recording.id)) {
+        map.set(recording.id, recording);
+      }
     }
     return map;
   }, [recordings, submittedIdSet, submittedRecordingQueries]);
-  const hasReviewStatusInLoadedRecordings = useMemo(
-    () => recordings.some((recording) => getRecordingReviewStatus(recording) !== null),
-    [recordings]
-  );
+  // Always offer Needs Review: gating it on the loaded pages made the filter
+  // menu's contents shift as pagination progressed (an option a vet saw
+  // yesterday could vanish today).
   const statusFilterOptions = useMemo(
-    () => (
-      hasReviewStatusInLoadedRecordings || selectedStatusFilter === 'needs_review'
-        ? [
-            STATUS_FILTER_OPTIONS[0],
-            STATUS_FILTER_OPTIONS[1],
-            NEEDS_REVIEW_STATUS_FILTER_OPTION,
-            STATUS_FILTER_OPTIONS[2],
-            STATUS_FILTER_OPTIONS[3],
-          ]
-        : STATUS_FILTER_OPTIONS
-    ),
-    [hasReviewStatusInLoadedRecordings, selectedStatusFilter]
+    () => [
+      STATUS_FILTER_OPTIONS[0],
+      STATUS_FILTER_OPTIONS[1],
+      NEEDS_REVIEW_STATUS_FILTER_OPTION,
+      STATUS_FILTER_OPTIONS[2],
+      STATUS_FILTER_OPTIONS[3],
+    ],
+    []
   );
   const activeStatusFilterLabel = statusFilterOptions.find(
     (option) => option.value === selectedStatusFilter
@@ -425,11 +445,24 @@ export default function RecordingsListScreen() {
               onChangeText={setSearch}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
-              placeholder="Search by patient name..."
+              placeholder={RECORDINGS_LIST_COPY.searchPlaceholder}
               placeholderTextColor={colors.contentTertiary}
-              accessibilityLabel="Search recordings by patient name"
+              accessibilityLabel={RECORDINGS_LIST_COPY.searchAccessibilityLabel}
               className="flex-1 p-3 text-body text-content-primary"
+              returnKeyType="search"
+              clearButtonMode="while-editing"
             />
+            {/* Android has no clearButtonMode — provide an explicit clear-X. */}
+            {Platform.OS === 'android' && search.length > 0 && (
+              <Pressable
+                onPress={() => setSearch('')}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                hitSlop={10}
+              >
+                <X color={colors.contentTertiary} size={iconSm} />
+              </Pressable>
+            )}
           </View>
 
           <Select
@@ -448,6 +481,7 @@ export default function RecordingsListScreen() {
       <FlatList
         data={displayRecordings}
         keyExtractor={keyExtractor}
+        keyboardShouldPersistTaps="handled"
         renderItem={({ item }) => (
           <RecordingCard
             recording={item}
@@ -477,11 +511,27 @@ export default function RecordingsListScreen() {
               accessibilityRole="summary"
             >
               <Text className="text-body-sm font-semibold text-brand-700 dark:text-brand-500">
-                {submittedIds.length} of {submittedIds.length} submitted
+                {SUBMITTED_BANNER_COPY.title(submittedIds.length)}
               </Text>
-              <Text className="text-caption text-content-tertiary mt-1">
-                IDs {submittedIds.map((id) => id.slice(0, 8)).join(', ')}
-              </Text>
+              {/* Per-recording rows: patient name + live processing status —
+                  the old constant "N of N submitted" + raw UUID list could
+                  never show partial progress and meant nothing to a vet. */}
+              {submittedIds.map((submittedId) => {
+                const submittedRecording = submittedRecordingsById.get(submittedId);
+                return (
+                  <View key={submittedId} className="flex-row items-center justify-between mt-1.5">
+                    <Text
+                      className="text-body-sm text-content-body flex-1 mr-2"
+                      numberOfLines={1}
+                    >
+                      {submittedRecording
+                        ? displayPatientName(submittedRecording)
+                        : SUBMITTED_BANNER_COPY.loadingRow}
+                    </Text>
+                    {submittedRecording ? <StatusBadge status={submittedRecording.status} /> : null}
+                  </View>
+                );
+              })}
             </View>
           ) : null
         }

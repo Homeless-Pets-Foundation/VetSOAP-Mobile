@@ -9,7 +9,7 @@ import {
   FileClock,
   FileText,
   HelpCircle,
-  LifeBuoy,
+  ShieldCheck,
   LogOut,
   Mail,
   Monitor,
@@ -20,39 +20,42 @@ import {
   UserRound,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuthActions, useAuthUser } from '../../../src/hooks/useAuth';
-import type { SignOutRecoveryMode } from '../../../src/auth/AuthProvider';
-import { useResponsive } from '../../../src/hooks/useResponsive';
-import { biometrics } from '../../../src/lib/biometrics';
-import { canRecordAppointments } from '../../../src/lib/recordingPermissions';
+import { useAuthActions, useAuthUser } from '../../src/hooks/useAuth';
+import type { SignOutRecoveryMode } from '../../src/auth/AuthProvider';
+import { useResponsive } from '../../src/hooks/useResponsive';
+import { biometrics } from '../../src/lib/biometrics';
+import { canRecordAppointments } from '../../src/lib/recordingPermissions';
 import {
   SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED,
   supportStaffRecoveryVault,
-} from '../../../src/lib/supportStaffRecoveryVault';
-import { CONTENT_MAX_WIDTH } from '../../../src/components/ui/ScreenContainer';
-import { Card } from '../../../src/components/ui/Card';
-import { IconButton } from '../../../src/components/ui/IconButton';
-import { ListItem } from '../../../src/components/ui/ListItem';
-import { Toggle } from '../../../src/components/ui/Toggle';
-import { SegmentedControl } from '../../../src/components/ui/SegmentedControl';
-import { countUnsentRecordings } from '../../../src/lib/localRecordings';
-import { trackEvent } from '../../../src/lib/analytics';
-import { THEME_COPY } from '../../../src/constants/strings';
-import { ProviderIssueBanner } from '../../../src/components/ProviderIssueBanner';
+} from '../../src/lib/supportStaffRecoveryVault';
+import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
+import { Card } from '../../src/components/ui/Card';
+import { IconButton } from '../../src/components/ui/IconButton';
+import { ListItem } from '../../src/components/ui/ListItem';
+import { Toggle } from '../../src/components/ui/Toggle';
+import { SegmentedControl } from '../../src/components/ui/SegmentedControl';
+import { countUnsentRecordings } from '../../src/lib/localRecordings';
+import { trackEvent } from '../../src/lib/analytics';
+import { THEME_COPY } from '../../src/constants/strings';
+import { ProviderIssueBanner } from '../../src/components/ProviderIssueBanner';
 import {
   HELP_CENTER_URL,
   PRIVACY_POLICY_URL,
   SUPPORT_CONTACT_URL,
   TERMS_URL,
-} from '../../../src/config';
-import { useThemeColors } from '../../../src/hooks/useThemeColors';
-import { useThemePreference } from '../../../src/hooks/useThemePreference';
-import type { ThemePreference } from '../../../src/lib/themePreference';
+} from '../../src/config';
+import { useThemeColors } from '../../src/hooks/useThemeColors';
+import { useThemePreference } from '../../src/hooks/useThemePreference';
+import type { ThemePreference } from '../../src/lib/themePreference';
 import Constants from 'expo-constants';
 
 function SectionHeading({ children, className = '' }: { children: string; className?: string }) {
   return (
-    <Text className={`text-caption text-content-tertiary font-semibold mb-2 px-1 ${className}`}>
+    <Text
+      className={`text-caption text-content-tertiary font-semibold mb-2 px-1 ${className}`}
+      accessibilityRole="header"
+    >
       {children}
     </Text>
   );
@@ -308,29 +311,33 @@ export default function SettingsScreen() {
           </Card>
 
           <SectionHeading>ACCOUNT</SectionHeading>
-          <ListItem
-            onPress={() => {
-              router.push('/profile' as never);
-            }}
-            accessibilityLabel="Edit profile"
-            title="Edit Profile"
-            subtitle="Name and password"
-            leading={<UserRound color={colors.brand500} size={iconSm} />}
-            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
-          />
-          {canViewBilling ? (
+          {/* The section-closing margin lives on this wrapper (not the
+              conditional Subscription row) so non-admin users get the same
+              gap before APP. */}
+          <View className="mb-5">
             <ListItem
               onPress={() => {
-                router.push('/subscription' as never);
+                router.push('/profile' as never);
               }}
-              accessibilityLabel="View subscription"
-              title="Subscription"
-              subtitle="Plan, trial, renewal, and billing portal"
-              leading={<CreditCard color={colors.brand500} size={iconSm} />}
+              accessibilityLabel="Edit profile"
+              title="Edit Profile"
+              subtitle="Name and password"
+              leading={<UserRound color={colors.brand500} size={iconSm} />}
               trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
-              className="mb-5"
             />
-          ) : null}
+            {canViewBilling ? (
+              <ListItem
+                onPress={() => {
+                  router.push('/subscription' as never);
+                }}
+                accessibilityLabel="View subscription"
+                title="Subscription"
+                subtitle="Plan, trial, renewal, and billing portal"
+                leading={<CreditCard color={colors.brand500} size={iconSm} />}
+                trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+              />
+            ) : null}
+          </View>
 
           <SectionHeading>APP</SectionHeading>
           <Card className="mb-5">
@@ -419,7 +426,7 @@ export default function SettingsScreen() {
             accessibilityLabel="Open privacy policy"
             title="Privacy"
             subtitle="How Captivet handles data"
-            leading={<LifeBuoy color={colors.brand500} size={iconSm} />}
+            leading={<ShieldCheck color={colors.brand500} size={iconSm} />}
             trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
             className="mb-5"
           />

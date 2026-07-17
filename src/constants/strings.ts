@@ -4,6 +4,8 @@ export const PROCESSING_STEP_LABELS = {
   transcribing: 'Transcribing',
   generating: 'Generating SOAP',
   completed: 'Complete',
+  /** Shown on the active step while status is retry_scheduled. */
+  retrying: 'Retrying…',
 } as const;
 
 export const PROCESSING_WARMTH = [
@@ -24,6 +26,17 @@ export const UPLOAD_OVERLAY_COPY = {
   phaseStarting: 'Preparing…',
   phaseUploading: 'Uploading…',
   phaseProcessing: 'Processing…',
+  hide: 'Hide',
+  /**
+   * Compact banner shown while the overlay is hidden but uploads continue.
+   * `active` is the 1-based position of the slot currently uploading —
+   * derived from its index in the batch, NOT from the completed count, which
+   * stops advancing after a failed slot (Codex P2, PR #143).
+   */
+  backgroundProgress: (active: number, total: number): string =>
+    `Uploading ${Math.min(Math.max(active, 1), total)} of ${total}… Tap to view`,
+  announceSingle: 'Upload in progress',
+  announceMulti: (total: number): string => `Uploading ${total} recordings`,
 } as const;
 
 export const STALE_RECORDING_UPLOAD_COPY =
@@ -33,6 +46,10 @@ export const SILENT_CHECK_COPY = {
   title: 'Recording sounds silent',
   body:
     'Your microphone signal looked very quiet. If you can hear the audio on playback in Edit Recording, ' +
+    'tap Upload Anyway. Otherwise cancel and re-record.',
+  /** Durable captures can't open Edit Recording — don't reference it. */
+  bodyDurable:
+    "Your microphone signal looked very quiet. If you're sure the visit was captured, " +
     'tap Upload Anyway. Otherwise cancel and re-record.',
   cancel: 'Cancel',
   upload: 'Upload Anyway',
@@ -46,6 +63,156 @@ export const OVERSIZED_CONFIRM_COPY = {
     `This may take a few minutes. Continue?`,
   cancel: 'Cancel',
   upload: 'Upload',
+} as const;
+
+export const LOGIN_COPY = {
+  forgotPassword: 'Forgot password?',
+  continueWithGoogle: 'Continue with Google',
+  orContinueWith: 'or continue with',
+  lockout: (seconds: number): string =>
+    `Too many failed attempts. Please try again in ${seconds}s.`,
+  networkError: 'A network error occurred. Please check your connection and try again.',
+  signOutStillPending:
+    'Still finishing the previous sign-out. Please try again in a moment.',
+} as const;
+
+export const PASSWORD_RESET_COPY = {
+  sendFailed:
+    "Couldn't send the reset email. Check the address and your connection, then try again.",
+  sendRateLimited: 'Too many attempts — wait a minute and try again.',
+  updateFailed:
+    "Couldn't update the password. Your reset link may have expired — request a new one from the sign-in screen.",
+  passwordTooShort: 'Password must be at least 8 characters.',
+  passwordMismatch: 'Both password fields must match.',
+  resend: 'Resend email',
+  resendCooldown: (seconds: number): string => `Resend email (${seconds}s)`,
+  tapLink:
+    "Tap the link in the email to reset your password. If you don't see the email, check your spam folder.",
+} as const;
+
+export const DEVICE_LIMIT_COPY = {
+  signOut: 'Sign out instead',
+  stillAtLimit: 'Still at the device limit. Revoke a device below or sign out.',
+  revokeFailed: "Couldn't revoke that device. Check your connection and try again.",
+} as const;
+
+export const MFA_BOOTSTRAP_COPY = {
+  failed: "Couldn't load verification. Check your connection and try again.",
+  retry: 'Try Again',
+} as const;
+
+export const DISCARD_SESSION_COPY = {
+  title: 'Discard Recordings?',
+  /** Body when every at-risk slot is truly unsaved (no drafts involved). */
+  body: (unsavedCount: number): string =>
+    unsavedCount === 1
+      ? 'You have 1 unsubmitted recording. Leaving will discard it.'
+      : `You have ${unsavedCount} unsubmitted recordings. Leaving will discard them.`,
+  /** Body when the session also holds finished drafts — those are durable and survive. */
+  bodyWithDrafts: (unsavedCount: number): string =>
+    unsavedCount === 1
+      ? 'You have 1 recording that is not saved yet. Leaving will discard it. Finished drafts stay in Not Submitted.'
+      : `You have ${unsavedCount} recordings that are not saved yet. Leaving will discard them. Finished drafts stay in Not Submitted.`,
+  stay: 'Stay',
+  discard: 'Discard',
+} as const;
+
+export const REPLACE_SESSION_COPY = {
+  title: 'Replace Current Session?',
+  /** Load-draft variant: truly-unsaved work is replaced; drafts are preserved. */
+  bodyLoadDraft:
+    'You have unsaved recordings in progress. Loading this draft will replace them. Finished drafts stay in Not Submitted.',
+  /** Resume-stash variant. */
+  bodyResumeStash:
+    'You have unsaved recordings in progress. Resuming this saved session will replace them. Finished drafts stay in Not Submitted.',
+  cancel: 'Cancel',
+  loadDraft: 'Load Draft',
+  replace: 'Replace',
+} as const;
+
+/**
+ * Saved-session ("stash") copy. User-facing vocabulary is consolidated on two
+ * concepts (2026-07 audit theme C): "Saved sessions" (stash) and
+ * "Not Submitted" (drafts) — don't introduce new synonyms.
+ */
+export const STASH_COPY = {
+  saveForLater: 'Save for Later',
+  savedFull: (max: number): string => `Saved Full (${max})`,
+  atCapacityTitle: 'Saved Sessions Full',
+  atCapacityBody: (max: number): string =>
+    `You can keep up to ${max} saved sessions. Resume or delete one to save another.`,
+  confirmStopTitle: 'Save for Later?',
+  confirmStopBody:
+    'Your active recording will be finished and saved. You can resume this session later to add more.',
+  confirmStopSave: 'Save',
+  cancel: 'Cancel',
+  savedTitle: 'Session Saved',
+  savedBody: 'Your recordings are under Saved Sessions on this screen. Resume them anytime.',
+  saveFailedTitle: 'Save Failed',
+  saveFailedBody:
+    'Could not save your session. Your recordings are still here — please try again or submit them now.',
+  autoSavedTitle: 'Saved for Later',
+  autoSavedBody:
+    "Your network was unstable, so we saved this for you. Open it from Saved Sessions and tap Resume once you're back online.",
+  deleteTitle: 'Delete Saved Session?',
+  deleteBody: 'Audio recordings will be permanently deleted. This cannot be undone.',
+  delete: 'Delete',
+  sectionTitle: (count: number): string => `Saved Sessions (${count})`,
+  audioMissingTitle: 'Audio Files Missing',
+  audioMissingBody: 'All audio files for this saved session have been deleted. It will be removed.',
+  someAudioMissingTitle: 'Some Audio Missing',
+  someAudioMissingBody: (missingCount: number): string =>
+    `${missingCount} audio segment(s) could not be found. Resume with available data?`,
+  resumeAnyway: 'Resume Anyway',
+  resumeFailedTitle: 'Resume Failed',
+  resumeFailedBody: 'Could not restore your session.',
+} as const;
+
+export const ERROR_COPY = {
+  network: 'No internet connection. Please check your network and try again.',
+  server: 'Something went wrong on our end. Please try again in a moment.',
+  timeout: 'The request timed out. Check your connection and try again.',
+  rateLimited: 'Too many requests — wait a moment and try again.',
+  permission: "You don't have permission to do that.",
+  loadFailed: "Couldn't load this right now. Check your connection and try again.",
+  uploadGeneric: 'Upload failed. Please try again.',
+  processingFailedBody:
+    'Something went wrong while generating this note. Retry processing, or copy the details for support.',
+  copyDetails: 'Copy details for support',
+  detailsCopied: 'Details copied',
+} as const;
+
+export const RECOVERY_COPY = {
+  subtitle: 'Recordings saved when a staff member signed out of this device.',
+  emptyBody:
+    'Nothing to recover here. Recordings are saved to this screen when a staff member signs out ' +
+    'with unsent work; restore them to your drafts to review and submit.',
+  timedOutBody:
+    'This device did not finish checking local recovery storage. Try again while staying signed in.',
+} as const;
+
+export const RECORDING_DETAIL_COPY = {
+  processingTitle: 'Processing…',
+  processingBody: 'This usually takes 1-2 minutes.',
+  processingFailedTitle: 'Processing Failed',
+  awaitingMetadataTitle: 'Awaiting Patient Details',
+  awaitingMetadataBody:
+    'This recording was imported and needs patient details before processing can begin. Complete the details on the web app.',
+  audioNotOnDeviceTitle: 'Audio Not on This Device',
+  audioNotOnDeviceBody:
+    'This draft was started on another device, or its local audio was cleared from this one. ' +
+    'Submit it from the device where you recorded it, or delete it here to clean up.',
+} as const;
+
+export const RECORDINGS_LIST_COPY = {
+  searchPlaceholder: 'Search patient or client…',
+  searchAccessibilityLabel: 'Search recordings by patient or client name',
+} as const;
+
+export const SUBMITTED_BANNER_COPY = {
+  title: (count: number): string =>
+    count === 1 ? 'Recording submitted' : `${count} recordings submitted`,
+  loadingRow: 'Loading…',
 } as const;
 
 export const SOAP_SECTION_ACTIONS = {
@@ -69,10 +236,23 @@ export const AUDIO_PLAYER_COPY = {
   disabledWhileRecording:
     'Playback is paused while a recording is in progress. Finish the recording to listen.',
   part: (n: number): string => `Part ${n}`,
+  speed: (rate: number): string => `${rate}x`,
+} as const;
+
+export const RECORDER_TRANSITION_COPY = {
+  /** Toast + screen-reader announcement when swiping away auto-pauses a live recording. */
+  autoPaused: (patientLabel: string): string => `Recording for ${patientLabel} paused`,
+  /** Legacy interruption banner: partial segment saved, auto-resume armed. */
+  interruptedPaused:
+    'Recording paused by an interruption (call or another app) — auto-resuming when it ends.',
+  /** Durable interruption banner: capture finalized as a submittable draft (no auto-resume in v1). */
+  interruptedSaved:
+    'An interruption ended this recording. The audio was saved — tap Continue Recording to add more.',
+  dismiss: 'OK',
 } as const;
 
 export const RECORD_BANNERS = {
-  pendingDraftOffline: 'Draft recording pending upload — connect to Wi-Fi to sync',
+  pendingDraftOffline: 'Draft recording pending upload — connect to the internet to sync',
   pendingDraftOnline: 'Draft saved locally — syncing to server…',
 } as const;
 
@@ -298,7 +478,7 @@ export const REPROCESS_MODELS_COPY = {
   transcriptionLabel: 'Transcription model',
   soapLabel: 'SOAP note model',
   currentPrefix: 'Last used: ',
-  confirm: 'Reprocess ', // trailing space: prevents Android single-word clipping in flex-row (CLAUDE.md UI gotcha)
+  confirm: 'Reprocess', // clipping mitigation now lives inside ui/Button — plain label here
   cancel: 'Cancel',
   failure: 'Could not start reprocessing. Please try again.',
   invalidModel: 'That model is not available for your organization.',
@@ -323,6 +503,7 @@ export const DEVICE_REGISTRATION_BANNER_COPY = {
   body: 'Some features may not work until your device is registered.',
   retry: 'Retry',
   retrying: 'Retrying…',
+  retryFailed: 'Retry failed — check your connection and try again.',
 } as const;
 
 export const THEME_COPY = {

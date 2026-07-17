@@ -102,7 +102,7 @@ export const StaticWaveform = React.memo(function StaticWaveform({
 
   return (
     <View
-      accessibilityRole="adjustable"
+      accessibilityRole="image"
       accessibilityLabel={`Audio waveform. Duration ${Math.floor(duration)} seconds.`}
       onLayout={(e) => setLayoutWidth(e.nativeEvent.layout.width)}
       style={{ height }}

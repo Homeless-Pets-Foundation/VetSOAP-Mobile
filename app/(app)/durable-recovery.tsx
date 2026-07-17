@@ -154,19 +154,19 @@ export default function DurableRecoveryScreen() {
   );
 
   return (
-    <SafeAreaView className="flex-1 bg-surface-base" edges={['top', 'bottom']}>
+    <SafeAreaView className="flex-1 bg-surface" edges={['top', 'bottom']}>
       <View className="flex-row items-center gap-2 px-4 py-3">
-        <IconButton label="Back" onPress={goBack} icon={<ChevronLeft size={24} color={colors.contentBody} />} />
-        <Text className="text-xl font-semibold text-content-strong">Recovered Recordings</Text>
+        <IconButton label="Go back" onPress={goBack} icon={<ChevronLeft size={24} color={colors.contentBody} />} />
+        <Text className="text-display font-semibold text-content-primary">Recovered Recordings</Text>
       </View>
       <ScrollView contentContainerClassName="px-4 pb-8 gap-3">
-        <Text className="text-content-muted mb-2">
+        <Text className="text-content-tertiary mb-2">
           Captivet recovered {recoveries.length === 1 ? 'an unsaved local recording' : `${recoveries.length} unsaved local recordings`}.
           Add patient details, then review and submit — or discard.
         </Text>
         {recoveries.length === 0 && (
           <Card className="p-4">
-            <Text className="text-content-muted">No recordings to recover.</Text>
+            <Text className="text-content-tertiary">No recordings to recover.</Text>
           </Card>
         )}
         {recoveries.map((m) => {
@@ -176,11 +176,11 @@ export default function DurableRecoveryScreen() {
             <Card key={m.recordingId} className="p-4 gap-2">
               <View className="flex-row items-center gap-2">
                 <FileClock size={18} color={colors.contentTertiary} />
-                <Text className="text-content-strong font-medium">Unsaved recording · {formatDuration(m.durationMs)}</Text>
+                <Text className="text-content-primary font-medium">Unsaved recording · {formatDuration(m.durationMs)}</Text>
               </View>
-              <Text className="text-content-muted text-sm">Recorded {formatSavedAt(m.updatedAt)}</Text>
+              <Text className="text-content-tertiary text-body-sm">Recorded {formatSavedAt(m.updatedAt)}</Text>
               {editPending && (
-                <Text className="text-status-danger text-sm">
+                <Text className="text-status-danger text-body-sm">
                   Edit not yet applied — re-apply your edit before submitting, or submit the original audio.
                 </Text>
               )}

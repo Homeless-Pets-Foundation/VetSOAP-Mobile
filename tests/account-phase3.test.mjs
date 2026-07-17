@@ -24,7 +24,7 @@ test('Phase 3 account API uses additive server contracts', async () => {
 });
 
 test('settings account surface is grouped and support links use direct openURL', async () => {
-  const settings = await read('app/(app)/(tabs)/settings.tsx');
+  const settings = await read('app/(app)/settings.tsx');
   for (const label of ['ACCOUNT', 'SECURITY', 'SUPPORT', 'LEGAL', 'LOCAL RECOVERY', 'DANGER ZONE']) {
     assert.match(settings, new RegExp(label));
   }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, Alert, ActivityIndicator, Linking, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
+import { View, Text, Alert, ActivityIndicator, AccessibilityInfo, Linking, Platform, Pressable, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';
@@ -12,15 +12,21 @@ import { Paths } from 'expo-file-system';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
 import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import {
+  DISCARD_SESSION_COPY,
   MULTI_PATIENT_RECORD_FIRST_COPY,
   OVERSIZED_CONFIRM_COPY,
   RECORD_BANNERS,
+  RECORDER_TRANSITION_COPY,
+  REPLACE_SESSION_COPY,
   SILENT_CHECK_COPY,
+  STASH_COPY,
   TEMPLATE_DEFAULT_COPY,
+  UPLOAD_OVERLAY_COPY,
 } from '../../../src/constants/strings';
+import { Toast } from '../../../src/components/Toast';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
-import { stashStorage } from '../../../src/lib/stashStorage';
+import { stashStorage, MAX_STASHES } from '../../../src/lib/stashStorage';
 import { recoveryIntent, type RecoveryIntentReason } from '../../../src/lib/recoveryIntent';
 import {
   getRecordingPermissionsAsync,
@@ -69,6 +75,7 @@ import { breadcrumb, captureException, captureMessage, measurePhase } from '../.
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
+import { friendlyErrorMessage } from '../../../src/lib/errorCopy';
 import { recordingActivity } from '../../../src/lib/recordingActivity';
 import { recordSubmitAttempt } from '../../../src/lib/submitTiming';
 import { setSessionActivity } from '../../../src/lib/sessionActivity';
@@ -83,13 +90,58 @@ import { PatientTabStrip } from '../../../src/components/PatientTabStrip';
 import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../../src/components/SubmitPanel';
 import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
-import { UploadOverlay } from '../../../src/components/UploadOverlay';
+import { UploadOverlay, countBatchCompleted } from '../../../src/components/UploadOverlay';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
 import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
 import { isPimsPatientIdExplicitlyCleared } from '../../../src/lib/pimsPatientIdIntent';
+
+/**
+ * "Truly unsaved" = work that would actually be lost if the session were
+ * discarded: in-memory audio with no committed draft, or a live/paused
+ * recorder. Slots with a `draftSlotId` are durable on disk + server (they
+ * survive as "Not Submitted" cards on Home), so discard/replace flows must
+ * neither count them as at-risk nor delete them.
+ */
+function isTrulyUnsavedSlot(s: PatientSlot): boolean {
+  return (
+    (slotHasRecoverableAudio(s) && !s.draftSlotId && s.uploadStatus !== 'success') ||
+    s.audioState === 'recording' ||
+    s.audioState === 'paused'
+  );
+}
+
+/**
+ * Draft ids for every slot committed as a draft — the preserve list for
+ * discardCurrentSession. `excludeSlotIds` drops slots whose draftSlotId does
+ * NOT identify a surviving local draft (resumed-from-stash slots until a
+ * fresh autoSaveDraft commits): preserving those made discard skip
+ * deleteSlotDraft, stranding the server draft as a "Not Submitted" row with
+ * no audio after the stash release deleted the only copy (Codex P2, PR #143).
+ */
+function collectPreserveDraftSlotIds(
+  slots: PatientSlot[],
+  excludeSlotIds?: ReadonlySet<string>
+): string[] {
+  const ids: string[] = [];
+  for (const s of slots) {
+    if (s.draftSlotId && !excludeSlotIds?.has(s.id)) ids.push(s.draftSlotId);
+  }
+  return ids;
+}
+
+/**
+ * Announce a transition for screen readers on iOS only. The on-card status
+ * badge and the interruption banner already carry `accessibilityLiveRegion`
+ * (Android-only), so an unconditional announce here double-speaks every
+ * transition under TalkBack — mirror the iOS gating Toast/CopiedToast use
+ * (Codex P2, PR #143).
+ */
+function announceForIOS(message: string): void {
+  if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(message);
+}
 
 function PermissionGate({ onGranted }: { onGranted: () => void }) {
   const { scale } = useResponsive();
@@ -465,11 +517,13 @@ function scheduleNonUrgentWork(
 }
 
 /** Promise-wrapped Alert.alert offering Upload Anyway when silence-check trips. */
-function confirmSilentUpload(): Promise<boolean> {
+function confirmSilentUpload(opts?: { durable?: boolean }): Promise<boolean> {
   return new Promise((resolve) => {
     Alert.alert(
       SILENT_CHECK_COPY.title,
-      SILENT_CHECK_COPY.body,
+      // Durable captures can't open Edit Recording, so the standard body's
+      // "verify in Edit Recording" instruction would be impossible to follow.
+      opts?.durable ? SILENT_CHECK_COPY.bodyDurable : SILENT_CHECK_COPY.body,
       [
         { text: SILENT_CHECK_COPY.cancel, style: 'cancel', onPress: () => resolve(false) },
         { text: SILENT_CHECK_COPY.upload, style: 'default', onPress: () => resolve(true) },
@@ -507,6 +561,7 @@ function RecordingSession() {
   const user = useAuthUser();
   const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
   const recorder = useAudioRecorder();
+  const colors = useThemeColors();
   const { width: screenWidth } = useWindowDimensions();
   const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
   const [preferredTemplateId, setPreferredTemplateId] = useState<string | null | undefined>(undefined);
@@ -610,17 +665,34 @@ function RecordingSession() {
     }
   }, [deleteLocalSlotDraft]);
 
+  // Synchronous mirror for guards: while a Submit All batch runs, the whole
+  // session is frozen (even with the overlay hidden via the escape hatch), so
+  // no new slot/recording — and no metadata edit — can be created and then
+  // silently discarded by the post-batch resetSession() (Codex P1, PR #143).
+  // Declared here (before handleUpdateForm) to avoid a TDZ reference; its
+  // value is refreshed each render right after the isSubmittingAll state below.
+  const isSubmittingAllRef = useRef(false);
+
   /** Metadata edits retain the stable upload intent and any complete R2 hint. */
   const handleUpdateForm = useCallback(
     (slotId: string, field: keyof CreateRecording, value: string | boolean | undefined) => {
+      // Frozen during Submit All: the upload loop holds a pre-edit slot
+      // snapshot (edits wouldn't reach the server) and the post-batch reset
+      // would discard them anyway (Codex P1, PR #143).
+      if (isSubmittingAllRef.current) return;
       updateForm(slotId, field, value);
     },
     [updateForm]
   );
 
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
+  // Refresh the guard mirror declared above handleUpdateForm each render.
+  isSubmittingAllRef.current = isSubmittingAll;
   const [submittingSlotId, setSubmittingSlotId] = useState<string | null>(null);
-  const [totalSlotsToUpload, setTotalSlotsToUpload] = useState(0);
+  // Slot ids in the current submit batch — UploadOverlay scopes its
+  // progress math to these (WP6: cross-batch counting inflated progress).
+  const [batchSlotIds, setBatchSlotIds] = useState<string[]>([]);
+  const [uploadOverlayHidden, setUploadOverlayHidden] = useState(false);
   const [isStashing, setIsStashing] = useState(false);
   const [finishingDraftSlotId, setFinishingDraftSlotId] = useState<string | null>(null);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
@@ -632,6 +704,15 @@ function RecordingSession() {
   // The AppState handler reads this from a ref — its effect deps are pinned
   // to avoid re-subscribing AppState on every state mutation.
   const interruptionPendingResumeRef = useRef<{ slotId: string } | null>(null);
+  // Durable interruptions finalize the recording (no auto-resume in v1); this
+  // drives an explanatory, dismissible banner so the capture doesn't silently
+  // flip from "Recording…" to "Recording Complete" mid-exam.
+  const [durableInterruptionNotice, setDurableInterruptionNotice] = useState(false);
+  // Transient toast shown when swiping away from a live recording auto-pauses
+  // it — without this the only feedback is a haptic, and a vet can keep
+  // talking while nothing records.
+  const [pauseToast, setPauseToast] = useState<string | null>(null);
+  const hidePauseToast = useCallback(() => setPauseToast(null), []);
   const netInfo = useNetInfo();
   const isConnected = netInfo.isConnected;
   // Derives a coarse connection descriptor for telemetry. Don't leak SSIDs or
@@ -670,6 +751,21 @@ function RecordingSession() {
   const pendingStashRef = useRef(false);
   // Track pending draft for "stop recorder then auto-save draft" flow
   const pendingDraftSlotIdRef = useRef<string | null>(null);
+  // Slot ids whose CURRENT audio has not yet been persisted by autoSaveDraft
+  // (save in flight, save failed, or save still pending in the deferred
+  // effect). draftSlotId alone only proves an older snapshot was saved —
+  // treating it as safe let a discard silently drop a freshly recorded
+  // segment (Codex P1, PR #143). Cleared per-slot on save success and
+  // wholesale on session reset/discard.
+  const unsyncedDraftAudioRef = useRef<Set<string>>(new Set());
+  // Slot ids restored from a stash whose retained draftSlotId does NOT map to
+  // a surviving local draft (stashing deleted it — the stash owns the audio).
+  // Distinct from unsyncedDraftAudioRef: an in-flight/failed autoSaveDraft
+  // still has an OLDER durable snapshot worth preserving on discard, whereas
+  // these slots have none — preserving their draftSlotId strands the server
+  // draft row as an audio-less "Not Submitted" card (Codex P2, PR #143).
+  // Cleared per-slot on autoSaveDraft success, wholesale on discard.
+  const stashResumedSlotIdsRef = useRef<Set<string>>(new Set());
   const pendingDraftMinSegmentCountRef = useRef<number>(0);
   const pendingDraftRecoveryReasonRef = useRef<Map<string, RecoveryIntentReason>>(new Map());
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
@@ -689,15 +785,26 @@ function RecordingSession() {
   // Guard: track which slot IDs are actively uploading to prevent double-submission
   // across React render batches (useRef is synchronous; useState is not).
   const uploadingSlotIdsRef = useRef<Set<string>>(new Set());
+  // Guard: a slot marked for submission may still finish its deferred local draft save,
+  // but it must not create a new server-side draft row while upload is in flight.
+  const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
   const isSlotUploadActive = useCallback((slotId: string): boolean => {
+    // A Submit All batch freezes the entire session — even a slot NOT in the
+    // batch must not be mutated, because the batch's success path resets the
+    // whole session and would discard it (Codex P1, PR #143).
+    if (isSubmittingAllRef.current) return true;
     if (uploadingSlotIdsRef.current.has(slotId)) return true;
+    // Slots queued behind the current upload in a Submit All batch exist only
+    // in submitIntentSlotIdsRef (uploadStatus still 'pending'), yet the batch
+    // loop holds a snapshot of them. With the overlay hidden they must be as
+    // locked as the actively-uploading slot — otherwise continue/edit/delete
+    // on a queued slot makes the loop upload stale audio or files the UI just
+    // deleted (Codex P1, PR #143).
+    if (submitIntentSlotIdsRef.current.has(slotId)) return true;
     return sessionRef.current.slots.some(
       (slot) => slot.id === slotId && slot.uploadStatus === 'uploading',
     );
   }, []);
-  // Guard: a slot marked for submission may still finish its deferred local draft save,
-  // but it must not create a new server-side draft row while upload is in flight.
-  const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
   // Guard: if upload wins the race against deferred local draft persistence, auto-save
   // must immediately clean up the late draft instead of leaving it behind locally.
   const completedUploadSlotIdsRef = useRef<Set<string>>(new Set());
@@ -1066,6 +1173,10 @@ function RecordingSession() {
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       breadcrumb('record', 'durable_interruption_finished', { slot_id: slotId });
+      // Explain the silent finalize: the card flips from "Recording…" to
+      // "Recording Complete" with no other cue, mid-exam.
+      setDurableInterruptionNotice(true);
+      announceForIOS(RECORDER_TRANSITION_COPY.interruptedSaved);
       recorder.resetWithoutDelete();
       return;
     }
@@ -1081,8 +1192,35 @@ function RecordingSession() {
     interruptionPendingResumeRef.current = { slotId };
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     breadcrumb('record', 'interruption_paused', { slot_id: slotId });
+    // The banner below is Android-only via accessibilityLiveRegion; announce
+    // explicitly so iOS VoiceOver users hear the pause too (iOS-gated to avoid
+    // a double announcement on Android).
+    announceForIOS(RECORDER_TRANSITION_COPY.interruptedPaused);
     recorder.resetWithoutDelete();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally fires only on the recorder transition; reading session/refs from current render is correct
+  }, [recorder.state]);
+
+  // A fresh recording supersedes the durable-interruption explainer.
+  useEffect(() => {
+    if (recorder.state === 'recording') setDurableInterruptionNotice(false);
+  }, [recorder.state]);
+
+  // Announce recorder transitions for screen readers. The on-card badges use
+  // accessibilityLiveRegion, which is Android-only — iOS VoiceOver users got
+  // no feedback that recording started/paused/resumed/finished (WP29).
+  const prevRecorderStateRef = useRef(recorder.state);
+  useEffect(() => {
+    const prev = prevRecorderStateRef.current;
+    const next = recorder.state;
+    prevRecorderStateRef.current = next;
+    if (prev === next) return;
+    if (next === 'recording') {
+      announceForIOS(prev === 'paused' ? 'Recording resumed' : 'Recording started');
+    } else if (next === 'paused') {
+      announceForIOS('Recording paused');
+    } else if (next === 'stopped' && (prev === 'recording' || prev === 'paused')) {
+      announceForIOS('Recording finished');
+    }
   }, [recorder.state]);
 
   // Android audio-focus interruption bridge.
@@ -1264,14 +1402,16 @@ function RecordingSession() {
           safeDeleteFile(seg.uri);
         }
       });
-      // Best-effort delete any server recording left mid-confirm — the user is
-      // abandoning this session entirely.
-      deleteOrphanServerRecording(slot);
-      // Also delete the auto-saved draft (local + server) so the discarded
-      // recording doesn't linger as a "Not Submitted" row on Home — unless
-      // the caller asked us to keep it (e.g. resume-from-Home is about to
-      // load that draft and would otherwise read a freshly-deleted key).
+      // Delete the auto-saved draft (local + server) and any mid-confirm
+      // server recording so the discarded work doesn't linger as a "Not
+      // Submitted" row on Home — unless the caller asked us to keep the
+      // draft (e.g. resume-from-Home is about to load it). The orphan
+      // server-recording delete MUST stay inside this preserve gate: a
+      // preserved draft's pendingConfirm points at that server row, and for
+      // proof-only recovery drafts with no local audio the upload can never
+      // be restarted once the row is gone (Codex P1, PR #143).
       if (!slot.draftSlotId || !preserve.has(slot.draftSlotId)) {
+        deleteOrphanServerRecording(slot);
         // A FINISHED durable slot keeps its audio in the native audio.aac; the
         // recorder.reset() above only discards the still-BOUND live recorder, so
         // an unbound finished durable slot would survive on disk and the launch
@@ -1295,29 +1435,46 @@ function RecordingSession() {
     // segment refs are gone, but releaseResumedStash works off the stored id.
     releaseResumedStashIfAny();
 
+    unsyncedDraftAudioRef.current.clear();
+    stashResumedSlotIdsRef.current.clear();
     resetSession();
   }, [session.slots, session.recorderBoundToSlotId, recorder, unbindRecorder, resetSession, releaseResumedStashIfAny, deleteOrphanServerRecording, deleteSlotDraft, cancelScheduledDraft, user?.id]);
 
-  // Navigation guard: only active when there are truly unsaved recordings (not yet uploaded)
-  const unsavedCount = session.slots.filter(
-    (s) => (slotHasRecoverableAudio(s) && s.uploadStatus !== 'success') ||
-            s.audioState === 'recording' || s.audioState === 'paused'
-  ).length;
+  // Navigation guard: only active when there are truly unsaved recordings.
+  // Drafted slots (draftSlotId set) are durable on disk + server and survive
+  // discard via the preserve list below, so they don't arm the guard —
+  // UNLESS their newest audio is still waiting on autoSaveDraft (see
+  // unsyncedDraftAudioRef).
+  const isSlotTrulyUnsaved = useCallback(
+    (s: PatientSlot): boolean =>
+      isTrulyUnsavedSlot(s) ||
+      (slotHasRecoverableAudio(s) &&
+        s.uploadStatus !== 'success' &&
+        (unsyncedDraftAudioRef.current.has(s.id) || pendingDraftSlotIdRef.current === s.id)),
+    []
+  );
+  const unsavedCount = session.slots.filter(isSlotTrulyUnsaved).length;
+  const draftedSlotCount = session.slots.filter((s) => s.draftSlotId).length;
 
   usePreventRemove(unsavedCount > 0 && !isSubmittingAll, ({ data }) => {
     Alert.alert(
-      'Discard Recordings?',
-      unsavedCount === 1
-        ? 'You have 1 unsubmitted recording. Leaving will discard it.'
-        : `You have ${unsavedCount} unsubmitted recordings. Leaving will discard them.`,
+      DISCARD_SESSION_COPY.title,
+      draftedSlotCount > 0
+        ? DISCARD_SESSION_COPY.bodyWithDrafts(unsavedCount)
+        : DISCARD_SESSION_COPY.body(unsavedCount),
       [
-        { text: 'Stay', style: 'cancel' },
+        { text: DISCARD_SESSION_COPY.stay, style: 'cancel' },
         {
-          text: 'Discard',
+          text: DISCARD_SESSION_COPY.discard,
           style: 'destructive',
           onPress: () => {
             (async () => {
-              await discardCurrentSession();
+              await discardCurrentSession({
+                preserveDraftSlotIds: collectPreserveDraftSlotIds(
+                  sessionRef.current.slots,
+                  stashResumedSlotIdsRef.current
+                ),
+              });
               navigation.dispatch(data.action);
             })().catch(() => {});
           },
@@ -1348,10 +1505,21 @@ function RecordingSession() {
       Haptics.selectionAsync().catch(() => {});
       const leavingSlotId = session.recorderBoundToSlotId;
       if (leavingSlotId && recorder.state === 'recording') {
+        const leavingSlot = session.slots.find((s) => s.id === leavingSlotId);
+        const patientLabel =
+          leavingSlot?.formData.patientName?.trim() ||
+          `Patient ${session.slots.findIndex((s) => s.id === leavingSlotId) + 1}`;
         (async () => {
           try {
             await recorder.pause();
             setAudioState(leavingSlotId, 'paused');
+            // Visible + spoken feedback — the auto-pause is otherwise silent
+            // (haptic only) and a vet could keep talking while nothing records.
+            // The Toast host owns the announcement (iOS-gated announce +
+            // Android live region), so no explicit call here — that would
+            // double-speak on both platforms (Codex P2, PR #143).
+            const message = RECORDER_TRANSITION_COPY.autoPaused(patientLabel);
+            setPauseToast(message);
           } catch {
             try { await recorder.stop(); } catch {}
           }
@@ -1360,7 +1528,7 @@ function RecordingSession() {
       if (opts?.fromSwipe) swipeChangeRef.current = true;
       setActiveIndex(index);
     },
-    [session.activeIndex, session.recorderBoundToSlotId, recorder, setActiveIndex, setAudioState]
+    [session.activeIndex, session.recorderBoundToSlotId, session.slots, recorder, setActiveIndex, setAudioState]
   );
 
   const handleScrollEnd = useCallback(
@@ -2233,7 +2401,7 @@ function RecordingSession() {
           // Silent-audio guard from the synthetic durable peak (fails closed).
           const durableSilence = await checkSilentAudio(slot);
           if (durableSilence.silent) {
-            const override = await confirmSilentUpload();
+            const override = await confirmSilentUpload({ durable: true });
             if (!override) {
               const silentErr = new Error(
                 'This recording appears silent. Please verify microphone input and record again before uploading.',
@@ -2744,13 +2912,17 @@ function RecordingSession() {
           return null;
         }
 
+        // Errors crafted at our own tagged throw sites (silent_check, presign,
+        // r2_put, confirm, create_draft) carry user-facing messages — keep
+        // them. Everything else (native uploader internals, unexpected
+        // shapes) maps to safe copy; raw detail stays in telemetry below.
         let msg: string;
-        if (error instanceof TypeError && /network/i.test(error.message)) {
-          msg = 'No internet connection. Please check your network and try again.';
-        } else if (error instanceof Error) {
+        if (error instanceof ApiError || error instanceof TypeError) {
+          msg = friendlyErrorMessage(error, 'upload');
+        } else if (error instanceof Error && getUploadPhase(error) !== 'unknown') {
           msg = error.message;
         } else {
-          msg = 'Upload failed. Please try again.';
+          msg = friendlyErrorMessage(error, 'upload');
         }
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
 
@@ -3045,6 +3217,10 @@ function RecordingSession() {
 
   const autoSaveDraft = useCallback(
     async (slot: PatientSlot) => {
+      // Guard bookkeeping: while this save is in flight (or after it fails),
+      // the slot's newest audio exists only in session state, so the
+      // discard/replace guards must not treat draftSlotId as proof of safety.
+      unsyncedDraftAudioRef.current.add(slot.id);
       try {
         // Phase 1: persist the local draft (audio + metadata). Always runs
         // regardless of connectivity so the user can resume offline.
@@ -3088,6 +3264,11 @@ function RecordingSession() {
           reason: recoveryReason,
         });
         invalidateRecordingCaches(queryClient, 'draft_changed');
+
+        // Local persistence succeeded — the current audio snapshot is durable
+        // and draftSlotId identifies a real local draft again.
+        unsyncedDraftAudioRef.current.delete(slot.id);
+        stashResumedSlotIdsRef.current.delete(slot.id);
 
         if (completedUploadSlotIdsRef.current.has(slot.id)) {
           deleteLocalSlotDraft(slot);
@@ -3251,10 +3432,7 @@ function RecordingSession() {
       releaseResumedStashIfAny();
       resetSession();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-      Alert.alert(
-        'Saved for Later',
-        "Your network was unstable, so we saved this for you. Open it from Saved Sessions and tap Resume once you're back online."
-      );
+      Alert.alert(STASH_COPY.autoSavedTitle, STASH_COPY.autoSavedBody);
       return true;
     },
     [
@@ -3304,7 +3482,7 @@ function RecordingSession() {
 
       markSubmitIntent([slotId]);
       setSubmittingSlotId(slotId);
-      setTotalSlotsToUpload(1);
+      setBatchSlotIds([slotId]);
 
       (async () => {
         try {
@@ -3327,7 +3505,10 @@ function RecordingSession() {
             } else {
               releaseResumedStashIfAny();
               resetSession();
-              router.push(`/recordings/${serverRecordingId}` as `/recordings/${string}`);
+              // from=submit: the detail screen's Back must return to the
+              // recordings list, not router.back() into this just-reset form
+              // (Codex P2, PR #143).
+              router.push(`/recordings/${serverRecordingId}?from=submit` as `/recordings/${string}`);
             }
           } else {
             // Upload returned null — uploadSlot already set the on-card error
@@ -3340,12 +3521,12 @@ function RecordingSession() {
         } finally {
           clearSubmitIntent([slotId]);
           setSubmittingSlotId(null);
-          setTotalSlotsToUpload(0);
+          setBatchSlotIds([]);
         }
       })().catch(() => {
         clearSubmitIntent([slotId]);
         setSubmittingSlotId(null);
-        setTotalSlotsToUpload(0);
+        setBatchSlotIds([]);
       });
     },
     [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]
@@ -3402,7 +3583,7 @@ function RecordingSession() {
     const slotIdsToUpload = slotsToUpload.map((slot) => slot.id);
     markSubmitIntent(slotIdsToUpload);
     setIsSubmittingAll(true);
-    setTotalSlotsToUpload(slotsToUpload.length);
+    setBatchSlotIds(slotIdsToUpload);
     trackEvent({ name: 'submit_all_attempted', props: { slot_count: slotsToUpload.length } });
 
     // Track NetInfo transitions only during the active upload loop. Each
@@ -3487,7 +3668,7 @@ function RecordingSession() {
         clearSubmitIntent(slotIdsToUpload);
         setIsSubmittingAll(false);
         setSubmittingSlotId(null);
-        setTotalSlotsToUpload(0);
+        setBatchSlotIds([]);
         try { netUnsub(); } catch { /* noop */ }
         setSessionActivity('idle');
       }
@@ -3495,13 +3676,19 @@ function RecordingSession() {
       clearSubmitIntent(slotIdsToUpload);
       setIsSubmittingAll(false);
       setSubmittingSlotId(null);
-      setTotalSlotsToUpload(0);
+      setBatchSlotIds([]);
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
   }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordFirstEnabled, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
+    // Frozen during Submit All — a new patient created mid-batch would be wiped
+    // by the post-batch resetSession() (Codex P1, PR #143).
+    if (isSubmittingAllRef.current) {
+      showUploadInProgressAlert();
+      return;
+    }
     const shouldWarnRecordFirstMultiPatient =
       recordFirstEnabled &&
       sessionRef.current.slots.length === 1 &&
@@ -3559,7 +3746,7 @@ function RecordingSession() {
           releaseResumedStashIfAny();
           resetSession();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          Alert.alert('Session Saved', 'Your recordings have been saved. You can resume them anytime from this screen.');
+          Alert.alert(STASH_COPY.savedTitle, STASH_COPY.savedBody);
         } else {
           // Only show the error dialog when there are recordings to recover.
           // If no segments exist the recording failed at the native level and a
@@ -3572,12 +3759,12 @@ function RecordingSession() {
           // write fail) shows no feedback and the user thinks it saved.
           const hasRecordings = postFlushSession.slots.some(slotHasRecoverableAudio);
           if (hasRecordings) {
-            Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
+            Alert.alert(STASH_COPY.saveFailedTitle, STASH_COPY.saveFailedBody);
           }
         }
       } catch (error) {
         if (__DEV__) console.error('[Record] stash failed:', error);
-        Alert.alert('Save Failed', 'Could not save your session. Your recordings are still here — please try again or submit them now.');
+        Alert.alert(STASH_COPY.saveFailedTitle, STASH_COPY.saveFailedBody);
       } finally {
         setIsStashing(false);
       }
@@ -3602,12 +3789,12 @@ function RecordingSession() {
     // If recorder is active, stop it first — the effect will trigger executeStash
     if (session.recorderBoundToSlotId && (recorder.state === 'recording' || recorder.state === 'paused')) {
       Alert.alert(
-        'Save for Later?',
-        'Your active recording will be saved. You can resume this session later to add more context.',
+        STASH_COPY.confirmStopTitle,
+        STASH_COPY.confirmStopBody,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: STASH_COPY.cancel, style: 'cancel' },
           {
-            text: 'Save',
+            text: STASH_COPY.confirmStopSave,
             onPress: () => {
               pendingStashRef.current = true;
               (async () => {
@@ -3627,14 +3814,9 @@ function RecordingSession() {
       return;
     }
 
-    Alert.alert(
-      'Save for Later?',
-      'Your recordings will be saved. You can resume this session later to add more context.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Save', onPress: executeStash },
-      ]
-    );
+    // No recorder is live: stashing is non-destructive and fully reversible,
+    // so save immediately — the success alert is the confirmation.
+    executeStash();
   }, [session.recorderBoundToSlotId, recorder, executeStash]);
 
   const loadDraft = useCallback(
@@ -3750,7 +3932,12 @@ function RecordingSession() {
     // the others (they were never the user's intent to throw away).
     const preserveIds = new Set<string>([draftSlotId]);
     for (const s of currentSlots) {
-      if (s.draftSlotId) preserveIds.add(s.draftSlotId);
+      // Resumed-stash slots are excluded: their retained draftSlotId doesn't
+      // map to a surviving local draft (see stashResumedSlotIdsRef), and
+      // preserving it would strand the server row audio-less on discard.
+      if (s.draftSlotId && !stashResumedSlotIdsRef.current.has(s.id)) {
+        preserveIds.add(s.draftSlotId);
+      }
     }
     const preserveList = Array.from(preserveIds);
 
@@ -3764,26 +3951,19 @@ function RecordingSession() {
       return;
     }
 
-    // "Truly unsaved" = work that would actually be lost if we reset the
-    // session: in-memory segments with no draft saved, or a live/paused
-    // recorder. Drafted slots are durable on disk + server, so loading a
-    // different draft doesn't lose them — we skip the warning dialog and
-    // let the preserve list keep their rows intact.
-    const trulyUnsaved = currentSlots.some(
-      (s) =>
-        (slotHasRecoverableAudio(s) && !s.draftSlotId && s.uploadStatus !== 'success') ||
-        s.audioState === 'recording' ||
-        s.audioState === 'paused'
-    );
+    // Drafted slots are durable on disk + server, so loading a different
+    // draft doesn't lose them — we skip the warning dialog and let the
+    // preserve list keep their rows intact (see isTrulyUnsavedSlot).
+    const trulyUnsaved = currentSlots.some(isSlotTrulyUnsaved);
 
     if (trulyUnsaved) {
       Alert.alert(
-        'Replace Current Session?',
-        'You have unsaved recordings in progress. Loading this draft will replace them.',
+        REPLACE_SESSION_COPY.title,
+        REPLACE_SESSION_COPY.bodyLoadDraft,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: REPLACE_SESSION_COPY.cancel, style: 'cancel' },
           {
-            text: 'Load Draft',
+            text: REPLACE_SESSION_COPY.loadDraft,
             style: 'destructive',
             onPress: () => {
               (async () => {
@@ -3964,6 +4144,30 @@ function RecordingSession() {
             const slots = await resumeStashedSession(stashId);
             if (slots) {
               restoreSession(slots);
+              // RESTORE_SESSION replaced every slot — flags for the previous
+              // session's slot ids are moot (and must not leak onto restored
+              // slots if an id ever recurs).
+              unsyncedDraftAudioRef.current.clear();
+              stashResumedSlotIdsRef.current.clear();
+              // Stashing DELETED each slot's local draft (the stash became the
+              // audio owner) and resume only restores the draftSlotId
+              // identifier for server-draft promotion — the stash dir now
+              // holds the ONLY copy. Mark every restored slot with audio as
+              // unsynced so discard/replace flows warn instead of trusting
+              // the retained draftSlotId as proof of a durable draft; the
+              // flag clears when a new draft commit or upload re-secures the
+              // audio (Codex P1, PR #143).
+              for (const restored of slots) {
+                if (slotHasRecoverableAudio(restored) && restored.uploadStatus !== 'success') {
+                  unsyncedDraftAudioRef.current.add(restored.id);
+                }
+                // Any retained draftSlotId points at a draft that stashing
+                // deleted — exclude it from discard preserve lists until a
+                // fresh autoSaveDraft commits (see stashResumedSlotIdsRef).
+                if (restored.draftSlotId && restored.uploadStatus !== 'success') {
+                  stashResumedSlotIdsRef.current.add(restored.id);
+                }
+              }
               // Pin the stash entry so orphan cleanup cannot delete the audio
               // directory the active session is still reading from. The pin is
               // released when the session is resolved (upload / discard / re-stash);
@@ -3979,40 +4183,55 @@ function RecordingSession() {
         })().catch(() => {});
       };
 
-      if (hasUnsavedRecordings) {
+      const currentSlots = sessionRef.current.slots;
+      const preserveDraftSlotIds = collectPreserveDraftSlotIds(
+        currentSlots,
+        stashResumedSlotIdsRef.current
+      );
+      const trulyUnsaved = currentSlots.some(isSlotTrulyUnsaved);
+
+      if (trulyUnsaved) {
         Alert.alert(
-          'Replace Current Session?',
-          'Your current recordings will be lost. Are you sure you want to resume the saved session?',
+          REPLACE_SESSION_COPY.title,
+          REPLACE_SESSION_COPY.bodyResumeStash,
           [
-            { text: 'Cancel', style: 'cancel' },
+            { text: REPLACE_SESSION_COPY.cancel, style: 'cancel' },
             {
-              text: 'Replace',
+              text: REPLACE_SESSION_COPY.replace,
               style: 'destructive',
               onPress: () => {
                 (async () => {
-                  await discardCurrentSession();
+                  await discardCurrentSession({ preserveDraftSlotIds });
                   doResume();
                 })().catch(() => {});
               },
             },
           ]
         );
+      } else if (hasUnsavedRecordings) {
+        // Only drafted (durable) slots in the session — nothing is actually at
+        // risk, so skip the scary dialog, but still discard-with-preserve so
+        // debounce timers/stash pins are cleaned up before the restore.
+        (async () => {
+          await discardCurrentSession({ preserveDraftSlotIds });
+          doResume();
+        })().catch(() => {});
       } else {
         doResume();
       }
     },
-    [hasUnsavedRecordings, discardCurrentSession, resumeStashedSession, markResumed, restoreSession]
+    [hasUnsavedRecordings, isSlotTrulyUnsaved, discardCurrentSession, resumeStashedSession, markResumed, restoreSession]
   );
 
   const handleDeleteStash = useCallback(
     (stashId: string) => {
       Alert.alert(
-        'Delete Saved Session?',
-        'Audio recordings will be permanently deleted. This cannot be undone.',
+        STASH_COPY.deleteTitle,
+        STASH_COPY.deleteBody,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: STASH_COPY.cancel, style: 'cancel' },
           {
-            text: 'Delete',
+            text: STASH_COPY.delete,
             style: 'destructive',
             onPress: () => {
               deleteStash(stashId).catch(() => {});
@@ -4105,6 +4324,23 @@ function RecordingSession() {
 
   // Upload overlay visibility
   const showOverlay = isSubmittingAll || submittingSlotId !== null || session.slots.some((s) => s.uploadStatus === 'uploading');
+
+  // 1-based position of the slot currently uploading within the batch. The
+  // completed count can NOT stand in for this: it only counts successes, so
+  // after a failed slot it stalls and the hidden-overlay banner would keep
+  // announcing "Uploading 1 of N" for every later slot (Codex P2, PR #143).
+  const activeBatchPosition = (() => {
+    if (submittingSlotId) {
+      const idx = batchSlotIds.indexOf(submittingSlotId);
+      if (idx >= 0) return idx + 1;
+    }
+    return countBatchCompleted(session.slots, batchSlotIds) + 1;
+  })();
+
+  // Un-hide for the next batch once the current one fully resolves.
+  useEffect(() => {
+    if (!showOverlay && uploadOverlayHidden) setUploadOverlayHidden(false);
+  }, [showOverlay, uploadOverlayHidden]);
 
   // Pagination indicator
   const paginationText =
@@ -4217,12 +4453,21 @@ function RecordingSession() {
               <Button
                 variant="secondary"
                 size="sm"
-                onPress={handleStashSession}
-                disabled={isAtCapacity || isAnyUploading}
+                onPress={() => {
+                  // Stay tappable at capacity so the limit and remedy are
+                  // explained instead of a silently dead 'Saved Full' button.
+                  if (isAtCapacity) {
+                    Alert.alert(STASH_COPY.atCapacityTitle, STASH_COPY.atCapacityBody(MAX_STASHES));
+                    return;
+                  }
+                  handleStashSession();
+                }}
+                disabled={isAnyUploading}
                 loading={isStashing}
                 accessibilityLabel="Save session for later"
+                accessibilityState={{ disabled: isAnyUploading }}
               >
-                {isAtCapacity ? 'Saved Full' : 'Save for Later'}
+                {isAtCapacity ? STASH_COPY.savedFull(MAX_STASHES) : STASH_COPY.saveForLater}
               </Button>
             </View>
           )}
@@ -4233,7 +4478,7 @@ function RecordingSession() {
       {showStashList && (
         <View className="px-5 pb-2">
           <Text className="text-body-sm font-semibold text-content-secondary mb-2">
-            Saved Sessions ({stashCount})
+            {STASH_COPY.sectionTitle(stashCount)}
           </Text>
           {stashes.map((stash) => (
             <StashedSessionCard
@@ -4244,6 +4489,27 @@ function RecordingSession() {
             />
           ))}
         </View>
+      )}
+
+      {/* Compact progress banner while the upload overlay is hidden */}
+      {showOverlay && uploadOverlayHidden && (
+        <Pressable
+          onPress={() => setUploadOverlayHidden(false)}
+          accessibilityRole="button"
+          accessibilityLabel={UPLOAD_OVERLAY_COPY.backgroundProgress(
+            activeBatchPosition,
+            Math.max(batchSlotIds.length, 1)
+          )}
+          className="mx-5 mb-2 px-3 py-3 bg-brand-50 dark:bg-surface-sunken border border-brand-300 dark:border-border-default rounded-lg flex-row items-center"
+        >
+          <ActivityIndicator size="small" color={colors.brand500} />
+          <Text className="text-body-sm font-medium text-content-body flex-1 ml-3" numberOfLines={2}>
+            {UPLOAD_OVERLAY_COPY.backgroundProgress(
+              activeBatchPosition,
+              Math.max(batchSlotIds.length, 1)
+            )}
+          </Text>
+        </Pressable>
       )}
 
       {/* Pending Drafts Banner */}
@@ -4258,16 +4524,31 @@ function RecordingSession() {
       {/* Interruption Banner — call/Siri/headphones interrupted recording.
           Stays visible from the moment the partial segment is saved until
           AppState returns to 'active' and recording auto-resumes. */}
-      {interruptionPendingResume && (
+      {(interruptionPendingResume || durableInterruptionNotice) && (
         <View
           className="mx-5 mb-2 px-3 py-3 bg-status-warning border-2 border-status-warning rounded-lg flex-row items-center"
           accessibilityLiveRegion="assertive"
           accessibilityRole="alert"
         >
-          <View className="w-2 h-2 rounded-full bg-warning-500 mr-3" />
+          <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-3" />
           <Text className="text-body-sm font-semibold text-status-warning flex-1">
-            Recording paused for call — auto-resuming when you return.
+            {interruptionPendingResume
+              ? RECORDER_TRANSITION_COPY.interruptedPaused
+              : RECORDER_TRANSITION_COPY.interruptedSaved}
           </Text>
+          {!interruptionPendingResume && (
+            <Pressable
+              onPress={() => setDurableInterruptionNotice(false)}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss interruption notice"
+              hitSlop={10}
+              style={{ minHeight: 44, justifyContent: 'center' }}
+            >
+              <Text className="text-body-sm font-semibold text-status-warning underline">
+                {RECORDER_TRANSITION_COPY.dismiss}
+              </Text>
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -4309,6 +4590,14 @@ function RecordingSession() {
           accessibilityRole="adjustable"
           accessibilityLabel={`Patient ${session.activeIndex + 1} of ${session.slots.length}`}
           accessibilityLiveRegion="polite"
+          // adjustable without actions is a lie to screen readers — wire the
+          // swipe gestures to actually change the active patient.
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(event) => {
+            const delta = event.nativeEvent.actionName === 'increment' ? 1 : -1;
+            const next = Math.max(0, Math.min(session.activeIndex + delta, session.slots.length - 1));
+            if (next !== session.activeIndex) selectPatientIndex(next);
+          }}
         >
           {paginationText ? (
             <Text className="text-caption text-content-tertiary">{paginationText}</Text>
@@ -4339,12 +4628,14 @@ function RecordingSession() {
 
       {/* Upload overlay */}
       <UploadOverlay
-        visible={showOverlay}
+        visible={showOverlay && !uploadOverlayHidden}
         slots={session.slots}
         currentSlotId={submittingSlotId}
-        totalSlotsToUpload={totalSlotsToUpload}
+        batchSlotIds={batchSlotIds}
         isMulti={isSubmittingAll}
+        onHide={() => setUploadOverlayHidden(true)}
       />
+      <Toast message={pauseToast ?? ''} visible={pauseToast !== null} onHide={hidePauseToast} />
     </SafeAreaView>
   );
 }

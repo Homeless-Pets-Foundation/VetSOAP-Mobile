@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Text, View } from 'react-native';
+import { AccessibilityInfo, Text, View } from 'react-native';
 import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { Check, PawPrint } from 'lucide-react-native';
 import { PROCESSING_STEP_LABELS, PROCESSING_WARMTH } from '../constants/strings';
@@ -15,6 +15,17 @@ const PROCESSING_STEPS = [
 
 const STATUS_ORDER = ['uploading', 'uploaded', 'transcribing', 'transcribed', 'generating', 'completed'];
 
+/**
+ * `retry_scheduled` is a real server status (see RecordingStatus in
+ * src/types). Without a rank it indexed to -1 and every step rendered as
+ * pending with no current marker — exactly when the user most needs to know
+ * processing is retrying. Rank it at the transcription stage and label the
+ * active row "Retrying…".
+ */
+function normalizeStepperStatus(status: string): string {
+  return status === 'retry_scheduled' ? 'transcribing' : status;
+}
+
 export function ProcessingStepper({ currentStatus }: { currentStatus: string }) {
   const colors = useThemeColors();
   const [warmthIndex, setWarmthIndex] = useState(0);
@@ -29,9 +40,21 @@ export function ProcessingStepper({ currentStatus }: { currentStatus: string }) 
     return () => clearInterval(timer);
   }, [currentStatus]);
 
+  // Announce step transitions so screen-reader users hear processing advance
+  // (the 4.5s warmth rotator below is explicitly NOT announced — noise).
+  useEffect(() => {
+    if (currentStatus === 'failed' || currentStatus === 'completed') return;
+    const idx = STATUS_ORDER.indexOf(normalizeStepperStatus(currentStatus));
+    const step = PROCESSING_STEPS.find((st) => STATUS_ORDER.indexOf(st.status) === idx);
+    if (!step) return;
+    const label = currentStatus === 'retry_scheduled' ? PROCESSING_STEP_LABELS.retrying : step.label;
+    AccessibilityInfo.announceForAccessibility(`${label} in progress`);
+  }, [currentStatus]);
+
   if (currentStatus === 'failed') return null;
 
-  const currentIndex = STATUS_ORDER.indexOf(currentStatus);
+  const isRetrying = currentStatus === 'retry_scheduled';
+  const currentIndex = STATUS_ORDER.indexOf(normalizeStepperStatus(currentStatus));
 
   return (
     <View className="my-4">
@@ -40,12 +63,13 @@ export function ProcessingStepper({ currentStatus }: { currentStatus: string }) 
         const isComplete = currentIndex > stepIndex;
         const isCurrent = currentIndex === stepIndex;
         const isLast = i === PROCESSING_STEPS.length - 1;
+        const stepLabel = isCurrent && isRetrying ? PROCESSING_STEP_LABELS.retrying : step.label;
 
         return (
           <View key={step.status}>
             <View
               className="flex-row items-center mb-1"
-              accessibilityLabel={`${step.label}: ${isComplete ? 'complete' : isCurrent ? 'in progress' : 'pending'}`}
+              accessibilityLabel={`${stepLabel}: ${isComplete ? 'complete' : isCurrent ? 'in progress' : 'pending'}`}
             >
               <View
                 className={`w-6 h-6 rounded-full justify-center items-center mr-3 ${
@@ -80,7 +104,7 @@ export function ProcessingStepper({ currentStatus }: { currentStatus: string }) 
                       : 'text-content-tertiary'
                 }`}
               >
-                {step.label}
+                {stepLabel}
               </Text>
             </View>
             {!isLast && (
@@ -100,6 +124,7 @@ export function ProcessingStepper({ currentStatus }: { currentStatus: string }) 
           key={PROCESSING_WARMTH[warmthIndex]}
           entering={FadeIn.duration(250)}
           className="text-body-sm text-content-secondary mt-3"
+          importantForAccessibility="no"
         >
           {PROCESSING_WARMTH[warmthIndex]}
         </Animated.Text>

@@ -3,13 +3,17 @@ import { Modal, View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { ShieldAlert, Smartphone, Tablet, Monitor } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { useAuthDeviceRegistration } from '../hooks/useAuth';
+import { useAuthActions, useAuthDeviceRegistration, useAuthUser } from '../hooks/useAuth';
+import type { SignOutRecoveryMode } from '../auth/AuthProvider';
 import { useResponsive } from '../hooks/useResponsive';
 import { useDeviceCapacity } from '../hooks/useDeviceCapacity';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { devicesApi, type DeviceSession } from '../api/devices';
 import { Button } from './ui/Button';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
+import { breadcrumb } from '../lib/monitoring';
+import { SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED } from '../lib/supportStaffRecoveryVault';
+import { DEVICE_LIMIT_COPY } from '../constants/strings';
 
 function getDeviceIcon(deviceType: string | null) {
   if (!deviceType) return Smartphone;
@@ -64,12 +68,16 @@ export function DeviceLimitModal() {
     deviceRegistrationBlock,
     retryDeviceRegistration,
   } = useAuthDeviceRegistration();
+  const { signOut } = useAuthActions();
+  const user = useAuthUser();
   const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
   const queryClient = useQueryClient();
   const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity({ mode: 'manage' });
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [retryFailed, setRetryFailed] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   const visible = !!deviceRegistrationBlock;
 
@@ -78,6 +86,8 @@ export function DeviceLimitModal() {
     if (!visible) {
       setRevokingId(null);
       setRetrying(false);
+      setRetryFailed(false);
+      setSigningOut(false);
     }
   }, [visible]);
 
@@ -90,7 +100,10 @@ export function DeviceLimitModal() {
   }, [liveDevices, deviceRegistrationBlock]);
 
   const capacity = liveCapacity ?? deviceRegistrationBlock?.capacity ?? null;
-  const isBusy = revokingId !== null || retrying;
+  // signingOut is part of the shared busy guard: during support_staff recovery
+  // preservation the API token is still valid, so a device Revoke tapped mid
+  // sign-out could revoke another clinic device (Codex P2, PR #143).
+  const isBusy = revokingId !== null || retrying || signingOut;
 
   if (!deviceRegistrationBlock) return null;
 
@@ -98,6 +111,7 @@ export function DeviceLimitModal() {
     (async () => {
       if (isBusy) return;
       setRetrying(true);
+      setRetryFailed(false);
       try {
         const ok = await retryDeviceRegistration();
         if (ok) {
@@ -105,11 +119,71 @@ export function DeviceLimitModal() {
             .invalidateQueries({ queryKey: ['device-sessions'] })
             .catch(() => {});
           invalidateRecordingCaches(queryClient, 'device_registration_recovered');
+        } else {
+          // Without this the footer text just stops saying "Reconnecting…"
+          // and the user can't tell a failed retry from nothing happening.
+          setRetryFailed(true);
         }
+      } catch {
+        setRetryFailed(true);
       } finally {
         setRetrying(false);
       }
     })().catch(() => {});
+  };
+
+  // Escape hatch: a user unwilling to revoke a colleague's device on a shared
+  // account is otherwise permanently stuck in this hard-block modal. Standard
+  // sign-out preserves drafts/stashes (CLAUDE.md rule 8). support_staff use
+  // recoveryMode 'required' so a failed recovery-vault save blocks sign-out
+  // and surfaces the same retry/destructive choice as Settings — otherwise a
+  // storage-full recovery failure silently strands per-user drafts from the
+  // owner/admin who signs in next (Codex P2, PR #143).
+  const runSignOut = (recoveryMode: SignOutRecoveryMode) => {
+    if (isBusy) return;
+    setSigningOut(true);
+    signOut({ recoveryMode })
+      .catch((error) => {
+        if (
+          recoveryMode === 'required' &&
+          error instanceof Error &&
+          error.message === SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED
+        ) {
+          Alert.alert(
+            'Recovery Save Failed',
+            'The app could not save a recovery copy of the local recordings. Local storage may be full or unavailable. Stay signed in and try again, or sign out and permanently delete the local recordings on this tablet.',
+            [
+              { text: 'Stay Signed In', style: 'cancel' },
+              { text: 'Retry', onPress: () => runSignOut('required') },
+              {
+                text: 'Sign Out & Delete',
+                style: 'destructive',
+                onPress: () => {
+                  Alert.alert(
+                    'Delete Local Recordings?',
+                    'This signs out without saving a recovery copy. Any unsent local recordings for this support staff account may be permanently removed from this tablet.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Delete & Sign Out',
+                        style: 'destructive',
+                        onPress: () => runSignOut('destructive'),
+                      },
+                    ]
+                  );
+                },
+              },
+            ]
+          );
+          return;
+        }
+        if (__DEV__) console.error('[DeviceLimitModal] signOut failed:', error);
+      })
+      .finally(() => setSigningOut(false));
+  };
+
+  const handleSignOut = () => {
+    runSignOut(user?.role === 'support_staff' ? 'required' : 'best_effort');
   };
 
   const handleRevoke = (device: DeviceSession) => {
@@ -126,6 +200,7 @@ export function DeviceLimitModal() {
           onPress: () => {
             (async () => {
               setRevokingId(device.id);
+              setRetryFailed(false);
               try {
                 await devicesApi.revoke(device.id);
                 Haptics.notificationAsync(
@@ -146,13 +221,21 @@ export function DeviceLimitModal() {
                     .invalidateQueries({ queryKey: ['device-sessions'] })
                     .catch(() => {});
                   invalidateRecordingCaches(queryClient, 'device_registration_recovered');
+                } else {
+                  // The revoke worked but registration still failed (e.g.
+                  // connectivity died) — surface it exactly like the manual
+                  // retry path, or the next apparent action is revoking
+                  // ANOTHER working device unnecessarily.
+                  setRetryFailed(true);
                 }
               } catch (error) {
-                const message =
-                  error instanceof Error
-                    ? error.message
-                    : 'Could not revoke this device.';
-                Alert.alert('Revoke Failed', message);
+                // Never surface raw API error text to users; keep the detail
+                // in dev logs + a Sentry breadcrumb (no PHI — error name only).
+                if (__DEV__) console.error('[DeviceLimitModal] revoke failed:', error);
+                breadcrumb('auth', 'device_limit_revoke_failed', {
+                  error_name: error instanceof Error ? error.name : 'unknown',
+                });
+                Alert.alert('Revoke Failed', DEVICE_LIMIT_COPY.revokeFailed);
               } finally {
                 setRevokingId(null);
                 setRetrying(false);
@@ -226,7 +309,9 @@ export function DeviceLimitModal() {
                 const Icon = getDeviceIcon(device.deviceType);
                 const typeLabel = formatDeviceTypeLabel(device.deviceType);
                 const isThisRowBusy = revokingId === device.id;
-                const otherBusy = revokingId !== null && !isThisRowBusy;
+                // Dim + disable this row while any other action (a different
+                // revoke, a retry, or sign-out) holds the busy guard.
+                const otherBusy = isBusy && !isThisRowBusy;
                 return (
                   <View
                     key={device.id}
@@ -249,9 +334,10 @@ export function DeviceLimitModal() {
                     </View>
                     <Pressable
                       onPress={() => handleRevoke(device)}
-                      disabled={revokingId !== null}
+                      disabled={isBusy}
                       accessibilityRole="button"
                       accessibilityLabel={`Revoke ${device.deviceName || typeLabel}`}
+                      accessibilityState={{ disabled: isBusy }}
                       hitSlop={8}
                       className="ml-2 px-3 py-2"
                     >
@@ -264,7 +350,6 @@ export function DeviceLimitModal() {
                               ? 'text-content-tertiary'
                               : 'text-status-danger'
                         }`}
-                        allowFontScaling={false}
                         style={{ flexShrink: 0, paddingRight: 2 }}
                       >
                         {`${isThisRowBusy ? 'Revoking…' : 'Revoke'} `}
@@ -278,11 +363,31 @@ export function DeviceLimitModal() {
 
           {/* Footer */}
           <View className="px-5 py-3 border-t border-border-default">
+            {retryFailed && !retrying && (
+              <Text
+                className="text-caption text-status-danger text-center mb-2"
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+              >
+                {DEVICE_LIMIT_COPY.stillAtLimit}
+              </Text>
+            )}
             <Text className="text-caption text-content-tertiary text-center">
               {retrying
                 ? 'Reconnecting this device…'
                 : 'Revoking a device will sign it out everywhere.'}
             </Text>
+            <View className="mt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onPress={handleSignOut}
+                loading={signingOut}
+                disabled={isBusy}
+              >
+                {DEVICE_LIMIT_COPY.signOut}
+              </Button>
+            </View>
           </View>
         </View>
       </View>

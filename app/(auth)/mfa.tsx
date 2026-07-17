@@ -379,26 +379,33 @@ export default function MfaScreen() {
                   ) : (
                     <>
                       {mode === 'enroll' && enrollment ? (
-                        <View
-                          className="items-center bg-surface rounded-lg p-4 mb-5"
-                          accessible
-                          accessibilityLabel="QR code for authenticator app setup — or copy the setup key below"
-                        >
-                          <QRCode
-                            value={enrollment.uri}
-                            size={Math.min(scale(220), 220)}
-                            backgroundColor={colors.surfaceRaised}
-                            color={colors.contentPrimary}
-                          />
-                          <Text className="text-caption font-semibold text-content-tertiary mt-4 mb-1">
-                            Setup key
-                          </Text>
-                          <Text
-                            selectable
-                            className="text-body-sm text-content-body text-center"
+                        <View className="items-center bg-surface rounded-lg p-4 mb-5">
+                          {/* The accessible group covers only the QR + key text —
+                              grouping the whole card made the nested "Copy setup
+                              key" button unreachable for VoiceOver/TalkBack, and
+                              screen-reader users enrolling on the same device
+                              can't scan the QR (Codex P2, PR #143). */}
+                          <View
+                            className="items-center"
+                            accessible
+                            accessibilityLabel="QR code for authenticator app setup — or copy the setup key below"
                           >
-                            {enrollment.secret}
-                          </Text>
+                            <QRCode
+                              value={enrollment.uri}
+                              size={Math.min(scale(220), 220)}
+                              backgroundColor={colors.surfaceRaised}
+                              color={colors.contentPrimary}
+                            />
+                            <Text className="text-caption font-semibold text-content-tertiary mt-4 mb-1">
+                              Setup key
+                            </Text>
+                            <Text
+                              selectable
+                              className="text-body-sm text-content-body text-center"
+                            >
+                              {enrollment.secret}
+                            </Text>
+                          </View>
                           <View className="mt-3">
                             <CopiedToast visible={setupKeyCopied} className="-top-1 right-0" />
                             <Button

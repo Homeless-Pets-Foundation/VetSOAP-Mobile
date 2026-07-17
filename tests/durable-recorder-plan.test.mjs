@@ -124,6 +124,14 @@ test('recording controls cannot mutate a slot while its upload owns the audio', 
 
   assert.match(src, /const isSlotUploadActive = useCallback/);
   assert.match(src, /uploadingSlotIdsRef\.current\.has\(slotId\)/);
+  // Queued Submit All slots (tracked only via submit intent, uploadStatus
+  // still 'pending') must be locked too — with the overlay hidden, mutating a
+  // queued slot makes the batch loop upload stale/deleted audio (Codex P1).
+  const predicateStart = src.indexOf('const isSlotUploadActive = useCallback');
+  assert.match(
+    src.slice(predicateStart, predicateStart + 900),
+    /submitIntentSlotIdsRef\.current\.has\(slotId\)/
+  );
   assert.match(src, /function showUploadInProgressAlert\(\): void/);
   for (const handler of ['handleStart', 'handleContinueRecording', 'handleRecordAgain', 'handleRemove', 'handleEditRecording']) {
     const start = src.indexOf(`const ${handler} = useCallback`);

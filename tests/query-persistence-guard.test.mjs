@@ -24,6 +24,19 @@ test('persistence is user-keyed, allowlisted, and success-only', async () => {
   assert.match(src, /catch \(error\) \{\s*\n\s*if \(__DEV__\)/);
 });
 
+test('a restore that outlives its persistence scope is wiped, not leaked', async () => {
+  const src = await read('src/lib/queryPersistence.ts');
+  // persistQueryClient's async restore cannot be cancelled; if sign-out ran
+  // before it settled, the late hydration must be cleared so the outgoing
+  // user's clinical data never survives into the next session (Codex P1).
+  assert.match(src, /const \[unsubscribe, restorePromise\] = persistQueryClient\(/);
+  assert.match(src, /const restoreGeneration = \+\+generation/);
+  assert.match(src, /if \(generation !== restoreGeneration\) queryClient\.clear\(\)/);
+  // Stop must invalidate any in-flight restore.
+  const stopStart = src.indexOf('export function stopQueryPersistence');
+  assert.match(src.slice(stopStart, stopStart + 300), /generation \+= 1/);
+});
+
 test('AuthProvider starts persistence with the user scope and removes it on sign-out', async () => {
   const auth = await read('src/auth/AuthProvider.tsx');
   assert.match(auth, /startQueryPersistence\(scopedUserId\)/);

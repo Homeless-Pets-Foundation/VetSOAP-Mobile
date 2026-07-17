@@ -741,15 +741,22 @@ function RecordingSession() {
   // Guard: track which slot IDs are actively uploading to prevent double-submission
   // across React render batches (useRef is synchronous; useState is not).
   const uploadingSlotIdsRef = useRef<Set<string>>(new Set());
+  // Guard: a slot marked for submission may still finish its deferred local draft save,
+  // but it must not create a new server-side draft row while upload is in flight.
+  const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
   const isSlotUploadActive = useCallback((slotId: string): boolean => {
     if (uploadingSlotIdsRef.current.has(slotId)) return true;
+    // Slots queued behind the current upload in a Submit All batch exist only
+    // in submitIntentSlotIdsRef (uploadStatus still 'pending'), yet the batch
+    // loop holds a snapshot of them. With the overlay hidden they must be as
+    // locked as the actively-uploading slot — otherwise continue/edit/delete
+    // on a queued slot makes the loop upload stale audio or files the UI just
+    // deleted (Codex P1, PR #143).
+    if (submitIntentSlotIdsRef.current.has(slotId)) return true;
     return sessionRef.current.slots.some(
       (slot) => slot.id === slotId && slot.uploadStatus === 'uploading',
     );
   }, []);
-  // Guard: a slot marked for submission may still finish its deferred local draft save,
-  // but it must not create a new server-side draft row while upload is in flight.
-  const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
   // Guard: if upload wins the race against deferred local draft persistence, auto-save
   // must immediately clean up the late draft instead of leaving it behind locally.
   const completedUploadSlotIdsRef = useRef<Set<string>>(new Set());

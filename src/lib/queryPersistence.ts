@@ -54,6 +54,14 @@ interface ActivePersistence {
 }
 
 let active: ActivePersistence | null = null;
+// Bumped on every start/stop. persistQueryClient kicks off an async restore
+// (AsyncStorage read + hydrate) that cannot be cancelled; if sign-out or a
+// user switch happens while it is still pending, the outgoing user's clinical
+// queries would hydrate the shared client AFTER queryClient.clear() ran —
+// exposing them on the login screen / to the next user on a shared tablet
+// (Codex P1, PR #143). A stale generation at resolve time wipes whatever the
+// late restore hydrated.
+let generation = 0;
 
 function storageKeyForUser(userId: string): string {
   return `captivet_rq_cache_${userId}`;
@@ -69,6 +77,7 @@ export function startQueryPersistence(userId: string): void {
     if (!userId) return;
     if (active?.userId === userId) return;
     stopQueryPersistence({ removeStored: false });
+    const restoreGeneration = ++generation;
 
     const persister = createAsyncStoragePersister({
       storage: AsyncStorage,
@@ -76,7 +85,7 @@ export function startQueryPersistence(userId: string): void {
       throttleTime: 2000,
     });
 
-    const [unsubscribe] = persistQueryClient({
+    const [unsubscribe, restorePromise] = persistQueryClient({
       queryClient,
       persister,
       maxAge: PERSIST_MAX_AGE_MS,
@@ -85,6 +94,15 @@ export function startQueryPersistence(userId: string): void {
       buster: `${Application.nativeApplicationVersion ?? 'dev'}:${userId}`,
       dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
     });
+
+    // If this persistence scope was torn down before the restore settled, the
+    // hydration above just landed after sign-out's queryClient.clear(). Clear
+    // again: an empty cache (next user refetches) beats leaked clinical data.
+    restorePromise
+      .then(() => {
+        if (generation !== restoreGeneration) queryClient.clear();
+      })
+      .catch(() => {});
 
     active = { userId, unsubscribe, persister };
   } catch (error) {
@@ -99,6 +117,7 @@ export function startQueryPersistence(userId: string): void {
  */
 export function stopQueryPersistence(opts: { removeStored: boolean }): void {
   try {
+    generation += 1; // invalidate any in-flight restore (see startQueryPersistence)
     const current = active;
     active = null;
     current?.unsubscribe();

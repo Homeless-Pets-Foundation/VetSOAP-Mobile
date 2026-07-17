@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { AlertCircle, Eye, EyeOff } from 'lucide-react-native';
 import { supabase } from '../../src/auth/supabase';
+import { trackPendingSignOut } from '../../src/auth/pendingSignOut';
 import { useAuthReadiness } from '../../src/hooks/useAuth';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
@@ -31,10 +32,13 @@ export default function ResetPasswordScreen() {
     //
     // Rule 24: this gates the UI, and GoTrue's signOut can hang on a stale
     // AbortController — race it against a hard timeout so Cancel always
-    // reaches Login even if the network call never settles.
+    // reaches Login even if the network call never settles. The still-running
+    // sign-out is tracked so AuthProvider's sign-in paths wait for it to
+    // settle first — a late _removeSession() would otherwise delete a freshly
+    // established session (Codex P2, PR #143).
     setIsLoading(true);
     Promise.race([
-      supabase.auth.signOut().catch(() => {}),
+      trackPendingSignOut(supabase.auth.signOut()).catch(() => {}),
       new Promise((resolve) => setTimeout(resolve, 5_000)),
     ]).finally(() => {
       clearPasswordRecovery();
@@ -80,7 +84,7 @@ export default function ResetPasswordScreen() {
             text: 'OK',
             onPress: () => {
               clearPasswordRecovery();
-              supabase.auth.signOut()
+              trackPendingSignOut(supabase.auth.signOut())
                 .catch(() => {})
                 .finally(() => {
                   router.replace('/(auth)/login');

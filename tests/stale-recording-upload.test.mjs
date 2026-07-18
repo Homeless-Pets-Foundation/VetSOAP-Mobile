@@ -185,6 +185,7 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
     normalizeUploadIntentId,
     normalizeUploadKeyOverride,
     normalizeSupersededUploadKey,
+    effectiveUploadIdempotencyKey,
     slotUploadIdempotencyKey,
     durableUploadIdempotencyKey,
   } = await loadPure('src/lib/uploadIntent.ts');
@@ -196,6 +197,39 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
   assert.equal(normalizeUploadKeyOverride('recording-upload-v2:restart:bad\nheader'), null);
   assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:valid'), 'recording-upload-v1:slot:valid');
   assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:bad\rheader'), null);
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: 'recording-upload-v2:restart:replacement',
+      supersededUploadKey: null,
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: null,
+      supersededUploadKey: 'recording-upload-v1:slot:old',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: 'recording-upload-v2:restart:same',
+      supersededUploadKey: 'recording-upload-v2:restart:same',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
+  assert.equal(
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: 'recording-upload-v2:restart:replacement',
+      supersededUploadKey: 'recording-upload-v1:slot:old',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+    'recording-upload-v2:restart:replacement',
+  );
   const reducer = await read('src/hooks/useMultiPatientSession.ts');
   const clear = reducer.slice(reducer.indexOf("case 'CLEAR_AUDIO'"), reducer.indexOf("case 'CONTINUE_RECORDING'"));
   const update = reducer.slice(reducer.indexOf("case 'UPDATE_FORM'"), reducer.indexOf("case 'SET_AUDIO_STATE'"));
@@ -293,6 +327,14 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(controlledRestart, /Promise\.race\(\[transaction, timeoutResult\]\)/);
   assert.match(controlledRestart, /upload_restart_local_watchdog_fired/);
   assert.match(controlledRestart, /if \(watchdog\) clearTimeout\(watchdog\)/);
+  assert.match(
+    controlledRestart,
+    /if \(timedOut\)[\s\S]*transaction\.then\([\s\S]*uploadRestartSlotIdsRef\.current\.delete/,
+  );
+  assert.match(
+    controlledRestart,
+    /if \(!timedOut\)[\s\S]*uploadRestartSlotIdsRef\.current\.delete/,
+  );
   assert.ok(
     controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot)') <
       controlledRestart.indexOf('beginUploadAttemptReset('),
@@ -331,6 +373,15 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(record, /if \(slot\?\.pendingConfirm\) \{[\s\S]*?'Finish Submission First'/);
   assert.match(reducer, /case 'REPLACE_ALL_SEGMENTS':[\s\S]*?if \(slot\.pendingConfirm\) return slot/);
   assert.match(record, /slotHasRecoverableAudio\(s\)/);
+  const submitAll = record.slice(
+    record.indexOf('const handleSubmitAll = useCallback('),
+    record.indexOf('const handleAddPatient = useCallback('),
+  );
+  assert.match(submitAll, /slotsToUpload\.find\(\(slot\) => slot\.uploadRecovery\?\.canRestart\)/);
+  assert.ok(
+    submitAll.indexOf('UPLOAD_RECOVERY_COPY.submitAllBlockedTitle') <
+      submitAll.indexOf('markSubmitIntent(slotIdsToUpload)'),
+  );
   const card = await read('src/components/PatientSlotCard.tsx');
   const panel = await read('src/components/SubmitPanel.tsx');
   const stashes = await read('src/hooks/useStashedSessions.ts');

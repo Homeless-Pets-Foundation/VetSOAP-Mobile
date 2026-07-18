@@ -947,6 +947,7 @@ export const draftStorage = {
     }
     const currentKey = effectiveUploadIdempotencyKey({
       uploadKeyOverride: metadata.uploadKeyOverride,
+      supersededUploadKey: metadata.supersededUploadKey,
       durableRecordingId: metadata.durable?.recordingId,
       uploadIntentId: metadata.uploadIntentId,
       slotId,
@@ -1050,6 +1051,7 @@ export const draftStorage = {
     const nativeSuperseded = normalizeSupersededUploadKey(nativeSupersededUploadKey);
     const nativeCurrentKey = effectiveUploadIdempotencyKey({
       uploadKeyOverride: nativeOverride,
+      supersededUploadKey: nativeSuperseded,
       durableRecordingId: metadata.durable?.recordingId,
       uploadIntentId: metadata.uploadIntentId,
       slotId,
@@ -1106,6 +1108,7 @@ export const draftStorage = {
     }
     const currentKey = effectiveUploadIdempotencyKey({
       uploadKeyOverride: metadata.uploadKeyOverride,
+      supersededUploadKey: metadata.supersededUploadKey,
       durableRecordingId: metadata.durable?.recordingId,
       uploadIntentId: metadata.uploadIntentId,
       slotId,

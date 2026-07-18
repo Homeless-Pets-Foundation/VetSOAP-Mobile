@@ -39,6 +39,12 @@ export const UPLOAD_OVERLAY_COPY = {
   announceMulti: (total: number): string => `Uploading ${total} recordings`,
 } as const;
 
+export const UPLOAD_RECOVERY_COPY = {
+  submitAllBlockedTitle: 'Restart Upload First',
+  submitAllBlockedBody:
+    'One recording needs a confirmed safe restart. Open that patient and submit it individually before using Submit All.',
+} as const;
+
 export const STALE_RECORDING_UPLOAD_COPY =
   "We couldn't finish the upload. The recording is still saved on this device. Check your connection and try again.";
 

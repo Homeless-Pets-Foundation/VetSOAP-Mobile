@@ -34,16 +34,27 @@ export function createRestartUploadIdempotencyKey(): string {
 
 export function effectiveUploadIdempotencyKey(input: {
   uploadKeyOverride?: string | null;
+  supersededUploadKey?: string | null;
   durableRecordingId?: string | null;
   uploadIntentId: string;
   slotId: string;
 }): string {
-  if (
-    typeof input.uploadKeyOverride === 'string' &&
-    input.uploadKeyOverride.startsWith('recording-upload-v2:restart:') &&
-    input.uploadKeyOverride.length <= 128
-  ) {
-    return input.uploadKeyOverride;
+  const uploadKeyOverride = normalizeUploadKeyOverride(input.uploadKeyOverride);
+  const supersededUploadKey = normalizeSupersededUploadKey(input.supersededUploadKey);
+  const hasRestartIdentity =
+    (input.uploadKeyOverride !== null && input.uploadKeyOverride !== undefined) ||
+    (input.supersededUploadKey !== null && input.supersededUploadKey !== undefined);
+  if (hasRestartIdentity) {
+    if (
+      !uploadKeyOverride ||
+      !supersededUploadKey ||
+      uploadKeyOverride === supersededUploadKey
+    ) {
+      throw new Error(
+        'This saved upload restart is incomplete. Check its upload status before retrying.'
+      );
+    }
+    return uploadKeyOverride;
   }
   return input.durableRecordingId
     ? durableUploadIdempotencyKey(input.durableRecordingId)

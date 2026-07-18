@@ -22,6 +22,7 @@ import {
   STASH_COPY,
   TEMPLATE_DEFAULT_COPY,
   UPLOAD_OVERLAY_COPY,
+  UPLOAD_RECOVERY_COPY,
 } from '../../../src/constants/strings';
 import { Toast } from '../../../src/components/Toast';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
@@ -102,6 +103,7 @@ import { isPimsPatientIdExplicitlyCleared } from '../../../src/lib/pimsPatientId
 function uploadKeyForSlot(slot: PatientSlot): string {
   return effectiveUploadIdempotencyKey({
     uploadKeyOverride: slot.uploadKeyOverride,
+    supersededUploadKey: slot.supersededUploadKey,
     durableRecordingId: slot.durable?.recordingId,
     uploadIntentId: slot.uploadIntentId,
     slotId: slot.id,
@@ -810,6 +812,7 @@ function RecordingSession() {
     // whole session and would discard it (Codex P1, PR #143).
     if (isSubmittingAllRef.current) return true;
     if (uploadingSlotIdsRef.current.has(slotId)) return true;
+    if (uploadRestartSlotIdsRef.current.has(slotId)) return true;
     // Slots queued behind the current upload in a Submit All batch exist only
     // in submitIntentSlotIdsRef (uploadStatus still 'pending'), yet the batch
     // loop holds a snapshot of them. With the overlay hidden they must be as
@@ -3561,6 +3564,7 @@ function RecordingSession() {
   const persistControlledUploadRestart = useCallback(
     async (slot: PatientSlot): Promise<PatientSlot | null> => {
       if (!slot.uploadRecovery?.canRestart) return null;
+      const expectedOldKey = uploadKeyForSlot(slot);
       if (
         uploadRestartSlotIdsRef.current.has(slot.id) ||
         draftSyncInFlightSlotIdsRef.current.has(slot.id)
@@ -3569,7 +3573,6 @@ function RecordingSession() {
       }
       uploadRestartSlotIdsRef.current.add(slot.id);
       cancelScheduledDraft(slot.id);
-      const expectedOldKey = uploadKeyForSlot(slot);
       const replacementKey = createRestartUploadIdempotencyKey();
       const draftSlotId = slot.draftSlotId ?? slot.id;
       let timedOut = false;
@@ -3742,11 +3745,23 @@ function RecordingSession() {
             resolve(null);
           }, UPLOAD_RESTART_LOCAL_TIMEOUT_MS);
         });
-        return await Promise.race([transaction, timeoutResult]);
+        const result = await Promise.race([transaction, timeoutResult]);
+        if (timedOut) {
+          // Promise.race cannot cancel SecureStore or a native bridge call.
+          // Keep the coordination guard until the underlying transaction
+          // settles so its late CAS/write cannot overlap another submit,
+          // background sync, edit, or delete.
+          transaction.then(
+            () => uploadRestartSlotIdsRef.current.delete(slot.id),
+            () => uploadRestartSlotIdsRef.current.delete(slot.id),
+          );
+        }
+        return result;
       } finally {
-        timedOut = true;
         if (watchdog) clearTimeout(watchdog);
-        uploadRestartSlotIdsRef.current.delete(slot.id);
+        if (!timedOut) {
+          uploadRestartSlotIdsRef.current.delete(slot.id);
+        }
       }
     },
     [cancelScheduledDraft, dispatch, user?.id],
@@ -3929,6 +3944,18 @@ function RecordingSession() {
     );
 
     if (slotsToUpload.length === 0) return;
+    const conflictedSlot = slotsToUpload.find((slot) => slot.uploadRecovery?.canRestart);
+    if (conflictedSlot) {
+      const conflictedIndex = sessionRef.current.slots.findIndex(
+        (slot) => slot.id === conflictedSlot.id,
+      );
+      if (conflictedIndex >= 0) setActiveIndex(conflictedIndex);
+      Alert.alert(
+        UPLOAD_RECOVERY_COPY.submitAllBlockedTitle,
+        UPLOAD_RECOVERY_COPY.submitAllBlockedBody,
+      );
+      return;
+    }
 
     const slotIdsToUpload = slotsToUpload.map((slot) => slot.id);
     markSubmitIntent(slotIdsToUpload);
@@ -4030,7 +4057,7 @@ function RecordingSession() {
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
-  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordFirstEnabled, recordSelectedSlotUploadNull, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
+  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordFirstEnabled, recordSelectedSlotUploadNull, setActiveIndex, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
     // Frozen during Submit All — a new patient created mid-batch would be wiped

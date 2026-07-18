@@ -44,6 +44,7 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
         const durableRecordingId = draft.durable?.recordingId;
         const idempotencyKey = effectiveUploadIdempotencyKey({
           uploadKeyOverride: draft.uploadKeyOverride,
+          supersededUploadKey: draft.supersededUploadKey,
           durableRecordingId,
           uploadIntentId: draft.uploadIntentId,
           slotId: draft.slotId,

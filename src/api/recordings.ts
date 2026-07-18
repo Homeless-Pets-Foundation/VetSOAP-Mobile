@@ -467,6 +467,47 @@ type PendingConfirmClearReason =
   | 'committed_late_hint'
   | 'committed_late_anchor';
 
+interface TimedOutPersistenceWrite {
+  settled: Promise<void>;
+  clearReason: Extract<
+    PendingConfirmClearReason,
+    'committed_late_hint' | 'committed_late_anchor'
+  >;
+  cleanupScheduled: boolean;
+}
+
+// Tactical persistence timeouts must not make an uncancelled SecureStore/native
+// write invisible to a later retry. Keep this PHI-free, process-local registry
+// keyed by the stable upload intent until each callback actually settles.
+const timedOutPersistenceByIntent = new Map<string, Set<TimedOutPersistenceWrite>>();
+
+function trackTimedOutPersistence(
+  idempotencyKey: string,
+  persistence: { settled: Promise<void>; timedOut: boolean },
+  clearReason: TimedOutPersistenceWrite['clearReason'],
+): TimedOutPersistenceWrite | null {
+  if (!persistence.timedOut) return null;
+  const entry: TimedOutPersistenceWrite = {
+    settled: persistence.settled,
+    clearReason,
+    cleanupScheduled: false,
+  };
+  const writes = timedOutPersistenceByIntent.get(idempotencyKey) ?? new Set();
+  writes.add(entry);
+  timedOutPersistenceByIntent.set(idempotencyKey, writes);
+  persistence.settled
+    .finally(() => {
+      writes.delete(entry);
+      if (writes.size === 0) timedOutPersistenceByIntent.delete(idempotencyKey);
+    })
+    .catch(() => {});
+  return entry;
+}
+
+function hasPendingTimedOutPersistence(idempotencyKey: string): boolean {
+  return (timedOutPersistenceByIntent.get(idempotencyKey)?.size ?? 0) > 0;
+}
+
 function completeUploadMetadata(data: CreateRecording): PendingConfirmMetadata {
   const validated = createRecordingSchema.parse(data);
   return {
@@ -1032,8 +1073,35 @@ async function executeResilientUpload(
   options: ResilientUploadOptions,
 ): Promise<Recording> {
   const idempotencyKey = options.idempotencyKey;
-  if (!idempotencyKey || idempotencyKey.length > 128) {
+  if (
+    !idempotencyKey ||
+    idempotencyKey.length > 128 ||
+    !/^[\x21-\x7e]+$/.test(idempotencyKey)
+  ) {
     phaseError('prepare', 'This recording is missing its stable upload identity. Please reopen it and try again.');
+  }
+  const isRestartIdentity = idempotencyKey.startsWith('recording-upload-v2:restart:');
+  const suppliedSupersededKey = options.supersededIdempotencyKey;
+  const hasValidSupersededKey =
+    typeof suppliedSupersededKey === 'string' &&
+    suppliedSupersededKey.startsWith('recording-upload-v') &&
+    suppliedSupersededKey.length <= 128 &&
+    /^[\x21-\x7e]+$/.test(suppliedSupersededKey) &&
+    suppliedSupersededKey !== idempotencyKey;
+  if (
+    isRestartIdentity !== hasValidSupersededKey ||
+    (suppliedSupersededKey !== undefined && !hasValidSupersededKey)
+  ) {
+    phaseError(
+      'prepare',
+      'This saved upload restart is incomplete. Check its upload status before retrying.',
+    );
+  }
+  if (hasPendingTimedOutPersistence(idempotencyKey)) {
+    phaseError(
+      'prepare',
+      'Captivet is still securing the saved upload state. Check the upload status again.',
+    );
   }
   const metadata = completeUploadMetadata(data);
   const metadataMatchOptions: MetadataMatchOptions = {
@@ -1049,17 +1117,23 @@ async function executeResilientUpload(
   let staleRestartUsed = false;
   let recoveryRestartConsumed = false;
   let qualityReported = false;
-  const timedOutPreparedWrites: Promise<void>[] = [];
-
+  const timedOutPersistenceWrites: TimedOutPersistenceWrite[] = [];
   const persistPrepared = async (recordingId: string): Promise<void> => {
     const persistence = await invokePreparedCallback(options.onRecordingPrepared, recordingId);
-    if (persistence.timedOut) timedOutPreparedWrites.push(persistence.settled);
+    const tracked = trackTimedOutPersistence(
+      idempotencyKey,
+      persistence,
+      'committed_late_anchor',
+    );
+    if (tracked) timedOutPersistenceWrites.push(tracked);
   };
 
   const scheduleCommittedLateWriteCleanup = (): void => {
-    for (const settled of timedOutPreparedWrites.splice(0)) {
-      settled
-        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_anchor'))
+    for (const write of timedOutPersistenceWrites) {
+      if (write.cleanupScheduled) continue;
+      write.cleanupScheduled = true;
+      write.settled
+        .then(() => invokeClearHint(options.onClearPendingConfirm, write.clearReason))
         .catch(() => {});
     }
   };
@@ -1281,14 +1355,13 @@ async function executeResilientUpload(
   const persistHintAndConfirm = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
     latestPendingConfirm = hint;
     const persistence = await invokeHintCallback(options.onR2Complete, hint);
+    const tracked = trackTimedOutPersistence(
+      idempotencyKey,
+      persistence,
+      'committed_late_hint',
+    );
+    if (tracked) timedOutPersistenceWrites.push(tracked);
     const result = await confirmWithRecovery(hint, legacy);
-    if (persistence.timedOut) {
-      // A late SecureStore/native write must not resurrect recovery state after
-      // the server has confirmed the upload and the UI has cleaned the draft.
-      persistence.settled
-        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_hint'))
-        .catch(() => {});
-    }
     return result;
   };
 
@@ -1304,6 +1377,17 @@ async function executeResilientUpload(
   } catch (error) {
     if (!(error instanceof UploadIntentConflictError)) {
       throw error;
+    }
+    if (hasPendingTimedOutPersistence(idempotencyKey)) {
+      // The timed-out callback still owns a possible late write of the old
+      // server ID or confirmation proof. Do not expose a destructive restart
+      // until a subsequent status check observes that every callback settled.
+      throw new UploadIntentConflictError(
+        error.conflict,
+        error.uploadPhase,
+        'Captivet is still securing the saved upload state. Check the upload status again.',
+        'unresolved',
+      );
     }
     // A recovery response has already classified this state. Preserve that
     // exact outcome so callers cannot offer a restart for `unresolved`, and do

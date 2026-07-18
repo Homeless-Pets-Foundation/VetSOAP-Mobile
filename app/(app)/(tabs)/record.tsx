@@ -686,6 +686,10 @@ function RecordingSession() {
   // Declared here (before handleUpdateForm) to avoid a TDZ reference; its
   // value is refreshed each render right after the isSubmittingAll state below.
   const isSubmittingAllRef = useRef(false);
+  // Controlled upload-intent restart snapshots audio and metadata together.
+  // Keep this guard above every metadata-update entry point so delayed form or
+  // lookup callbacks cannot mutate the slot after that snapshot was taken.
+  const uploadRestartSlotIdsRef = useRef<Set<string>>(new Set());
 
   /** Metadata edits retain the stable upload intent and any complete R2 hint. */
   const handleUpdateForm = useCallback(
@@ -693,7 +697,12 @@ function RecordingSession() {
       // Frozen during Submit All: the upload loop holds a pre-edit slot
       // snapshot (edits wouldn't reach the server) and the post-batch reset
       // would discard them anyway (Codex P1, PR #143).
-      if (isSubmittingAllRef.current) return;
+      if (
+        isSubmittingAllRef.current ||
+        uploadRestartSlotIdsRef.current.has(slotId)
+      ) {
+        return;
+      }
       updateForm(slotId, field, value);
     },
     [updateForm]
@@ -804,8 +813,8 @@ function RecordingSession() {
   const submitIntentSlotIdsRef = useRef<Set<string>>(new Set());
   // A controlled restart and background draft creation must never overlap:
   // each would reserve a different server identity for the same local audio.
-  const uploadRestartSlotIdsRef = useRef<Set<string>>(new Set());
   const draftSyncInFlightSlotIdsRef = useRef<Set<string>>(new Set());
+  const draftSyncPromiseBySlotRef = useRef<Map<string, Promise<void>>>(new Map());
   const isSlotUploadActive = useCallback((slotId: string): boolean => {
     // A Submit All batch freezes the entire session — even a slot NOT in the
     // batch must not be mutated, because the batch's success path resets the
@@ -957,7 +966,12 @@ function RecordingSession() {
   // Auto-select default template for first slot once templates + user pref load
   useEffect(() => {
     if (templatesLoading || preferredTemplateId === undefined) return;
-    if (effectiveDefaultTemplate && session.slots.length === 1 && !session.slots[0].formData.templateId) {
+    if (
+      effectiveDefaultTemplate &&
+      session.slots.length === 1 &&
+      !session.slots[0].formData.templateId &&
+      !uploadRestartSlotIdsRef.current.has(session.slots[0].id)
+    ) {
       updateForm(session.slots[0].id, 'templateId', effectiveDefaultTemplate.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only run when defaultTemplate loads, not on every slot/form change
@@ -3143,132 +3157,151 @@ function RecordingSession() {
   // aborts before leaving a ghost draft row behind.
   const syncServerDraft = useCallback(
     async (slotId: string, draftSlotId: string) => {
-      if (
-        uploadRestartSlotIdsRef.current.has(slotId) ||
-        draftSyncInFlightSlotIdsRef.current.has(slotId)
-      ) {
-        return;
-      }
+      if (uploadRestartSlotIdsRef.current.has(slotId)) return;
+
+      // Serialize, rather than drop, a newer sync for the same slot. Each
+      // queued operation reads sessionRef only when its turn begins, so edits
+      // made while an older PATCH/POST is in flight are included. The promise
+      // tail also gives stash flushing a concrete operation to await.
+      const previous =
+        draftSyncPromiseBySlotRef.current.get(slotId) ?? Promise.resolve();
       draftSyncInFlightSlotIdsRef.current.add(slotId);
-      try {
-        if (!canRecordAppointments(user?.role)) return;
-        const slot = sessionRef.current.slots.find((s) => s.id === slotId);
-        if (!slot) return;
-        // Replacement identities are valid only through the controlled
-        // upload-intent recovery endpoint. Check both the in-memory slot and
-        // the persisted two-phase marker before any background server write.
-        if (slot.supersededUploadKey || uploadRestartSlotIdsRef.current.has(slotId)) return;
-        const persistedDraft = await draftStorage.getDraft(draftSlotId);
-        if (persistedDraft?.supersededUploadKey || persistedDraft?.uploadRestartPending) return;
-        if (completedUploadSlotIdsRef.current.has(slotId)) {
-          draftStorage.deleteDraft(slotId).catch(() => {});
-          recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
-          return;
-        }
-        if (!isConnected || submitIntentSlotIdsRef.current.has(slotId)) return;
-
-        let serverId: string | null = null;
-        if (slot.serverDraftId) {
-          const outcome = await patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData);
-          if (outcome === 'success') {
-            serverId = slot.serverDraftId;
-          } else if (outcome === 'draft_missing') {
-            // 404 from the server — the draft genuinely no longer exists
-            // (e.g. deleted from another device). Fall through to fresh create.
-            if (__DEV__) console.warn('[Record] syncServerDraft: draft missing on server, creating fresh', slot.serverDraftId);
-          } else {
-            // Keep draftMetadataDirty=true. A later Submit must either sync the
-            // latest metadata or fail closed before promotion, even after restart.
-            await draftStorage.markDraftMetadataDirty(slotId);
-            dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
-            breadcrumb('draft', 'sync_server_draft_metadata_not_synced', {
-              slot_id: slotId,
-              outcome,
-            });
-            return;
-          }
-
-          if (completedUploadSlotIdsRef.current.has(slotId)) {
-            draftStorage.deleteDraft(slotId).catch(() => {});
-            recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
-            return;
-          }
-          if (submitIntentSlotIdsRef.current.has(slotId)) return;
-        }
-
-        if (!serverId) {
-          if (submitIntentSlotIdsRef.current.has(slotId)) return;
-          if (uploadRestartSlotIdsRef.current.has(slotId)) return;
-          const latestDraft = await draftStorage.getDraft(draftSlotId);
-          if (latestDraft?.supersededUploadKey || latestDraft?.uploadRestartPending) return;
-          // A durable slot MUST create with a deterministic idempotency key
-          // derived from its on-disk durable recordingId, so a later Submit
-          // (which reuses `durable-${recordingId}`) promotes THIS row instead of
-          // fresh-creating a duplicate if the app dies before updateServerDraftId
-          // lands. Also persist serverRecordingId into the manifest as the
-          // death-surviving anchor. Mirrors the submit path + usePendingDraftSync.
-          const durableRecordingId = slot.durable?.recordingId;
-          const result = await recordingsApi.create(slot.formData, {
-            isDraft: true,
-            idempotencyKey: uploadKeyForSlot(slot),
-          });
-          serverId = result.id;
-          if (durableRecordingId && user?.id) {
-            await durableRecorder
-              .setServerRecordingId({
-                userId: user.id,
-                recordingId: durableRecordingId,
-                serverRecordingId: serverId,
-              })
-              .catch(() => {});
-          }
-
-          if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
-            // The Finish-time create and Submit share one persistent upload
-            // intent. A racing create can therefore return the exact canonical
-            // row Submit is preparing, uploading, or has already completed.
-            // Deleting it here would recreate the stale-row 404 window this
-            // protocol closes. Leave the server winner intact; only transient
-            // local draft state may be removed after proven upload success.
+      const operation = previous
+        .catch(() => {
+          // A failed predecessor must not poison the per-slot queue. The
+          // operation itself reports/captures its bounded failure below.
+        })
+        .then(async () => {
+          try {
+            if (!canRecordAppointments(user?.role)) return;
+            const slot = sessionRef.current.slots.find((s) => s.id === slotId);
+            if (!slot) return;
+            // Replacement identities are valid only through the controlled
+            // upload-intent recovery endpoint. Check both the in-memory slot and
+            // the persisted two-phase marker before any background server write.
+            if (slot.supersededUploadKey || uploadRestartSlotIdsRef.current.has(slotId)) return;
+            const persistedDraft = await draftStorage.getDraft(draftSlotId);
+            if (persistedDraft?.supersededUploadKey || persistedDraft?.uploadRestartPending) return;
             if (completedUploadSlotIdsRef.current.has(slotId)) {
               draftStorage.deleteDraft(slotId).catch(() => {});
               recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
+              return;
             }
-            return;
-          }
-        }
+            if (!isConnected || submitIntentSlotIdsRef.current.has(slotId)) return;
 
-        dispatch({ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: serverId });
-        await draftStorage.updateServerDraftId(draftSlotId, serverId);
-        invalidateRecordingCaches(queryClient, 'draft_changed');
-      } catch (error) {
-        const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
-        if (hadServerDraft) {
-          await draftStorage.markDraftMetadataDirty(slotId);
-          dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
-        }
-        if (isNetworkRequestFailed(error)) {
-          breadcrumb('draft', 'sync_server_draft_transient_network', {
-            slot_id: slotId,
-            had_server_draft: hadServerDraft,
-          });
-          return;
-        }
-        // Phase 2 of draft persistence. Failure here means the local draft
-        // exists but never reached the server — silent in prod before this
-        // capture call. Tag with phase so it groups separately from
-        // auto_save_draft (Phase 1) in Sentry.
-        captureException(error, {
-          tags: { phase: 'sync_server_draft' },
-          extra: {
-            slot_id: slotId,
-            had_server_draft: hadServerDraft,
-          },
+            let serverId: string | null = null;
+            if (slot.serverDraftId) {
+              const outcome = await patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData);
+              if (outcome === 'success') {
+                serverId = slot.serverDraftId;
+              } else if (outcome === 'draft_missing') {
+                // 404 from the server — the draft genuinely no longer exists
+                // (e.g. deleted from another device). Fall through to fresh create.
+                if (__DEV__) console.warn('[Record] syncServerDraft: draft missing on server, creating fresh', slot.serverDraftId);
+              } else {
+                // Keep draftMetadataDirty=true. A later Submit must either sync the
+                // latest metadata or fail closed before promotion, even after restart.
+                await draftStorage.markDraftMetadataDirty(slotId);
+                dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
+                breadcrumb('draft', 'sync_server_draft_metadata_not_synced', {
+                  slot_id: slotId,
+                  outcome,
+                });
+                return;
+              }
+
+              if (completedUploadSlotIdsRef.current.has(slotId)) {
+                draftStorage.deleteDraft(slotId).catch(() => {});
+                recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
+                return;
+              }
+              if (submitIntentSlotIdsRef.current.has(slotId)) return;
+            }
+
+            if (!serverId) {
+              if (submitIntentSlotIdsRef.current.has(slotId)) return;
+              if (uploadRestartSlotIdsRef.current.has(slotId)) return;
+              const latestDraft = await draftStorage.getDraft(draftSlotId);
+              if (latestDraft?.supersededUploadKey || latestDraft?.uploadRestartPending) return;
+              // A durable slot MUST create with a deterministic idempotency key
+              // derived from its on-disk durable recordingId, so a later Submit
+              // (which reuses `durable-${recordingId}`) promotes THIS row instead of
+              // fresh-creating a duplicate if the app dies before updateServerDraftId
+              // lands. Also persist serverRecordingId into the manifest as the
+              // death-surviving anchor. Mirrors the submit path + usePendingDraftSync.
+              const durableRecordingId = slot.durable?.recordingId;
+              const result = await recordingsApi.create(slot.formData, {
+                isDraft: true,
+                idempotencyKey: uploadKeyForSlot(slot),
+              });
+              serverId = result.id;
+              if (durableRecordingId && user?.id) {
+                await durableRecorder
+                  .setServerRecordingId({
+                    userId: user.id,
+                    recordingId: durableRecordingId,
+                    serverRecordingId: serverId,
+                  })
+                  .catch(() => {});
+              }
+
+              if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
+                // The Finish-time create and Submit share one persistent upload
+                // intent. A racing create can therefore return the exact canonical
+                // row Submit is preparing, uploading, or has already completed.
+                // Deleting it here would recreate the stale-row 404 window this
+                // protocol closes. Leave the server winner intact; only transient
+                // local draft state may be removed after proven upload success.
+                if (completedUploadSlotIdsRef.current.has(slotId)) {
+                  draftStorage.deleteDraft(slotId).catch(() => {});
+                  recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
+                }
+                return;
+              }
+            }
+
+            dispatch({ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: serverId });
+            await draftStorage.updateServerDraftId(draftSlotId, serverId);
+            invalidateRecordingCaches(queryClient, 'draft_changed');
+          } catch (error) {
+            const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
+            if (hadServerDraft) {
+              await draftStorage.markDraftMetadataDirty(slotId);
+              dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
+            }
+            if (isNetworkRequestFailed(error)) {
+              breadcrumb('draft', 'sync_server_draft_transient_network', {
+                slot_id: slotId,
+                had_server_draft: hadServerDraft,
+              });
+              return;
+            }
+            // Phase 2 of draft persistence. Failure here means the local draft
+            // exists but never reached the server — silent in prod before this
+            // capture call. Tag with phase so it groups separately from
+            // auto_save_draft (Phase 1) in Sentry.
+            captureException(error, {
+              tags: { phase: 'sync_server_draft' },
+              extra: {
+                slot_id: slotId,
+                had_server_draft: hadServerDraft,
+              },
+            });
+            if (__DEV__) console.warn('[Record] syncServerDraft failed:', error);
+          }
         });
-        if (__DEV__) console.warn('[Record] syncServerDraft failed:', error);
-      } finally {
-        draftSyncInFlightSlotIdsRef.current.delete(slotId);
-      }
+
+      draftSyncPromiseBySlotRef.current.set(slotId, operation);
+      const clearIfTail = () => {
+        if (draftSyncPromiseBySlotRef.current.get(slotId) === operation) {
+          draftSyncPromiseBySlotRef.current.delete(slotId);
+          draftSyncInFlightSlotIdsRef.current.delete(slotId);
+        }
+      };
+      // Register cleanup before any external waiter so flushScheduledDraft can
+      // observe an empty map immediately after the tail settles.
+      void operation.then(clearIfTail, clearIfTail);
+      await operation;
     },
     [dispatch, isConnected, queryClient, user?.id, user?.role]
   );
@@ -3309,12 +3342,23 @@ function RecordingSession() {
   const flushScheduledDraft = useCallback(
     async (slotId: string): Promise<void> => {
       const timer = pendingDraftTimersRef.current.get(slotId);
-      if (!timer) return;
-      clearTimeout(timer);
-      pendingDraftTimersRef.current.delete(slotId);
-      const slot = sessionRef.current.slots.find((s) => s.id === slotId);
-      if (!slot || !slot.draftSlotId) return;
-      await syncServerDraft(slotId, slot.draftSlotId);
+      if (timer) {
+        clearTimeout(timer);
+        pendingDraftTimersRef.current.delete(slotId);
+        const slot = sessionRef.current.slots.find((s) => s.id === slotId);
+        if (slot?.draftSlotId) {
+          await syncServerDraft(slotId, slot.draftSlotId);
+        }
+      }
+
+      // A debounce callback may already have consumed its timer and entered
+      // the queue. Do not let stash snapshot/delete local state until the
+      // complete per-slot sync tail (including any newer queued edit) settles.
+      while (true) {
+        const active = draftSyncPromiseBySlotRef.current.get(slotId);
+        if (!active) return;
+        await active;
+      }
     },
     [syncServerDraft]
   );
@@ -3594,7 +3638,11 @@ function RecordingSession() {
           // process death under the new replacement key.
           const snapshotSlot =
             draftSlotId === slot.id ? slot : { ...slot, id: draftSlotId };
-          const saved = await awaitStep(draftStorage.saveDraft(snapshotSlot));
+          const saved = await awaitStep(
+            draftStorage.saveDraft(snapshotSlot, {
+              requireCompleteAudio: true,
+            }),
+          );
           if (!slot.durable && saved.promotedSegments.length !== slot.segments.length) {
             throw new Error('Draft storage did not preserve every current audio segment');
           }

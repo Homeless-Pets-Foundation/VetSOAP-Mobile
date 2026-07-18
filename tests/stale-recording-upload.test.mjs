@@ -318,6 +318,20 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     record,
     /if \(slot\.supersededUploadKey \|\| uploadRestartSlotIdsRef\.current\.has\(slotId\)\) return/,
   );
+  assert.match(
+    record,
+    /isSubmittingAllRef\.current \|\|\s*uploadRestartSlotIdsRef\.current\.has\(slotId\)/,
+  );
+  assert.match(record, /const draftSyncPromiseBySlotRef = useRef<Map<string, Promise<void>>>/);
+  assert.match(
+    record,
+    /const previous =\s*draftSyncPromiseBySlotRef\.current\.get\(slotId\) \?\? Promise\.resolve\(\)/,
+  );
+  assert.match(record, /draftSyncPromiseBySlotRef\.current\.set\(slotId, operation\)/);
+  assert.match(
+    record,
+    /while \(true\) \{\s*const active = draftSyncPromiseBySlotRef\.current\.get\(slotId\);\s*if \(!active\) return;\s*await active;/,
+  );
   assert.match(record, /markSubmitIntent\(\[slot\.id\]\)[\s\S]*persistControlledUploadRestart/);
   const controlledRestart = record.slice(
     record.indexOf('const persistControlledUploadRestart = useCallback('),
@@ -336,9 +350,10 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     /if \(!timedOut\)[\s\S]*uploadRestartSlotIdsRef\.current\.delete/,
   );
   assert.ok(
-    controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot)') <
+    controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot,') <
       controlledRestart.indexOf('beginUploadAttemptReset('),
   );
+  assert.match(controlledRestart, /requireCompleteAudio: true/);
   assert.match(
     controlledRestart,
     /saved\.promotedSegments\.length !== slot\.segments\.length/,

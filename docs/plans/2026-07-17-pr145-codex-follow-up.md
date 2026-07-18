@@ -40,3 +40,30 @@ The Codex review of commit `6a79770f98` reported four merge-blocking findings.
 - Run the full mobile test suite, typecheck, and lint.
 - Push the fix, resolve only addressed threads, and request another exact-head
   Codex audit.
+
+## Exact-head follow-up (`26685055e4`)
+
+The next Codex review reported three additional merge-blocking findings.
+
+1. **P2 — metadata remains editable during restart persistence:** valid. The
+   controlled-restart guard protects audio mutation and submission, but form
+   updates can still race the snapshot passed to the upload path.
+2. **P2 — concurrent draft sync work is dropped:** valid. A second sync returns
+   while the first request is active, so newer metadata is not guaranteed to
+   reach the server and a stash flush may not wait for the server draft anchor.
+3. **P1 — partial segment saves replace complete restart metadata:** valid.
+   `saveDraft()` can commit a partial segment list before the controlled
+   restart detects the cardinality mismatch.
+
+### Implementation
+
+- Freeze every metadata-update entry point for a slot while its controlled
+  restart guard is active.
+- Serialize per-slot server draft syncs with a promise tail so each newer
+  request runs after the current one, and make flush await active work even
+  when no debounce timer remains.
+- Add a complete-audio save mode for controlled restarts that writes to
+  versioned files, refuses partial copies before the metadata commit, and
+  leaves the last complete draft snapshot intact on failure.
+- Add regression coverage for the metadata guard, queued sync/flush behavior,
+  and all-or-nothing restart persistence.

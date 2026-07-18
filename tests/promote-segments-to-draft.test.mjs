@@ -54,7 +54,7 @@ test('draftStorage.saveDraft returns { draftSlotId, promotedSegments } shape', a
 
   assert.match(
     src,
-    /async saveDraft\(slot: PatientSlot\): Promise<\{ draftSlotId: string; promotedSegments: AudioSegment\[\] \}>/
+    /async saveDraft\(\s*slot: PatientSlot,\s*options: DraftSaveOptions = \{\},\s*\): Promise<\{ draftSlotId: string; promotedSegments: AudioSegment\[\] \}>/
   );
   // The promoted array is derived from draftSegments (the on-disk durable
   // entries assembled during the copy loop), not from slot.segments — that's

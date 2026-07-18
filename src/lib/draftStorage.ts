@@ -89,6 +89,15 @@ export interface DraftSyncResult {
   failed: number;
 }
 
+export interface DraftSaveOptions {
+  /**
+   * Controlled upload restart must preserve one complete snapshot. Versioned
+   * destination files keep the previous draft untouched until every source
+   * segment has copied and the replacement metadata is ready to commit.
+   */
+  requireCompleteAudio?: boolean;
+}
+
 /** Current user ID — set by AuthProvider to scope draft data per-user. */
 let currentUserId: string | null = null;
 // Same-process coordination between background creation and an explicit
@@ -606,7 +615,10 @@ export const draftStorage = {
    * state stops pointing at recorder-temp paths that the OS can reap. See
    * docs/2026-05-17-promote-segments-to-draft.md (Sentry REACT-NATIVE-8).
    */
-  async saveDraft(slot: PatientSlot): Promise<{ draftSlotId: string; promotedSegments: AudioSegment[] }> {
+  async saveDraft(
+    slot: PatientSlot,
+    options: DraftSaveOptions = {},
+  ): Promise<{ draftSlotId: string; promotedSegments: AudioSegment[] }> {
     const userId = currentUserId;
     if (!userId) throw new Error('Draft storage: no user ID set');
 
@@ -701,6 +713,12 @@ export const draftStorage = {
     }
 
     const dir = slotDraftDirForUser(userId, slot.id);
+    const requireCompleteAudio = options.requireCompleteAudio === true;
+    const completeSaveVersion = requireCompleteAudio
+      ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+      : null;
+    const completeSaveFiles: string[] = [];
+    let completeSaveMetadataCommitted = false;
 
     // Read existing metadata up front so we can (a) preserve serverDraftId
     // through this re-save and (b) tag copy-failure telemetry with whether
@@ -752,7 +770,9 @@ export const draftStorage = {
             continue;
           }
 
-          const destUri = `${dir}seg_${i}.m4a`;
+          const destUri = completeSaveVersion
+            ? `${dir}restart_${completeSaveVersion}_${i}.m4a`
+            : `${dir}seg_${i}.m4a`;
           try {
             if (sameFileUri(segment.uri, destUri)) {
               draftSegments.push({
@@ -785,6 +805,7 @@ export const draftStorage = {
             continue;
           }
 
+          if (requireCompleteAudio) completeSaveFiles.push(destUri);
           draftSegments.push({
             uri: destUri,
             duration: segment.duration,
@@ -805,6 +826,20 @@ export const draftStorage = {
           false,
           failureReasons,
           priorValidSave,
+        );
+      }
+
+      // A controlled restart must never publish a partial replacement. Its
+      // versioned files do not overwrite the previous draft, so removing the
+      // incomplete version here leaves the last complete metadata+audio
+      // snapshot recoverable after process death.
+      if (
+        requireCompleteAudio &&
+        draftSegments.length !== slot.segments.length
+      ) {
+        completeSaveFiles.forEach((uri) => safeDeleteFile(uri));
+        throw new Error(
+          `Draft storage: complete save copied ${draftSegments.length} of ${slot.segments.length} segments`,
         );
       }
 
@@ -873,6 +908,7 @@ export const draftStorage = {
       };
 
       await writeDraftChunks(userId, slot.id, JSON.stringify(metadata));
+      completeSaveMetadataCommitted = true;
 
       // Update index
       const index = await readDraftIndex();
@@ -901,6 +937,9 @@ export const draftStorage = {
 
       return { draftSlotId: slot.id, promotedSegments };
     } catch (error) {
+      if (requireCompleteAudio && !completeSaveMetadataCommitted) {
+        completeSaveFiles.forEach((uri) => safeDeleteFile(uri));
+      }
       // Preserve audio from any pre-existing complete-on-disk draft. The catch
       // used to wipe `dir` unconditionally, which destroyed prior successful
       // saves when a re-save failed — typical when slot.segments[i].uri points

@@ -322,6 +322,42 @@ test('draftStorage: proof-only save persists metadata when every segment copy is
   assert.equal(draft.pendingConfirm.recordingId, proof.recordingId);
 });
 
+test('draftStorage: complete-audio save rejects partial copies without replacing prior metadata', async () => {
+  let missingSource = null;
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: (uri) => uri !== missingSource,
+  });
+  draftStorage.setUserId('userA');
+  const initial = {
+    ...makeSlot('slot-complete-save'),
+    segments: [
+      { uri: 'file:///rec/old-0.m4a', duration: 5 },
+      { uri: 'file:///rec/old-1.m4a', duration: 7 },
+    ],
+  };
+  await draftStorage.saveDraft(initial);
+  const before = await draftStorage.getDraft(initial.id);
+
+  missingSource = 'file:///rec/new-1.m4a';
+  await assert.rejects(
+    draftStorage.saveDraft(
+      {
+        ...initial,
+        segments: [
+          { uri: 'file:///rec/new-0.m4a', duration: 6 },
+          { uri: missingSource, duration: 8 },
+        ],
+      },
+      { requireCompleteAudio: true },
+    ),
+    /complete save copied 1 of 2 segments/,
+  );
+
+  const after = await draftStorage.getDraft(initial.id);
+  assert.deepEqual(after.segments, before.segments);
+  assert.equal(after.audioDuration, before.audioDuration);
+});
+
 test('draftStorage: every write path invalidates the cache', async () => {
   const { draftStorage } = await loadDraftStorage();
   draftStorage.setUserId('userA');

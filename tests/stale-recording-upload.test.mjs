@@ -543,6 +543,53 @@ test('Save for Later is excluded while submit intent or controlled restart owns 
   );
 });
 
+test('identity rotation drains phase-1 local saves and blocks stale snapshots', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(
+    record,
+    /const localDraftSavePromiseBySlotRef = useRef<Map<string, Promise<boolean>>>/,
+  );
+
+  const autoSave = record.slice(
+    record.indexOf('const autoSaveDraft = useCallback('),
+    record.indexOf('autoSaveDraftRef.current = autoSaveDraft;'),
+  );
+  assert.match(autoSave, /if \(uploadRestartSlotIdsRef\.current\.has\(slot\.id\)\) return false/);
+  assert.match(autoSave, /localDraftSavePromiseBySlotRef\.current\.get\(slot\.id\)/);
+  assert.match(autoSave, /localDraftSavePromiseBySlotRef\.current\.set\(slot\.id, operation\)/);
+  assert.match(
+    autoSave,
+    /submitIntentSlotIdsRef\.current\.has\(slot\.id\) \|\|\s*uploadRestartSlotIdsRef\.current\.has\(slot\.id\)/,
+  );
+
+  const flushStart = record.indexOf('const flushLocalDraftSave = useCallback');
+  const flushBody = record.slice(flushStart, flushStart + 450);
+  assert.match(
+    flushBody,
+    /while \(true\)[\s\S]*localDraftSavePromiseBySlotRef\.current\.get\(slotId\)[\s\S]*await active/,
+  );
+
+  const durableRotation = record.slice(
+    record.indexOf('const rotateDurableAudioIdentity = useCallback('),
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+  );
+  assert.ok(
+    durableRotation.indexOf('flushLocalDraftSave(slot.id)') <
+      durableRotation.indexOf('draftStorage.saveDraft(snapshotSlot'),
+    'durable rotation must drain ordinary local saves before its authoritative save',
+  );
+
+  const controlledRestart = record.slice(
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+    record.indexOf('const runSingleSubmit = useCallback('),
+  );
+  assert.ok(
+    controlledRestart.indexOf('flushLocalDraftSave(slot.id)') <
+      controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot'),
+    'controlled restart must drain ordinary local saves before its authoritative save',
+  );
+});
+
 test('native durable manifests persist and hydrate only non-PHI confirmation proof', async () => {
   const bridge = await read('modules/captivet-durable-recorder/index.ts');
   const android = await read('modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt');

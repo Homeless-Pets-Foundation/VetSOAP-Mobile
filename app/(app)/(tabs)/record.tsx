@@ -839,6 +839,9 @@ function RecordingSession() {
   // each would reserve a different server identity for the same local audio.
   const draftSyncInFlightSlotIdsRef = useRef<Set<string>>(new Set());
   const draftSyncPromiseBySlotRef = useRef<Map<string, Promise<void>>>(new Map());
+  // Phase-1 local saves also own a slot snapshot. Serialize them per slot and
+  // let identity rotation wait for the complete tail before writing a new key.
+  const localDraftSavePromiseBySlotRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const isSlotUploadActive = useCallback((slotId: string): boolean => {
     // A Submit All batch freezes the entire session — even a slot NOT in the
     // batch must not be mutated, because the batch's success path resets the
@@ -3517,92 +3520,127 @@ function RecordingSession() {
 
   const autoSaveDraft = useCallback(
     async (slot: PatientSlot) => {
-      // Guard bookkeeping: while this save is in flight (or after it fails),
-      // the slot's newest audio exists only in session state, so the
-      // discard/replace guards must not treat draftSlotId as proof of safety.
-      unsyncedDraftAudioRef.current.add(slot.id);
-      try {
-        // Phase 1: persist the local draft (audio + metadata). Always runs
-        // regardless of connectivity so the user can resume offline.
-        const { draftSlotId, promotedSegments } = await draftStorage.saveDraft(slot);
-        // Promote session-state segment URIs to the durable draft copies. This
-        // is the core RN-8 fix (docs/2026-05-17-promote-segments-to-draft.md):
-        // without this, slot.segments[].uri keeps pointing at recorder-temp
-        // paths that the OS can reap between Finish and a later re-save,
-        // making every subsequent saveDraft loop fail with `copy_threw`. The
-        // length guard skips promotion on a partial saveDraft success — the
-        // wipe-on-resave guard (PR #46) keeps the on-disk draft intact and
-        // the next successful re-save can promote all-or-nothing. Dispatch
-        // BEFORE SET_DRAFT_IDS so any subsequent read from sessionRef sees
-        // the durable URIs before scheduleDraftSync snapshots the slot.
-        if (promotedSegments.length === slot.segments.length) {
-          dispatch({
-            type: 'PROMOTE_SEGMENTS_TO_DRAFT',
-            slotId: slot.id,
-            segments: promotedSegments,
-          });
-        } else if (__DEV__) {
-          console.warn('[Record] segment-count mismatch in autoSaveDraft promotion',
-            { input: slot.segments.length, promoted: promotedSegments.length });
+      // Once restart owns the slot, an ordinary snapshot must not queue behind
+      // it and overwrite the replacement identity after the transaction.
+      if (uploadRestartSlotIdsRef.current.has(slot.id)) return false;
+      const previous =
+        localDraftSavePromiseBySlotRef.current.get(slot.id) ?? Promise.resolve(true);
+      const operation = previous
+        .catch(() => false)
+        .then(async () => {
+          if (uploadRestartSlotIdsRef.current.has(slot.id)) return false;
+          // Guard bookkeeping: while this save is in flight (or after it fails),
+          // the slot's newest audio exists only in session state, so the
+          // discard/replace guards must not treat draftSlotId as proof of safety.
+          unsyncedDraftAudioRef.current.add(slot.id);
+          try {
+            // Phase 1: persist the local draft (audio + metadata). Always runs
+            // regardless of connectivity so the user can resume offline.
+            const { draftSlotId, promotedSegments } = await draftStorage.saveDraft(slot);
+            // Promote session-state segment URIs to the durable draft copies. This
+            // is the core RN-8 fix (docs/2026-05-17-promote-segments-to-draft.md):
+            // without this, slot.segments[].uri keeps pointing at recorder-temp
+            // paths that the OS can reap between Finish and a later re-save,
+            // making every subsequent saveDraft loop fail with `copy_threw`. The
+            // length guard skips promotion on a partial saveDraft success — the
+            // wipe-on-resave guard (PR #46) keeps the on-disk draft intact and
+            // the next successful re-save can promote all-or-nothing. Dispatch
+            // BEFORE SET_DRAFT_IDS so any subsequent read from sessionRef sees
+            // the durable URIs before scheduleDraftSync snapshots the slot.
+            if (promotedSegments.length === slot.segments.length) {
+              dispatch({
+                type: 'PROMOTE_SEGMENTS_TO_DRAFT',
+                slotId: slot.id,
+                segments: promotedSegments,
+              });
+            } else if (__DEV__) {
+              console.warn('[Record] segment-count mismatch in autoSaveDraft promotion', {
+                input: slot.segments.length,
+                promoted: promotedSegments.length,
+              });
+            }
+            // Preserve the existing serverDraftId here — the server draft (if any)
+            // still represents this slot's recording. Nulling it would orphan the
+            // server row on every stop/continue cycle.
+            dispatch({
+              type: 'SET_DRAFT_IDS',
+              slotId: slot.id,
+              draftSlotId,
+              serverDraftId: slot.serverDraftId ?? null,
+              preserveDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
+            });
+            const recoveryReason =
+              pendingDraftRecoveryReasonRef.current.get(slot.id) ?? 'draft_finish';
+            pendingDraftRecoveryReasonRef.current.delete(slot.id);
+            await recoveryIntent.save({
+              userId: user?.id,
+              draftSlotId,
+              reason: recoveryReason,
+            });
+            invalidateRecordingCaches(queryClient, 'draft_changed');
+
+            // Local persistence succeeded — the current audio snapshot is durable
+            // and draftSlotId identifies a real local draft again.
+            unsyncedDraftAudioRef.current.delete(slot.id);
+            stashResumedSlotIdsRef.current.delete(slot.id);
+
+            if (completedUploadSlotIdsRef.current.has(slot.id)) {
+              deleteLocalSlotDraft(slot);
+              return true;
+            }
+
+            if (
+              !isConnected ||
+              submitIntentSlotIdsRef.current.has(slot.id) ||
+              uploadRestartSlotIdsRef.current.has(slot.id)
+            ) {
+              return true;
+            }
+
+            // Phase 2: server sync. Debounced so a user who immediately taps
+            // Submit never writes a draft row to the server.
+            scheduleDraftSync(slot.id, draftSlotId);
+            return true;
+          } catch (error) {
+            // Draft save is best-effort — never surface errors to the user.
+            // The recording is still in session state and can still be submitted.
+            // Capture to Sentry so empty-segment / dir-creation failures surface
+            // in production (the previous DEV-only warn was invisible on prod
+            // builds and let the orphan-draft bug hide).
+            captureException(error, {
+              tags: { phase: 'auto_save_draft' },
+              extra: {
+                slot_id: slot.id,
+                segment_count: slot.segments.length,
+                has_server_draft: !!slot.serverDraftId,
+              },
+            });
+            if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
+            return false;
+          }
+        });
+
+      localDraftSavePromiseBySlotRef.current.set(slot.id, operation);
+      const clearIfTail = () => {
+        if (localDraftSavePromiseBySlotRef.current.get(slot.id) === operation) {
+          localDraftSavePromiseBySlotRef.current.delete(slot.id);
         }
-        // Preserve the existing serverDraftId here — the server draft (if any)
-        // still represents this slot's recording. Nulling it would orphan the
-        // server row on every stop/continue cycle.
-        dispatch({
-          type: 'SET_DRAFT_IDS',
-          slotId: slot.id,
-          draftSlotId,
-          serverDraftId: slot.serverDraftId ?? null,
-          preserveDirty: !!slot.serverDraftId && slot.draftMetadataDirty,
-        });
-        const recoveryReason =
-          pendingDraftRecoveryReasonRef.current.get(slot.id) ?? 'draft_finish';
-        pendingDraftRecoveryReasonRef.current.delete(slot.id);
-        await recoveryIntent.save({
-          userId: user?.id,
-          draftSlotId,
-          reason: recoveryReason,
-        });
-        invalidateRecordingCaches(queryClient, 'draft_changed');
-
-        // Local persistence succeeded — the current audio snapshot is durable
-        // and draftSlotId identifies a real local draft again.
-        unsyncedDraftAudioRef.current.delete(slot.id);
-        stashResumedSlotIdsRef.current.delete(slot.id);
-
-        if (completedUploadSlotIdsRef.current.has(slot.id)) {
-          deleteLocalSlotDraft(slot);
-          return true;
-        }
-
-        if (!isConnected || submitIntentSlotIdsRef.current.has(slot.id)) return true;
-
-        // Phase 2: server sync. Debounced so a user who immediately taps
-        // Submit never writes a draft row to the server.
-        scheduleDraftSync(slot.id, draftSlotId);
-        return true;
-      } catch (error) {
-        // Draft save is best-effort — never surface errors to the user.
-        // The recording is still in session state and can still be submitted.
-        // Capture to Sentry so empty-segment / dir-creation failures surface
-        // in production (the previous DEV-only warn was invisible on prod
-        // builds and let the orphan-draft bug hide).
-        captureException(error, {
-          tags: { phase: 'auto_save_draft' },
-          extra: {
-            slot_id: slot.id,
-            segment_count: slot.segments.length,
-            has_server_draft: !!slot.serverDraftId,
-          },
-        });
-        if (__DEV__) console.warn('[Record] autoSaveDraft failed:', error);
-        return false;
-      }
+      };
+      void operation.then(clearIfTail, clearIfTail);
+      return operation;
     },
     [deleteLocalSlotDraft, dispatch, isConnected, queryClient, scheduleDraftSync, user?.id]
   );
 
   autoSaveDraftRef.current = autoSaveDraft;
+
+  const flushLocalDraftSave = useCallback(async (slotId: string): Promise<void> => {
+    while (true) {
+      const active = localDraftSavePromiseBySlotRef.current.get(slotId);
+      if (!active) return;
+      await active.catch(() => false);
+    }
+  }, []);
 
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
@@ -3800,6 +3838,11 @@ function RecordingSession() {
             return value;
           };
 
+          // A background/Finish auto-save may still own an older slot snapshot.
+          // Restart already blocks new saves; wait for the existing queue tail
+          // before persisting and rotating the authoritative identity.
+          await awaitStep(() => flushLocalDraftSave(slot.id));
+
           // Persist the current metadata snapshot even when a draft already
           // exists. The old draft can lag behind patient edits; committing a
           // fresh native identity against that stale snapshot would restore
@@ -3903,7 +3946,7 @@ function RecordingSession() {
         }
       }
     },
-    [cancelScheduledDraft, clearUploadRestart, dispatch, markUploadRestart, user?.id],
+    [cancelScheduledDraft, clearUploadRestart, dispatch, flushLocalDraftSave, markUploadRestart, user?.id],
   );
   rotateDurableAudioIdentityRef.current = rotateDurableAudioIdentity;
 
@@ -3943,6 +3986,11 @@ function RecordingSession() {
             }
             return value;
           };
+
+          // The upload restart guard rejects new ordinary saves. Drain any
+          // phase-1 save that captured the old slot before writing the exact
+          // restart snapshot and rotating SecureStore/native identity.
+          await awaitStep(flushLocalDraftSave(slot.id));
 
           // Always persist the exact current audio snapshot before rotating the
           // identity. An existing draft can lag behind an edit/Continue save, so
@@ -4121,7 +4169,7 @@ function RecordingSession() {
         }
       }
     },
-    [cancelScheduledDraft, clearUploadRestart, dispatch, markUploadRestart, user?.id],
+    [cancelScheduledDraft, clearUploadRestart, dispatch, flushLocalDraftSave, markUploadRestart, user?.id],
   );
 
   const runSingleSubmit = useCallback(

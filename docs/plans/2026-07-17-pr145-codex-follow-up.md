@@ -135,3 +135,23 @@ The ready-state Codex review reported three additional merge-blocking findings.
   until restart plus any resulting submit settles.
 - Add focused source/behavior tests for late native commit reconciliation,
   auth-scoped draft queues, and stash exclusion during restart.
+
+## Exact-head follow-up (`c5daf6dbe3`)
+
+The next Codex review reported one additional merge-blocking finding.
+
+1. **P1 — restart races an in-flight phase-one local save:** valid. The
+   controlled restart waits for server-draft synchronization but not an
+   `autoSaveDraft()` or background session save that already captured the old
+   slot. That write can finish after identity rotation and overwrite the
+   replacement keys and cleared proof in SecureStore.
+
+### Implementation
+
+- Track every per-slot phase-one draft save with a serialized promise tail.
+- Acquire the restart guard before any newer save can start, then drain the
+  slot's current local-save tail before persisting and rotating identity.
+- Route foreground and background local persistence through the same
+  coordination primitive, with auth-scope checks preserved.
+- Add focused source and behavior coverage proving restart cannot overlap an
+  old-snapshot local write.

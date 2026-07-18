@@ -112,7 +112,6 @@ function invalidatePendingConfirmForAudioChange(
       supersededUploadKey: null,
       uploadRecovery: null,
       pendingConfirm: null,
-      serverDraftId: null,
       serverRecordingId: null,
       draftMetadataDirty: false,
     };

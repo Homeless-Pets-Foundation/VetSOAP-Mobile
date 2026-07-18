@@ -96,6 +96,8 @@ The next Codex review reported four additional merge-blocking findings.
 - Add an ordinary fresh audio-change upload identity and rotate it atomically
   across SecureStore plus the native durable manifest before durable Continue
   can append bytes.
+- Preserve metadata-only server drafts when that fresh identity has not begun
+  an audio upload; rotate only when upload/recovery evidence makes reuse unsafe.
 - Clear ephemeral recovery classification on every metadata edit, and rotate
   or clear it on every audio mutation so the next submit re-inspects current
   state.

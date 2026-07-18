@@ -2073,7 +2073,6 @@ function RecordingSession() {
         isAudioChangeUploadIdempotencyKey(slot.uploadKeyOverride) &&
         !slot.supersededUploadKey &&
         slot.uploadStatus === 'pending' &&
-        !slot.serverDraftId &&
         !slot.serverRecordingId &&
         !slot.pendingConfirm &&
         !slot.uploadRecovery
@@ -2089,7 +2088,6 @@ function RecordingSession() {
           slot.supersededUploadKey ||
           slot.uploadRecovery ||
           slot.pendingConfirm ||
-          slot.serverDraftId ||
           slot.serverRecordingId ||
           slot.uploadStatus === 'error'
         )

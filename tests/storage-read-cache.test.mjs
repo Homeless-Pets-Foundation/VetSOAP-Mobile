@@ -200,7 +200,7 @@ async function loadDraftStorage(state, opts = {}) {
     },
     './fileOps': {
       fileExists: opts.fileExists ?? (() => true),
-      safeDeleteFile: () => {},
+      safeDeleteFile: opts.safeDeleteFile ?? (() => {}),
       safeDeleteDirectory: () => {},
       ensureDirectory: () => true,
     },
@@ -217,6 +217,9 @@ async function loadDraftStorage(state, opts = {}) {
       normalizeUploadIntentId: (value, slotId) => value || `legacy:${slotId}`,
       normalizeUploadKeyOverride: (value) => value || null,
       normalizeSupersededUploadKey: (value) => value || null,
+      isAudioChangeUploadIdempotencyKey: (value) =>
+        typeof value === 'string' &&
+        value.startsWith('recording-upload-v3:audio-change:'),
       effectiveUploadIdempotencyKey: ({ uploadKeyOverride, durableRecordingId, uploadIntentId }) =>
         uploadKeyOverride ||
         (durableRecordingId
@@ -356,6 +359,53 @@ test('draftStorage: complete-audio save rejects partial copies without replacing
   const after = await draftStorage.getDraft(initial.id);
   assert.deepEqual(after.segments, before.segments);
   assert.equal(after.audioDuration, before.audioDuration);
+});
+
+test('draftStorage: complete-audio save removes only the superseded committed snapshot', async () => {
+  const deleted = [];
+  const { draftStorage, state } = await loadDraftStorage(undefined, {
+    safeDeleteFile: (uri) => deleted.push(uri),
+  });
+  draftStorage.setUserId('userA');
+  const slot = {
+    ...makeSlot('slot-complete-replace'),
+    segments: [
+      { uri: 'file:///rec/first-0.m4a', duration: 5 },
+      { uri: 'file:///rec/first-1.m4a', duration: 7 },
+    ],
+  };
+
+  await draftStorage.saveDraft(slot, { requireCompleteAudio: true });
+  const first = await draftStorage.getDraft(slot.id);
+  const metaKey = `captivet_draft_userA_${slot.id}_meta`;
+  const chunkPrefix = `captivet_draft_userA_${slot.id}_chunk_`;
+  const chunkMeta = JSON.parse(state.get(metaKey));
+  assert.equal(chunkMeta.chunks, 1, 'fixture must remain a single mutable metadata chunk');
+  const priorMetadata = JSON.parse(state.get(`${chunkPrefix}0`));
+  const unconfinedUri = 'file:///outside-user-scope/restart_snapshot.m4a';
+  priorMetadata.segments[1].uri = unconfinedUri;
+  state.set(`${chunkPrefix}0`, JSON.stringify(priorMetadata));
+
+  await draftStorage.saveDraft(
+    {
+      ...slot,
+      segments: [
+        { uri: 'file:///rec/second-0.m4a', duration: 6 },
+        { uri: 'file:///rec/second-1.m4a', duration: 8 },
+      ],
+    },
+    { requireCompleteAudio: true },
+  );
+  const second = await draftStorage.getDraft(slot.id);
+
+  assert.equal(first.segments.length, 2);
+  assert.equal(second.segments.length, 2);
+  assert.ok(deleted.includes(first.segments[0].uri));
+  assert.equal(
+    deleted.includes(unconfinedUri),
+    false,
+    'cleanup must never follow a corrupted metadata URI outside the slot directory',
+  );
 });
 
 test('draftStorage: every write path invalidates the cache', async () => {

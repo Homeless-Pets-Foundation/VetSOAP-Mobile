@@ -5,6 +5,7 @@ import type { PatientSlot, SessionAction, SessionState, AudioSegment, DurableSlo
 import { isValidDurableId } from '../lib/durableAudio/paths';
 import {
   createUploadIntentId,
+  isAudioChangeUploadIdempotencyKey,
   normalizeSupersededUploadKey,
   normalizeUploadIntentId,
   normalizeUploadKeyOverride,
@@ -101,12 +102,31 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
  * its identity or server row could make preparation return the old recording as
  * already processed without uploading the new audio.
  */
-function invalidatePendingConfirmForAudioChange(slot: PatientSlot): Partial<PatientSlot> {
+function invalidatePendingConfirmForAudioChange(
+  slot: PatientSlot,
+  freshAudioUploadKey?: string,
+): Partial<PatientSlot> {
+  if (isAudioChangeUploadIdempotencyKey(freshAudioUploadKey)) {
+    return {
+      uploadKeyOverride: freshAudioUploadKey,
+      supersededUploadKey: null,
+      uploadRecovery: null,
+      pendingConfirm: null,
+      serverDraftId: null,
+      serverRecordingId: null,
+      draftMetadataDirty: false,
+    };
+  }
   // A controlled restart reserves its replacement row before the PUT begins.
   // If upload then fails before `pendingConfirm` exists, Continue/Edit still
   // changes the bytes covered by that replacement manifest. Rotate whenever
   // *any* recovery identity is active, not only after R2 proof was persisted.
-  if (!slot.pendingConfirm && !slot.uploadKeyOverride && !slot.supersededUploadKey) {
+  if (
+    !slot.pendingConfirm &&
+    !slot.uploadKeyOverride &&
+    !slot.supersededUploadKey &&
+    !slot.uploadRecovery
+  ) {
     return { pendingConfirm: null };
   }
   return {
@@ -188,6 +208,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           ...slot,
           formData: { ...slot.formData, [field]: value },
           pimsPatientIdExplicitlyCleared,
+          uploadRecovery: null,
         });
       };
 
@@ -268,7 +289,10 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           slot.id === action.slotId
             ? {
                 ...slot,
-                ...invalidatePendingConfirmForAudioChange(slot),
+                ...invalidatePendingConfirmForAudioChange(
+                  slot,
+                  action.freshAudioUploadKey,
+                ),
                 audioState: 'idle',
                 uploadStatus: 'pending',
                 uploadProgress: 0,
@@ -700,8 +724,8 @@ export function useMultiPatientSession(defaultTemplateId?: string) {
 
   const activeSlot = state.slots[state.activeIndex] ?? state.slots[0];
 
-  const continueRecording = useCallback((slotId: string) => {
-    dispatch({ type: 'CONTINUE_RECORDING', slotId });
+  const continueRecording = useCallback((slotId: string, freshAudioUploadKey?: string) => {
+    dispatch({ type: 'CONTINUE_RECORDING', slotId, freshAudioUploadKey });
   }, []);
 
   const setDurableRecording = useCallback((slotId: string, durable: DurableSlotRef) => {

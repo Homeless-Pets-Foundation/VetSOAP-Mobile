@@ -168,7 +168,8 @@ export function validateManifestObject(
   if (
     m.uploadKeyOverride !== undefined &&
     (typeof m.uploadKeyOverride !== 'string' ||
-      !m.uploadKeyOverride.startsWith('recording-upload-v2:restart:') ||
+      (!m.uploadKeyOverride.startsWith('recording-upload-v2:restart:') &&
+        !m.uploadKeyOverride.startsWith('recording-upload-v3:audio-change:')) ||
       m.uploadKeyOverride.length > 128)
   ) {
     return { ok: false, reason: 'invalid_upload_key_override' };

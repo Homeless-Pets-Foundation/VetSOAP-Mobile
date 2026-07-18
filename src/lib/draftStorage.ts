@@ -14,6 +14,7 @@ import { durableTombstone } from './durableAudio/tombstone';
 import { clonePendingConfirm } from './pendingConfirm';
 import {
   effectiveUploadIdempotencyKey,
+  isAudioChangeUploadIdempotencyKey,
   normalizeSupersededUploadKey,
   normalizeUploadIntentId,
   normalizeUploadKeyOverride,
@@ -327,6 +328,19 @@ function normalizeFileUriForCompare(uri: string): string {
 
 function sameFileUri(a: string, b: string): boolean {
   return a === b || normalizeFileUriForCompare(a) === normalizeFileUriForCompare(b);
+}
+
+function isConfinedFlatDraftFile(uri: string, draftDir: string): boolean {
+  const normalizedUri = normalizeFileUriForCompare(uri);
+  const normalizedDir = normalizeFileUriForCompare(draftDir);
+  if (!normalizedUri.startsWith(normalizedDir)) return false;
+  const relative = normalizedUri.slice(normalizedDir.length);
+  return (
+    relative.length > 0 &&
+    !relative.includes('/') &&
+    !relative.includes('\\') &&
+    !relative.includes('..')
+  );
 }
 
 function conciseCopyError(error: unknown): string {
@@ -910,6 +924,21 @@ export const draftStorage = {
       await writeDraftChunks(userId, slot.id, JSON.stringify(metadata));
       completeSaveMetadataCommitted = true;
 
+      // Metadata is now the commit point. Remove only files from the previous
+      // authoritative snapshot that are proven to be flat children of this
+      // user/slot directory; the new snapshot remains recoverable even if the
+      // later best-effort index write fails.
+      if (requireCompleteAudio && existing) {
+        for (const prior of existing.segments) {
+          if (
+            !draftSegments.some((segment) => sameFileUri(segment.uri, prior.uri)) &&
+            isConfinedFlatDraftFile(prior.uri, dir)
+          ) {
+            safeDeleteFile(prior.uri);
+          }
+        }
+      }
+
       // Update index
       const index = await readDraftIndex();
       if (!index.includes(slot.id)) {
@@ -1031,7 +1060,9 @@ export const draftStorage = {
     }
 
     metadata.uploadKeyOverride = normalizedReplacement;
-    metadata.supersededUploadKey = normalizedOld;
+    metadata.supersededUploadKey = isAudioChangeUploadIdempotencyKey(normalizedReplacement)
+      ? null
+      : normalizedOld;
     metadata.uploadRestartPending = null;
     metadata.serverDraftId = null;
     metadata.pendingConfirm = null;
@@ -1096,12 +1127,17 @@ export const draftStorage = {
       slotId,
     });
 
+    const expectedNativeSuperseded = isAudioChangeUploadIdempotencyKey(
+      pending.replacementKey,
+    )
+      ? null
+      : pending.expectedOldKey;
     if (
       nativeCurrentKey === pending.replacementKey &&
-      nativeSuperseded === pending.expectedOldKey
+      nativeSuperseded === expectedNativeSuperseded
     ) {
       metadata.uploadKeyOverride = pending.replacementKey;
-      metadata.supersededUploadKey = pending.expectedOldKey;
+      metadata.supersededUploadKey = expectedNativeSuperseded;
       metadata.uploadRestartPending = null;
       metadata.serverDraftId = null;
       metadata.pendingConfirm = null;
@@ -1155,7 +1191,9 @@ export const draftStorage = {
     if (currentKey !== normalizedOld) return false;
 
     metadata.uploadKeyOverride = normalizedReplacement;
-    metadata.supersededUploadKey = normalizedOld;
+    metadata.supersededUploadKey = isAudioChangeUploadIdempotencyKey(normalizedReplacement)
+      ? null
+      : normalizedOld;
     metadata.uploadRestartPending = null;
     metadata.serverDraftId = null;
     metadata.pendingConfirm = null;
@@ -1199,7 +1237,11 @@ export const draftStorage = {
           return;
         }
         metadata.uploadKeyOverride = metadata.uploadRestartPending.replacementKey;
-        metadata.supersededUploadKey = metadata.uploadRestartPending.expectedOldKey;
+        metadata.supersededUploadKey = isAudioChangeUploadIdempotencyKey(
+          metadata.uploadRestartPending.replacementKey,
+        )
+          ? null
+          : metadata.uploadRestartPending.expectedOldKey;
         metadata.uploadRestartPending = null;
         metadata.pendingConfirm = null;
       }
@@ -1243,7 +1285,11 @@ export const draftStorage = {
           return;
         }
         metadata.uploadKeyOverride = metadata.uploadRestartPending.replacementKey;
-        metadata.supersededUploadKey = metadata.uploadRestartPending.expectedOldKey;
+        metadata.supersededUploadKey = isAudioChangeUploadIdempotencyKey(
+          metadata.uploadRestartPending.replacementKey,
+        )
+          ? null
+          : metadata.uploadRestartPending.expectedOldKey;
         metadata.uploadRestartPending = null;
       }
       metadata.pendingConfirm = normalized;

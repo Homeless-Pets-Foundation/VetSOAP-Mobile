@@ -447,10 +447,11 @@ internal object DurableRecorderEngine {
       ?: throw DurableRecorderException(DurableErrors.STATE, "expectedOldKey is required")
     val replacementKey = input["replacementKey"] as? String
       ?: throw DurableRecorderException(DurableErrors.STATE, "replacementKey is required")
+    val isFreshAudioChange = replacementKey.startsWith("recording-upload-v3:audio-change:")
     if (
       expectedOldKey.length > 128 ||
       replacementKey.length > 128 ||
-      !replacementKey.startsWith("recording-upload-v2:restart:")
+      (!replacementKey.startsWith("recording-upload-v2:restart:") && !isFreshAudioChange)
     ) {
       throw DurableRecorderException(DurableErrors.STATE, "invalid upload restart identity")
     }
@@ -463,7 +464,7 @@ internal object DurableRecorderEngine {
         throw DurableRecorderException(DurableErrors.STATE, "upload identity changed; inspect again")
       }
       it.uploadKeyOverride = replacementKey
-      it.supersededUploadKey = expectedOldKey
+      it.supersededUploadKey = if (isFreshAudioChange) null else expectedOldKey
       it.serverRecordingId = null
       it.pendingConfirmJson = null
     }

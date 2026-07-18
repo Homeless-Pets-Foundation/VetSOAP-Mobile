@@ -188,12 +188,17 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
     effectiveUploadIdempotencyKey,
     slotUploadIdempotencyKey,
     durableUploadIdempotencyKey,
+    createAudioChangeUploadIdempotencyKey,
+    isAudioChangeUploadIdempotencyKey,
   } = await loadPure('src/lib/uploadIntent.ts');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');
   assert.equal(slotUploadIdempotencyKey('legacy:slot-7'), 'recording-upload-v1:slot:legacy:slot-7');
   assert.equal(durableUploadIdempotencyKey('native-9'), 'recording-upload-v1:durable:native-9');
   assert.equal(normalizeUploadKeyOverride('recording-upload-v2:restart:valid'), 'recording-upload-v2:restart:valid');
+  const audioChangeKey = createAudioChangeUploadIdempotencyKey();
+  assert.equal(isAudioChangeUploadIdempotencyKey(audioChangeKey), true);
+  assert.equal(normalizeUploadKeyOverride(audioChangeKey), audioChangeKey);
   assert.equal(normalizeUploadKeyOverride('recording-upload-v2:restart:bad\nheader'), null);
   assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:valid'), 'recording-upload-v1:slot:valid');
   assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:bad\rheader'), null);
@@ -230,15 +235,35 @@ test('stable upload intents rotate when audio changes after R2 completion', asyn
     }),
     'recording-upload-v2:restart:replacement',
   );
+  assert.equal(
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: audioChangeKey,
+      supersededUploadKey: null,
+      durableRecordingId: 'native-9',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+    audioChangeKey,
+  );
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: audioChangeKey,
+      supersededUploadKey: 'recording-upload-v2:restart:old',
+      durableRecordingId: 'native-9',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
   const reducer = await read('src/hooks/useMultiPatientSession.ts');
   const clear = reducer.slice(reducer.indexOf("case 'CLEAR_AUDIO'"), reducer.indexOf("case 'CONTINUE_RECORDING'"));
   const update = reducer.slice(reducer.indexOf("case 'UPDATE_FORM'"), reducer.indexOf("case 'SET_AUDIO_STATE'"));
   assert.match(clear, /uploadIntentId: createUploadIntentId\(\)/);
   assert.doesNotMatch(update, /createUploadIntentId|pendingConfirm: null/);
+  assert.match(update, /uploadRecovery: null/);
   assert.match(reducer, /function invalidatePendingConfirmForAudioChange/);
   assert.match(
     reducer,
-    /if \(!slot\.pendingConfirm && !slot\.uploadKeyOverride && !slot\.supersededUploadKey\)/,
+    /!slot\.pendingConfirm[\s\S]*!slot\.uploadKeyOverride[\s\S]*!slot\.supersededUploadKey[\s\S]*!slot\.uploadRecovery/,
   );
   assert.match(reducer, /uploadIntentId: createUploadIntentId\(\)/);
   for (const action of ['SAVE_AUDIO', 'CONTINUE_RECORDING', 'UPDATE_SEGMENT', 'DELETE_SEGMENT', 'REPLACE_ALL_SEGMENTS']) {
@@ -338,6 +363,9 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     record.indexOf('const runSingleSubmit = useCallback('),
   );
   assert.match(controlledRestart, /UPLOAD_RESTART_LOCAL_TIMEOUT_MS/);
+  assert.match(controlledRestart, /initiatingScopeGeneration/);
+  assert.match(controlledRestart, /scopeIsCurrent/);
+  assert.match(controlledRestart, /draftStorage\.getUserId\(\) === userId/);
   assert.match(controlledRestart, /Promise\.race\(\[transaction, timeoutResult\]\)/);
   assert.match(controlledRestart, /upload_restart_local_watchdog_fired/);
   assert.match(controlledRestart, /if \(watchdog\) clearTimeout\(watchdog\)/);
@@ -362,6 +390,25 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     record,
     /beginUploadAttemptReset[\s\S]*durableRecorder\.resetUploadAttempt[\s\S]*commitUploadAttemptReset/,
   );
+  const durableAudioRotation = record.slice(
+    record.indexOf('const rotateDurableAudioIdentity = useCallback('),
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+  );
+  assert.match(durableAudioRotation, /createAudioChangeUploadIdempotencyKey\(\)/);
+  assert.match(durableAudioRotation, /beginUploadAttemptReset/);
+  assert.match(durableAudioRotation, /durableRecorder\.resetUploadAttempt/);
+  assert.match(durableAudioRotation, /commitUploadAttemptReset/);
+  assert.match(record, /continueRecording\(slotId, freshAudioUploadKey\)/);
+  const androidDurable = await read(
+    'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt',
+  );
+  const iosDurable = await read(
+    'modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift',
+  );
+  const durableManifest = await read('src/lib/durableAudio/manifest.ts');
+  for (const source of [androidDurable, iosDurable, durableManifest]) {
+    assert.match(source, /recording-upload-v3:audio-change:/);
+  }
   assert.match(record, /await draftStorage\.updatePendingConfirm/);
   assert.match(record, /recordingsApi\.confirmPendingUpload/);
   assert.match(record, /if \(slot\.pendingConfirm\)/);

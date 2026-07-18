@@ -231,6 +231,72 @@ test('durable upload restart uses a two-phase marker and clears old server proof
   assert.equal(meta.pendingSync, false);
 });
 
+test('durable audio-change rotation commits a fresh ordinary identity without a superseded key', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const oldKey = 'recording-upload-v2:restart:previous-replacement';
+  const freshKey = 'recording-upload-v3:audio-change:fresh-audio';
+  await draftStorage.saveDraft({
+    ...durableSlot(),
+    uploadKeyOverride: oldKey,
+    supersededUploadKey: 'recording-upload-v1:durable:dr-abc123',
+    serverDraftId: 'server-old',
+    pendingConfirm: {
+      recordingId: '11111111-1111-4111-8111-111111111111',
+      fileKey:
+        'recordings/22222222-2222-4222-8222-222222222222/11111111-1111-4111-8111-111111111111.aac',
+    },
+  });
+
+  assert.equal(
+    await draftStorage.beginUploadAttemptReset('slot-durable-1', oldKey, freshKey),
+    true,
+  );
+  assert.equal(
+    await draftStorage.commitUploadAttemptReset('slot-durable-1', oldKey, freshKey),
+    true,
+  );
+
+  const meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.uploadKeyOverride, freshKey);
+  assert.equal(meta.supersededUploadKey, null);
+  assert.equal(meta.uploadRestartPending, null);
+  assert.equal(meta.serverDraftId, null);
+  assert.equal(meta.pendingConfirm, null);
+  assert.equal(meta.pendingSync, false);
+});
+
+test('durable audio change commits a fresh ordinary key without a superseded recovery pair', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const oldKey = 'recording-upload-v1:durable:dr-abc123';
+  const freshKey = 'recording-upload-v3:audio-change:fresh-one';
+  await draftStorage.saveDraft({
+    ...durableSlot(),
+    serverDraftId: 'server-old',
+  });
+
+  assert.equal(
+    await draftStorage.beginUploadAttemptReset('slot-durable-1', oldKey, freshKey),
+    true,
+  );
+  assert.equal(
+    await draftStorage.reconcileUploadAttemptReset(
+      'slot-durable-1',
+      freshKey,
+      null,
+    ),
+    'committed',
+  );
+
+  const meta = await draftStorage.getDraft('slot-durable-1');
+  assert.equal(meta.uploadKeyOverride, freshKey);
+  assert.equal(meta.supersededUploadKey, null);
+  assert.equal(meta.uploadRestartPending, null);
+  assert.equal(meta.serverDraftId, null);
+  assert.equal(meta.pendingSync, false);
+});
+
 test('durable upload restart cancellation restores the prior background-sync state', async () => {
   const { draftStorage } = await loadDraftStorage();
   draftStorage.setUserId('userA');

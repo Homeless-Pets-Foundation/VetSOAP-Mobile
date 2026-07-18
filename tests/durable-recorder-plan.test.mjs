@@ -619,7 +619,7 @@ test('durable Continue re-enters the single start funnel instead of blocking', a
     /deleteOrphanServerRecording\(slot\)/,
     'continuation must retain the stable intent and reusable canonical server row'
   );
-  assert.match(body, /continueRecording\(slotId\);/);
+  assert.match(body, /continueRecording\(slotId, freshAudioUploadKey\);/);
   assert.match(body, /startRecordingForSlot\(slotId\);/);
 });
 

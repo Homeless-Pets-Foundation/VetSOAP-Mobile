@@ -46,8 +46,10 @@ import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryStat
 import { validatePendingConfirm } from '../../../src/lib/pendingConfirm';
 import { getSecureRandomHex } from '../../../src/lib/random';
 import {
+  createAudioChangeUploadIdempotencyKey,
   createRestartUploadIdempotencyKey,
   effectiveUploadIdempotencyKey,
+  isAudioChangeUploadIdempotencyKey,
   normalizeUploadIntentId,
 } from '../../../src/lib/uploadIntent';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
@@ -573,6 +575,21 @@ function RecordingSession() {
   const navigation = useNavigation();
   const queryClient = useQueryClient();
   const user = useAuthUser();
+  const authScopeKey = user ? `${user.organizationId}\u0000${user.id}` : null;
+  const authScopeKeyRef = useRef<string | null>(null);
+  const authScopeGenerationRef = useRef(0);
+  const authScopeMountedRef = useRef(true);
+  if (authScopeKeyRef.current !== authScopeKey) {
+    authScopeKeyRef.current = authScopeKey;
+    authScopeGenerationRef.current += 1;
+  }
+  useEffect(() => {
+    authScopeMountedRef.current = true;
+    return () => {
+      authScopeMountedRef.current = false;
+      authScopeGenerationRef.current += 1;
+    };
+  }, []);
   const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
   const recorder = useAudioRecorder();
   const colors = useThemeColors();
@@ -793,6 +810,9 @@ function RecordingSession() {
   const pendingDraftRecoveryReasonRef = useRef<Map<string, RecoveryIntentReason>>(new Map());
   // Ref for startRecordingForSlot to avoid hoisting issues in the effect
   const startRecordingRef = useRef<(slotId: string) => void>(() => {});
+  const rotateDurableAudioIdentityRef = useRef<
+    (slot: PatientSlot) => Promise<string | null>
+  >(async () => null);
   // Single-flight guard for startRecordingForSlot. Prevents a second concurrent
   // invocation (e.g. user-retap during a 250ms pending-start-queue setTimeout,
   // or any path where two start calls overlap) from racing the first: the
@@ -1989,59 +2009,126 @@ function RecordingSession() {
         );
         return;
       }
-      const beginContinue = () => {
-        if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
-          recorder.resetWithoutDelete();
-        }
-        continueRecording(slotId);
-        if (slot?.durable) startRecordingForSlot(slotId);
-      };
-      if (slot?.durable && session.recorderBoundToSlotId && session.recorderBoundToSlotId !== slotId) {
-        const boundSlot = session.slots.find((s) => s.id === session.recorderBoundToSlotId);
-        if (boundSlot && recorder.state === 'recording') {
-          Alert.alert(
-            'Stop Current Recording?',
-            `Stop recording for ${boundSlot.formData.patientName || 'the other patient'} before continuing this one?`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Stop & Continue',
-                onPress: () => {
-                  continueRecording(slotId);
-                  enqueuePendingStart(slotId);
-                  (async () => {
-                    try {
-                      await recorder.stop();
-                    } catch {
-                      removePendingStart(slotId);
-                      setAudioState(slotId, 'stopped');
-                      Alert.alert('Recording Error', 'Failed to stop the current recording.');
-                    }
-                  })().catch(() => {});
+      const continueAfterIdentityReady = (freshAudioUploadKey?: string) => {
+        const beginContinue = () => {
+          if (!session.recorderBoundToSlotId || session.recorderBoundToSlotId === slotId) {
+            recorder.resetWithoutDelete();
+          }
+          continueRecording(slotId, freshAudioUploadKey);
+          if (slot?.durable) startRecordingForSlot(slotId);
+        };
+        if (
+          slot?.durable &&
+          session.recorderBoundToSlotId &&
+          session.recorderBoundToSlotId !== slotId
+        ) {
+          const boundSlot = session.slots.find((s) => s.id === session.recorderBoundToSlotId);
+          if (boundSlot && recorder.state === 'recording') {
+            Alert.alert(
+              'Stop Current Recording?',
+              `Stop recording for ${boundSlot.formData.patientName || 'the other patient'} before continuing this one?`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Stop & Continue',
+                  onPress: () => {
+                    continueRecording(slotId, freshAudioUploadKey);
+                    enqueuePendingStart(slotId);
+                    (async () => {
+                      try {
+                        await recorder.stop();
+                      } catch {
+                        removePendingStart(slotId);
+                        setAudioState(slotId, 'stopped');
+                        Alert.alert('Recording Error', 'Failed to stop the current recording.');
+                      }
+                    })().catch(() => {});
+                  },
                 },
-              },
-            ]
-          );
-          return;
+              ]
+            );
+            return;
+          }
+          if (boundSlot && recorder.state === 'paused') {
+            continueRecording(slotId, freshAudioUploadKey);
+            enqueuePendingStart(slotId);
+            (async () => {
+              try {
+                await recorder.stop();
+              } catch {
+                removePendingStart(slotId);
+                setAudioState(slotId, 'stopped');
+                Alert.alert('Recording Error', 'Failed to stop the current recording.');
+              }
+            })().catch(() => {});
+            return;
+          }
         }
-        if (boundSlot && recorder.state === 'paused') {
-          continueRecording(slotId);
-          enqueuePendingStart(slotId);
-          (async () => {
-            try {
-              await recorder.stop();
-            } catch {
-              removePendingStart(slotId);
-              setAudioState(slotId, 'stopped');
-              Alert.alert('Recording Error', 'Failed to stop the current recording.');
-            }
-          })().catch(() => {});
-          return;
-        }
+        beginContinue();
+      };
+
+      if (
+        slot?.durable &&
+        slot.uploadKeyOverride &&
+        isAudioChangeUploadIdempotencyKey(slot.uploadKeyOverride) &&
+        !slot.supersededUploadKey &&
+        slot.uploadStatus === 'pending' &&
+        !slot.serverDraftId &&
+        !slot.serverRecordingId &&
+        !slot.pendingConfirm &&
+        !slot.uploadRecovery
+      ) {
+        continueAfterIdentityReady(slot.uploadKeyOverride);
+        return;
       }
-      beginContinue();
+
+      if (
+        slot?.durable &&
+        (
+          slot.uploadKeyOverride ||
+          slot.supersededUploadKey ||
+          slot.uploadRecovery ||
+          slot.pendingConfirm ||
+          slot.serverDraftId ||
+          slot.serverRecordingId ||
+          slot.uploadStatus === 'error'
+        )
+      ) {
+        const initiatingScopeKey = authScopeKeyRef.current;
+        const initiatingScopeGeneration = authScopeGenerationRef.current;
+        const initiatingUserId = user?.id;
+        const scopeIsCurrent = () =>
+          authScopeMountedRef.current &&
+          initiatingScopeKey !== null &&
+          initiatingUserId !== undefined &&
+          authScopeKeyRef.current === initiatingScopeKey &&
+          authScopeGenerationRef.current === initiatingScopeGeneration &&
+          draftStorage.getUserId() === initiatingUserId;
+        rotateDurableAudioIdentityRef.current(slot)
+          .then((freshAudioUploadKey) => {
+            if (!scopeIsCurrent()) return;
+            if (!freshAudioUploadKey) {
+              Alert.alert(
+                'Continue Not Started',
+                'Captivet could not safely rotate this recording to a fresh upload identity. The saved audio is unchanged.',
+              );
+              return;
+            }
+            continueAfterIdentityReady(freshAudioUploadKey);
+          })
+          .catch(() => {
+            if (!scopeIsCurrent()) return;
+            Alert.alert(
+              'Continue Not Started',
+              'Captivet could not safely rotate this recording to a fresh upload identity. The saved audio is unchanged.',
+            );
+          });
+        return;
+      }
+
+      continueAfterIdentityReady();
     },
-    [isSlotUploadActive, session.recorderBoundToSlotId, session.slots, continueRecording, recorder, startRecordingForSlot, enqueuePendingStart, removePendingStart, setAudioState]
+    [isSlotUploadActive, session.recorderBoundToSlotId, session.slots, continueRecording, recorder, startRecordingForSlot, enqueuePendingStart, removePendingStart, setAudioState, user?.id]
   );
 
   const handleRecordAgain = useCallback(
@@ -3605,9 +3692,169 @@ function RecordingSession() {
     });
   }, []);
 
+  const rotateDurableAudioIdentity = useCallback(
+    async (slot: PatientSlot): Promise<string | null> => {
+      const userId = user?.id;
+      const initiatingScopeKey = authScopeKeyRef.current;
+      const initiatingScopeGeneration = authScopeGenerationRef.current;
+      if (
+        !slot.durable ||
+        !userId ||
+        !initiatingScopeKey ||
+        uploadRestartSlotIdsRef.current.has(slot.id) ||
+        draftSyncInFlightSlotIdsRef.current.has(slot.id)
+      ) {
+        return null;
+      }
+
+      const scopeIsCurrent = () =>
+        authScopeMountedRef.current &&
+        authScopeKeyRef.current === initiatingScopeKey &&
+        authScopeGenerationRef.current === initiatingScopeGeneration &&
+        draftStorage.getUserId() === userId;
+      if (!scopeIsCurrent()) return null;
+
+      const expectedOldKey = uploadKeyForSlot(slot);
+      const freshAudioUploadKey = createAudioChangeUploadIdempotencyKey();
+      const draftSlotId = slot.draftSlotId ?? slot.id;
+      uploadRestartSlotIdsRef.current.add(slot.id);
+      cancelScheduledDraft(slot.id);
+      let timedOut = false;
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
+
+      try {
+        const transaction = (async (): Promise<string | null> => {
+          const awaitStep = async <T,>(operation: () => Promise<T>): Promise<T> => {
+            if (!scopeIsCurrent()) {
+              throw new Error('Durable audio identity user scope changed');
+            }
+            const value = await operation();
+            if (!scopeIsCurrent()) {
+              throw new Error('Durable audio identity user scope changed');
+            }
+            return value;
+          };
+
+          // Persist the current metadata snapshot even when a draft already
+          // exists. The old draft can lag behind patient edits; committing a
+          // fresh native identity against that stale snapshot would restore
+          // incorrect metadata after process death.
+          const snapshotSlot =
+            draftSlotId === slot.id ? slot : { ...slot, id: draftSlotId };
+          const saved = await awaitStep(() =>
+            draftStorage.saveDraft(snapshotSlot, { requireCompleteAudio: true }),
+          );
+          const persistedDraftSlotId = saved.draftSlotId;
+
+          const began = await awaitStep(() =>
+            draftStorage.beginUploadAttemptReset(
+              persistedDraftSlotId,
+              expectedOldKey,
+              freshAudioUploadKey,
+            ),
+          );
+          if (!began) return null;
+
+          let draftCommitted = false;
+          try {
+            await awaitStep(() =>
+              durableRecorder.resetUploadAttempt({
+                userId,
+                recordingId: slot.durable!.recordingId,
+                expectedOldKey,
+                replacementKey: freshAudioUploadKey,
+              }),
+            );
+          } catch (error) {
+            if (!scopeIsCurrent()) throw error;
+            // The native response can be lost after its atomic rename.
+            // Reconcile from the authoritative manifest before deciding
+            // whether Continue may append bytes.
+            const manifest = await awaitStep(() =>
+              durableRecorder
+                .getManifest({ userId, recordingId: slot.durable!.recordingId })
+                .catch(() => null),
+            );
+            const reconciled = manifest
+              ? await awaitStep(() =>
+                  draftStorage.reconcileUploadAttemptReset(
+                    persistedDraftSlotId,
+                    manifest.uploadKeyOverride,
+                    manifest.supersededUploadKey,
+                  ),
+                )
+              : 'blocked';
+            if (reconciled !== 'committed') throw error;
+            draftCommitted = true;
+          }
+
+          if (!draftCommitted) {
+            draftCommitted = await awaitStep(() =>
+              draftStorage.commitUploadAttemptReset(
+                persistedDraftSlotId,
+                expectedOldKey,
+                freshAudioUploadKey,
+              ),
+            );
+          }
+          if (!draftCommitted || !scopeIsCurrent()) return null;
+
+          // Keep live state aligned even if the UI watchdog already returned.
+          // A timed-out native call may still have atomically committed; the
+          // next Continue can safely reuse this fresh ordinary identity.
+          dispatch({
+            type: 'RESET_UPLOAD_ATTEMPT',
+            slotId: slot.id,
+            uploadKeyOverride: freshAudioUploadKey,
+            supersededUploadKey: null,
+          });
+          return freshAudioUploadKey;
+        })();
+
+        const timeoutResult = new Promise<null>((resolve) => {
+          watchdog = setTimeout(() => {
+            timedOut = true;
+            captureMessage('durable_audio_identity_watchdog_fired', 'warning', {
+              tags: { phase: 'upload_recovery', mode: 'durable_continue' },
+            });
+            resolve(null);
+          }, UPLOAD_RESTART_LOCAL_TIMEOUT_MS);
+        });
+        const result = await Promise.race([transaction, timeoutResult]);
+        if (timedOut) {
+          // The native/SecureStore operation cannot be cancelled. Retain the
+          // coordination guard until it settles; the transaction will align
+          // live state if its atomic identity update committed late.
+          transaction.then(
+            () => uploadRestartSlotIdsRef.current.delete(slot.id),
+            () => uploadRestartSlotIdsRef.current.delete(slot.id),
+          );
+        }
+        return result;
+      } finally {
+        if (watchdog) clearTimeout(watchdog);
+        if (!timedOut) {
+          uploadRestartSlotIdsRef.current.delete(slot.id);
+        }
+      }
+    },
+    [cancelScheduledDraft, dispatch, user?.id],
+  );
+  rotateDurableAudioIdentityRef.current = rotateDurableAudioIdentity;
+
   const persistControlledUploadRestart = useCallback(
     async (slot: PatientSlot): Promise<PatientSlot | null> => {
       if (!slot.uploadRecovery?.canRestart) return null;
+      const userId = user?.id;
+      const initiatingScopeKey = authScopeKeyRef.current;
+      const initiatingScopeGeneration = authScopeGenerationRef.current;
+      if (!userId || !initiatingScopeKey) return null;
+      const scopeIsCurrent = () =>
+        authScopeMountedRef.current &&
+        authScopeKeyRef.current === initiatingScopeKey &&
+        authScopeGenerationRef.current === initiatingScopeGeneration &&
+        draftStorage.getUserId() === userId;
+      if (!scopeIsCurrent()) return null;
       const expectedOldKey = uploadKeyForSlot(slot);
       if (
         uploadRestartSlotIdsRef.current.has(slot.id) ||
@@ -3626,7 +3873,7 @@ function RecordingSession() {
         const transaction = (async (): Promise<PatientSlot | null> => {
           const awaitStep = async <T,>(promise: Promise<T>): Promise<T> => {
             const value = await promise;
-            if (timedOut) {
+            if (timedOut || !scopeIsCurrent()) {
               throw new Error('Upload restart persistence timed out');
             }
             return value;
@@ -3653,10 +3900,10 @@ function RecordingSession() {
           };
 
           let draftReset = false;
-          if (slot.durable && user?.id) {
+          if (slot.durable) {
             const manifest = await awaitStep(
               durableRecorder
-                .getManifest({ userId: user.id, recordingId: slot.durable.recordingId })
+                .getManifest({ userId, recordingId: slot.durable.recordingId })
                 .catch(() => null),
             );
             if (manifest) {
@@ -3671,7 +3918,7 @@ function RecordingSession() {
               try {
                 await awaitStep(
                   durableRecorder.resetUploadAttempt({
-                    userId: user.id,
+                    userId,
                     recordingId: slot.durable.recordingId,
                     expectedOldKey,
                     replacementKey,
@@ -3685,7 +3932,7 @@ function RecordingSession() {
                 // recreate the split-brain state this protocol prevents.
                 const manifestAfterError = await awaitStep(
                   durableRecorder
-                    .getManifest({ userId: user.id, recordingId: slot.durable.recordingId })
+                    .getManifest({ userId, recordingId: slot.durable.recordingId })
                     .catch(() => null),
                 );
                 const reconciliation = manifestAfterError
@@ -3731,8 +3978,6 @@ function RecordingSession() {
               });
               return null;
             }
-          } else if (slot.durable && !slot.durable.recoveredAudioUri) {
-            return null;
           }
 
           if (!draftReset) {
@@ -3751,7 +3996,7 @@ function RecordingSession() {
             return null;
           }
 
-          if (timedOut) return null;
+          if (timedOut || !scopeIsCurrent()) return null;
           const restarted: PatientSlot = {
             ...persistedSlot,
             uploadKeyOverride: replacementKey,
@@ -3906,12 +4151,26 @@ function RecordingSession() {
           {
             text: 'Restart Upload',
             onPress: () => {
+              const initiatingScopeKey = authScopeKeyRef.current;
+              const initiatingScopeGeneration = authScopeGenerationRef.current;
+              const initiatingUserId = user?.id;
+              const scopeIsCurrent = () =>
+                authScopeMountedRef.current &&
+                initiatingScopeKey !== null &&
+                initiatingUserId !== undefined &&
+                authScopeKeyRef.current === initiatingScopeKey &&
+                authScopeGenerationRef.current === initiatingScopeGeneration &&
+                draftStorage.getUserId() === initiatingUserId;
               // Block any already-scheduled draft sync before the two-phase
               // local restart begins. runSingleSubmit keeps this marker set
               // until the recovery request finishes.
               markSubmitIntent([slot.id]);
               persistControlledUploadRestart(slot)
                 .then((restarted) => {
+                  if (!scopeIsCurrent()) {
+                    clearSubmitIntent([slot.id]);
+                    return;
+                  }
                   if (restarted) {
                     runSingleSubmit(restarted);
                     return;
@@ -3923,6 +4182,10 @@ function RecordingSession() {
                   );
                 })
                 .catch(() => {
+                  if (!scopeIsCurrent()) {
+                    clearSubmitIntent([slot.id]);
+                    return;
+                  }
                   clearSubmitIntent([slot.id]);
                   Alert.alert(
                     'Restart Not Started',
@@ -3941,6 +4204,7 @@ function RecordingSession() {
       persistControlledUploadRestart,
       runSingleSubmit,
       slotHasLiveRecorder,
+      user?.id,
       user?.role,
     ],
   );

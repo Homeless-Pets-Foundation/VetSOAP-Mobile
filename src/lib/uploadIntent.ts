@@ -1,5 +1,7 @@
 const MAX_UPLOAD_INTENT_ID_LENGTH = 96;
 const MAX_UPLOAD_KEY_LENGTH = 128;
+const RESTART_UPLOAD_KEY_PREFIX = 'recording-upload-v2:restart:';
+const AUDIO_CHANGE_UPLOAD_KEY_PREFIX = 'recording-upload-v3:audio-change:';
 
 /** Non-security identity: timestamp + Math.random is explicitly permitted. */
 export function createUploadIntentId(): string {
@@ -29,7 +31,21 @@ export function durableUploadIdempotencyKey(recordingId: string): string {
 
 /** One-time replacement identity for an explicitly approved conflict restart. */
 export function createRestartUploadIdempotencyKey(): string {
-  return `recording-upload-v2:restart:${createUploadIntentId()}`;
+  return `${RESTART_UPLOAD_KEY_PREFIX}${createUploadIntentId()}`;
+}
+
+/** Fresh ordinary identity after durable bytes change post-restart/inspection. */
+export function createAudioChangeUploadIdempotencyKey(): string {
+  return `${AUDIO_CHANGE_UPLOAD_KEY_PREFIX}${createUploadIntentId()}`;
+}
+
+export function isAudioChangeUploadIdempotencyKey(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    value.startsWith(AUDIO_CHANGE_UPLOAD_KEY_PREFIX) &&
+    value.length <= MAX_UPLOAD_KEY_LENGTH &&
+    /^[\x21-\x7e]+$/.test(value)
+  );
 }
 
 export function effectiveUploadIdempotencyKey(input: {
@@ -44,11 +60,20 @@ export function effectiveUploadIdempotencyKey(input: {
   const hasRestartIdentity =
     (input.uploadKeyOverride !== null && input.uploadKeyOverride !== undefined) ||
     (input.supersededUploadKey !== null && input.supersededUploadKey !== undefined);
+  if (uploadKeyOverride && isAudioChangeUploadIdempotencyKey(uploadKeyOverride)) {
+    if (input.supersededUploadKey !== null && input.supersededUploadKey !== undefined) {
+      throw new Error(
+        'This saved upload identity is incomplete. Check its upload status before retrying.'
+      );
+    }
+    return uploadKeyOverride;
+  }
   if (hasRestartIdentity) {
     if (
       !uploadKeyOverride ||
       !supersededUploadKey ||
-      uploadKeyOverride === supersededUploadKey
+      uploadKeyOverride === supersededUploadKey ||
+      !uploadKeyOverride.startsWith(RESTART_UPLOAD_KEY_PREFIX)
     ) {
       throw new Error(
         'This saved upload restart is incomplete. Check its upload status before retrying.'
@@ -63,7 +88,8 @@ export function effectiveUploadIdempotencyKey(input: {
 
 export function normalizeUploadKeyOverride(value: unknown): string | null {
   return typeof value === 'string' &&
-    value.startsWith('recording-upload-v2:restart:') &&
+    (value.startsWith(RESTART_UPLOAD_KEY_PREFIX) ||
+      value.startsWith(AUDIO_CHANGE_UPLOAD_KEY_PREFIX)) &&
     value.length <= MAX_UPLOAD_KEY_LENGTH &&
     /^[\x21-\x7e]+$/.test(value)
     ? value

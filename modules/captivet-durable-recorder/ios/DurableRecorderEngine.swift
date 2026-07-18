@@ -539,9 +539,10 @@ final class DurableRecorderEngine: NSObject {
     guard DurablePaths.isValidId(userId), DurablePaths.isValidId(recordingId) else {
       throw fail(.invalidId, "invalid ids", recordingId)
     }
+    let isFreshAudioChange = replacementKey.hasPrefix("recording-upload-v3:audio-change:")
     guard expectedOldKey.utf8.count <= 128,
           replacementKey.utf8.count <= 128,
-          replacementKey.hasPrefix("recording-upload-v2:restart:") else {
+          replacementKey.hasPrefix("recording-upload-v2:restart:") || isFreshAudioChange else {
       throw fail(.invalidId, "invalid upload restart identity", recordingId)
     }
     try mutateManifestAtomically(userId: userId, recordingId: recordingId) { manifest in
@@ -553,7 +554,7 @@ final class DurableRecorderEngine: NSObject {
         throw self.fail(.state, "upload identity changed; inspect again", recordingId)
       }
       manifest.uploadKeyOverride = replacementKey
-      manifest.supersededUploadKey = expectedOldKey
+      manifest.supersededUploadKey = isFreshAudioChange ? nil : expectedOldKey
       manifest.serverRecordingId = nil
       manifest.pendingConfirmJson = nil
     }

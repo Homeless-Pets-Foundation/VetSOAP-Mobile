@@ -125,7 +125,7 @@ export type SessionAction =
   | { type: 'SET_AUDIO_STATE'; slotId: string; audioState: PatientSlot['audioState'] }
   | { type: 'SAVE_AUDIO'; slotId: string; audioUri: string; duration: number; peakMetering?: number }
   | { type: 'CLEAR_AUDIO'; slotId: string }
-  | { type: 'CONTINUE_RECORDING'; slotId: string }
+  | { type: 'CONTINUE_RECORDING'; slotId: string; freshAudioUploadKey?: string }
   | { type: 'BIND_RECORDER'; slotId: string }
   | { type: 'UNBIND_RECORDER' }
   | { type: 'SET_UPLOAD_STATUS'; slotId: string; status: PatientSlot['uploadStatus']; progress?: number; error?: string | null; serverRecordingId?: string | null; pendingConfirm?: PendingConfirm | null }
@@ -140,7 +140,7 @@ export type SessionAction =
       type: 'RESET_UPLOAD_ATTEMPT';
       slotId: string;
       uploadKeyOverride: string;
-      supersededUploadKey: string;
+      supersededUploadKey: string | null;
     }
   | { type: 'RESET_SESSION'; defaultTemplateId?: string }
   | { type: 'RESTORE_SESSION'; slots: PatientSlot[] }

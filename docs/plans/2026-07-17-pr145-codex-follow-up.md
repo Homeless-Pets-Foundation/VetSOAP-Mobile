@@ -67,3 +67,37 @@ The next Codex review reported three additional merge-blocking findings.
   leaves the last complete draft snapshot intact on failure.
 - Add regression coverage for the metadata guard, queued sync/flush behavior,
   and all-or-nothing restart persistence.
+
+## Exact-head follow-up (`26f2b96ed9`)
+
+The next Codex review reported four additional merge-blocking findings.
+
+1. **P1 — restart continuation can cross authentication scope:** valid. A
+   local persistence promise can outlive the Record screen and start upload
+   under a subsequently signed-in user's API session.
+2. **P2 — complete restart snapshots accumulate:** valid. Versioned copies
+   protect the prior draft during commit, but the newly superseded files are
+   not removed after metadata makes the new version authoritative.
+3. **P1 — durable audio mutation falls back to the superseded key:** valid.
+   Clearing the restart pair rotates `uploadIntentId`, but the durable
+   idempotency resolver ignores that field and reuses the original durable key;
+   the native manifest also retains its old restart identity.
+4. **P2 — inspected recovery survives slot edits:** valid. Metadata edits and
+   audio mutations without an existing proof/restart pair can retain a
+   `restart_available` classification for an obsolete snapshot.
+
+### Implementation
+
+- Capture a user-scope generation for controlled restart and abort every late
+  continuation, including the final upload start, unless that exact scope is
+  still mounted and current.
+- After complete metadata commits, delete only superseded audio files proven
+  confined to that slot's draft directory; retain the new authoritative set.
+- Add an ordinary fresh audio-change upload identity and rotate it atomically
+  across SecureStore plus the native durable manifest before durable Continue
+  can append bytes.
+- Clear ephemeral recovery classification on every metadata edit, and rotate
+  or clear it on every audio mutation so the next submit re-inspects current
+  state.
+- Add focused source and behavior coverage for scope invalidation, confined
+  cleanup, durable identity rotation, and edit invalidation.

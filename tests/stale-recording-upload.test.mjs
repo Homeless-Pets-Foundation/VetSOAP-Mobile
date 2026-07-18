@@ -368,14 +368,23 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(controlledRestart, /draftStorage\.getUserId\(\) === userId/);
   assert.match(controlledRestart, /Promise\.race\(\[transaction, timeoutResult\]\)/);
   assert.match(controlledRestart, /upload_restart_local_watchdog_fired/);
+  // The watchdog releases the UI but must not turn a late native commit into
+  // an exception or skip reducer alignment. The transaction keeps running
+  // under the auth-scope guard until reconciliation finishes.
+  assert.doesNotMatch(controlledRestart, /if \(timedOut \|\| !scopeIsCurrent\(\)\)/);
+  assert.doesNotMatch(controlledRestart, /if \(timedOut\) throw error/);
+  assert.match(
+    controlledRestart,
+    /if \(!scopeIsCurrent\(\)\) return null;[\s\S]*type: 'RESET_UPLOAD_ATTEMPT'/,
+  );
   assert.match(controlledRestart, /if \(watchdog\) clearTimeout\(watchdog\)/);
   assert.match(
     controlledRestart,
-    /if \(timedOut\)[\s\S]*transaction\.then\([\s\S]*uploadRestartSlotIdsRef\.current\.delete/,
+    /if \(timedOut\)[\s\S]*transaction\.then\([\s\S]*clearUploadRestart/,
   );
   assert.match(
     controlledRestart,
-    /if \(!timedOut\)[\s\S]*uploadRestartSlotIdsRef\.current\.delete/,
+    /if \(!timedOut\)[\s\S]*clearUploadRestart/,
   );
   assert.ok(
     controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot,') <
@@ -458,9 +467,34 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     record.indexOf('const scheduleDraftSync = useCallback('),
   );
   assert.doesNotMatch(draftSync, /deleteRecordingWithRetry\(serverId/);
+  // Queue ownership is captured when the sync is enqueued, not when its
+  // predecessor settles. Every deferred storage/network operation is wrapped
+  // by a pre/post auth-generation check, and the catch path exits before
+  // touching replacement-user state.
+  assert.match(draftSync, /const initiatingUserId = user\?\.id/);
+  assert.match(draftSync, /const initiatingScopeKey = authScopeKeyRef\.current/);
+  assert.match(draftSync, /const initiatingScopeGeneration = authScopeGenerationRef\.current/);
+  assert.match(draftSync, /draftStorage\.getUserId\(\) === initiatingUserId/);
+  assert.match(draftSync, /const awaitScoped = async <T,>/);
+  assert.match(draftSync, /const persistedDraft = await awaitScoped/);
+  assert.match(draftSync, /const outcome = await awaitScoped/);
+  assert.match(
+    draftSync,
+    /patchDraftMetadataWithRetry\([\s\S]*scopeIsCurrent,[\s\S]*\)/,
+  );
+  assert.match(draftSync, /const result = await awaitScoped/);
+  assert.match(
+    draftSync,
+    /catch \(error\) \{\s*\/\/ Auth may have switched[\s\S]*if \(!scopeIsCurrent\(\)\) return;/,
+  );
   assert.match(
     draftSync,
     /if \(slot\.supersededUploadKey \|\| uploadRestartSlotIdsRef\.current\.has\(slotId\)\) return/,
+  );
+  const retryableCleanup = await read('src/lib/retryableCleanup.ts');
+  assert.match(
+    retryableCleanup,
+    /if \(!shouldContinue\(\)\) return 'transient_failure';/,
   );
   assert.match(strings, /We couldn't finish the upload\. The recording is still saved on this device/);
 
@@ -468,6 +502,44 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(
     pendingDraftSync,
     /draft\.supersededUploadKey \|\| draft\.uploadRestartPending/,
+  );
+});
+
+test('Save for Later is excluded while submit intent or controlled restart owns the session', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  assert.match(record, /const \[submitIntentCount, setSubmitIntentCount\] = useState\(0\)/);
+  assert.match(record, /const \[uploadRestartCount, setUploadRestartCount\] = useState\(0\)/);
+  assert.match(
+    record,
+    /const markSubmitIntent = useCallback[\s\S]*setSubmitIntentCount\(submitIntentSlotIdsRef\.current\.size\)/,
+  );
+  assert.match(
+    record,
+    /const hasBlockingUploadWork = useCallback\([\s\S]*submitIntentSlotIdsRef\.current\.size > 0[\s\S]*uploadRestartSlotIdsRef\.current\.size > 0/,
+  );
+
+  const executeStash = record.slice(
+    record.indexOf('const executeStash = useCallback('),
+    record.indexOf('// Effect: execute pending stash'),
+  );
+  assert.match(executeStash, /if \(hasBlockingUploadWork\(\)\)/);
+  assert.ok(
+    executeStash.lastIndexOf('if (hasBlockingUploadWork())') >
+      executeStash.indexOf('await Promise.all('),
+    'stash must recheck upload ownership after awaiting draft flushes',
+  );
+
+  const handleStash = record.slice(
+    record.indexOf('const handleStashSession = useCallback('),
+    record.indexOf('const loadDraft = useCallback('),
+  );
+  assert.match(handleStash, /if \(hasBlockingUploadWork\(\)\)/);
+  assert.match(record, /const canStash =[\s\S]*submitIntentCount === 0/);
+  assert.match(record, /const canStash =[\s\S]*uploadRestartCount === 0/);
+  assert.match(
+    record,
+    /disabled=\{isAnyUploading \|\| submitIntentCount > 0 \|\| uploadRestartCount > 0\}/,
   );
 });
 

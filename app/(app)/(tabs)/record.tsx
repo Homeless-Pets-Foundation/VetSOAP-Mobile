@@ -734,6 +734,10 @@ function RecordingSession() {
   const [batchSlotIds, setBatchSlotIds] = useState<string[]>([]);
   const [uploadOverlayHidden, setUploadOverlayHidden] = useState(false);
   const [isStashing, setIsStashing] = useState(false);
+  // Refs provide synchronous upload ownership, while this count makes those
+  // mutations visible to render-time controls such as Save for Later.
+  const [submitIntentCount, setSubmitIntentCount] = useState(0);
+  const [uploadRestartCount, setUploadRestartCount] = useState(0);
   const [finishingDraftSlotId, setFinishingDraftSlotId] = useState<string | null>(null);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
   // Set when an audio session interruption (incoming call, Siri, etc.) tore
@@ -898,13 +902,34 @@ function RecordingSession() {
       // race against a just-written draft row.
       cancelScheduledDraft(slotId);
     });
+    setSubmitIntentCount(submitIntentSlotIdsRef.current.size);
   }, [cancelScheduledDraft]);
 
   const clearSubmitIntent = useCallback((slotIds: string[]) => {
     slotIds.forEach((slotId) => {
       submitIntentSlotIdsRef.current.delete(slotId);
     });
+    setSubmitIntentCount(submitIntentSlotIdsRef.current.size);
   }, []);
+
+  const markUploadRestart = useCallback((slotId: string) => {
+    uploadRestartSlotIdsRef.current.add(slotId);
+    setUploadRestartCount(uploadRestartSlotIdsRef.current.size);
+  }, []);
+
+  const clearUploadRestart = useCallback((slotId: string) => {
+    uploadRestartSlotIdsRef.current.delete(slotId);
+    setUploadRestartCount(uploadRestartSlotIdsRef.current.size);
+  }, []);
+
+  const hasBlockingUploadWork = useCallback(
+    () =>
+      isSubmittingAllRef.current ||
+      submitIntentSlotIdsRef.current.size > 0 ||
+      uploadRestartSlotIdsRef.current.size > 0 ||
+      uploadingSlotIdsRef.current.size > 0,
+    [],
+  );
 
   const buildPersistedSlot = useCallback(
     (slotId: string, snapshot: PersistableRecorderSnapshot): PatientSlot | null => {
@@ -3243,6 +3268,17 @@ function RecordingSession() {
   const syncServerDraft = useCallback(
     async (slotId: string, draftSlotId: string) => {
       if (uploadRestartSlotIdsRef.current.has(slotId)) return;
+      const initiatingUserId = user?.id;
+      const initiatingRole = user?.role;
+      const initiatingScopeKey = authScopeKeyRef.current;
+      const initiatingScopeGeneration = authScopeGenerationRef.current;
+      if (!initiatingUserId || !initiatingScopeKey) return;
+      const scopeIsCurrent = () =>
+        authScopeMountedRef.current &&
+        authScopeKeyRef.current === initiatingScopeKey &&
+        authScopeGenerationRef.current === initiatingScopeGeneration &&
+        draftStorage.getUserId() === initiatingUserId;
+      if (!scopeIsCurrent()) return;
 
       // Serialize, rather than drop, a newer sync for the same slot. Each
       // queued operation reads sessionRef only when its turn begins, so edits
@@ -3257,26 +3293,43 @@ function RecordingSession() {
           // operation itself reports/captures its bounded failure below.
         })
         .then(async () => {
+          const awaitScoped = async <T,>(operation: () => Promise<T>): Promise<T> => {
+            if (!scopeIsCurrent()) {
+              throw new Error('Draft sync authentication scope changed');
+            }
+            const value = await operation();
+            if (!scopeIsCurrent()) {
+              throw new Error('Draft sync authentication scope changed');
+            }
+            return value;
+          };
           try {
-            if (!canRecordAppointments(user?.role)) return;
+            if (!scopeIsCurrent() || !canRecordAppointments(initiatingRole)) return;
             const slot = sessionRef.current.slots.find((s) => s.id === slotId);
             if (!slot) return;
             // Replacement identities are valid only through the controlled
             // upload-intent recovery endpoint. Check both the in-memory slot and
             // the persisted two-phase marker before any background server write.
             if (slot.supersededUploadKey || uploadRestartSlotIdsRef.current.has(slotId)) return;
-            const persistedDraft = await draftStorage.getDraft(draftSlotId);
+            const persistedDraft = await awaitScoped(() => draftStorage.getDraft(draftSlotId));
             if (persistedDraft?.supersededUploadKey || persistedDraft?.uploadRestartPending) return;
             if (completedUploadSlotIdsRef.current.has(slotId)) {
-              draftStorage.deleteDraft(slotId).catch(() => {});
-              recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
+              await awaitScoped(() => draftStorage.deleteDraft(slotId).catch(() => {}));
+              await awaitScoped(() => recoveryIntent.clearForDraftSlot(slotId).catch(() => {}));
               return;
             }
             if (!isConnected || submitIntentSlotIdsRef.current.has(slotId)) return;
 
             let serverId: string | null = null;
             if (slot.serverDraftId) {
-              const outcome = await patchDraftMetadataWithRetry(slot.serverDraftId, slot.formData);
+              const outcome = await awaitScoped(() =>
+                patchDraftMetadataWithRetry(
+                  slot.serverDraftId!,
+                  slot.formData,
+                  undefined,
+                  scopeIsCurrent,
+                ),
+              );
               if (outcome === 'success') {
                 serverId = slot.serverDraftId;
               } else if (outcome === 'draft_missing') {
@@ -3286,7 +3339,8 @@ function RecordingSession() {
               } else {
                 // Keep draftMetadataDirty=true. A later Submit must either sync the
                 // latest metadata or fail closed before promotion, even after restart.
-                await draftStorage.markDraftMetadataDirty(slotId);
+                await awaitScoped(() => draftStorage.markDraftMetadataDirty(slotId));
+                if (!scopeIsCurrent()) return;
                 dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
                 breadcrumb('draft', 'sync_server_draft_metadata_not_synced', {
                   slot_id: slotId,
@@ -3296,8 +3350,8 @@ function RecordingSession() {
               }
 
               if (completedUploadSlotIdsRef.current.has(slotId)) {
-                draftStorage.deleteDraft(slotId).catch(() => {});
-                recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
+                await awaitScoped(() => draftStorage.deleteDraft(slotId).catch(() => {}));
+                await awaitScoped(() => recoveryIntent.clearForDraftSlot(slotId).catch(() => {}));
                 return;
               }
               if (submitIntentSlotIdsRef.current.has(slotId)) return;
@@ -3306,7 +3360,7 @@ function RecordingSession() {
             if (!serverId) {
               if (submitIntentSlotIdsRef.current.has(slotId)) return;
               if (uploadRestartSlotIdsRef.current.has(slotId)) return;
-              const latestDraft = await draftStorage.getDraft(draftSlotId);
+              const latestDraft = await awaitScoped(() => draftStorage.getDraft(draftSlotId));
               if (latestDraft?.supersededUploadKey || latestDraft?.uploadRestartPending) return;
               // A durable slot MUST create with a deterministic idempotency key
               // derived from its on-disk durable recordingId, so a later Submit
@@ -3315,19 +3369,21 @@ function RecordingSession() {
               // lands. Also persist serverRecordingId into the manifest as the
               // death-surviving anchor. Mirrors the submit path + usePendingDraftSync.
               const durableRecordingId = slot.durable?.recordingId;
-              const result = await recordingsApi.create(slot.formData, {
-                isDraft: true,
-                idempotencyKey: uploadKeyForSlot(slot),
-              });
+              const result = await awaitScoped(() =>
+                recordingsApi.create(slot.formData, {
+                  isDraft: true,
+                  idempotencyKey: uploadKeyForSlot(slot),
+                }),
+              );
               serverId = result.id;
-              if (durableRecordingId && user?.id) {
-                await durableRecorder
-                  .setServerRecordingId({
-                    userId: user.id,
+              if (durableRecordingId) {
+                await awaitScoped(() =>
+                  durableRecorder.setServerRecordingId({
+                    userId: initiatingUserId,
                     recordingId: durableRecordingId,
-                    serverRecordingId: serverId,
-                  })
-                  .catch(() => {});
+                    serverRecordingId: result.id,
+                  }).catch(() => {}),
+                );
               }
 
               if (submitIntentSlotIdsRef.current.has(slotId) || completedUploadSlotIdsRef.current.has(slotId)) {
@@ -3338,20 +3394,31 @@ function RecordingSession() {
                 // protocol closes. Leave the server winner intact; only transient
                 // local draft state may be removed after proven upload success.
                 if (completedUploadSlotIdsRef.current.has(slotId)) {
-                  draftStorage.deleteDraft(slotId).catch(() => {});
-                  recoveryIntent.clearForDraftSlot(slotId).catch(() => {});
+                  await awaitScoped(() => draftStorage.deleteDraft(slotId).catch(() => {}));
+                  await awaitScoped(() => recoveryIntent.clearForDraftSlot(slotId).catch(() => {}));
                 }
                 return;
               }
             }
 
+            if (!scopeIsCurrent()) return;
             dispatch({ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: serverId });
-            await draftStorage.updateServerDraftId(draftSlotId, serverId);
+            await awaitScoped(() => draftStorage.updateServerDraftId(draftSlotId, serverId));
+            if (!scopeIsCurrent()) return;
             invalidateRecordingCaches(queryClient, 'draft_changed');
           } catch (error) {
+            // Auth may have switched while this operation waited behind another
+            // slot sync or awaited storage/network. Never inspect, mutate, or
+            // report the replacement user's state on behalf of the old scope.
+            if (!scopeIsCurrent()) return;
             const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
             if (hadServerDraft) {
-              await draftStorage.markDraftMetadataDirty(slotId);
+              try {
+                await awaitScoped(() => draftStorage.markDraftMetadataDirty(slotId));
+              } catch {
+                return;
+              }
+              if (!scopeIsCurrent()) return;
               dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
             }
             if (isNetworkRequestFailed(error)) {
@@ -3715,7 +3782,7 @@ function RecordingSession() {
       const expectedOldKey = uploadKeyForSlot(slot);
       const freshAudioUploadKey = createAudioChangeUploadIdempotencyKey();
       const draftSlotId = slot.draftSlotId ?? slot.id;
-      uploadRestartSlotIdsRef.current.add(slot.id);
+      markUploadRestart(slot.id);
       cancelScheduledDraft(slot.id);
       let timedOut = false;
       let watchdog: ReturnType<typeof setTimeout> | null = null;
@@ -3824,19 +3891,19 @@ function RecordingSession() {
           // coordination guard until it settles; the transaction will align
           // live state if its atomic identity update committed late.
           transaction.then(
-            () => uploadRestartSlotIdsRef.current.delete(slot.id),
-            () => uploadRestartSlotIdsRef.current.delete(slot.id),
+            () => clearUploadRestart(slot.id),
+            () => clearUploadRestart(slot.id),
           );
         }
         return result;
       } finally {
         if (watchdog) clearTimeout(watchdog);
         if (!timedOut) {
-          uploadRestartSlotIdsRef.current.delete(slot.id);
+          clearUploadRestart(slot.id);
         }
       }
     },
-    [cancelScheduledDraft, dispatch, user?.id],
+    [cancelScheduledDraft, clearUploadRestart, dispatch, markUploadRestart, user?.id],
   );
   rotateDurableAudioIdentityRef.current = rotateDurableAudioIdentity;
 
@@ -3860,7 +3927,7 @@ function RecordingSession() {
       ) {
         return null;
       }
-      uploadRestartSlotIdsRef.current.add(slot.id);
+      markUploadRestart(slot.id);
       cancelScheduledDraft(slot.id);
       const replacementKey = createRestartUploadIdempotencyKey();
       const draftSlotId = slot.draftSlotId ?? slot.id;
@@ -3871,8 +3938,8 @@ function RecordingSession() {
         const transaction = (async (): Promise<PatientSlot | null> => {
           const awaitStep = async <T,>(promise: Promise<T>): Promise<T> => {
             const value = await promise;
-            if (timedOut || !scopeIsCurrent()) {
-              throw new Error('Upload restart persistence timed out');
+            if (!scopeIsCurrent()) {
+              throw new Error('Upload restart authentication scope changed');
             }
             return value;
           };
@@ -3923,7 +3990,6 @@ function RecordingSession() {
                   }),
                 );
               } catch (error) {
-                if (timedOut) throw error;
                 // A native bridge may reject after the atomic manifest rename
                 // already committed. Re-read the authoritative manifest before
                 // compensating; blindly rolling back SecureStore here would
@@ -3994,7 +4060,7 @@ function RecordingSession() {
             return null;
           }
 
-          if (timedOut || !scopeIsCurrent()) return null;
+          if (!scopeIsCurrent()) return null;
           const restarted: PatientSlot = {
             ...persistedSlot,
             uploadKeyOverride: replacementKey,
@@ -4043,19 +4109,19 @@ function RecordingSession() {
           // settles so its late CAS/write cannot overlap another submit,
           // background sync, edit, or delete.
           transaction.then(
-            () => uploadRestartSlotIdsRef.current.delete(slot.id),
-            () => uploadRestartSlotIdsRef.current.delete(slot.id),
+            () => clearUploadRestart(slot.id),
+            () => clearUploadRestart(slot.id),
           );
         }
         return result;
       } finally {
         if (watchdog) clearTimeout(watchdog);
         if (!timedOut) {
-          uploadRestartSlotIdsRef.current.delete(slot.id);
+          clearUploadRestart(slot.id);
         }
       }
     },
-    [cancelScheduledDraft, dispatch, user?.id],
+    [cancelScheduledDraft, clearUploadRestart, dispatch, markUploadRestart, user?.id],
   );
 
   const runSingleSubmit = useCallback(
@@ -4399,6 +4465,10 @@ function RecordingSession() {
   // -- Stash handlers --
 
   const executeStash = useCallback(() => {
+    if (hasBlockingUploadWork()) {
+      showUploadInProgressAlert();
+      return;
+    }
     setIsStashing(true);
     (async () => {
       try {
@@ -4409,6 +4479,13 @@ function RecordingSession() {
         await Promise.all(
           sessionRef.current.slots.map((s) => flushScheduledDraft(s.id).catch(() => {}))
         );
+        // A controlled restart or submit may have claimed the session while
+        // draft flushing awaited storage/network. It owns the source files and
+        // persisted identity until it settles, so stashing must fail closed.
+        if (hasBlockingUploadWork()) {
+          showUploadInProgressAlert();
+          return;
+        }
         // Read sessionRef (not the closure-captured `session`): flushScheduledDraft
         // dispatches SET_DRAFT_IDS, which updates the ref synchronously but does
         // not update the closure variable. Passing `session` risks stashing the
@@ -4458,7 +4535,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteLocalSlotDraft, flushScheduledDraft]);
+  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteLocalSlotDraft, flushScheduledDraft, hasBlockingUploadWork]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,
@@ -4473,6 +4550,10 @@ function RecordingSession() {
   }, [session, executeStash]);
 
   const handleStashSession = useCallback(() => {
+    if (hasBlockingUploadWork()) {
+      showUploadInProgressAlert();
+      return;
+    }
     // If recorder is active, stop it first — the effect will trigger executeStash
     if (session.recorderBoundToSlotId && (recorder.state === 'recording' || recorder.state === 'paused')) {
       Alert.alert(
@@ -4504,7 +4585,7 @@ function RecordingSession() {
     // No recorder is live: stashing is non-destructive and fully reversible,
     // so save immediately — the success alert is the confirmation.
     executeStash();
-  }, [session.recorderBoundToSlotId, recorder, executeStash]);
+  }, [session.recorderBoundToSlotId, recorder, executeStash, hasBlockingUploadWork]);
 
   const loadDraft = useCallback(
     async (slotId: string) => {
@@ -5055,7 +5136,12 @@ function RecordingSession() {
 
   // Show stash button when there are unsaved recordings to stash
   const canStash =
-    hasUnsavedRecordings && !isSubmittingAll && !isStashing && finishingDraftSlotId === null;
+    hasUnsavedRecordings &&
+    !isSubmittingAll &&
+    !isStashing &&
+    submitIntentCount === 0 &&
+    uploadRestartCount === 0 &&
+    finishingDraftSlotId === null;
   const isAnyUploading = session.slots.some((s) => s.uploadStatus === 'uploading');
 
   // Upload overlay visibility
@@ -5198,10 +5284,12 @@ function RecordingSession() {
                   }
                   handleStashSession();
                 }}
-                disabled={isAnyUploading}
+                disabled={isAnyUploading || submitIntentCount > 0 || uploadRestartCount > 0}
                 loading={isStashing}
                 accessibilityLabel="Save session for later"
-                accessibilityState={{ disabled: isAnyUploading }}
+                accessibilityState={{
+                  disabled: isAnyUploading || submitIntentCount > 0 || uploadRestartCount > 0,
+                }}
               >
                 {isAtCapacity ? STASH_COPY.savedFull(MAX_STASHES) : STASH_COPY.saveForLater}
               </Button>

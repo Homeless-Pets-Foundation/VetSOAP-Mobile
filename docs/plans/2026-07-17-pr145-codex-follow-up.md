@@ -103,3 +103,35 @@ The next Codex review reported four additional merge-blocking findings.
   state.
 - Add focused source and behavior coverage for scope invalidation, confined
   cleanup, durable identity rotation, and edit invalidation.
+
+## Ready-state exact-head follow-up (`4c6b0027e4`)
+
+The ready-state Codex review reported three additional merge-blocking findings.
+
+1. **P2 — late durable restart commits remain split:** valid. The watchdog
+   turns a successful native reset into a timeout exception before
+   reconciliation, so SecureStore can retain the phase-one marker while the
+   native manifest already owns the replacement identity.
+2. **P1 — queued draft sync crosses authentication scope:** valid. A queued
+   `.then()` reads `sessionRef` and invokes the current API client without
+   proving it still belongs to the user and organization that enqueued it,
+   allowing a sign-out/sign-in race to submit the prior user's draft metadata.
+3. **P2 — stashing remains enabled during controlled restart:** valid. The
+   restart sets only the submit-intent ref, while the Save for Later UI and
+   stash handler do not consult that guard; stashing can therefore delete
+   source files or snapshot the superseded identity while restart persistence
+   is unsettled.
+
+### Implementation
+
+- Let a late successful native reset re-read the authoritative manifest,
+  reconcile the phase-one SecureStore marker, and align live state while the
+  UI watchdog still returns promptly.
+- Capture the initiating auth scope/generation for every queued draft sync and
+  revalidate it before each deferred local read, network call, storage write,
+  and dispatch.
+- Treat submit-intent/controlled-restart guards as active work in both the
+  Save for Later disabled state and the stash handler, retaining the guard
+  until restart plus any resulting submit settles.
+- Add focused source/behavior tests for late native commit reconciliation,
+  auth-scoped draft queues, and stash exclusion during restart.

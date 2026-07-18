@@ -72,7 +72,7 @@ test('record.tsx autoSaveDraft dispatches PROMOTE_SEGMENTS_TO_DRAFT before SET_D
   // Destructure the new return shape.
   assert.match(
     src,
-    /const \{ draftSlotId, promotedSegments \} = await draftStorage\.saveDraft\(slot\);/
+    /const \{ draftSlotId, promotedSegments \} = await awaitScoped\(\(\) =>\s*draftStorage\.saveDraft\(slot\),\s*\);/
   );
   // Length-gated PROMOTE dispatch — partial-success saveDraft must not promote.
   assert.match(

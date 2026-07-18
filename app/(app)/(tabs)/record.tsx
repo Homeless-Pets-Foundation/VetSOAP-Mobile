@@ -3520,15 +3520,30 @@ function RecordingSession() {
 
   const autoSaveDraft = useCallback(
     async (slot: PatientSlot) => {
+      const initiatingUserId = user?.id;
+      const initiatingScopeKey = authScopeKeyRef.current;
+      const initiatingScopeGeneration = authScopeGenerationRef.current;
+      if (!initiatingUserId || !initiatingScopeKey) return false;
+      const scopeIsCurrent = () =>
+        authScopeMountedRef.current &&
+        authScopeKeyRef.current === initiatingScopeKey &&
+        authScopeGenerationRef.current === initiatingScopeGeneration &&
+        draftStorage.getUserId() === initiatingUserId;
       // Once restart owns the slot, an ordinary snapshot must not queue behind
       // it and overwrite the replacement identity after the transaction.
-      if (uploadRestartSlotIdsRef.current.has(slot.id)) return false;
+      if (!scopeIsCurrent() || uploadRestartSlotIdsRef.current.has(slot.id)) return false;
       const previous =
         localDraftSavePromiseBySlotRef.current.get(slot.id) ?? Promise.resolve(true);
       const operation = previous
         .catch(() => false)
         .then(async () => {
-          if (uploadRestartSlotIdsRef.current.has(slot.id)) return false;
+          if (!scopeIsCurrent() || uploadRestartSlotIdsRef.current.has(slot.id)) return false;
+          const awaitScoped = async <T,>(operation: () => Promise<T>): Promise<T> => {
+            if (!scopeIsCurrent()) throw new Error('Local draft save authentication scope changed');
+            const value = await operation();
+            if (!scopeIsCurrent()) throw new Error('Local draft save authentication scope changed');
+            return value;
+          };
           // Guard bookkeeping: while this save is in flight (or after it fails),
           // the slot's newest audio exists only in session state, so the
           // discard/replace guards must not treat draftSlotId as proof of safety.
@@ -3536,7 +3551,9 @@ function RecordingSession() {
           try {
             // Phase 1: persist the local draft (audio + metadata). Always runs
             // regardless of connectivity so the user can resume offline.
-            const { draftSlotId, promotedSegments } = await draftStorage.saveDraft(slot);
+            const { draftSlotId, promotedSegments } = await awaitScoped(() =>
+              draftStorage.saveDraft(slot),
+            );
             // Promote session-state segment URIs to the durable draft copies. This
             // is the core RN-8 fix (docs/2026-05-17-promote-segments-to-draft.md):
             // without this, slot.segments[].uri keeps pointing at recorder-temp
@@ -3572,11 +3589,14 @@ function RecordingSession() {
             const recoveryReason =
               pendingDraftRecoveryReasonRef.current.get(slot.id) ?? 'draft_finish';
             pendingDraftRecoveryReasonRef.current.delete(slot.id);
-            await recoveryIntent.save({
-              userId: user?.id,
-              draftSlotId,
-              reason: recoveryReason,
-            });
+            await awaitScoped(() =>
+              recoveryIntent.save({
+                userId: initiatingUserId,
+                draftSlotId,
+                reason: recoveryReason,
+              }),
+            );
+            if (!scopeIsCurrent()) return false;
             invalidateRecordingCaches(queryClient, 'draft_changed');
 
             // Local persistence succeeded — the current audio snapshot is durable
@@ -3602,6 +3622,7 @@ function RecordingSession() {
             scheduleDraftSync(slot.id, draftSlotId);
             return true;
           } catch (error) {
+            if (!scopeIsCurrent()) return false;
             // Draft save is best-effort — never surface errors to the user.
             // The recording is still in session state and can still be submitted.
             // Capture to Sentry so empty-segment / dir-creation failures surface

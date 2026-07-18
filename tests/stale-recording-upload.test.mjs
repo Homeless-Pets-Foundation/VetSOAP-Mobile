@@ -554,7 +554,16 @@ test('identity rotation drains phase-1 local saves and blocks stale snapshots', 
     record.indexOf('const autoSaveDraft = useCallback('),
     record.indexOf('autoSaveDraftRef.current = autoSaveDraft;'),
   );
-  assert.match(autoSave, /if \(uploadRestartSlotIdsRef\.current\.has\(slot\.id\)\) return false/);
+  assert.match(autoSave, /const initiatingScopeKey = authScopeKeyRef\.current/);
+  assert.match(autoSave, /const initiatingScopeGeneration = authScopeGenerationRef\.current/);
+  assert.match(autoSave, /draftStorage\.getUserId\(\) === initiatingUserId/);
+  assert.match(autoSave, /const awaitScoped = async <T,>/);
+  assert.match(autoSave, /draftStorage\.saveDraft\(slot\)/);
+  assert.match(autoSave, /userId: initiatingUserId/);
+  assert.match(
+    autoSave,
+    /if \(!scopeIsCurrent\(\) \|\| uploadRestartSlotIdsRef\.current\.has\(slot\.id\)\) return false/,
+  );
   assert.match(autoSave, /localDraftSavePromiseBySlotRef\.current\.get\(slot\.id\)/);
   assert.match(autoSave, /localDraftSavePromiseBySlotRef\.current\.set\(slot\.id, operation\)/);
   assert.match(

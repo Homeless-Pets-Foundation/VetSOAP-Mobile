@@ -115,6 +115,8 @@ export const stashAudioManager = {
         stashedSlots.push({
           id: slot.id,
           uploadIntentId: normalizeUploadIntentId(slot.uploadIntentId, slot.id),
+          uploadKeyOverride: slot.uploadKeyOverride,
+          supersededUploadKey: slot.supersededUploadKey,
           formData: { ...slot.formData },
           pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
             slot.formData.pimsPatientId,

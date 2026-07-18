@@ -74,7 +74,10 @@ test('Submit All uses the same metadata gate as per-slot submit outside record-f
   assert.match(record, /function slotHasRequiredSubmitFields\(slot: PatientSlot\): boolean/);
   assert.match(record, /const recordedSlotsNeedingDetails = recordFirstEnabled[\s\S]*!slotHasRequiredSubmitFields\(s\)/);
   assert.match(record, /Alert\.alert\(\s*'Add Required Details'/);
-  assert.match(record, /await draftStorage\.markDraftMetadataDirty\(slotId\)/);
+  assert.match(
+    record,
+    /await awaitScoped\(\(\) => draftStorage\.markDraftMetadataDirty\(slotId\)\)/,
+  );
   assert.match(record, /draftMetadataDirty: draft\.draftMetadataDirty \|\| !!draft\.serverDraftId/);
   assert.match(record, /\(recordFirstEnabled \|\| slotHasRequiredSubmitFields\(s\)\) &&\s*s\.uploadStatus !== 'success'/);
   assert.match(record, /recordFirstEnabled=\{recordFirstEnabled\}/);

@@ -15,9 +15,12 @@ test('handleUpdateForm is frozen during a Submit All batch', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
   const start = src.indexOf('const handleUpdateForm = useCallback');
   assert.ok(start > -1);
-  const body = src.slice(start, start + 500);
+  const body = src.slice(start, start + 700);
   // The guard runs BEFORE dispatching the update.
-  assert.match(body, /if \(isSubmittingAllRef\.current\) return;\s*\n\s*updateForm\(slotId, field, value\);/);
+  assert.match(
+    body,
+    /if \(\s*isSubmittingAllRef\.current \|\|\s*uploadRestartSlotIdsRef\.current\.has\(slotId\)\s*\) \{\s*return;\s*\}\s*updateForm\(slotId, field, value\);/,
+  );
   // The ref is declared before handleUpdateForm (no TDZ) and refreshed after
   // the isSubmittingAll state.
   const refDecl = src.indexOf('const isSubmittingAllRef = useRef(false);');

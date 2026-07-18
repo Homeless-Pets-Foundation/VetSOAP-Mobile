@@ -88,7 +88,7 @@ test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone',
   const src = await read('app/(app)/(tabs)/record.tsx');
   // Upload the truncated complete-frame prefix (durableUploadUri), NOT the raw file.
   assert.match(src, /createWithFile\(\s*slot\.formData,\s*durableUploadUri,\s*'audio\/aac'/);
-  assert.match(src, /idempotencyKey: durableUploadIdempotencyKey\(durable\.recordingId\)/);
+  assert.match(src, /idempotencyKey: uploadKeyForSlot\(slot\)/);
   assert.match(src, /setServerRecordingId\(\{ userId: uid, recordingId: durable\.recordingId/);
   // markUploaded appears before deleteDraft which appears before purgeAfterUpload.
   const iMark = src.indexOf('.markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt');
@@ -385,7 +385,10 @@ test('recovered durable draft preserves the death-surviving server anchor', asyn
   // while a rotated audio intent is allowed to clear an obsolete disk anchor.
   assert.match(draft, /const resolvedServerDraftId = durableIntentRotated[\s\S]*existingDurable\?\.serverDraftId \?\? slot\.serverDraftId \?\? null/);
   assert.match(draft, /serverDraftId: resolvedServerDraftId/);
-  assert.match(draft, /pendingSync: !durableIntentRotated && existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/);
+  assert.match(
+    draft,
+    /pendingSync: supersededUploadKey \|\| uploadRestartPending\s*\?\s*false\s*:\s*!durableIntentRotated && existingDurable\?\.serverDraftId\s*\?\s*existingDurable\.pendingSync\s*:\s*!resolvedServerDraftId/,
+  );
 });
 
 test('native self-heal scan returns confirmed-uploaded-but-not-purged manifests', async () => {
@@ -616,7 +619,7 @@ test('durable Continue re-enters the single start funnel instead of blocking', a
     /deleteOrphanServerRecording\(slot\)/,
     'continuation must retain the stable intent and reusable canonical server row'
   );
-  assert.match(body, /continueRecording\(slotId\);/);
+  assert.match(body, /continueRecording\(slotId, freshAudioUploadKey\);/);
   assert.match(body, /startRecordingForSlot\(slotId\);/);
 });
 
@@ -859,10 +862,10 @@ test('durable offline draft-create uses a deterministic idempotency anchor', asy
   assert.match(store, /createFn: \(draft: DraftMetadata\) => Promise<\{ id: string \}>/);
   assert.match(store, /const created = await createFn\(draft\);/);
   const pending = await read('src/hooks/usePendingDraftSync.ts');
-  assert.match(pending, /idempotencyKey: durableUploadIdempotencyKey\(durableRecordingId\)/);
+  assert.match(pending, /idempotencyKey,/);
   assert.match(pending, /setServerRecordingId\(\{ userId, recordingId: durableRecordingId, serverRecordingId: created\.id \}\)/);
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(rec, /idempotencyKey: durableUploadIdempotencyKey\(durableRecordingId\)/);
+  assert.match(rec, /idempotencyKey: uploadKeyForSlot\(slot\)/);
 });
 
 test('durable active-pointer write is bounded so a hung Keystore cannot strand start', async () => {

@@ -79,6 +79,15 @@ public class CaptivetDurableRecorderModule: Module {
       )
     }
 
+    AsyncFunction("resetUploadAttempt") { (input: ResetUploadAttemptInput) in
+      try DurableRecorderEngine.shared.resetUploadAttempt(
+        userId: input.userId,
+        recordingId: input.recordingId,
+        expectedOldKey: input.expectedOldKey,
+        replacementKey: input.replacementKey
+      )
+    }
+
     AsyncFunction("markUploaded") { (input: MarkUploadedInput) in
       try DurableRecorderEngine.shared.markUploaded(
         userId: input.userId,
@@ -155,4 +164,11 @@ internal struct SetPendingConfirmInput: Record {
   @Field var userId: String = ""
   @Field var recordingId: String = ""
   @Field var pendingConfirmJson: String? = nil
+}
+
+internal struct ResetUploadAttemptInput: Record {
+  @Field var userId: String = ""
+  @Field var recordingId: String = ""
+  @Field var expectedOldKey: String = ""
+  @Field var replacementKey: String = ""
 }

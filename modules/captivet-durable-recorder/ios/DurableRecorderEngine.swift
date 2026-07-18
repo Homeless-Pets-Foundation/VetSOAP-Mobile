@@ -530,6 +530,36 @@ final class DurableRecorderEngine: NSObject {
     }
   }
 
+  func resetUploadAttempt(
+    userId: String,
+    recordingId: String,
+    expectedOldKey: String,
+    replacementKey: String
+  ) throws {
+    guard DurablePaths.isValidId(userId), DurablePaths.isValidId(recordingId) else {
+      throw fail(.invalidId, "invalid ids", recordingId)
+    }
+    let isFreshAudioChange = replacementKey.hasPrefix("recording-upload-v3:audio-change:")
+    guard expectedOldKey.utf8.count <= 128,
+          replacementKey.utf8.count <= 128,
+          replacementKey.hasPrefix("recording-upload-v2:restart:") || isFreshAudioChange else {
+      throw fail(.invalidId, "invalid upload restart identity", recordingId)
+    }
+    try mutateManifestAtomically(userId: userId, recordingId: recordingId) { manifest in
+      guard manifest.confirmedUploadAt == nil, manifest.state != "uploaded" else {
+        throw self.fail(.state, "confirmed upload cannot be restarted", recordingId)
+      }
+      let currentKey = manifest.uploadKeyOverride ?? "recording-upload-v1:durable:\(recordingId)"
+      guard currentKey == expectedOldKey else {
+        throw self.fail(.state, "upload identity changed; inspect again", recordingId)
+      }
+      manifest.uploadKeyOverride = replacementKey
+      manifest.supersededUploadKey = isFreshAudioChange ? nil : expectedOldKey
+      manifest.serverRecordingId = nil
+      manifest.pendingConfirmJson = nil
+    }
+  }
+
   func markUploaded(userId: String, recordingId: String, confirmedUploadAt: String) throws {
     guard DurablePaths.isValidId(userId), DurablePaths.isValidId(recordingId) else {
       throw fail(.invalidId, "invalid ids", recordingId)
@@ -548,15 +578,20 @@ final class DurableRecorderEngine: NSObject {
   private func mutateManifestAtomically(
     userId: String,
     recordingId: String,
-    _ mutate: (inout DurableManifest) -> Void
+    _ mutate: (inout DurableManifest) throws -> Void
   ) throws {
-    var thrown: DurableException?
+    var thrown: Error?
     writerQueue.sync {
       guard var manifest = DurableManifest.read(userId: userId, recordingId: recordingId) else {
         thrown = self.fail(.notFound, "manifest not found", recordingId)
         return
       }
-      mutate(&manifest)
+      do {
+        try mutate(&manifest)
+      } catch {
+        thrown = error
+        return
+      }
       manifest.updatedAt = self.nowISO()
       do {
         try manifest.write(userId: userId, recordingId: recordingId)

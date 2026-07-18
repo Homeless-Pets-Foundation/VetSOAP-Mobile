@@ -200,7 +200,7 @@ async function loadDraftStorage(state, opts = {}) {
     },
     './fileOps': {
       fileExists: opts.fileExists ?? (() => true),
-      safeDeleteFile: () => {},
+      safeDeleteFile: opts.safeDeleteFile ?? (() => {}),
       safeDeleteDirectory: () => {},
       ensureDirectory: () => true,
     },
@@ -215,6 +215,20 @@ async function loadDraftStorage(state, opts = {}) {
     },
     './uploadIntent': {
       normalizeUploadIntentId: (value, slotId) => value || `legacy:${slotId}`,
+      normalizeUploadKeyOverride: (value) => value || null,
+      normalizeSupersededUploadKey: (value) => value || null,
+      isAudioChangeUploadIdempotencyKey: (value) =>
+        typeof value === 'string' &&
+        value.startsWith('recording-upload-v3:audio-change:'),
+      effectiveUploadIdempotencyKey: ({ uploadKeyOverride, durableRecordingId, uploadIntentId }) =>
+        uploadKeyOverride ||
+        (durableRecordingId
+          ? `recording-upload-v1:durable:${durableRecordingId}`
+          : `recording-upload-v1:slot:${uploadIntentId}`),
+    },
+    './pimsPatientIdIntent': {
+      isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
+        persistedIntent === true || value === null,
     },
     './pimsPatientIdIntent': {
       isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
@@ -309,6 +323,89 @@ test('draftStorage: proof-only save persists metadata when every segment copy is
   assert.equal(draft.segments.length, 0);
   assert.equal(draft.audioDuration, 5);
   assert.equal(draft.pendingConfirm.recordingId, proof.recordingId);
+});
+
+test('draftStorage: complete-audio save rejects partial copies without replacing prior metadata', async () => {
+  let missingSource = null;
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: (uri) => uri !== missingSource,
+  });
+  draftStorage.setUserId('userA');
+  const initial = {
+    ...makeSlot('slot-complete-save'),
+    segments: [
+      { uri: 'file:///rec/old-0.m4a', duration: 5 },
+      { uri: 'file:///rec/old-1.m4a', duration: 7 },
+    ],
+  };
+  await draftStorage.saveDraft(initial);
+  const before = await draftStorage.getDraft(initial.id);
+
+  missingSource = 'file:///rec/new-1.m4a';
+  await assert.rejects(
+    draftStorage.saveDraft(
+      {
+        ...initial,
+        segments: [
+          { uri: 'file:///rec/new-0.m4a', duration: 6 },
+          { uri: missingSource, duration: 8 },
+        ],
+      },
+      { requireCompleteAudio: true },
+    ),
+    /complete save copied 1 of 2 segments/,
+  );
+
+  const after = await draftStorage.getDraft(initial.id);
+  assert.deepEqual(after.segments, before.segments);
+  assert.equal(after.audioDuration, before.audioDuration);
+});
+
+test('draftStorage: complete-audio save removes only the superseded committed snapshot', async () => {
+  const deleted = [];
+  const { draftStorage, state } = await loadDraftStorage(undefined, {
+    safeDeleteFile: (uri) => deleted.push(uri),
+  });
+  draftStorage.setUserId('userA');
+  const slot = {
+    ...makeSlot('slot-complete-replace'),
+    segments: [
+      { uri: 'file:///rec/first-0.m4a', duration: 5 },
+      { uri: 'file:///rec/first-1.m4a', duration: 7 },
+    ],
+  };
+
+  await draftStorage.saveDraft(slot, { requireCompleteAudio: true });
+  const first = await draftStorage.getDraft(slot.id);
+  const metaKey = `captivet_draft_userA_${slot.id}_meta`;
+  const chunkPrefix = `captivet_draft_userA_${slot.id}_chunk_`;
+  const chunkMeta = JSON.parse(state.get(metaKey));
+  assert.equal(chunkMeta.chunks, 1, 'fixture must remain a single mutable metadata chunk');
+  const priorMetadata = JSON.parse(state.get(`${chunkPrefix}0`));
+  const unconfinedUri = 'file:///outside-user-scope/restart_snapshot.m4a';
+  priorMetadata.segments[1].uri = unconfinedUri;
+  state.set(`${chunkPrefix}0`, JSON.stringify(priorMetadata));
+
+  await draftStorage.saveDraft(
+    {
+      ...slot,
+      segments: [
+        { uri: 'file:///rec/second-0.m4a', duration: 6 },
+        { uri: 'file:///rec/second-1.m4a', duration: 8 },
+      ],
+    },
+    { requireCompleteAudio: true },
+  );
+  const second = await draftStorage.getDraft(slot.id);
+
+  assert.equal(first.segments.length, 2);
+  assert.equal(second.segments.length, 2);
+  assert.ok(deleted.includes(first.segments[0].uri));
+  assert.equal(
+    deleted.includes(unconfinedUri),
+    false,
+    'cleanup must never follow a corrupted metadata URI outside the slot directory',
+  );
 });
 
 test('draftStorage: every write path invalidates the cache', async () => {
@@ -451,6 +548,96 @@ test('draftStorage: syncPending reports partial failures and leaves failed draft
   assert.equal(slot1.pendingSync, false);
   assert.equal(slot2.serverDraftId, null);
   assert.equal(slot2.pendingSync, true);
+});
+
+test('draftStorage: durable restart marker blocks sync until phase 2 commits', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const slotId = 'slot-restart-two-phase';
+  const oldKey = 'recording-upload-v1:slot:intent-before-restart';
+  const replacementKey = 'recording-upload-v2:restart:intent-after-restart';
+
+  await draftStorage.saveDraft({
+    ...makeSlot(slotId),
+    uploadIntentId: 'intent-before-restart',
+  });
+  await draftStorage.updateServerDraftId(slotId, 'server-before-restart');
+  await draftStorage.updatePendingConfirm(slotId, {
+    recordingId: '11111111-1111-4111-8111-111111111111',
+    fileKey:
+      'recordings/22222222-2222-4222-8222-222222222222/11111111-1111-4111-8111-111111111111.m4a',
+  }, 'server-before-restart');
+
+  assert.equal(
+    await draftStorage.beginUploadAttemptReset(slotId, oldKey, replacementKey),
+    true,
+  );
+  let draft = await draftStorage.getDraft(slotId);
+  assert.equal(draft.uploadKeyOverride, null);
+  assert.equal(draft.supersededUploadKey, null);
+  assert.equal(draft.serverDraftId, 'server-before-restart');
+  assert.ok(draft.pendingConfirm);
+  assert.equal(draft.pendingSync, false);
+  assert.deepEqual(
+    { ...draft.uploadRestartPending },
+    {
+      expectedOldKey: oldKey,
+      replacementKey,
+      previousPendingSync: false,
+    },
+  );
+
+  let creates = 0;
+  let result = await draftStorage.syncPending('userA', async () => {
+    creates++;
+    return { id: 'must-not-create' };
+  });
+  assert.deepEqual({ ...result }, { attempted: 0, succeeded: 0, failed: 0 });
+  assert.equal(creates, 0);
+
+  assert.equal(
+    await draftStorage.commitUploadAttemptReset(slotId, oldKey, replacementKey),
+    true,
+  );
+  draft = await draftStorage.getDraft(slotId);
+  assert.equal(draft.uploadKeyOverride, replacementKey);
+  assert.equal(draft.supersededUploadKey, oldKey);
+  assert.equal(draft.uploadRestartPending, null);
+  assert.equal(draft.serverDraftId, null);
+  assert.equal(draft.pendingConfirm, null);
+  assert.equal(draft.pendingSync, false);
+});
+
+test('draftStorage: re-saving a restarted draft cannot enter ordinary background creation', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  const slotId = 'slot-restart-resave';
+  const oldKey = 'recording-upload-v1:slot:intent-before-restart';
+  const replacementKey = 'recording-upload-v2:restart:intent-after-restart';
+  const restartedSlot = {
+    ...makeSlot(slotId),
+    uploadIntentId: 'intent-before-restart',
+    uploadKeyOverride: replacementKey,
+    supersededUploadKey: oldKey,
+  };
+
+  await draftStorage.saveDraft({
+    ...makeSlot(slotId),
+    uploadIntentId: 'intent-before-restart',
+  });
+  assert.equal(await draftStorage.resetUploadAttempt(slotId, oldKey, replacementKey), true);
+  await draftStorage.saveDraft(restartedSlot);
+
+  const draft = await draftStorage.getDraft(slotId);
+  assert.equal(draft.pendingSync, false);
+  assert.equal(draft.supersededUploadKey, oldKey);
+  let creates = 0;
+  const result = await draftStorage.syncPending('userA', async () => {
+    creates++;
+    return { id: 'must-not-create' };
+  });
+  assert.deepEqual({ ...result }, { attempted: 0, succeeded: 0, failed: 0 });
+  assert.equal(creates, 0);
 });
 
 test('draftStorage: cached reads hand out defensive clones', async () => {

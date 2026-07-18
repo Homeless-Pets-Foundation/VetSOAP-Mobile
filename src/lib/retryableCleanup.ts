@@ -49,9 +49,11 @@ export type PatchDraftOutcome =
 export async function patchDraftMetadataWithRetry(
   recordingId: string,
   data: Partial<CreateRecording>,
-  attempts = DEFAULT_ATTEMPTS
+  attempts = DEFAULT_ATTEMPTS,
+  shouldContinue: () => boolean = () => true
 ): Promise<PatchDraftOutcome> {
   for (let i = 0; i < attempts; i++) {
+    if (!shouldContinue()) return 'transient_failure';
     try {
       await recordingsApi.updateDraftMetadata(recordingId, data);
       return 'success';
@@ -66,6 +68,7 @@ export async function patchDraftMetadataWithRetry(
       }
       if (__DEV__) console.warn('[cleanup] patch-draft retry', i + 1, recordingId, err);
       if (i < attempts - 1) {
+        if (!shouldContinue()) return 'transient_failure';
         const delay = BACKOFF_MS[i] ?? 5_000;
         await new Promise((r) => setTimeout(r, delay));
       }

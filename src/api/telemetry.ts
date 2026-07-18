@@ -3,6 +3,10 @@ import Constants from 'expo-constants';
 import { apiClient } from './client';
 import type { ErrorPhase, NetworkState, SubmitDiagnosticsProps } from '../lib/analytics';
 import { shouldEmit } from '../lib/rateLimitMonitoring';
+import type {
+  UploadIntentConflictReason,
+  UploadIntentConflictStage,
+} from './uploadPreparation';
 
 /**
  * Fire-and-forget client-side telemetry. Posted to
@@ -27,6 +31,8 @@ export interface ReportClientErrorInput {
   networkState?: NetworkState;
   attemptNumber?: number;
   submitContext?: SubmitDiagnosticsProps;
+  uploadConflictStage?: UploadIntentConflictStage;
+  uploadConflictReason?: UploadIntentConflictReason;
 }
 
 // Lazy so old dev-client APKs without the expo-application native module
@@ -59,7 +65,7 @@ function sanitizeMessage(raw: string): string {
 }
 
 export function reportClientError(input: ReportClientErrorInput): void {
-  const subKey = `${input.phase}:${input.errorCode ?? 'none'}`;
+  const subKey = `${input.phase}:${input.errorCode ?? 'none'}:${input.uploadConflictStage ?? 'none'}:${input.uploadConflictReason ?? 'none'}`;
   const gate = shouldEmit('report_client_error', subKey);
   if (!gate.emit) return;
 
@@ -76,6 +82,8 @@ export function reportClientError(input: ReportClientErrorInput): void {
     networkState: input.networkState,
     attemptNumber: input.attemptNumber,
     submitContext: input.submitContext,
+    uploadConflictStage: input.uploadConflictStage,
+    uploadConflictReason: input.uploadConflictReason,
     appVersion: getAppVersion(),
     platform: PLATFORM,
     osVersion: OS_VERSION,

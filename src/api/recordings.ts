@@ -34,7 +34,11 @@ import { waitForNetworkOnline } from '../lib/networkWait';
 import { STALE_RECORDING_UPLOAD_COPY } from '../constants/strings';
 import {
   validatePreparedUploadEnvelope,
+  validateUploadIntentConflictDetails,
+  validateUploadIntentRecoveryEnvelope,
   type PrepareUploadResponse,
+  type UploadIntentConflictDetails,
+  type UploadIntentRecoveryResponse,
 } from './uploadPreparation';
 import {
   tagPhase,
@@ -414,6 +418,8 @@ interface ResilientUploadOptions {
   resume?: PendingConfirm;
   existingRecordingId?: string;
   idempotencyKey?: string;
+  supersededIdempotencyKey?: string;
+  onRecoveryPrepared?: () => void | Promise<void>;
   metadataDirty?: boolean;
   pimsPatientIdExplicitlyCleared?: boolean;
   audioDurationSeconds?: number;
@@ -421,11 +427,86 @@ interface ResilientUploadOptions {
   mode?: 'durable' | 'standard';
 }
 
+export class UploadIntentConflictError extends Error {
+  readonly code = 'UPLOAD_INTENT_CONFLICT';
+  readonly uploadPhase: 'prepare' | 'confirm';
+
+  constructor(
+    public readonly conflict: UploadIntentConflictDetails,
+    phase: 'prepare' | 'confirm',
+    message = 'This upload needs a safe status check before it can continue.',
+    public readonly recoveryOutcome: 'restart_available' | 'unresolved' | null = null,
+  ) {
+    super(message);
+    this.name = 'UploadIntentConflictError';
+    this.uploadPhase = phase;
+  }
+}
+
+function typedUploadIntentConflict(
+  error: unknown,
+  phase: 'prepare' | 'confirm',
+): UploadIntentConflictError | null {
+  if (!(error instanceof ApiError) || error.status !== 409 || error.code !== 'UPLOAD_INTENT_CONFLICT') {
+    return null;
+  }
+  try {
+    return new UploadIntentConflictError(
+      validateUploadIntentConflictDetails(error.data?.uploadConflict),
+      phase,
+      error.message,
+    );
+  } catch {
+    return null;
+  }
+}
+
 type PendingConfirmClearReason =
   | 'canonical_change'
   | 'invalid_resume'
   | 'committed_late_hint'
   | 'committed_late_anchor';
+
+interface TimedOutPersistenceWrite {
+  settled: Promise<void>;
+  clearReason: Extract<
+    PendingConfirmClearReason,
+    'committed_late_hint' | 'committed_late_anchor'
+  >;
+  cleanupScheduled: boolean;
+}
+
+// Tactical persistence timeouts must not make an uncancelled SecureStore/native
+// write invisible to a later retry. Keep this PHI-free, process-local registry
+// keyed by the stable upload intent until each callback actually settles.
+const timedOutPersistenceByIntent = new Map<string, Set<TimedOutPersistenceWrite>>();
+
+function trackTimedOutPersistence(
+  idempotencyKey: string,
+  persistence: { settled: Promise<void>; timedOut: boolean },
+  clearReason: TimedOutPersistenceWrite['clearReason'],
+): TimedOutPersistenceWrite | null {
+  if (!persistence.timedOut) return null;
+  const entry: TimedOutPersistenceWrite = {
+    settled: persistence.settled,
+    clearReason,
+    cleanupScheduled: false,
+  };
+  const writes = timedOutPersistenceByIntent.get(idempotencyKey) ?? new Set();
+  writes.add(entry);
+  timedOutPersistenceByIntent.set(idempotencyKey, writes);
+  persistence.settled
+    .finally(() => {
+      writes.delete(entry);
+      if (writes.size === 0) timedOutPersistenceByIntent.delete(idempotencyKey);
+    })
+    .catch(() => {});
+  return entry;
+}
+
+function hasPendingTimedOutPersistence(idempotencyKey: string): boolean {
+  return (timedOutPersistenceByIntent.get(idempotencyKey)?.size ?? 0) > 0;
+}
 
 function completeUploadMetadata(data: CreateRecording): PendingConfirmMetadata {
   const validated = createRecordingSchema.parse(data);
@@ -520,9 +601,72 @@ async function requestPreparation(
       files,
     }, idempotencyKey);
   } catch (error) {
+    const conflict = typedUploadIntentConflict(error, 'prepare');
+    if (conflict) throw conflict;
     tagPhase(error, 'prepare');
   }
   return validatePreparationResponse(raw, files.length, metadata, matchOptions);
+}
+
+async function requestUploadIntentRecovery(input: {
+  action: 'inspect' | 'restart';
+  inspectionKey: string;
+  replacementIdempotencyKey?: string;
+  existingRecordingId?: string;
+  metadata: PendingConfirmMetadata;
+  files: PendingConfirmFile[];
+  pendingConfirm?: PendingConfirm;
+}): Promise<UploadIntentRecoveryResponse> {
+  let raw: unknown;
+  try {
+    raw = await apiClient.post(
+      '/api/recordings/upload-intent-recovery',
+      {
+        action: input.action,
+        ...(input.replacementIdempotencyKey
+          ? { replacementIdempotencyKey: input.replacementIdempotencyKey }
+          : {}),
+        ...(input.existingRecordingId ? { existingRecordingId: input.existingRecordingId } : {}),
+        metadata: input.metadata,
+        files: input.files,
+        ...(input.pendingConfirm
+          ? {
+              pendingConfirm: {
+                recordingId: input.pendingConfirm.recordingId,
+                fileKey: input.pendingConfirm.fileKey,
+                ...(input.pendingConfirm.segmentKeys
+                  ? {
+                      segmentKeys: input.pendingConfirm.segmentKeys,
+                      segmentCount: input.pendingConfirm.segmentCount,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      },
+      input.inspectionKey,
+    );
+  } catch (error) {
+    const conflict = typedUploadIntentConflict(error, 'prepare');
+    if (conflict) throw conflict;
+    tagPhase(error, 'prepare');
+  }
+  let response: UploadIntentRecoveryResponse;
+  try {
+    response = validateUploadIntentRecoveryEnvelope(raw, input.files.length);
+  } catch (error) {
+    tagPhase(error, 'prepare');
+  }
+  if (response.outcome === 'prepared') {
+    for (const upload of response.uploads) {
+      try {
+        validateUploadUrl(upload.uploadUrl);
+      } catch (error) {
+        tagPhase(error, 'prepare');
+      }
+    }
+  }
+  return response;
 }
 
 function isRouteLevelPrepare404(error: unknown): boolean {
@@ -556,6 +700,11 @@ async function postConfirm(
       metadata,
     });
   } catch (error) {
+    const conflict = typedUploadIntentConflict(error, 'confirm');
+    if (conflict) throw conflict;
+    // Rolling deployments and older API versions can commit the upload and
+    // still return an untyped 409. Retain the proven-completed GET fallback;
+    // typed conflicts use the stricter recovery endpoint below.
     if (error instanceof ApiError && error.status === 409) {
       let current: Recording;
       try {
@@ -563,8 +712,16 @@ async function postConfirm(
       } catch (probeError) {
         tagPhase(probeError, 'confirm');
       }
-      if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
-        return assertRecordingMatchesMetadataPayload(current, metadataAsPayload(metadata), matchOptions);
+      if (
+        current.status !== 'draft' &&
+        current.status !== 'uploading' &&
+        current.status !== 'failed'
+      ) {
+        return assertRecordingMatchesMetadataPayload(
+          current,
+          metadataAsPayload(metadata),
+          matchOptions,
+        );
       }
     }
     tagPhase(error, 'confirm');
@@ -916,8 +1073,35 @@ async function executeResilientUpload(
   options: ResilientUploadOptions,
 ): Promise<Recording> {
   const idempotencyKey = options.idempotencyKey;
-  if (!idempotencyKey || idempotencyKey.length > 128) {
+  if (
+    !idempotencyKey ||
+    idempotencyKey.length > 128 ||
+    !/^[\x21-\x7e]+$/.test(idempotencyKey)
+  ) {
     phaseError('prepare', 'This recording is missing its stable upload identity. Please reopen it and try again.');
+  }
+  const isRestartIdentity = idempotencyKey.startsWith('recording-upload-v2:restart:');
+  const suppliedSupersededKey = options.supersededIdempotencyKey;
+  const hasValidSupersededKey =
+    typeof suppliedSupersededKey === 'string' &&
+    suppliedSupersededKey.startsWith('recording-upload-v') &&
+    suppliedSupersededKey.length <= 128 &&
+    /^[\x21-\x7e]+$/.test(suppliedSupersededKey) &&
+    suppliedSupersededKey !== idempotencyKey;
+  if (
+    isRestartIdentity !== hasValidSupersededKey ||
+    (suppliedSupersededKey !== undefined && !hasValidSupersededKey)
+  ) {
+    phaseError(
+      'prepare',
+      'This saved upload restart is incomplete. Check its upload status before retrying.',
+    );
+  }
+  if (hasPendingTimedOutPersistence(idempotencyKey)) {
+    phaseError(
+      'prepare',
+      'Captivet is still securing the saved upload state. Check the upload status again.',
+    );
   }
   const metadata = completeUploadMetadata(data);
   const metadataMatchOptions: MetadataMatchOptions = {
@@ -929,19 +1113,27 @@ async function executeResilientUpload(
   };
   const mode = options.mode ?? 'standard';
   const validResume = options.resume ? validatePendingConfirm(options.resume) : null;
+  let latestPendingConfirm: PendingConfirm | null = validResume;
   let staleRestartUsed = false;
+  let recoveryRestartConsumed = false;
   let qualityReported = false;
-  const timedOutPreparedWrites: Promise<void>[] = [];
-
+  const timedOutPersistenceWrites: TimedOutPersistenceWrite[] = [];
   const persistPrepared = async (recordingId: string): Promise<void> => {
     const persistence = await invokePreparedCallback(options.onRecordingPrepared, recordingId);
-    if (persistence.timedOut) timedOutPreparedWrites.push(persistence.settled);
+    const tracked = trackTimedOutPersistence(
+      idempotencyKey,
+      persistence,
+      'committed_late_anchor',
+    );
+    if (tracked) timedOutPersistenceWrites.push(tracked);
   };
 
   const scheduleCommittedLateWriteCleanup = (): void => {
-    for (const settled of timedOutPreparedWrites.splice(0)) {
-      settled
-        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_anchor'))
+    for (const write of timedOutPersistenceWrites) {
+      if (write.cleanupScheduled) continue;
+      write.cleanupScheduled = true;
+      write.settled
+        .then(() => invokeClearHint(options.onClearPendingConfirm, write.clearReason))
         .catch(() => {});
     }
   };
@@ -972,16 +1164,58 @@ async function executeResilientUpload(
     }
     const descriptors = preparationFiles(files);
     let prepared: PrepareUploadResponse;
+    let recoveryPreparedThisCall = false;
     try {
-      prepared = await requestPreparation(
-        existingRecordingId,
-        idempotencyKey,
-        metadata,
-        descriptors,
-        metadataMatchOptions,
-      );
+      if (options.supersededIdempotencyKey && !recoveryRestartConsumed) {
+        recoveryRestartConsumed = true;
+        const recovery = await requestUploadIntentRecovery({
+          action: 'restart',
+          inspectionKey: options.supersededIdempotencyKey,
+          replacementIdempotencyKey: idempotencyKey,
+          existingRecordingId,
+          metadata,
+          files: descriptors,
+          pendingConfirm: validResume ?? undefined,
+        });
+        if (recovery.outcome === 'restart_available' || recovery.outcome === 'unresolved') {
+          throw new UploadIntentConflictError(
+            recovery.conflict,
+            'prepare',
+            undefined,
+            recovery.outcome,
+          );
+        }
+        if (recovery.outcome === 'already_uploaded' || recovery.outcome === 'already_processed') {
+          return assertRecordingMatchesMetadataPayload(
+            recovery.recording,
+            metadataAsPayload(metadata),
+            metadataMatchOptions,
+          );
+        }
+        prepared = {
+          outcome: 'prepared',
+          recording: recovery.recording,
+          replacedMissingRecordingId: false,
+          uploads: recovery.uploads,
+          warnings: recovery.warnings,
+        };
+        recoveryPreparedThisCall = true;
+      } else {
+        prepared = await requestPreparation(
+          existingRecordingId,
+          idempotencyKey,
+          metadata,
+          descriptors,
+          metadataMatchOptions,
+        );
+      }
     } catch (error) {
       if (!isRouteLevelPrepare404(error)) throw error;
+      // A controlled restart must be authorized by the recovery transaction.
+      // Falling back to the legacy create/upload route here would bypass the
+      // server's proof that the superseded attempt is safe to retire and could
+      // duplicate an upload during a rolling API deployment.
+      if (options.supersededIdempotencyKey) throw error;
       const legacy = await legacyUpload(data, files, metadata, options, idempotencyKey, persistPrepared);
       if (legacy.replacedMissingRecordingId) staleRestartUsed = true;
       return persistHintAndConfirm(legacy.hint, true);
@@ -993,6 +1227,9 @@ async function executeResilientUpload(
     // same replacement again, so assignment is intentionally idempotent.
     if (prepared.replacedMissingRecordingId) staleRestartUsed = true;
     await persistPrepared(prepared.recording.id);
+    if (recoveryPreparedThisCall && options.onRecoveryPrepared) {
+      await options.onRecoveryPrepared();
+    }
     if (validResume && validResume.recordingId !== prepared.recording.id) {
       await invokeClearHint(options.onClearPendingConfirm, 'canonical_change');
     }
@@ -1116,26 +1353,92 @@ async function executeResilientUpload(
   };
 
   const persistHintAndConfirm = async (hint: PendingConfirm, legacy: boolean): Promise<Recording> => {
+    latestPendingConfirm = hint;
     const persistence = await invokeHintCallback(options.onR2Complete, hint);
+    const tracked = trackTimedOutPersistence(
+      idempotencyKey,
+      persistence,
+      'committed_late_hint',
+    );
+    if (tracked) timedOutPersistenceWrites.push(tracked);
     const result = await confirmWithRecovery(hint, legacy);
-    if (persistence.timedOut) {
-      // A late SecureStore/native write must not resurrect recovery state after
-      // the server has confirmed the upload and the UI has cleaned the draft.
-      persistence.settled
-        .then(() => invokeClearHint(options.onClearPendingConfirm, 'committed_late_hint'))
-        .catch(() => {});
-    }
     return result;
   };
 
   if (options.resume && !validResume) {
     await invokeClearHint(options.onClearPendingConfirm, 'invalid_resume');
   }
-  const result = validResume
-    ? await confirmWithRecovery(validResume, false)
-    : await prepareAndUpload(options.existingRecordingId);
-  scheduleCommittedLateWriteCleanup();
-  return result;
+  try {
+    const result = validResume
+      ? await confirmWithRecovery(validResume, false)
+      : await prepareAndUpload(options.existingRecordingId);
+    scheduleCommittedLateWriteCleanup();
+    return result;
+  } catch (error) {
+    if (!(error instanceof UploadIntentConflictError)) {
+      throw error;
+    }
+    if (hasPendingTimedOutPersistence(idempotencyKey)) {
+      // The timed-out callback still owns a possible late write of the old
+      // server ID or confirmation proof. Do not expose a destructive restart
+      // until a subsequent status check observes that every callback settled.
+      throw new UploadIntentConflictError(
+        error.conflict,
+        error.uploadPhase,
+        'Captivet is still securing the saved upload state. Check the upload status again.',
+        'unresolved',
+      );
+    }
+    // A recovery response has already classified this state. Preserve that
+    // exact outcome so callers cannot offer a restart for `unresolved`, and do
+    // not inspect it again under a different identity.
+    if (error.recoveryOutcome) throw error;
+
+    const recoveryHint = latestPendingConfirm;
+    let descriptors = recoveryHint?.files;
+    if (!descriptors) {
+      if (inputFiles.length > 0) {
+        try {
+          descriptors = preparationFiles(await preflightLocalFiles(inputFiles));
+        } catch {
+          throw error;
+        }
+      } else if (recoveryHint) {
+        // Native durable confirmation proofs intentionally omit file
+        // descriptors to keep PHI and mutable metadata out of the plaintext
+        // manifest. The server can still inspect its canonical intent and R2
+        // keys from this exact pending-confirm proof.
+        descriptors = [];
+      } else {
+        throw error;
+      }
+    }
+    const recovery = await requestUploadIntentRecovery({
+      action: 'inspect',
+      inspectionKey: idempotencyKey,
+      existingRecordingId: recoveryHint?.recordingId ?? options.existingRecordingId,
+      metadata,
+      files: descriptors,
+      pendingConfirm: recoveryHint ?? undefined,
+    });
+    if (recovery.outcome === 'already_uploaded' || recovery.outcome === 'already_processed') {
+      scheduleCommittedLateWriteCleanup();
+      return assertRecordingMatchesMetadataPayload(
+        recovery.recording,
+        metadataAsPayload(metadata),
+        metadataMatchOptions,
+      );
+    }
+    if (recovery.outcome === 'restart_available' || recovery.outcome === 'unresolved') {
+      throw new UploadIntentConflictError(
+        recovery.conflict,
+        error.uploadPhase,
+        undefined,
+        recovery.outcome,
+      );
+    }
+    phaseError('prepare', 'The upload status check returned an unexpected restart response.');
+  }
 }
 
 export const recordingsApi = {

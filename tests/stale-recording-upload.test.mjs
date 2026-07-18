@@ -81,6 +81,52 @@ test('already outcomes reject upload URLs and retain server proof semantics', as
   assert.throws(() => validatePreparedUploadEnvelope(response({ outcome: 'already_processed' }), 1));
 });
 
+test('upload conflict validation enforces typed stage/reason pairs', async () => {
+  const { validateUploadIntentConflictDetails } = await loadPure('src/api/uploadPreparation.ts');
+  assert.equal(
+    validateUploadIntentConflictDetails({
+      stage: 'confirm',
+      reason: 'commit_state_changed',
+      recoveryAction: 'inspect',
+    }).reason,
+    'commit_state_changed',
+  );
+  assert.throws(() =>
+    validateUploadIntentConflictDetails({
+      stage: 'confirm',
+      reason: 'prepared_manifest_mismatch',
+      recoveryAction: 'inspect',
+    }),
+  );
+});
+
+test('upload recovery envelope validates restart availability and replacement manifests', async () => {
+  const { validateUploadIntentRecoveryEnvelope } = await loadPure('src/api/uploadPreparation.ts');
+  const conflict = {
+    stage: 'prepare',
+    reason: 'prepared_manifest_mismatch',
+    recoveryAction: 'inspect',
+  };
+  assert.equal(
+    validateUploadIntentRecoveryEnvelope({ outcome: 'restart_available', conflict }, 1).outcome,
+    'restart_available',
+  );
+  const prepared = {
+    outcome: 'prepared',
+    recording: response().recording,
+    replacedRecordingId: recordingId,
+    uploads: response().uploads,
+    warnings: [],
+  };
+  assert.equal(validateUploadIntentRecoveryEnvelope(prepared, 1).outcome, 'prepared');
+  assert.throws(() =>
+    validateUploadIntentRecoveryEnvelope(
+      { ...prepared, uploads: [{ ...prepared.uploads[0], index: 2 }] },
+      1,
+    ),
+  );
+});
+
 test('pending-confirm validation accepts minimal native proof and strips PHI fields', async () => {
   const { validatePendingConfirm, toNativePendingConfirmProof } = await loadPure('src/lib/pendingConfirm.ts');
   const pending = {
@@ -135,24 +181,105 @@ test('Patient ID clear intent distinguishes untouched blanks, explicit clears, a
 });
 
 test('stable upload intents rotate when audio changes after R2 completion', async () => {
-  const { normalizeUploadIntentId, slotUploadIdempotencyKey, durableUploadIdempotencyKey } = await loadPure('src/lib/uploadIntent.ts');
+  const {
+    normalizeUploadIntentId,
+    normalizeUploadKeyOverride,
+    normalizeSupersededUploadKey,
+    effectiveUploadIdempotencyKey,
+    slotUploadIdempotencyKey,
+    durableUploadIdempotencyKey,
+    createAudioChangeUploadIdempotencyKey,
+    isAudioChangeUploadIdempotencyKey,
+  } = await loadPure('src/lib/uploadIntent.ts');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');
   assert.equal(normalizeUploadIntentId(undefined, 'slot-7'), 'legacy:slot-7');
   assert.equal(slotUploadIdempotencyKey('legacy:slot-7'), 'recording-upload-v1:slot:legacy:slot-7');
   assert.equal(durableUploadIdempotencyKey('native-9'), 'recording-upload-v1:durable:native-9');
+  assert.equal(normalizeUploadKeyOverride('recording-upload-v2:restart:valid'), 'recording-upload-v2:restart:valid');
+  const audioChangeKey = createAudioChangeUploadIdempotencyKey();
+  assert.equal(isAudioChangeUploadIdempotencyKey(audioChangeKey), true);
+  assert.equal(normalizeUploadKeyOverride(audioChangeKey), audioChangeKey);
+  assert.equal(normalizeUploadKeyOverride('recording-upload-v2:restart:bad\nheader'), null);
+  assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:valid'), 'recording-upload-v1:slot:valid');
+  assert.equal(normalizeSupersededUploadKey('recording-upload-v1:slot:bad\rheader'), null);
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: 'recording-upload-v2:restart:replacement',
+      supersededUploadKey: null,
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: null,
+      supersededUploadKey: 'recording-upload-v1:slot:old',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: 'recording-upload-v2:restart:same',
+      supersededUploadKey: 'recording-upload-v2:restart:same',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
+  assert.equal(
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: 'recording-upload-v2:restart:replacement',
+      supersededUploadKey: 'recording-upload-v1:slot:old',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+    'recording-upload-v2:restart:replacement',
+  );
+  assert.equal(
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: audioChangeKey,
+      supersededUploadKey: null,
+      durableRecordingId: 'native-9',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+    audioChangeKey,
+  );
+  assert.throws(() =>
+    effectiveUploadIdempotencyKey({
+      uploadKeyOverride: audioChangeKey,
+      supersededUploadKey: 'recording-upload-v2:restart:old',
+      durableRecordingId: 'native-9',
+      uploadIntentId: 'intent',
+      slotId: 'slot-7',
+    }),
+  );
   const reducer = await read('src/hooks/useMultiPatientSession.ts');
   const clear = reducer.slice(reducer.indexOf("case 'CLEAR_AUDIO'"), reducer.indexOf("case 'CONTINUE_RECORDING'"));
   const update = reducer.slice(reducer.indexOf("case 'UPDATE_FORM'"), reducer.indexOf("case 'SET_AUDIO_STATE'"));
   assert.match(clear, /uploadIntentId: createUploadIntentId\(\)/);
   assert.doesNotMatch(update, /createUploadIntentId|pendingConfirm: null/);
+  assert.match(update, /uploadRecovery: null/);
   assert.match(reducer, /function invalidatePendingConfirmForAudioChange/);
-  assert.match(reducer, /if \(!slot\.pendingConfirm\) return \{ pendingConfirm: null \}/);
+  assert.match(
+    reducer,
+    /!slot\.pendingConfirm[\s\S]*!slot\.uploadKeyOverride[\s\S]*!slot\.supersededUploadKey[\s\S]*!slot\.uploadRecovery/,
+  );
   assert.match(reducer, /uploadIntentId: createUploadIntentId\(\)/);
   for (const action of ['SAVE_AUDIO', 'CONTINUE_RECORDING', 'UPDATE_SEGMENT', 'DELETE_SEGMENT', 'REPLACE_ALL_SEGMENTS']) {
     const start = reducer.indexOf(`case '${action}'`);
     const end = reducer.indexOf("case '", start + 6);
     assert.match(reducer.slice(start, end === -1 ? undefined : end), /invalidatePendingConfirmForAudioChange/);
   }
+  const restore = reducer.slice(
+    reducer.indexOf("case 'RESTORE_SESSION'"),
+    reducer.indexOf("case 'UPDATE_SEGMENT'"),
+  );
+  assert.match(restore, /uploadKeyOverride: normalizeUploadKeyOverride\(slot\.uploadKeyOverride\)/);
+  assert.match(
+    restore,
+    /supersededUploadKey: normalizeSupersededUploadKey\(slot\.supersededUploadKey\)/,
+  );
 
   const draftStorage = await read('src/lib/draftStorage.ts');
   assert.match(draftStorage, /uploadIntentRotated[\s\S]*slot\.serverDraftId \?\? null/);
@@ -184,9 +311,18 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(api, /persistence\.settled[\s\S]*invokeClearHint/);
   assert.match(api, /committed_late_anchor/);
   assert.match(api, /if \(usingRefreshedUrl\)/);
-  assert.match(api, /error instanceof ApiError && error\.status === 409/);
+  assert.match(api, /error\.status !== 409 \|\| error\.code !== 'UPLOAD_INTENT_CONFLICT'/);
   assert.match(api, /isRouteLevelPrepare404\(error\)/);
   assert.match(api, /if \(!isRouteLevelPrepare404\(error\)\) throw error/);
+  const prepareFallback = execute.slice(
+    execute.indexOf('if (!isRouteLevelPrepare404(error)) throw error'),
+    execute.indexOf('if (legacy.replacedMissingRecordingId)'),
+  );
+  assert.match(prepareFallback, /if \(options\.supersededIdempotencyKey\) throw error/);
+  assert.ok(
+    prepareFallback.indexOf('if (options.supersededIdempotencyKey) throw error') <
+      prepareFallback.indexOf('legacyUpload('),
+  );
   assert.match(api, /current\.status === 'draft' \|\| current\.status === 'uploading'|probedRecording\.status === 'draft'/);
   assert.match(api, /if \(staleRestartUsed\)/);
   assert.match(api, /staleRestartUsed = true/);
@@ -197,8 +333,91 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(legacy, /createdForLegacyUpload/);
   assert.match(legacy, /orphan_pending_confirm/);
 
-  assert.match(record, /slotUploadIdempotencyKey\(/);
-  assert.match(record, /durableUploadIdempotencyKey\(/);
+  assert.match(record, /effectiveUploadIdempotencyKey\(/);
+  assert.match(record, /supersededIdempotencyKey/);
+  assert.match(
+    record,
+    /error\.recoveryOutcome === 'restart_available' && localAudioAvailableForRestart/,
+  );
+  assert.match(
+    record,
+    /if \(slot\.supersededUploadKey \|\| uploadRestartSlotIdsRef\.current\.has\(slotId\)\) return/,
+  );
+  assert.match(
+    record,
+    /isSubmittingAllRef\.current \|\|\s*uploadRestartSlotIdsRef\.current\.has\(slotId\)/,
+  );
+  assert.match(record, /const draftSyncPromiseBySlotRef = useRef<Map<string, Promise<void>>>/);
+  assert.match(
+    record,
+    /const previous =\s*draftSyncPromiseBySlotRef\.current\.get\(slotId\) \?\? Promise\.resolve\(\)/,
+  );
+  assert.match(record, /draftSyncPromiseBySlotRef\.current\.set\(slotId, operation\)/);
+  assert.match(
+    record,
+    /while \(true\) \{\s*const active = draftSyncPromiseBySlotRef\.current\.get\(slotId\);\s*if \(!active\) return;\s*await active;/,
+  );
+  assert.match(record, /markSubmitIntent\(\[slot\.id\]\)[\s\S]*persistControlledUploadRestart/);
+  const controlledRestart = record.slice(
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+    record.indexOf('const runSingleSubmit = useCallback('),
+  );
+  assert.match(controlledRestart, /UPLOAD_RESTART_LOCAL_TIMEOUT_MS/);
+  assert.match(controlledRestart, /initiatingScopeGeneration/);
+  assert.match(controlledRestart, /scopeIsCurrent/);
+  assert.match(controlledRestart, /draftStorage\.getUserId\(\) === userId/);
+  assert.match(controlledRestart, /Promise\.race\(\[transaction, timeoutResult\]\)/);
+  assert.match(controlledRestart, /upload_restart_local_watchdog_fired/);
+  // The watchdog releases the UI but must not turn a late native commit into
+  // an exception or skip reducer alignment. The transaction keeps running
+  // under the auth-scope guard until reconciliation finishes.
+  assert.doesNotMatch(controlledRestart, /if \(timedOut \|\| !scopeIsCurrent\(\)\)/);
+  assert.doesNotMatch(controlledRestart, /if \(timedOut\) throw error/);
+  assert.match(
+    controlledRestart,
+    /if \(!scopeIsCurrent\(\)\) return null;[\s\S]*type: 'RESET_UPLOAD_ATTEMPT'/,
+  );
+  assert.match(controlledRestart, /if \(watchdog\) clearTimeout\(watchdog\)/);
+  assert.match(
+    controlledRestart,
+    /if \(timedOut\)[\s\S]*transaction\.then\([\s\S]*clearUploadRestart/,
+  );
+  assert.match(
+    controlledRestart,
+    /if \(!timedOut\)[\s\S]*clearUploadRestart/,
+  );
+  assert.ok(
+    controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot,') <
+      controlledRestart.indexOf('beginUploadAttemptReset('),
+  );
+  assert.match(controlledRestart, /requireCompleteAudio: true/);
+  assert.match(
+    controlledRestart,
+    /saved\.promotedSegments\.length !== slot\.segments\.length/,
+  );
+  assert.match(
+    record,
+    /beginUploadAttemptReset[\s\S]*durableRecorder\.resetUploadAttempt[\s\S]*commitUploadAttemptReset/,
+  );
+  const durableAudioRotation = record.slice(
+    record.indexOf('const rotateDurableAudioIdentity = useCallback('),
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+  );
+  assert.match(durableAudioRotation, /createAudioChangeUploadIdempotencyKey\(\)/);
+  assert.match(durableAudioRotation, /beginUploadAttemptReset/);
+  assert.match(durableAudioRotation, /durableRecorder\.resetUploadAttempt/);
+  assert.match(durableAudioRotation, /commitUploadAttemptReset/);
+  assert.match(record, /continueRecording\(slotId, freshAudioUploadKey\)/);
+  const androidDurable = await read(
+    'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt',
+  );
+  const iosDurable = await read(
+    'modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift',
+  );
+  const durableManifest = await read('src/lib/durableAudio/manifest.ts');
+  for (const source of [androidDurable, iosDurable, durableManifest]) {
+    assert.match(source, /recording-upload-v3:audio-change:/);
+  }
   assert.match(record, /await draftStorage\.updatePendingConfirm/);
   assert.match(record, /recordingsApi\.confirmPendingUpload/);
   assert.match(record, /if \(slot\.pendingConfirm\)/);
@@ -225,6 +444,15 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
   assert.match(record, /if \(slot\?\.pendingConfirm\) \{[\s\S]*?'Finish Submission First'/);
   assert.match(reducer, /case 'REPLACE_ALL_SEGMENTS':[\s\S]*?if \(slot\.pendingConfirm\) return slot/);
   assert.match(record, /slotHasRecoverableAudio\(s\)/);
+  const submitAll = record.slice(
+    record.indexOf('const handleSubmitAll = useCallback('),
+    record.indexOf('const handleAddPatient = useCallback('),
+  );
+  assert.match(submitAll, /slotsToUpload\.find\(\(slot\) => slot\.uploadRecovery\?\.canRestart\)/);
+  assert.ok(
+    submitAll.indexOf('UPLOAD_RECOVERY_COPY.submitAllBlockedTitle') <
+      submitAll.indexOf('markSubmitIntent(slotIdsToUpload)'),
+  );
   const card = await read('src/components/PatientSlotCard.tsx');
   const panel = await read('src/components/SubmitPanel.tsx');
   const stashes = await read('src/hooks/useStashedSessions.ts');
@@ -239,7 +467,136 @@ test('upload orchestration preserves ordering, persistence, fallback, and bounde
     record.indexOf('const scheduleDraftSync = useCallback('),
   );
   assert.doesNotMatch(draftSync, /deleteRecordingWithRetry\(serverId/);
+  // Queue ownership is captured when the sync is enqueued, not when its
+  // predecessor settles. Every deferred storage/network operation is wrapped
+  // by a pre/post auth-generation check, and the catch path exits before
+  // touching replacement-user state.
+  assert.match(draftSync, /const initiatingUserId = user\?\.id/);
+  assert.match(draftSync, /const initiatingScopeKey = authScopeKeyRef\.current/);
+  assert.match(draftSync, /const initiatingScopeGeneration = authScopeGenerationRef\.current/);
+  assert.match(draftSync, /draftStorage\.getUserId\(\) === initiatingUserId/);
+  assert.match(draftSync, /const awaitScoped = async <T,>/);
+  assert.match(draftSync, /const persistedDraft = await awaitScoped/);
+  assert.match(draftSync, /const outcome = await awaitScoped/);
+  assert.match(
+    draftSync,
+    /patchDraftMetadataWithRetry\([\s\S]*scopeIsCurrent,[\s\S]*\)/,
+  );
+  assert.match(draftSync, /const result = await awaitScoped/);
+  assert.match(
+    draftSync,
+    /catch \(error\) \{\s*\/\/ Auth may have switched[\s\S]*if \(!scopeIsCurrent\(\)\) return;/,
+  );
+  assert.match(
+    draftSync,
+    /if \(slot\.supersededUploadKey \|\| uploadRestartSlotIdsRef\.current\.has\(slotId\)\) return/,
+  );
+  const retryableCleanup = await read('src/lib/retryableCleanup.ts');
+  assert.match(
+    retryableCleanup,
+    /if \(!shouldContinue\(\)\) return 'transient_failure';/,
+  );
   assert.match(strings, /We couldn't finish the upload\. The recording is still saved on this device/);
+
+  const pendingDraftSync = await read('src/hooks/usePendingDraftSync.ts');
+  assert.match(
+    pendingDraftSync,
+    /draft\.supersededUploadKey \|\| draft\.uploadRestartPending/,
+  );
+});
+
+test('Save for Later is excluded while submit intent or controlled restart owns the session', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  assert.match(record, /const \[submitIntentCount, setSubmitIntentCount\] = useState\(0\)/);
+  assert.match(record, /const \[uploadRestartCount, setUploadRestartCount\] = useState\(0\)/);
+  assert.match(
+    record,
+    /const markSubmitIntent = useCallback[\s\S]*setSubmitIntentCount\(submitIntentSlotIdsRef\.current\.size\)/,
+  );
+  assert.match(
+    record,
+    /const hasBlockingUploadWork = useCallback\([\s\S]*submitIntentSlotIdsRef\.current\.size > 0[\s\S]*uploadRestartSlotIdsRef\.current\.size > 0/,
+  );
+
+  const executeStash = record.slice(
+    record.indexOf('const executeStash = useCallback('),
+    record.indexOf('// Effect: execute pending stash'),
+  );
+  assert.match(executeStash, /if \(hasBlockingUploadWork\(\)\)/);
+  assert.ok(
+    executeStash.lastIndexOf('if (hasBlockingUploadWork())') >
+      executeStash.indexOf('await Promise.all('),
+    'stash must recheck upload ownership after awaiting draft flushes',
+  );
+
+  const handleStash = record.slice(
+    record.indexOf('const handleStashSession = useCallback('),
+    record.indexOf('const loadDraft = useCallback('),
+  );
+  assert.match(handleStash, /if \(hasBlockingUploadWork\(\)\)/);
+  assert.match(record, /const canStash =[\s\S]*submitIntentCount === 0/);
+  assert.match(record, /const canStash =[\s\S]*uploadRestartCount === 0/);
+  assert.match(
+    record,
+    /disabled=\{isAnyUploading \|\| submitIntentCount > 0 \|\| uploadRestartCount > 0\}/,
+  );
+});
+
+test('identity rotation drains phase-1 local saves and blocks stale snapshots', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(
+    record,
+    /const localDraftSavePromiseBySlotRef = useRef<Map<string, Promise<boolean>>>/,
+  );
+
+  const autoSave = record.slice(
+    record.indexOf('const autoSaveDraft = useCallback('),
+    record.indexOf('autoSaveDraftRef.current = autoSaveDraft;'),
+  );
+  assert.match(autoSave, /const initiatingScopeKey = authScopeKeyRef\.current/);
+  assert.match(autoSave, /const initiatingScopeGeneration = authScopeGenerationRef\.current/);
+  assert.match(autoSave, /draftStorage\.getUserId\(\) === initiatingUserId/);
+  assert.match(autoSave, /const awaitScoped = async <T,>/);
+  assert.match(autoSave, /draftStorage\.saveDraft\(slot\)/);
+  assert.match(autoSave, /userId: initiatingUserId/);
+  assert.match(
+    autoSave,
+    /if \(!scopeIsCurrent\(\) \|\| uploadRestartSlotIdsRef\.current\.has\(slot\.id\)\) return false/,
+  );
+  assert.match(autoSave, /localDraftSavePromiseBySlotRef\.current\.get\(slot\.id\)/);
+  assert.match(autoSave, /localDraftSavePromiseBySlotRef\.current\.set\(slot\.id, operation\)/);
+  assert.match(
+    autoSave,
+    /submitIntentSlotIdsRef\.current\.has\(slot\.id\) \|\|\s*uploadRestartSlotIdsRef\.current\.has\(slot\.id\)/,
+  );
+
+  const flushStart = record.indexOf('const flushLocalDraftSave = useCallback');
+  const flushBody = record.slice(flushStart, flushStart + 450);
+  assert.match(
+    flushBody,
+    /while \(true\)[\s\S]*localDraftSavePromiseBySlotRef\.current\.get\(slotId\)[\s\S]*await active/,
+  );
+
+  const durableRotation = record.slice(
+    record.indexOf('const rotateDurableAudioIdentity = useCallback('),
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+  );
+  assert.ok(
+    durableRotation.indexOf('flushLocalDraftSave(slot.id)') <
+      durableRotation.indexOf('draftStorage.saveDraft(snapshotSlot'),
+    'durable rotation must drain ordinary local saves before its authoritative save',
+  );
+
+  const controlledRestart = record.slice(
+    record.indexOf('const persistControlledUploadRestart = useCallback('),
+    record.indexOf('const runSingleSubmit = useCallback('),
+  );
+  assert.ok(
+    controlledRestart.indexOf('flushLocalDraftSave(slot.id)') <
+      controlledRestart.indexOf('draftStorage.saveDraft(snapshotSlot'),
+    'controlled restart must drain ordinary local saves before its authoritative save',
+  );
 });
 
 test('native durable manifests persist and hydrate only non-PHI confirmation proof', async () => {

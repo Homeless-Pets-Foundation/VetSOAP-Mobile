@@ -440,6 +440,36 @@ internal object DurableRecorderEngine {
     mutateManifest(ctx.applicationContext, uId, rId) { it.pendingConfirmJson = pendingJson }
   }
 
+  fun resetUploadAttempt(ctx: Context, input: Map<String, Any?>) {
+    val uId = DurablePaths.requireValidId(input["userId"] as? String, "userId")
+    val rId = DurablePaths.requireValidId(input["recordingId"] as? String, "recordingId")
+    val expectedOldKey = input["expectedOldKey"] as? String
+      ?: throw DurableRecorderException(DurableErrors.STATE, "expectedOldKey is required")
+    val replacementKey = input["replacementKey"] as? String
+      ?: throw DurableRecorderException(DurableErrors.STATE, "replacementKey is required")
+    val isFreshAudioChange = replacementKey.startsWith("recording-upload-v3:audio-change:")
+    if (
+      expectedOldKey.length > 128 ||
+      replacementKey.length > 128 ||
+      (!replacementKey.startsWith("recording-upload-v2:restart:") && !isFreshAudioChange)
+    ) {
+      throw DurableRecorderException(DurableErrors.STATE, "invalid upload restart identity")
+    }
+    mutateManifest(ctx.applicationContext, uId, rId) {
+      if (it.confirmedUploadAt != null || it.state == DurableState.UPLOADED) {
+        throw DurableRecorderException(DurableErrors.STATE, "confirmed upload cannot be restarted")
+      }
+      val currentKey = it.uploadKeyOverride ?: "recording-upload-v1:durable:$rId"
+      if (currentKey != expectedOldKey) {
+        throw DurableRecorderException(DurableErrors.STATE, "upload identity changed; inspect again")
+      }
+      it.uploadKeyOverride = replacementKey
+      it.supersededUploadKey = if (isFreshAudioChange) null else expectedOldKey
+      it.serverRecordingId = null
+      it.pendingConfirmJson = null
+    }
+  }
+
   fun markUploaded(ctx: Context, input: Map<String, Any?>) {
     val uId = DurablePaths.requireValidId(input["userId"] as? String, "userId")
     val rId = DurablePaths.requireValidId(input["recordingId"] as? String, "recordingId")

@@ -39,6 +39,8 @@ internal data class DurableManifest(
   var edited: Boolean? = null,
   var anchorsPending: Boolean? = null,
   var pendingConfirmJson: String? = null,
+  var uploadKeyOverride: String? = null,
+  var supersededUploadKey: String? = null,
 ) {
   /** Convert to the JS-facing map Expo serializes for the bridge. */
   fun toMap(): Map<String, Any?> {
@@ -73,6 +75,8 @@ internal data class DurableManifest(
     edited?.let { m["edited"] = it }
     anchorsPending?.let { m["anchorsPending"] = it }
     pendingConfirmJson?.let { m["pendingConfirmJson"] = it }
+    uploadKeyOverride?.let { m["uploadKeyOverride"] = it }
+    supersededUploadKey?.let { m["supersededUploadKey"] = it }
     return m
   }
 
@@ -107,6 +111,8 @@ internal data class DurableManifest(
     edited?.let { o.put("edited", it) }
     anchorsPending?.let { o.put("anchorsPending", it) }
     pendingConfirmJson?.let { o.put("pendingConfirmJson", it) }
+    uploadKeyOverride?.let { o.put("uploadKeyOverride", it) }
+    supersededUploadKey?.let { o.put("supersededUploadKey", it) }
     return o.toString()
   }
 
@@ -141,6 +147,8 @@ internal data class DurableManifest(
         edited = if (o.has("edited")) o.optBoolean("edited") else null,
         anchorsPending = if (o.has("anchorsPending")) o.optBoolean("anchorsPending") else null,
         pendingConfirmJson = if (o.has("pendingConfirmJson")) o.optString("pendingConfirmJson") else null,
+        uploadKeyOverride = if (o.has("uploadKeyOverride")) o.optString("uploadKeyOverride") else null,
+        supersededUploadKey = if (o.has("supersededUploadKey")) o.optString("supersededUploadKey") else null,
       )
     }.getOrNull()
 

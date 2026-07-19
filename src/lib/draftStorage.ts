@@ -101,6 +101,8 @@ export interface DraftSaveOptions {
 
 /** Current user ID — set by AuthProvider to scope draft data per-user. */
 let currentUserId: string | null = null;
+let userScopeVersion = 0;
+const userIdListeners = new Set<(userId: string | null) => void>();
 // Same-process coordination between background creation and an explicit
 // controlled restart. Durable persistence handles process death; this set
 // closes the in-memory race before either operation reaches the network/native
@@ -587,11 +589,8 @@ async function readDraftIndex(): Promise<string[]> {
   return readDraftIndexForUser(userId);
 }
 
-/** Write the draft index for the current user. */
-async function writeDraftIndex(slotIds: string[]): Promise<void> {
-  const userId = currentUserId;
-  if (!userId) return;
-
+/** Write the draft index for an explicit user without consulting mutable scope. */
+async function writeDraftIndexForUser(userId: string, slotIds: string[]): Promise<void> {
   try {
     await SecureStore.setItemAsync(
       draftIndexKeyForUser(userId),
@@ -603,6 +602,13 @@ async function writeDraftIndex(slotIds: string[]): Promise<void> {
   }
 }
 
+/** Write the draft index for the current user. */
+async function writeDraftIndex(slotIds: string[]): Promise<void> {
+  const userId = currentUserId;
+  if (!userId) return;
+  return writeDraftIndexForUser(userId, slotIds);
+}
+
 /**
  * Draft storage module for persisting audio drafts locally.
  *
@@ -612,13 +618,35 @@ async function writeDraftIndex(slotIds: string[]): Promise<void> {
 export const draftStorage = {
   /** Set the current user ID. Must be called before any draft operations. */
   setUserId(userId: string | null): void {
+    const changed = currentUserId !== userId;
     currentUserId = userId;
     invalidateDraftsCache();
+    if (changed) {
+      userScopeVersion++;
+      for (const listener of userIdListeners) {
+        try {
+          listener(userId);
+        } catch {
+          // A background observer must never break the auth scope update.
+        }
+      }
+    }
   },
 
   /** Read the currently scoped user ID. */
   getUserId(): string | null {
     return currentUserId;
+  },
+
+  /** Monotonic token invalidating same-user cache reuse across re-auth. */
+  getUserScopeVersion(): number {
+    return userScopeVersion;
+  },
+
+  /** Observe auth-scope changes so in-flight background reads can abort. */
+  subscribeUserIdChanges(listener: (userId: string | null) => void): () => void {
+    userIdListeners.add(listener);
+    return () => userIdListeners.delete(listener);
   },
 
   /**
@@ -1440,7 +1468,15 @@ export const draftStorage = {
   async deleteDraft(slotId: string): Promise<void> {
     const userId = currentUserId;
     if (!userId) return;
+    return this.deleteDraftForUser(userId, slotId);
+  },
 
+  /**
+   * Delete a draft for an explicit user. Every key and filesystem path remains
+   * bound to that user even if authentication changes while SecureStore awaits.
+   */
+  async deleteDraftForUser(userId: string, slotId: string): Promise<void> {
+    if (!userId) return;
     try {
       // A support-staff-recovery-restored durable draft references its audio via
       // durable.recoveredAudioUri — a loose .aac OUTSIDE the draft dir that the
@@ -1464,9 +1500,9 @@ export const draftStorage = {
       await deleteDraftChunks(userId, slotId);
 
       // Remove from index
-      const index = await readDraftIndex();
+      const index = await readDraftIndexForUser(userId);
       const filtered = index.filter((id) => id !== slotId);
-      await writeDraftIndex(filtered);
+      await writeDraftIndexForUser(userId, filtered);
     } catch {
       // Best-effort cleanup
     } finally {
@@ -1541,13 +1577,21 @@ export const draftStorage = {
    * delete). Drafts with no serverDraftId still classify with no network.
    */
   async evictExpired(
-    opts: { maxAgeDays?: number; warnAgeDays?: number; isOnline?: boolean },
+    opts: {
+      maxAgeDays?: number;
+      warnAgeDays?: number;
+      isOnline?: boolean;
+      userId?: string;
+      isScopeValid?: () => boolean;
+    },
     getStatus?: (serverDraftId: string) => Promise<string | null>
   ): Promise<{ expired: DraftMetadata[]; expiring: DraftMetadata[] }> {
     const expired: DraftMetadata[] = [];
     const expiring: DraftMetadata[] = [];
-    const userId = currentUserId;
+    const userId = opts.userId ?? currentUserId;
     if (!userId) return { expired, expiring };
+    const isScopeValid = opts.isScopeValid ?? (() => currentUserId === userId);
+    if (!isScopeValid()) return { expired, expiring };
 
     const maxAgeDays = opts.maxAgeDays ?? 30;
     const warnAgeDays = opts.warnAgeDays ?? 23;
@@ -1556,8 +1600,10 @@ export const draftStorage = {
     const dayMs = 24 * 60 * 60 * 1000;
 
     try {
-      const drafts = await this.listDrafts();
+      const drafts = await this.listDraftsForUser(userId);
+      if (!isScopeValid()) return { expired: [], expiring: [] };
       for (const draft of drafts) {
+        if (!isScopeValid()) return { expired: [], expiring: [] };
         const savedMs = new Date(draft.savedAt).getTime();
         if (isNaN(savedMs)) continue; // unparseable timestamp — never evict blind
         const ageDays = (now - savedMs) / dayMs;
@@ -1567,15 +1613,18 @@ export const draftStorage = {
         if (draft.serverDraftId && isOnline && getStatus) {
           try {
             const status = await getStatus(draft.serverDraftId);
+            if (!isScopeValid()) return { expired: [], expiring: [] };
             // null/unknown => unverifiable => treat as un-sent (defer).
             uploadedConfirmed =
               status != null &&
+              status !== 'missing' &&
               status !== 'draft' &&
               status !== 'failed' &&
               status !== 'error';
           } catch {
             uploadedConfirmed = false; // unverifiable -> defer
           }
+          if (!isScopeValid()) return { expired: [], expiring: [] };
         }
 
         if (uploadedConfirmed) {
@@ -1584,11 +1633,13 @@ export const draftStorage = {
           // launch self-heal, which purges only after confirmed upload.
           if (draft.durable && isValidDurableId(draft.durable.recordingId)) {
             const purged = await durableTombstone.has(draft.durable.recordingId);
+            if (!isScopeValid()) return { expired: [], expiring: [] };
             if (!purged) continue;
           }
           // Redundant local copy. Delete silently only once truly old.
           if (ageDays >= maxAgeDays) {
-            await this.deleteDraft(draft.slotId);
+            if (!isScopeValid()) return { expired: [], expiring: [] };
+            await this.deleteDraftForUser(userId, draft.slotId);
           }
           continue;
         }
@@ -1622,19 +1673,25 @@ export const draftStorage = {
       // recording status string or null when unverifiable.
       getStatus?: (serverDraftId: string) => Promise<string | null>;
       isOnline?: boolean;
+      userId?: string;
+      isScopeValid?: () => boolean;
     }
   ): Promise<number> {
-    const userId = currentUserId;
+    const userId = opts?.userId ?? currentUserId;
     if (!userId) return 0;
 
     const getStatus = opts?.getStatus;
     const isOnline = opts?.isOnline ?? true;
+    const isScopeValid = opts?.isScopeValid ?? (() => currentUserId === userId);
+    if (!isScopeValid()) return 0;
 
     let cleaned = 0;
     let found = 0;
     try {
-      const drafts = await this.listDrafts();
+      const drafts = await this.listDraftsForUser(userId);
+      if (!isScopeValid()) return cleaned;
       for (const draft of drafts) {
+        if (!isScopeValid()) return cleaned;
         // Missing local audio is not an orphan after R2 has accepted the bytes.
         // Keep the proof so loadDraft can finish the server commit.
         if (clonePendingConfirm(draft.pendingConfirm)) continue;
@@ -1652,6 +1709,7 @@ export const draftStorage = {
         // destroy durable drafts on the next Record-tab mount.
         if (durableId) {
           const purged = await durableTombstone.has(durableId);
+          if (!isScopeValid()) return cleaned;
           if (!purged) continue; // valid durable draft, not an orphan
           found++;
           draftBreadcrumb('orphan_sweep_delete', {
@@ -1660,7 +1718,7 @@ export const draftStorage = {
             segment_count: 0,
             has_server_draft: !!draft.serverDraftId,
           });
-          await this.deleteDraft(draft.slotId);
+          await this.deleteDraftForUser(userId, draft.slotId);
           cleaned++;
           continue;
         }
@@ -1685,25 +1743,19 @@ export const draftStorage = {
           has_server_draft: !!draft.serverDraftId,
         });
 
-        if (anyMissing) {
-          // Audio is genuinely gone — safe to drop the server row + local meta.
-          if (draft.serverDraftId) {
-            try {
-              await deleteServerDraft(draft.serverDraftId);
-            } catch {
-              // Best-effort — server may already be gone or offline.
-            }
-          }
-          await this.deleteDraft(draft.slotId);
+        if (anyMissing && !draft.serverDraftId) {
+          // There is no server anchor to protect and the local audio set is
+          // irrecoverably incomplete.
+          if (!isScopeValid()) return cleaned;
+          await this.deleteDraftForUser(userId, draft.slotId);
           cleaned++;
           continue;
         }
 
-        // emptyButServerLinked: reconcile server status before deleting any row,
-        // and FAIL CLOSED. A just-uploaded recording (the uploaded-marker ->
-        // deleteDraft window) must never have its server row destroyed offline.
+        // Every server-linked orphan shape must reconcile through the shared
+        // validated batch snapshot before deleting a row or local metadata.
+        // FAIL CLOSED: a partial/unknown response preserves everything.
         if (!getStatus || !isOnline || !draft.serverDraftId) {
-          // Unverifiable -> defer (do not delete). Cleaned next time online.
           continue;
         }
         let status: string | null = null;
@@ -1712,20 +1764,33 @@ export const draftStorage = {
         } catch {
           status = null;
         }
-        if (status === null) continue; // unverifiable -> defer
-        if (status === 'draft' || status === 'failed' || status === 'error') {
-          // Genuine orphan draft row — safe to delete server row + local.
+        if (!isScopeValid()) return cleaned;
+        if (status === null) continue;
+        if (status === 'missing') {
+          // The row is proven absent in this tenant. There is nothing to
+          // delete remotely; remove only the unusable local metadata.
+          await this.deleteDraftForUser(userId, draft.slotId);
+          cleaned++;
+          continue;
+        }
+        if (status === 'draft') {
+          // Only a real server draft is eligible for automatic remote
+          // deletion. A failed or otherwise non-draft row can still be a
+          // retryable recording with durable audio in R2.
           try {
+            if (!isScopeValid()) return cleaned;
             await deleteServerDraft(draft.serverDraftId);
           } catch {
             /* best-effort */
           }
-          await this.deleteDraft(draft.slotId);
+          if (!isScopeValid()) return cleaned;
+          await this.deleteDraftForUser(userId, draft.slotId);
           cleaned++;
         } else {
-          // Uploaded/processed — the row is real. Keep it; drop only the stale
-          // local metadata so the leftover card disappears.
-          await this.deleteDraft(draft.slotId);
+          // Failed/uploaded/processed — the row is real. Keep it; drop only
+          // unusable stale local metadata so the leftover card disappears.
+          if (!isScopeValid()) return cleaned;
+          await this.deleteDraftForUser(userId, draft.slotId);
           cleaned++;
         }
       }

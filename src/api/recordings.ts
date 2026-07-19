@@ -50,11 +50,28 @@ import {
   type TaggedError,
 } from './uploadRetry';
 import { isPimsPatientIdExplicitlyCleared } from '../lib/pimsPatientIdIntent';
+import {
+  draftPresenceRequestSchema,
+  parseDraftPresenceResponse,
+  type DraftPresenceResponse,
+} from './draftPresenceContract';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
 const PENDING_CONFIRM_PERSIST_TIMEOUT_MS = 3_000;
 const RECORDING_ANCHOR_PERSIST_TIMEOUT_MS = 3_000;
+
+export const RECORDING_AUDIO_MISSING_CODE = 'RECORDING_AUDIO_MISSING' as const;
+
+export function isRecordingAudioMissingError(
+  error: unknown,
+): error is ApiError & { code: typeof RECORDING_AUDIO_MISSING_CODE } {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    error.code === RECORDING_AUDIO_MISSING_CODE
+  );
+}
 
 export type RecordingDeleteReason =
   | 'user_delete'
@@ -1475,6 +1492,23 @@ export const recordingsApi = {
       signal: options.signal,
       allowAuthSideEffects: options.allowAuthSideEffects,
     });
+  },
+
+  async draftPresence(
+    recordingIds: readonly string[],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<DraftPresenceResponse> {
+    const payload = draftPresenceRequestSchema.parse({
+      recordingIds: [...recordingIds],
+    });
+    const response = await apiClient.request<unknown>('/api/recordings/draft-presence', {
+      method: 'POST',
+      body: payload,
+      timeoutMs: 10_000,
+      signal: options.signal,
+      allowAuthSideEffects: false,
+    });
+    return parseDraftPresenceResponse(payload.recordingIds, response);
   },
 
   async create(

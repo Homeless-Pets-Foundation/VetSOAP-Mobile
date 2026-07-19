@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "configuredVirtualHost": "captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+  "vectors": [
+    {
+      "name": "accept_virtual_hosted",
+      "accepted": true,
+      "style": "virtual_hosted",
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/clinic/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=TESTACCESS%2F20260718%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=content-type%3Bhost&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "accept_path_style",
+      "accepted": true,
+      "style": "path_style",
+      "url": "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/captivet-contract-fixtures/recordings/clinic/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=TESTACCESS%2F20260718%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1&X-Amz-SignedHeaders=host&X-Amz-Signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "reject_sibling_bucket_virtual_host",
+      "accepted": false,
+      "url": "https://captivet-other-bucket.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_sibling_account_virtual_host",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.11111111111111111111111111111111.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_sibling_bucket_path_style",
+      "accepted": false,
+      "url": "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/captivet-other-bucket/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_sibling_account_path_style",
+      "accepted": false,
+      "url": "https://11111111111111111111111111111111.r2.cloudflarestorage.com/captivet-contract-fixtures/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_lookalike_domain",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com.evil.test/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_http",
+      "accepted": false,
+      "url": "http://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_non_default_port",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com:8443/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_credentials",
+      "accepted": false,
+      "url": "https://user:password@captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_fragment",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#fragment"
+    },
+    {
+      "name": "reject_empty_key",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_wrong_path_boundary",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings-archive/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_duplicate_slash",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings//session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_dot_segment",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/../session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_encoded_dot_segment",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/%2e%2e/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_encoded_separator",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/clinic%2Fsession.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_encoded_bucket_boundary",
+      "accepted": false,
+      "url": "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/captivet-contract-fixtures%2Frecordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_missing_algorithm",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_wrong_algorithm",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA1&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_duplicate_algorithm",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_empty_credential",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_invalid_date",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20261340T250000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_zero_expires",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=0&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_expires_over_server_max",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1801&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_non_integer_expires",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1.5&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_signed_headers_without_host_token",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=x-host%3Bcontent-type&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "reject_short_signature",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=abcd"
+    },
+    {
+      "name": "reject_non_hex_signature",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+    },
+    {
+      "name": "reject_duplicate_signature",
+      "accepted": false,
+      "url": "https://captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&X-Amz-Signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

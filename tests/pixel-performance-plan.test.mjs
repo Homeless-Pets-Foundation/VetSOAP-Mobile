@@ -52,7 +52,8 @@ test('Pixel performance plan keeps root diagnostics and named phase timing wired
   assert.match(monitoring, /breadcrumb\('performance', 'phase_complete'/);
   assert.match(monitoring, /captureMessage\(`slow_phase_\$\{name\}`/);
   assert.match(monitoring, /fingerprint: \[message\]/);
-  assert.match(monitoring, /if \(durationMs >= 5000\)/);
+  assert.match(monitoring, /warningThresholdMs !== null && durationMs >= warningThresholdMs/);
+  assert.match(monitoring, /warningThresholdMs\?: number \| null/);
   assert.match(monitoring, /duration_bucket: bucketDuration\(durationMs\)/);
 
   assert.match(rootLayout, /rootBoundaryDiagnostics/);
@@ -122,6 +123,8 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   const cache = await read('src/lib/recordingQueryCache.ts');
   const draftStorage = await read('src/lib/draftStorage.ts');
   const apiClient = await read('src/api/client.ts');
+  const draftPresence = await read('src/api/draftPresence.ts');
+  const batch = await read('src/lib/draftPresenceBatch.ts');
   const homeFocusRefresh = home.slice(
     home.indexOf('const handleFocusRefresh'),
     home.indexOf('useFocusEffect(handleFocusRefresh)')
@@ -150,24 +153,30 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
   assert.match(localDrafts, /useAuthDeviceRegistration/);
   assert.match(localDrafts, /const canReconcileServerDrafts = !!userId && !deviceRegistrationPending && !deviceRegistrationBlock/);
   assert.match(localDrafts, /const RECONCILE_INTERVAL_MS = 5 \* 60_000/);
-  assert.match(localDrafts, /const RECONCILE_CONCURRENCY = 3/);
-  assert.match(localDrafts, /const RECONCILE_REQUEST_TIMEOUT_MS = 10_000/);
-  assert.match(localDrafts, /const RECONCILE_PROBE_DEADLINE_MS = 12_000/);
-  assert.match(localDrafts, /const controller = new AbortController\(\)/);
-  assert.match(localDrafts, /signal: controller\.signal/);
-  assert.match(localDrafts, /allowAuthSideEffects: false/);
-  assert.match(localDrafts, /finish\(\{ presence: 'unknown', interrupted: true \}, true\)/);
+  assert.match(localDrafts, /getDraftPresenceSnapshot\(/);
+  assert.match(localDrafts, /linkedServerDraftIds\(linkedDrafts\)/);
+  assert.match(localDrafts, /snapshot\.statusById\.get\(serverDraftId\) !== 'missing'/);
+  assert.match(localDrafts, /warningThresholdMs: 10_000/);
+  assert.match(localDrafts, /warningThresholdMs: null/);
   assert.match(localDrafts, /AppState\.addEventListener\('change'/);
   assert.match(localDrafts, /AppState\.currentState !== 'active'/);
   assert.match(localDrafts, /draftStorage\.getUserId\(\) !== userId/);
   assert.match(localDrafts, /nextState !== 'active'/);
   assert.match(localDrafts, /reconcileInFlightByUser\.get\(userId\)/);
   assert.match(localDrafts, /reconcileInBackground\(false\)/);
-  assert.match(localDrafts, /runBounded\(/);
   assert.match(localDrafts, /listDraftsForUser\(userId\)/);
-  assert.match(localDrafts, /clearServerDraftIdForUser\(userId, draft\.slotId, serverDraftId\)/);
+  assert.match(localDrafts, /clearServerDraftIdForUser\([\s\S]*userId,[\s\S]*draft\.slotId,[\s\S]*serverDraftId/);
   assert.match(localDrafts, /reconcileInBackground\(false\);\s*return drafts;/);
   assert.doesNotMatch(localDrafts, /await reconcileMissingServerDrafts\(userId/);
+
+  assert.match(draftPresence, /const controller = new AbortController\(\)/);
+  assert.match(draftPresence, /signal: controller\.signal/);
+  assert.match(draftPresence, /AppState\.addEventListener\('change'/);
+  assert.match(draftPresence, /subscribeUserIdChanges/);
+  assert.match(draftPresence, /warningThresholdMs: 10_000/);
+  assert.match(draftPresence, /warningThresholdMs: null/);
+  assert.match(batch, /Math\.min\(2, chunks\.length\)/);
+  assert.match(batch, /if \(failed \|\| !isScopeValid\(\)/);
 
   assert.match(apiClient, /signal\?: AbortSignal/);
   assert.match(apiClient, /signal\?\.addEventListener\('abort', abortFromExternalSignal/);
@@ -185,11 +194,26 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
 
   assert.match(record, /function scheduleNonUrgentWork/);
   assert.match(record, /InteractionManager\.runAfterInteractions\(\(\) => \{/);
-  assert.match(record, /measurePhase\(label, undefined, work\)\.catch\(\(\) => \{\}\)/);
+  assert.match(record, /measurePhase\(label, undefined, work, \{ warningThresholdMs \}\)\.catch\(\(\) => \{\}\)/);
   assert.match(record, /Promise\.all\(\[\s*[\s\S]*draftStorage\.deleteDraft\(slot\.id\)[\s\S]*\]\)\.then\(\(\) => \{\s*invalidateRecordingCaches\(queryClient, 'draft_deleted'\);/);
   assert.match(record, /'record_pending_draft_scan'/);
   assert.match(record, /'orphan_cleanup'/);
   assert.match(record, /'thirty_day_eviction'/);
+  assert.equal(
+    (record.match(/draftStorage\.getUserScopeVersion\(\) === userScopeVersion/g) ?? []).length,
+    2,
+    'orphan cleanup and age eviction must both retain their initiating auth generation',
+  );
+  assert.match(
+    record,
+    /const isScopeValid = \(\) =>[\s\S]*AppState\.currentState === 'active'[\s\S]*draftStorage\.getUserId\(\) === user\.id/,
+  );
+  assert.equal(
+    (record.match(/userId: user\.id,\s*isScopeValid/g) ?? []).length,
+    2,
+    'both destructive draft sweeps must pass an explicit user and live scope guard',
+  );
+  assert.match(record, /deleteDraftForUser\(user\.id, draft\.slotId\)/);
 
   assert.match(draftStorage, /export interface DraftSyncResult/);
   assert.match(draftStorage, /attempted: number;\s*succeeded: number;\s*failed: number;/);

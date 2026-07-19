@@ -35,6 +35,10 @@ const SANDBOX_GLOBALS = {
   Object,
   String,
   Boolean,
+  URL,
+  URLSearchParams,
+  AbortController,
+  AbortSignal,
   Map,
   Set,
   Symbol,
@@ -53,8 +57,9 @@ function resolveRelative(fromFile, spec) {
  * Load a repo-relative .ts module (e.g. 'src/lib/durableAudio/tombstone.ts').
  * @param {string} relPath repo-relative path
  * @param {Record<string, unknown>} mocks bare specifier -> module exports
+ * @param {Record<string, unknown>} globals additional/overridden vm globals
  */
-export async function loadTsModule(relPath, mocks = {}) {
+export async function loadTsModule(relPath, mocks = {}, globals = {}) {
   const cache = new Map();
 
   function loadSync(absFile) {
@@ -73,15 +78,16 @@ export async function loadTsModule(relPath, mocks = {}) {
     cache.set(absFile, moduleObj.exports); // cache pre-run for cycle safety
 
     const localRequire = (spec) => {
+      if (Object.prototype.hasOwnProperty.call(mocks, spec)) return mocks[spec];
       if (spec.startsWith('.')) {
         return loadSync(resolveRelative(absFile, spec));
       }
-      if (Object.prototype.hasOwnProperty.call(mocks, spec)) return mocks[spec];
       return requireReal(spec);
     };
 
     vm.runInNewContext(compiled, {
       ...SANDBOX_GLOBALS,
+      ...globals,
       exports: moduleObj.exports,
       module: moduleObj,
       require: localRequire,

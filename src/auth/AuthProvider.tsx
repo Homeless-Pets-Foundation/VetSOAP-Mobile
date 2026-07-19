@@ -1579,7 +1579,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     measurePhase(
       'auth_init_get_session',
       undefined,
-      () => withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session')
+      () => withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session'),
+      { warningThresholdMs: null }
     ).then(async (result) => {
       const existingSession = result?.data?.session ?? null;
       if (existingSession) {

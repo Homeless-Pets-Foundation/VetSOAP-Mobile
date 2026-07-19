@@ -113,6 +113,7 @@ export default function RecordingDetailScreen() {
   useEffect(() => {
     setAccessRevoked(null); // reset when navigating to a different recording
     setRetryAudioMissing(false);
+    pollingStartedAtRef.current = null;
   }, [id]);
 
   // Completion celebration — fired ONCE on the prev !== 'completed' →

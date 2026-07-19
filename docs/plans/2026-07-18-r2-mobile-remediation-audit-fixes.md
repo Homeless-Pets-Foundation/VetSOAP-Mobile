@@ -58,5 +58,31 @@ Source: VetSOAP-Connect
 - [x] Re-run focused and full validation and audit the replacement diff:
       494 tests, TypeScript, Expo lint, Expo Doctor 19/19, and `git diff
       --check` all pass.
-- [ ] Push the replacement head and request a fresh exact-head Codex P0/P1/P2
-      audit before merge.
+- [x] Push the replacement head and request a fresh exact-head Codex P0/P1/P2
+      audit before merge. Codex reviewed `76cbef15a2baeae704a0638bbc88573c4ff942b0`
+      and reported no major issues.
+
+## Repeated cross-repository self-audit — after the clean Codex review
+
+- [x] P1, non-draft server-row preservation: automatic orphan cleanup still
+      classifies a returned `failed` status like `draft` and calls the server
+      delete route. A failed row can still be a real, retryable recording with
+      audio in R2. Only a returned `draft` row may be deleted remotely by this
+      cleanup; returned non-draft rows must be preserved, while unusable stale
+      local metadata may still be removed. Add runtime coverage proving
+      `failed` never invokes the server deleter.
+- [x] P2, route-scope stale clock: reset `pollingStartedAtRef` when the detail
+      route ID changes so an in-place navigation cannot make a fresh recording
+      inherit another recording's 30-minute stale-processing presentation.
+- [ ] P2, cross-repository retry contract: Mobile intentionally offers Retry
+      for active processing that remains stale for 30 minutes, but Connect
+      currently accepts only `failed`, `retry_scheduled`, or a five-minute
+      stale `uploaded` row. Extend the Connect follow-up with an atomic,
+      status-aware stale-active retry path and matching API/web tests before
+      any Mobile build. Do not broaden the Mobile action against production
+      until that backward-compatible server change is live.
+- [x] Re-run focused and full Mobile validation: 495 tests, TypeScript, Expo
+      lint, Expo Doctor 19/19, focused retry/reconciliation tests, and `git
+      diff --check` all pass.
+- [ ] Replace the PR head and request another exact-head Codex P0/P1/P2 audit
+      before merge.

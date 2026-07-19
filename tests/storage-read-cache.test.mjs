@@ -347,6 +347,31 @@ test('draftStorage: proven missing server row removes orphan metadata without a 
   assert.equal(await draftStorage.getDraft('slot-missing-orphan'), null);
 });
 
+test('draftStorage: failed server row is preserved while unusable local metadata is removed', async () => {
+  let filesPresent = true;
+  let serverDeletes = 0;
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: () => filesPresent,
+  });
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot-failed-server-row'));
+  await draftStorage.updateServerDraftId(
+    'slot-failed-server-row',
+    '11111111-1111-4111-8111-111111111111',
+  );
+  filesPresent = false;
+
+  const cleaned = await draftStorage.cleanupOrphaned(
+    async () => {
+      serverDeletes++;
+    },
+    { getStatus: async () => 'failed', isOnline: true },
+  );
+  assert.equal(cleaned, 1);
+  assert.equal(serverDeletes, 0);
+  assert.equal(await draftStorage.getDraft('slot-failed-server-row'), null);
+});
+
 test('draftStorage: missing and unknown status never silently evict local audio', async () => {
   for (const status of ['missing', null]) {
     const { draftStorage } = await loadDraftStorage();

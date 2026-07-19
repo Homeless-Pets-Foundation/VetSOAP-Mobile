@@ -1773,8 +1773,10 @@ export const draftStorage = {
           cleaned++;
           continue;
         }
-        if (status === 'draft' || status === 'failed' || status === 'error') {
-          // Genuine orphan draft row — safe to delete server row + local.
+        if (status === 'draft') {
+          // Only a real server draft is eligible for automatic remote
+          // deletion. A failed or otherwise non-draft row can still be a
+          // retryable recording with durable audio in R2.
           try {
             if (!isScopeValid()) return cleaned;
             await deleteServerDraft(draft.serverDraftId);
@@ -1785,8 +1787,8 @@ export const draftStorage = {
           await this.deleteDraftForUser(userId, draft.slotId);
           cleaned++;
         } else {
-          // Uploaded/processed — the row is real. Keep it; drop only the stale
-          // local metadata so the leftover card disappears.
+          // Failed/uploaded/processed — the row is real. Keep it; drop only
+          // unusable stale local metadata so the leftover card disappears.
           if (!isScopeValid()) return cleaned;
           await this.deleteDraftForUser(userId, draft.slotId);
           cleaned++;

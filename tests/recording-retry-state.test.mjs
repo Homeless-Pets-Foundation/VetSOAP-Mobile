@@ -99,6 +99,11 @@ test('detail retry handles only the typed 409 as expected and renders the non-re
   assert.match(retryMutation, /onSuccess:[\s\S]*setRetryAudioMissing\(false\)/);
   assert.match(detail, /Audio unavailable/);
   assert.match(detail, /Start New Recording/);
+  const routeResetEffect = detail.slice(
+    detail.indexOf('useEffect(() => {', detail.indexOf('const [retryAudioMissing')),
+    detail.indexOf('// Completion celebration'),
+  );
+  assert.match(routeResetEffect, /pollingStartedAtRef\.current = null/);
   assert.match(
     detail,
     /!!recording\.audioFileUrl &&\s*retryPresentation !== 'audio_unavailable' &&\s*aiModels/,

@@ -52,7 +52,7 @@
     {
       "name": "reject_credentials",
       "accepted": false,
-      "url": "https://user:password@captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "url": "https://user:***@captivet-contract-fixtures.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/recordings/session.aac?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test&X-Amz-Date=20260718T120000Z&X-Amz-Expires=1800&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
     {
       "name": "reject_fragment",

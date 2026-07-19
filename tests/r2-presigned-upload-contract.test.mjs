@@ -43,9 +43,16 @@ test('R2 contract fixture is versioned and byte-pinned', () => {
   assert.equal(fixture.version, 1);
   assert.equal(
     createHash('sha256').update(fixtureBytes).digest('hex'),
-    'b8e1a202f978c2513b698d503ee541db53a7dd1967abfb1040a94932594d321f'
+    '448fcce0dce65a8c5f9306d76be36310e9c9eb0d7d405e6d34fe7712f36a904d'
   );
   assert.equal(fixture.vectors.length, 30);
+});
+
+test('credential rejection vector uses only an explicitly redacted synthetic password', () => {
+  const vector = fixture.vectors.find(({ name }) => name === 'reject_credentials');
+  assert.ok(vector);
+  assert.equal(new URL(vector.url).username, 'user');
+  assert.equal(new URL(vector.url).password, '***');
 });
 
 test('pure R2 validator consumes every cross-repository contract vector', () => {

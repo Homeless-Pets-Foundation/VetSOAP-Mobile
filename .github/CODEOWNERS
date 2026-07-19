@@ -1,0 +1,22 @@
+# Default owner
+* @jaxnnux
+
+# R2 destination contract and every path that can change production build
+# configuration or presigned-upload authorization.
+contracts/r2-presigned-upload-v1.json @philgooddvm-oss
+contracts/r2-production-destination-v1.json @philgooddvm-oss
+contracts/r2-production-destination-v1.sha256 @philgooddvm-oss
+app.config.ts @philgooddvm-oss
+eas.json @philgooddvm-oss
+.env.example @philgooddvm-oss
+src/config.ts @philgooddvm-oss
+src/lib/r2UploadUrl.ts @philgooddvm-oss
+src/lib/sslPinning.ts @philgooddvm-oss
+src/api/recordings.ts @philgooddvm-oss
+tests/r2-presigned-upload-contract.test.mjs @philgooddvm-oss
+tests/helpers/loadTs.mjs @philgooddvm-oss
+.github/r2-protected-paths.txt @philgooddvm-oss
+.github/scripts/r2-approval-gate.cjs @philgooddvm-oss
+.github/scripts/r2-approval-gate.test.cjs @philgooddvm-oss
+.github/workflows/r2-approval-gate.yml @philgooddvm-oss
+.github/workflows/ci.yml @philgooddvm-oss

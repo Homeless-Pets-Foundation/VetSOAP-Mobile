@@ -1,0 +1,19 @@
+# Prefixes end with /. All other entries are exact repository-relative paths.
+contracts/r2-presigned-upload-v1.json
+contracts/r2-production-destination-v1.json
+contracts/r2-production-destination-v1.sha256
+app.config.ts
+eas.json
+.env.example
+src/config.ts
+src/lib/r2UploadUrl.ts
+src/lib/sslPinning.ts
+src/api/recordings.ts
+tests/r2-presigned-upload-contract.test.mjs
+tests/helpers/loadTs.mjs
+.github/CODEOWNERS
+.github/workflows/ci.yml
+.github/workflows/r2-approval-gate.yml
+.github/r2-protected-paths.txt
+.github/scripts/r2-approval-gate.cjs
+.github/scripts/r2-approval-gate.test.cjs

@@ -4,9 +4,20 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { loadTsModule } from './helpers/loadTs.mjs';
 
-const fixtureUrl = new URL('../contracts/r2-presigned-upload-v1.json', import.meta.url);
+const fixtureUrl = new URL(
+  '../contracts/r2-presigned-upload-v1.json',
+  import.meta.url,
+);
 const fixtureBytes = await readFile(fixtureUrl);
 const fixture = JSON.parse(fixtureBytes.toString('utf8'));
+const productionDestinationUrl = new URL(
+  '../contracts/r2-production-destination-v1.json',
+  import.meta.url,
+);
+const productionDestinationBytes = await readFile(productionDestinationUrl);
+const productionDestination = JSON.parse(
+  productionDestinationBytes.toString('utf8'),
+);
 const validator = await loadTsModule('src/lib/r2UploadUrl.ts');
 
 async function loadProductionUploadWrapper(r2BucketHostname) {
@@ -43,13 +54,33 @@ test('R2 contract fixture is versioned and byte-pinned', () => {
   assert.equal(fixture.version, 1);
   assert.equal(
     createHash('sha256').update(fixtureBytes).digest('hex'),
-    '448fcce0dce65a8c5f9306d76be36310e9c9eb0d7d405e6d34fe7712f36a904d'
+    '448fcce0dce65a8c5f9306d76be36310e9c9eb0d7d405e6d34fe7712f36a904d',
   );
   assert.equal(fixture.vectors.length, 30);
 });
 
+test('production R2 destination contract is distinct, versioned, and byte-pinned', () => {
+  assert.equal(productionDestination.version, 1);
+  assert.equal(productionDestination.objectPrefix, 'recordings/');
+  assert.equal(productionDestination.serverAddressingStyle, 'virtual_hosted');
+  assert.equal(
+    createHash('sha256').update(productionDestinationBytes).digest('hex'),
+    'ad4389df46892d85eca25c227964ead59c9f95fc1b5e31cee0daea3d348bdc41',
+  );
+  assert.equal(
+    productionDestination.environments.production.virtualHost,
+    'captivet-recordings.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com',
+  );
+  assert.equal(
+    productionDestination.environments.staging.bucketName,
+    'captivet-staging-recordings',
+  );
+});
+
 test('credential rejection vector uses only an explicitly redacted synthetic password', () => {
-  const vector = fixture.vectors.find(({ name }) => name === 'reject_credentials');
+  const vector = fixture.vectors.find(
+    ({ name }) => name === 'reject_credentials',
+  );
   assert.ok(vector);
   assert.equal(new URL(vector.url).username, 'user');
   assert.equal(new URL(vector.url).password, '***');
@@ -61,7 +92,7 @@ test('pure R2 validator consumes every cross-repository contract vector', () => 
     if (vector.accepted) {
       const result = validator.validateR2PresignedUploadUrl(
         vector.url,
-        fixture.configuredVirtualHost
+        fixture.configuredVirtualHost,
       );
       assert.equal(result.style, vector.style, vector.name);
       assert.ok(result.objectPath.length > 0, vector.name);
@@ -71,17 +102,17 @@ test('pure R2 validator consumes every cross-repository contract vector', () => 
         () =>
           validator.validateR2PresignedUploadUrl(
             vector.url,
-            fixture.configuredVirtualHost
+            fixture.configuredVirtualHost,
           ),
         validator.R2UploadUrlValidationError,
-        vector.name
+        vector.name,
       );
     }
   }
-  assert.deepEqual(
-    [...acceptedStyles].sort(),
-    ['path_style', 'virtual_hosted']
-  );
+  assert.deepEqual([...acceptedStyles].sort(), [
+    'path_style',
+    'virtual_hosted',
+  ]);
 });
 
 test('R2 bucket configuration requires a canonical virtual bucket hostname', () => {
@@ -90,7 +121,7 @@ test('R2 bucket configuration requires a canonical virtual bucket hostname', () 
   assert.equal(parsed.accountId, '0123456789abcdef0123456789abcdef');
   assert.equal(
     parsed.accountHost,
-    '0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com'
+    '0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com',
   );
 
   for (const invalid of [
@@ -131,9 +162,13 @@ test('production EAS builds reject stale or missing R2 hostname secrets before p
   const appConfig = await loadAppConfigForBuild({
     ...baseEnv,
     EXPO_PUBLIC_R2_BUCKET_HOSTNAME:
-      'captivet-recordings.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com',
+      productionDestination.environments.production.virtualHost,
   });
   assert.doesNotThrow(() => appConfig.default({ config: {} }));
+  assert.equal(
+    appConfig.CANONICAL_PRODUCTION_R2_BUCKET_HOSTNAME,
+    productionDestination.environments.production.virtualHost,
+  );
 });
 
 test('local config evaluation retains the callable runtime fail-closed path', async () => {
@@ -151,7 +186,8 @@ test('production upload wrapper fails closed and accepts both exact contract sty
     '',
     `https://${fixture.configuredVirtualHost}`,
   ]) {
-    const { module, violations } = await loadProductionUploadWrapper(configuredHostname);
+    const { module, violations } =
+      await loadProductionUploadWrapper(configuredHostname);
     assert.throws(
       () => module.validateUploadUrl(fixture.vectors[0].url),
       /Upload URL failed security validation/,
@@ -163,7 +199,10 @@ test('production upload wrapper fails closed and accepts both exact contract sty
     fixture.configuredVirtualHost,
   );
   for (const vector of fixture.vectors.filter(({ accepted }) => accepted)) {
-    assert.doesNotThrow(() => module.validateUploadUrl(vector.url), vector.name);
+    assert.doesNotThrow(
+      () => module.validateUploadUrl(vector.url),
+      vector.name,
+    );
   }
   assert.deepEqual(violations, []);
 });
@@ -177,12 +216,12 @@ test('production request validator is not broadened to arbitrary R2 hosts', asyn
 
   assert.match(
     sslPinning,
-    /validateR2PresignedUploadUrl\(url, R2_BUCKET_HOSTNAME\)/
+    /validateR2PresignedUploadUrl\(url, R2_BUCKET_HOSTNAME\)/,
   );
   assert.doesNotMatch(sslPinning, /r2\.cloudflarestorage\.com['"`]\)/);
   assert.match(config, /Canonical virtual R2 bucket hostname/);
   assert.match(
     example,
-    /EXPO_PUBLIC_R2_BUCKET_HOSTNAME=your-bucket-name\.your-account-id\.r2\.cloudflarestorage\.com/
+    /EXPO_PUBLIC_R2_BUCKET_HOSTNAME=your-bucket-name\.your-account-id\.r2\.cloudflarestorage\.com/,
   );
 });

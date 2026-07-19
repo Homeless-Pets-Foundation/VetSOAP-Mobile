@@ -1,13 +1,15 @@
 import { ExpoConfig, ConfigContext } from 'expo/config';
+import r2ProductionDestination from './contracts/r2-production-destination-v1.json';
 
 const IS_DEV = process.env.APP_VARIANT === 'development';
 const IS_PRODUCTION = process.env.APP_VARIANT === 'production';
 const IS_LOCAL_TEST = process.env.APP_VARIANT === 'local-test';
 const IS_IOS_EAS_BUILD = process.env.EAS_BUILD_PLATFORM === 'ios';
-const IS_EAS_BUILD = process.env.EAS_BUILD_PLATFORM === 'android' || IS_IOS_EAS_BUILD;
+const IS_EAS_BUILD =
+  process.env.EAS_BUILD_PLATFORM === 'android' || IS_IOS_EAS_BUILD;
 
 export const CANONICAL_PRODUCTION_R2_BUCKET_HOSTNAME =
-  'captivet-recordings.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com';
+  r2ProductionDestination.environments.production.virtualHost;
 
 export function requireProductionR2BuildConfig(): void {
   if (!IS_EAS_BUILD || !IS_PRODUCTION) return;
@@ -18,7 +20,7 @@ export function requireProductionR2BuildConfig(): void {
   ) {
     throw new Error(
       'Invalid EXPO_PUBLIC_R2_BUCKET_HOSTNAME for a production EAS build. ' +
-        'Set the production EAS environment to the canonical Captivet virtual bucket hostname.'
+        'Set the production EAS environment to the canonical Captivet virtual bucket hostname.',
     );
   }
 }
@@ -35,7 +37,7 @@ function requireGoogleIosBuildConfig(): void {
   if (missing.length > 0) {
     throw new Error(
       `Missing Google Sign-In iOS build config: ${missing.join(', ')}. ` +
-        'Set these in the EAS environment before building iOS.'
+        'Set these in the EAS environment before building iOS.',
     );
   }
 }
@@ -66,10 +68,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // runtime useFonts/splash-gate (rules 1/24). The plugin needs explicit
     // .ttf paths — it does not expand globs. Family registers as "Inter";
     // font-medium/semibold/bold keep working via fontWeight on the wght axis.
-    [
-      'expo-font',
-      { fonts: ['./assets/fonts/Inter-Variable.ttf'] },
-    ],
+    ['expo-font', { fonts: ['./assets/fonts/Inter-Variable.ttf'] }],
     [
       'expo-audio',
       {
@@ -91,10 +90,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // configures native SDKs + source-map upload during EAS build.
     '@sentry/react-native/expo',
     // FFmpeg for on-device audio trimming and waveform extraction
-    [
-      '@config-plugins/ffmpeg-kit-react-native',
-      { package: 'min' },
-    ],
+    ['@config-plugins/ffmpeg-kit-react-native', { package: 'min' }],
     // iOS-only: override CocoaPods trunk resolution of ffmpeg-kit-ios-min
     // with our self-hosted podspec (mirrors the Android Maven self-host).
     // Required post arthenica sunset — see plugins/with-ffmpeg-ios-pod-source.js.
@@ -116,8 +112,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           enableShrinkResourcesInReleaseBuilds: true, // strip unreferenced res/ entries (requires minify)
           allowBackup: false, // Prevent unencrypted backup extraction
           minSdkVersion: 24, // Required by ffmpeg-kit-react-native
-          extraProguardRules: '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
-          extraMavenRepos: ['https://homeless-pets-foundation.github.io/ffmpeg-kit-maven'],
+          extraProguardRules:
+            '-dontwarn expo.modules.core.interfaces.services.KeepAwakeManager',
+          extraMavenRepos: [
+            'https://homeless-pets-foundation.github.io/ffmpeg-kit-maven',
+          ],
           useLegacyPackaging: false, // Required for 16 KB memory page alignment (Android 15+)
         },
         ios: {
@@ -159,7 +158,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     userInterfaceStyle: 'automatic',
     ios: {
       supportsTablet: true,
-      bundleIdentifier: IS_LOCAL_TEST ? 'com.captivet.mobile.local' : 'com.captivet.mobile',
+      bundleIdentifier: IS_LOCAL_TEST
+        ? 'com.captivet.mobile.local'
+        : 'com.captivet.mobile',
       usesAppleSignIn: true,
       infoPlist: {
         NSMicrophoneUsageDescription:

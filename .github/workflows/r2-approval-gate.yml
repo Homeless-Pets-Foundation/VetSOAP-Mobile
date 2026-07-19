@@ -1,0 +1,47 @@
+name: R2 Approval Gate
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: r2-approval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  approval:
+    name: R2 Approval Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted default branch only
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Detect trusted gate installation
+        id: trusted-gate
+        shell: bash
+        run: |
+          if test -f .github/scripts/r2-approval-gate.cjs &&
+             test -f .github/r2-protected-paths.txt; then
+            echo "installed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            echo "Trusted R2 gate is not on the default branch yet; allowing its one-time bootstrap PR."
+          fi
+
+      - name: Require current-head approval for protected paths
+        if: steps.trusted-gate.outputs.installed == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const gate = require('./.github/scripts/r2-approval-gate.cjs');
+            await gate.run({ github, context, core });

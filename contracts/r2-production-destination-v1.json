@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "objectPrefix": "recordings/",
+  "serverAddressingStyle": "virtual_hosted",
+  "environments": {
+    "production": {
+      "accountOrigin": "https://17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com",
+      "bucketName": "captivet-recordings",
+      "virtualHost": "captivet-recordings.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com"
+    },
+    "staging": {
+      "accountOrigin": "https://17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com",
+      "bucketName": "captivet-staging-recordings",
+      "virtualHost": "captivet-staging-recordings.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com"
+    }
+  }
+}

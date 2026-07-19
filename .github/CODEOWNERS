@@ -12,6 +12,7 @@ eas.json @philgooddvm-oss
 src/config.ts @philgooddvm-oss
 src/lib/r2UploadUrl.ts @philgooddvm-oss
 src/lib/sslPinning.ts @philgooddvm-oss
+src/api/recordings.ts @philgooddvm-oss
 tests/r2-presigned-upload-contract.test.mjs @philgooddvm-oss
 tests/helpers/loadTs.mjs @philgooddvm-oss
 .github/r2-protected-paths.txt @philgooddvm-oss

@@ -8,6 +8,7 @@ eas.json
 src/config.ts
 src/lib/r2UploadUrl.ts
 src/lib/sslPinning.ts
+src/api/recordings.ts
 tests/r2-presigned-upload-contract.test.mjs
 tests/helpers/loadTs.mjs
 .github/CODEOWNERS

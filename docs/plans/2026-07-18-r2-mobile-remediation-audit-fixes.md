@@ -34,3 +34,29 @@ Source: VetSOAP-Connect
       test/typecheck/lint/Expo Doctor
       suite, and audit the resulting diff before replacing the preparatory
       Mobile commit.
+
+## Codex exact-head audit — `d820f502e81841584855c09348bdc0692510c2a2`
+
+- [x] P1, configuration migration: keep the runtime validator strict and do
+      not accept the legacy account-host value, which cannot identify the
+      trusted bucket and would violate the canonical virtual-host contract.
+      The production EAS value will still be overwritten immediately before
+      the release build. Add a production EAS build-time guard in
+      `app.config.ts` so an unreadable stale/malformed secret fails the build
+      before clinicians can install it; keep the callable runtime parser and
+      its no-module-load-throw behavior unchanged.
+- [x] P2, offline/transient presence failure: do not let an unknown batch
+      snapshot skip local/stash age warnings. Continue eviction with every
+      linked server status treated as unknown so server-linked audio remains
+      fail-closed while local-only drafts and stashes still reach the existing
+      warn-first prompt. Preserve the initiating-user scope/version guards.
+- [x] P2, alleged server `error` status: no code change. Both repositories'
+      canonical `RecordingStatus` contracts and the database state machine omit
+      `error`; the legacy defensive checks in local cleanup do not make it a
+      valid API response. Accepting it only on Mobile would weaken strict
+      response parsing and create cross-repository contract drift.
+- [x] Re-run focused and full validation and audit the replacement diff:
+      494 tests, TypeScript, Expo lint, Expo Doctor 19/19, and `git diff
+      --check` all pass.
+- [ ] Push the replacement head and request a fresh exact-head Codex P0/P1/P2
+      audit before merge.

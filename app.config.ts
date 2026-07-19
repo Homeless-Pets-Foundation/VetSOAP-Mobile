@@ -4,6 +4,24 @@ const IS_DEV = process.env.APP_VARIANT === 'development';
 const IS_PRODUCTION = process.env.APP_VARIANT === 'production';
 const IS_LOCAL_TEST = process.env.APP_VARIANT === 'local-test';
 const IS_IOS_EAS_BUILD = process.env.EAS_BUILD_PLATFORM === 'ios';
+const IS_EAS_BUILD = process.env.EAS_BUILD_PLATFORM === 'android' || IS_IOS_EAS_BUILD;
+
+export const CANONICAL_PRODUCTION_R2_BUCKET_HOSTNAME =
+  'captivet-recordings.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com';
+
+export function requireProductionR2BuildConfig(): void {
+  if (!IS_EAS_BUILD || !IS_PRODUCTION) return;
+
+  if (
+    process.env.EXPO_PUBLIC_R2_BUCKET_HOSTNAME !==
+    CANONICAL_PRODUCTION_R2_BUCKET_HOSTNAME
+  ) {
+    throw new Error(
+      'Invalid EXPO_PUBLIC_R2_BUCKET_HOSTNAME for a production EAS build. ' +
+        'Set the production EAS environment to the canonical Captivet virtual bucket hostname.'
+    );
+  }
+}
 
 function requireGoogleIosBuildConfig(): void {
   if (!IS_IOS_EAS_BUILD || IS_DEV) return;
@@ -24,6 +42,7 @@ function requireGoogleIosBuildConfig(): void {
 
 export default ({ config }: ConfigContext): ExpoConfig => {
   requireGoogleIosBuildConfig();
+  requireProductionR2BuildConfig();
 
   const plugins: ExpoConfig['plugins'] = [
     'expo-router',

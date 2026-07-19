@@ -4973,9 +4973,13 @@ function RecordingSession() {
           user.id,
           linkedServerDraftIds(drafts),
         );
-        if (!snapshot || !isScopeValid()) return;
+        if (!isScopeValid()) return;
         const getStatus = async (id: string): Promise<string | null> => {
-          return snapshot.statusById.get(id) ?? null;
+          // A failed/offline batch makes every linked row unknown. Continue
+          // the warn-first age classification without treating an omission as
+          // deletion proof: evictExpired preserves server-linked audio for
+          // null statuses, while local-only drafts and stashes still surface.
+          return snapshot?.statusById.get(id) ?? null;
         };
         const draftResult = await draftStorage.evictExpired(
           {

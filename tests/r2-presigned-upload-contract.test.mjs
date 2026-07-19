@@ -31,6 +31,14 @@ async function loadProductionUploadWrapper(r2BucketHostname) {
   return { module, violations };
 }
 
+async function loadAppConfigForBuild(env) {
+  return loadTsModule(
+    'app.config.ts',
+    { 'expo/config': {} },
+    { process: { env } },
+  );
+}
+
 test('R2 contract fixture is versioned and byte-pinned', () => {
   assert.equal(fixture.version, 1);
   assert.equal(
@@ -88,6 +96,47 @@ test('R2 bucket configuration requires a canonical virtual bucket hostname', () 
   ]) {
     assert.equal(validator.parseR2BucketConfig(invalid), null, invalid);
   }
+});
+
+test('production EAS builds reject stale or missing R2 hostname secrets before packaging', async () => {
+  const baseEnv = {
+    APP_VARIANT: 'production',
+    EAS_BUILD_PLATFORM: 'android',
+  };
+
+  for (const configuredHostname of [
+    undefined,
+    '17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com',
+    'captivet-other.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com',
+  ]) {
+    const appConfig = await loadAppConfigForBuild({
+      ...baseEnv,
+      ...(configuredHostname
+        ? { EXPO_PUBLIC_R2_BUCKET_HOSTNAME: configuredHostname }
+        : {}),
+    });
+    assert.throws(
+      () => appConfig.default({ config: {} }),
+      /Invalid EXPO_PUBLIC_R2_BUCKET_HOSTNAME for a production EAS build/,
+    );
+  }
+
+  const appConfig = await loadAppConfigForBuild({
+    ...baseEnv,
+    EXPO_PUBLIC_R2_BUCKET_HOSTNAME:
+      'captivet-recordings.17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com',
+  });
+  assert.doesNotThrow(() => appConfig.default({ config: {} }));
+});
+
+test('local config evaluation retains the callable runtime fail-closed path', async () => {
+  const appConfig = await loadAppConfigForBuild({
+    APP_VARIANT: 'production',
+    EXPO_PUBLIC_R2_BUCKET_HOSTNAME:
+      '17ddf683610714717770b50ff184edd9.r2.cloudflarestorage.com',
+  });
+
+  assert.doesNotThrow(() => appConfig.default({ config: {} }));
 });
 
 test('production upload wrapper fails closed and accepts both exact contract styles', async () => {

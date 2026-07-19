@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { loadTsModule } from './helpers/loadTs.mjs';
 
@@ -248,4 +249,24 @@ test('runtime snapshot reuses a validated superset without another request', asy
   assert.equal(superset.statusById.get(first), 'draft');
   assert.equal(subset.statusById.get(first), 'draft');
   assert.equal(harness.requests, 1);
+});
+
+test('record age eviction degrades an unavailable presence snapshot to unknown', async () => {
+  const source = await readFile(
+    new URL('../app/(app)/(tabs)/record.tsx', import.meta.url),
+    'utf8',
+  );
+  const start = source.indexOf(
+    "scheduleNonUrgentWork('thirty_day_eviction'",
+  );
+  const end = source.indexOf(
+    'const handleResumeStash',
+    start,
+  );
+  assert.ok(start >= 0 && end > start, 'expected the age-eviction effect');
+  const effect = source.slice(start, end);
+
+  assert.doesNotMatch(effect, /if \(!snapshot[^)]*\) return/);
+  assert.match(effect, /snapshot\?\.statusById\.get\(id\) \?\? null/);
+  assert.match(effect, /stashStorage\.evictExpired/);
 });

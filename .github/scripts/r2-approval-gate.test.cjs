@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  MAX_PULL_REQUEST_FILES,
+  evaluateChangedFiles,
   hasCurrentApproval,
   matchesProtectedPath,
 } = require('./r2-approval-gate.cjs');
@@ -27,6 +29,63 @@ test('R2 gate protects configured prefixes and its own approval files', () => {
       'src/lib/r2UploadUrl.ts',
     ]),
     false,
+  );
+});
+
+test('R2 gate matches both sides of protected-file renames', () => {
+  assert.deepEqual(
+    evaluateChangedFiles(
+      [
+        {
+          filename: 'src/lib/renamedSslPinning.ts',
+          previous_filename: 'src/lib/sslPinning.ts',
+          status: 'renamed',
+        },
+      ],
+      ['src/lib/sslPinning.ts'],
+    ),
+    {
+      approvalRequired: true,
+      mayBeTruncated: false,
+      protectedPaths: ['src/lib/sslPinning.ts'],
+    },
+  );
+  assert.equal(
+    evaluateChangedFiles(
+      [
+        {
+          filename: 'src/lib/sslPinning.ts',
+          previous_filename: 'src/lib/unprotected.ts',
+          status: 'renamed',
+        },
+      ],
+      ['src/lib/sslPinning.ts'],
+    ).approvalRequired,
+    true,
+  );
+});
+
+test('R2 gate fails closed at GitHub file-list truncation boundary', () => {
+  const file = (index) => ({ filename: `src/unprotected-${index}.ts` });
+  assert.equal(
+    evaluateChangedFiles(
+      Array.from({ length: MAX_PULL_REQUEST_FILES - 1 }, (_, index) =>
+        file(index),
+      ),
+      [],
+    ).approvalRequired,
+    false,
+  );
+  assert.deepEqual(
+    evaluateChangedFiles(
+      Array.from({ length: MAX_PULL_REQUEST_FILES }, (_, index) => file(index)),
+      [],
+    ),
+    {
+      approvalRequired: true,
+      mayBeTruncated: true,
+      protectedPaths: [],
+    },
   );
 });
 

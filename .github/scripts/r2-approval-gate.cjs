@@ -4,6 +4,7 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
 const REQUIRED_REVIEWER = 'philgooddvm-oss';
+const MAX_PULL_REQUEST_FILES = 3000;
 const ALWAYS_PROTECTED = new Set([
   '.github/r2-protected-paths.txt',
   '.github/workflows/r2-approval-gate.yml',
@@ -23,6 +24,28 @@ function matchesProtectedPath(path, patterns) {
   return patterns.some((pattern) =>
     pattern.endsWith('/') ? path.startsWith(pattern) : path === pattern,
   );
+}
+
+function evaluateChangedFiles(files, patterns) {
+  const changedPaths = [
+    ...new Set(
+      files.flatMap((file) =>
+        [file.filename, file.previous_filename].filter(
+          (path) => typeof path === 'string',
+        ),
+      ),
+    ),
+  ];
+  const protectedPaths = changedPaths.filter((path) =>
+    matchesProtectedPath(path, patterns),
+  );
+  const mayBeTruncated = files.length >= MAX_PULL_REQUEST_FILES;
+
+  return {
+    approvalRequired: mayBeTruncated || protectedPaths.length > 0,
+    mayBeTruncated,
+    protectedPaths,
+  };
 }
 
 function hasCurrentApproval(reviews, headSha, reviewer = REQUIRED_REVIEWER) {
@@ -49,13 +72,16 @@ async function run({ github, context, core, root = process.cwd() }) {
     per_page: 100,
   });
   const patterns = readProtectedPaths(root);
-  const protectedFiles = files
-    .map((file) => file.filename)
-    .filter((path) => matchesProtectedPath(path, patterns));
+  const changedFiles = evaluateChangedFiles(files, patterns);
 
-  if (protectedFiles.length === 0) {
+  if (!changedFiles.approvalRequired) {
     core.info('No R2-protected paths changed; approval gate passes.');
     return;
+  }
+  if (changedFiles.mayBeTruncated) {
+    core.warning(
+      `Pull request file list reached GitHub's ${MAX_PULL_REQUEST_FILES}-file cap; requiring R2 approval because the list may be truncated.`,
+    );
   }
 
   const [{ data: pull }, reviews] = await Promise.all([
@@ -76,13 +102,15 @@ async function run({ github, context, core, root = process.cwd() }) {
   }
 
   core.info(
-    `R2 approval is current for ${protectedFiles.length} protected path(s) at ${pull.head.sha}.`,
+    `R2 approval is current for ${changedFiles.protectedPaths.length} returned protected path(s) at ${pull.head.sha}.`,
   );
 }
 
 module.exports = {
   ALWAYS_PROTECTED,
+  MAX_PULL_REQUEST_FILES,
   REQUIRED_REVIEWER,
+  evaluateChangedFiles,
   hasCurrentApproval,
   matchesProtectedPath,
   readProtectedPaths,

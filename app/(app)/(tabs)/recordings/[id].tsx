@@ -10,7 +10,10 @@ import * as Haptics from 'expo-haptics';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer';
-import { recordingsApi } from '../../../../src/api/recordings';
+import {
+  isRecordingAudioMissingError,
+  recordingsApi,
+} from '../../../../src/api/recordings';
 import { ApiError } from '../../../../src/api/client';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { SoapNoteView } from '../../../../src/components/SoapNoteView';
@@ -44,8 +47,6 @@ import { invalidateRecordingCaches, mergeRecordingIntoCachedLists, removeRecordi
 import {
   shouldEmitExtractionObserved,
   buildExtractionObservedProps,
-  shouldReportZeroFill,
-  zeroFillErrorCode,
 } from '../../../../src/lib/recordFirstObservability';
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
@@ -54,6 +55,7 @@ import { canRecordAppointments } from '../../../../src/lib/recordingPermissions'
 import { hasVisibleReprocessModelChoice } from '../../../../src/lib/aiModels';
 import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
 import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
+import { getRecordingRetryPresentation } from '../../../../src/lib/recordingRetryState';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
@@ -107,8 +109,10 @@ export default function RecordingDetailScreen() {
   // falls to a terminal screen instead of the offline-cache fallback (Codex
   // P1, PR #143).
   const [accessRevoked, setAccessRevoked] = useState<{ status: number } | null>(null);
+  const [retryAudioMissing, setRetryAudioMissing] = useState(false);
   useEffect(() => {
     setAccessRevoked(null); // reset when navigating to a different recording
+    setRetryAudioMissing(false);
   }, [id]);
 
   // Completion celebration — fired ONCE on the prev !== 'completed' →
@@ -301,6 +305,7 @@ export default function RecordingDetailScreen() {
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
     onSuccess: (updatedRecording) => {
+      setRetryAudioMissing(false);
       if (id && updatedRecording?.id === id) {
         queryClient.setQueryData(['recording', id], updatedRecording);
         mergeRecordingIntoCachedLists(queryClient, updatedRecording);
@@ -310,6 +315,13 @@ export default function RecordingDetailScreen() {
       invalidateRecordingCaches(queryClient, 'processing_retry');
     },
     onError: (error: Error) => {
+      if (isRecordingAudioMissingError(error)) {
+        // Expected business outcome: the audio disappeared after render.
+        // Switch to the same non-retry state without reporting an exception.
+        setRetryAudioMissing(true);
+        queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
+        return;
+      }
       if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
         return;
       }
@@ -482,7 +494,7 @@ export default function RecordingDetailScreen() {
     };
   }, [recording, id]);
 
-  // Record-first observability (A1 + A2). Fires once per completed record-first
+  // Record-first product observability. Fires once per completed record-first
   // recording, BEFORE the review-card `shouldShow` gate below — so it captures
   // the null-extraction (`had_metadata=false`) cohort that never shows a card,
   // the exact "looks broken" population the old card-based query was blind to.
@@ -497,23 +509,6 @@ export default function RecordingDetailScreen() {
       name: 'ai_metadata_extraction_observed',
       props: buildExtractionObservedProps(recording),
     });
-
-    // A2 — zero-fill warning, keyed by recording into client_telemetry. Gated on
-    // a blank patient name (manual recordings self-exclude), NOT on
-    // needsMetadataReview (server clears it on null extraction — the case we
-    // must catch). Mirrors the delete_draft reportClientError call below.
-    if (shouldReportZeroFill(recording, recordFirstEnabled)) {
-      const meta = recording.aiExtractedMetadata ?? null;
-      const appliedCount = Array.isArray(meta?.appliedFields) ? meta.appliedFields.length : 0;
-      const extractedCount = meta?.fields ? Object.keys(meta.fields).length : 0;
-      reportClientError({
-        phase: 'ai_extract',
-        severity: 'warning',
-        errorCode: zeroFillErrorCode(recording),
-        message: `record-first zero-fill: had_metadata=${meta != null} applied=${appliedCount} extracted=${extractedCount}`,
-        recordingId: id,
-      });
-    }
   }, [id, recordFirstEnabled, recording]);
 
   useEffect(() => {
@@ -656,6 +651,10 @@ export default function RecordingDetailScreen() {
     }
   }, [router, from]);
 
+  const startNewRecording = useCallback(() => {
+    router.push('/record');
+  }, [router]);
+
   // Access revoked (403) or deleted (404): terminal even with cached data —
   // never keep rendering the cached transcript/SOAP/audio once the server has
   // definitively denied access (Codex P1, PR #143). No Retry (it would just
@@ -711,6 +710,12 @@ export default function RecordingDetailScreen() {
   }
 
   const isProcessing = !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording.status);
+  const retryPresentation = getRecordingRetryPresentation({
+    status: recording.status,
+    audioFileUrl: recording.audioFileUrl,
+    isPollingStale,
+    audioMissingError: retryAudioMissing,
+  });
   const hasTranscript =
     recording.status === 'completed' &&
     typeof recording.transcriptText === 'string' &&
@@ -893,6 +898,34 @@ export default function RecordingDetailScreen() {
           />
         )}
 
+        {retryPresentation === 'audio_unavailable' && (
+          <Card className="mx-5 mb-4 border-status-warning">
+            <View className="flex-row items-start">
+              <View className="mr-2 mt-0.5">
+                <AlertTriangle color={colors.warning600} size={18} />
+              </View>
+              <View className="flex-1">
+                <Text className="text-body font-semibold text-status-warning mb-1">
+                  Audio unavailable
+                </Text>
+                <Text className="text-body-sm text-content-tertiary mb-3">
+                  This recording no longer has audio to process. Start a new recording to continue.
+                </Text>
+                <View className="self-start">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onPress={startNewRecording}
+                    accessibilityLabel="Start new recording"
+                  >
+                    Start New Recording
+                  </Button>
+                </View>
+              </View>
+            </View>
+          </Card>
+        )}
+
         {/* Reprocess — re-transcribe + regenerate SOAP with chosen models. Own card at top level so
             BOTH completed and failed (with audio) reach it; hidden until the backend returns a real,
             key/allow-list-filtered model list with a visible actual choice. The 202 body seeds
@@ -900,6 +933,7 @@ export default function RecordingDetailScreen() {
         {id &&
           (recording.status === 'completed' || recording.status === 'failed') &&
           !!recording.audioFileUrl &&
+          retryPresentation !== 'audio_unavailable' &&
           aiModels &&
           hasVisibleReprocessModelChoice(aiModels, {
             recordingForeignLanguage: recording.foreignLanguage,
@@ -930,8 +964,31 @@ export default function RecordingDetailScreen() {
           </Card>
         )}
 
+        {recording.status === 'retry_scheduled' &&
+          !isPollingStale &&
+          retryPresentation === 'retry' && (
+            <Card className="mx-5 mb-4 border-status-warning">
+              <Text className="text-body font-semibold text-status-warning mb-1">
+                Retry scheduled
+              </Text>
+              <Text className="text-body-sm text-content-tertiary mb-3">
+                Processing will retry automatically. You can also retry it now.
+              </Text>
+              <View className="self-start">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onPress={() => retryMutation.mutate()}
+                  loading={retryMutation.isPending}
+                >
+                  Retry Now
+                </Button>
+              </View>
+            </Card>
+          )}
+
         {/* Stale processing warning — shown after 30 min of non-terminal status */}
-        {isPollingStale && (
+        {isPollingStale && retryPresentation === 'retry' && (
           <Card className="mx-5 mb-4 border-status-warning">
             <View className="flex-row items-start">
               <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
@@ -1065,15 +1122,17 @@ export default function RecordingDetailScreen() {
                 {ERROR_COPY.processingFailedBody}
               </Text>
               <View className="self-start flex-row gap-2">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onPress={() => retryMutation.mutate()}
-                  loading={retryMutation.isPending}
-                  accessibilityLabel="Retry processing"
-                >
-                  Retry
-                </Button>
+                {retryPresentation === 'retry' && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onPress={() => retryMutation.mutate()}
+                    loading={retryMutation.isPending}
+                    accessibilityLabel="Retry processing"
+                  >
+                    Retry
+                  </Button>
+                )}
                 {recording.errorMessage ? (
                   <Button
                     variant="ghost"

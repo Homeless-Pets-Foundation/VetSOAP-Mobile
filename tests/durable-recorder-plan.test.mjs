@@ -198,7 +198,8 @@ test('draftStorage: durable-aware orphan/audio checks + metadata-only save', asy
   // cleanupOrphaned: durable skip-unless-purged + getStatus reconcile + fail closed
   assert.match(src, /const durableId =/);
   assert.match(src, /if \(!getStatus \|\| !isOnline \|\| !draft\.serverDraftId\) \{/);
-  assert.match(src, /status === null\) continue; \/\/ unverifiable -> defer/);
+  assert.match(src, /if \(status === null\) continue;/);
+  assert.match(src, /if \(status === 'missing'\) \{/);
 });
 
 test('stash round-trip: durable through all 3 Rule 20 sites', async () => {

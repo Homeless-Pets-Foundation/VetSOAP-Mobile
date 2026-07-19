@@ -101,6 +101,10 @@ async function loadHarness({
       './uploadPreparation': preparation,
       './uploadRetry': retry,
       '../lib/pimsPatientIdIntent': pimsPatientIdIntent,
+      './draftPresenceContract': {
+        draftPresenceRequestSchema: { parse: (value) => value },
+        parseDraftPresenceResponse: (_requestedIds, value) => value,
+      },
     };
     if (!(specifier in modules)) throw new Error(`unexpected module ${specifier}`);
     return modules[specifier];

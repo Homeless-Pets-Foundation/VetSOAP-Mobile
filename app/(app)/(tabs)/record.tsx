@@ -67,6 +67,10 @@ import {
   UploadIntentConflictError,
   type RecordingDeleteReason,
 } from '../../../src/api/recordings';
+import {
+  getDraftPresenceSnapshot,
+  linkedServerDraftIds,
+} from '../../../src/api/draftPresence';
 import { ApiError } from '../../../src/api/client';
 import { patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import {
@@ -512,14 +516,15 @@ function slotSubmitDiagnostics(
 function scheduleNonUrgentWork(
   label: string,
   work: () => Promise<void>,
-  fallbackMs = 2_500
+  fallbackMs = 2_500,
+  warningThresholdMs: number | null = 10_000
 ): () => void {
   let cancelled = false;
   let started = false;
   const run = () => {
     if (cancelled || started) return;
     started = true;
-    measurePhase(label, undefined, work).catch(() => {});
+    measurePhase(label, undefined, work, { warningThresholdMs }).catch(() => {});
   };
   const task = InteractionManager.runAfterInteractions(() => {
     run();
@@ -4898,29 +4903,36 @@ function RecordingSession() {
     if (!user?.id) return;
     let cancelled = false;
     const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async () => {
+      const userScopeVersion = draftStorage.getUserScopeVersion();
+      const isScopeValid = () =>
+        !cancelled &&
+        AppState.currentState === 'active' &&
+        draftStorage.getUserId() === user.id &&
+        draftStorage.getUserScopeVersion() === userScopeVersion;
+      if (!isScopeValid()) return;
+      const drafts = await draftStorage.listDraftsForUser(user.id);
+      const snapshot = await getDraftPresenceSnapshot(
+        user.id,
+        linkedServerDraftIds(drafts),
+      );
+      if (!snapshot || !isScopeValid()) return;
       const cleaned = await draftStorage
         .cleanupOrphaned((serverDraftId) => recordingsApi.delete(serverDraftId, { reason: 'orphan_draft_cleanup' }), {
-          // Reconcile the legacy empty-server-linked branch before deleting any
-          // server row (fail-closed offline so a just-uploaded row is never lost).
-          getStatus: async (serverDraftId) => {
-            try {
-              const rec = await recordingsApi.get(serverDraftId);
-              return (rec?.status as string | undefined) ?? null;
-            } catch {
-              return null;
-            }
-          },
+          getStatus: async (serverDraftId) =>
+            snapshot.statusById.get(serverDraftId) ?? null,
           isOnline: isConnected !== false,
+          userId: user.id,
+          isScopeValid,
         })
         .catch(() => 0);
-      if (!cancelled && cleaned > 0) {
+      if (isScopeValid() && cleaned > 0) {
         invalidateRecordingCaches(queryClient, 'draft_deleted');
       }
       // Sweep stale FFmpeg-split temp dirs from a previous session that may
       // have been force-quit mid-split. Live in-flight splits create their
       // own uniquely-timestamped subdir and are guarded by the orchestrator's
       // own try/catch — this only wipes leftovers.
-      cleanupSplitTempDirs(user.id);
+      if (isScopeValid()) cleanupSplitTempDirs(user.id);
     }, 3_000);
     return () => {
       cancelled = true;
@@ -4949,26 +4961,41 @@ function RecordingSession() {
     let cancelled = false;
     const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async () => {
       try {
+        const userScopeVersion = draftStorage.getUserScopeVersion();
+        const isScopeValid = () =>
+          !cancelled &&
+          AppState.currentState === 'active' &&
+          draftStorage.getUserId() === user.id &&
+          draftStorage.getUserScopeVersion() === userScopeVersion;
+        if (!isScopeValid()) return;
+        const drafts = await draftStorage.listDraftsForUser(user.id);
+        const snapshot = await getDraftPresenceSnapshot(
+          user.id,
+          linkedServerDraftIds(drafts),
+        );
+        if (!snapshot || !isScopeValid()) return;
         const getStatus = async (id: string): Promise<string | null> => {
-          try {
-            const rec = await recordingsApi.get(id);
-            return rec?.status ?? null;
-          } catch {
-            return null;
-          }
+          return snapshot.statusById.get(id) ?? null;
         };
         const draftResult = await draftStorage.evictExpired(
-          { maxAgeDays: 30, warnAgeDays: 23, isOnline: online },
+          {
+            maxAgeDays: 30,
+            warnAgeDays: 23,
+            isOnline: online,
+            userId: user.id,
+            isScopeValid,
+          },
           getStatus
         );
+        if (!isScopeValid()) return;
         const stashResult = await stashStorage.evictExpired({ maxAgeDays: 30, warnAgeDays: 23 });
+        if (!isScopeValid()) return;
 
         const expiredDrafts = draftResult.expired;
         const expiredStashes = stashResult.expired;
         const totalExpired = expiredDrafts.length + expiredStashes.length;
         const totalExpiring = draftResult.expiring.length + stashResult.expiring.length;
 
-        if (cancelled) return;
         if (totalExpired > 0) {
           const n = totalExpired;
           const noun = n === 1 ? 'recording' : 'recordings';
@@ -4985,24 +5012,30 @@ function RecordingSession() {
                 style: 'destructive',
                 onPress: () => {
                   (async () => {
+                    if (!isScopeValid()) return;
                     for (const draft of expiredDrafts) {
+                      if (!isScopeValid()) return;
                       try {
                         if (draft.serverDraftId) {
                           await recordingsApi.delete(draft.serverDraftId, { reason: 'user_delete' }).catch(() => {});
                         }
-                        await draftStorage.deleteDraft(draft.slotId);
+                        if (!isScopeValid()) return;
+                        await draftStorage.deleteDraftForUser(user.id, draft.slotId);
                       } catch {
                         // best-effort
                       }
                     }
                     for (const stash of expiredStashes) {
+                      if (!isScopeValid()) return;
                       try {
                         await deleteStash(stash.id);
                       } catch {
                         // best-effort
                       }
                     }
-                    invalidateRecordingCaches(queryClient, 'draft_deleted');
+                    if (isScopeValid()) {
+                      invalidateRecordingCaches(queryClient, 'draft_deleted');
+                    }
                   })().catch(() => {});
                 },
               },

@@ -141,24 +141,7 @@ test('A1: drop_reasons_count surfaced when server attaches C7 dropReasons', () =
   assert.equal(props.drop_reasons_count, 2);
 });
 
-// ─── A2: ai_extract zero-fill warning gate ──────────────────────────────────
-
-test('A2: zero-fill + blank patient name → warning fires (null extraction)', () => {
-  const rec = makeRecording({ patientName: '', aiExtractedMetadata: null });
-  assert.equal(OBS.shouldReportZeroFill(rec, true), true);
-  assert.equal(OBS.zeroFillErrorCode(rec), 'null_extraction');
-});
-
-test('A2: extracted but nothing applied + blank name → warning fires (zero_applied)', () => {
-  const rec = makeRecording({
-    patientName: '',
-    aiExtractedMetadata: { appliedFields: [], fields: { species: { value: 'Canine' } } },
-  });
-  assert.equal(OBS.shouldReportZeroFill(rec, true), true);
-  assert.equal(OBS.zeroFillErrorCode(rec), 'zero_applied');
-});
-
-test('A2: multi-patient safety block stays in analytics but does not fire an error warning', () => {
+test('A1: multi-patient safety block stays represented in product analytics', () => {
   const rec = makeRecording({
     patientName: '',
     needsMetadataReview: true,
@@ -176,44 +159,33 @@ test('A2: multi-patient safety block stays in analytics but does not fire an err
   assert.equal(observed.multiple_patients_detected, true);
   assert.equal(observed.applied_field_count, 0);
   assert.equal(observed.extracted_field_count, 2);
-  assert.equal(OBS.shouldReportZeroFill(rec, true), false);
 });
 
-test('A2: applied something → no warning even with blank patient name', () => {
-  const rec = makeRecording({
-    patientName: '',
-    aiExtractedMetadata: { appliedFields: ['species'], fields: { species: { value: 'Canine' } } },
-  });
-  assert.equal(OBS.shouldReportZeroFill(rec, true), false);
-});
+// ─── Gating cases (A1 discriminator) ───────────────────────────────────────
 
-// ─── Gating cases (A1/A2 discriminators) ────────────────────────────────────
-
-test('GATE: non-record-first org → no observed event AND no warning', () => {
+test('GATE: non-record-first org → no observed event', () => {
   const rec = makeRecording({ patientName: '', aiExtractedMetadata: null });
   assert.equal(OBS.shouldEmitExtractionObserved(rec, false), false);
-  assert.equal(OBS.shouldReportZeroFill(rec, false), false);
 });
 
 test('GATE: non-completed recording → no observed event', () => {
   const rec = makeRecording({ status: 'transcribing' });
   assert.equal(OBS.shouldEmitExtractionObserved(rec, true), false);
-  assert.equal(OBS.shouldReportZeroFill(rec, true), false);
 });
 
-test('GATE: manually-filled (patient name populated, null metadata) → observed fires but NO warning', () => {
+test('GATE: manually-filled record with null metadata still emits the observed product event', () => {
   const rec = makeRecording({ patientName: 'Rex', aiExtractedMetadata: null });
   assert.equal(OBS.shouldEmitExtractionObserved(rec, true), true);
-  assert.equal(OBS.shouldReportZeroFill(rec, true), false);
 });
 
-test('GATE: null-extraction record-first (needsMetadataReview=false, blank name) → warning DOES fire (gate is not needsMetadataReview)', () => {
+test('GATE: null-extraction record-first emits even when review is not needed', () => {
   const rec = makeRecording({
     patientName: '',
     needsMetadataReview: false,
     aiExtractedMetadata: null,
   });
-  assert.equal(OBS.shouldReportZeroFill(rec, true), true);
+  assert.equal(OBS.shouldEmitExtractionObserved(rec, true), true);
+  assert.equal(OBS.buildExtractionObservedProps(rec).had_metadata, false);
 });
 
 // ─── B5/B6: MetadataReviewCard helpers ──────────────────────────────────────
@@ -331,13 +303,13 @@ test('B5: empty state hidden when patient name already populated', () => {
 
 // ─── Wiring assertions (component uses the pure helpers) ─────────────────────
 
-test('WIRING: [id].tsx fires observed event + ai_extract warning via helpers', async () => {
+test('WIRING: [id].tsx retains the observed product event without ai_extract telemetry', async () => {
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
   assert.match(detail, /shouldEmitExtractionObserved/);
   assert.match(detail, /buildExtractionObservedProps/);
-  assert.match(detail, /shouldReportZeroFill/);
   assert.match(detail, /name: 'ai_metadata_extraction_observed'/);
-  assert.match(detail, /phase: 'ai_extract'/);
+  assert.doesNotMatch(detail, /phase: 'ai_extract'/);
+  assert.doesNotMatch(detail, /shouldReportZeroFill|zeroFillErrorCode/);
   assert.match(detail, /extractionObservedIdsRef/);
 });
 

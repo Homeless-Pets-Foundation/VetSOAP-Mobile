@@ -350,22 +350,41 @@ function bucketDuration(durationMs: number): string {
  * Measure an app-specific phase without adding required startup work.
  * Fixed phase names + low-cardinality tags only; callers must not pass PHI.
  */
+export interface MeasurePhaseOptions {
+  /**
+   * Undefined preserves the existing 5-second warning. A positive number uses
+   * a phase-specific threshold. Null keeps the breadcrumb but disables the
+   * generic slow-phase warning.
+   */
+  warningThresholdMs?: number | null;
+}
+
 export function measurePhase<T>(
   name: string,
   tags: Record<string, PhaseTagValue> | undefined,
   fn: () => T,
+  options?: MeasurePhaseOptions,
 ): T;
 export function measurePhase<T>(
   name: string,
   tags: Record<string, PhaseTagValue> | undefined,
   fn: () => Promise<T>,
+  options?: MeasurePhaseOptions,
 ): Promise<T>;
 export function measurePhase<T>(
   name: string,
   tags: Record<string, PhaseTagValue> | undefined,
   fn: () => T | Promise<T>,
+  options?: MeasurePhaseOptions,
 ): T | Promise<T> {
   const startedAt = nowMs();
+  const configuredThreshold = options?.warningThresholdMs;
+  const warningThresholdMs =
+    configuredThreshold === null
+      ? null
+      : typeof configuredThreshold === 'number' && configuredThreshold > 0
+        ? configuredThreshold
+        : 5000;
   const finish = (outcome: 'success' | 'error') => {
     const durationMs = Math.max(0, Math.round(nowMs() - startedAt));
     const sanitizedTags: Record<string, string> = {
@@ -387,10 +406,10 @@ export function measurePhase<T>(
       count: sanitizedTags.count,
     });
 
-    if (durationMs >= 5000) {
+    if (warningThresholdMs !== null && durationMs >= warningThresholdMs) {
       captureMessage(`slow_phase_${name}`, 'warning', {
         tags: sanitizedTags,
-        extra: { duration_ms: durationMs },
+        extra: { duration_ms: durationMs, warning_threshold_ms: warningThresholdMs },
       });
     }
   };

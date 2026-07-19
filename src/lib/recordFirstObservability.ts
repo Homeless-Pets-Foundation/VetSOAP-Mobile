@@ -2,7 +2,7 @@ import type { Recording, RecordingMetadataField } from '../types';
 
 /**
  * Pure decision + counting helpers for the record-first observability surface
- * (Workstreams A1/A2 of the record-first reliability plan) and the
+ * (the PHI-free product event) and the
  * MetadataReviewCard suggestion/empty-state UX (B5/B6).
  *
  * These live outside the React component so they can be unit-tested
@@ -188,43 +188,6 @@ export function buildExtractionObservedProps(recording: Recording): ExtractionOb
   }
 
   return props;
-}
-
-/**
- * Whether to fire the `ai_extract` zero-fill warning (A2).
- *
- * Discriminator is "patient name still blank now" — a manually-filled
- * recording has the patient name populated and self-excludes. Fires when a
- * completed record-first recording with a blank patient name returns no
- * metadata at all OR applied nothing.
- *
- * Multi-patient extraction is intentionally excluded. The server must never
- * auto-apply metadata when it detects multiple patients; that path shows the
- * review UI and is already counted by `ai_metadata_extraction_observed` with
- * `multiple_patients_detected=true`. Reporting it as an extraction warning
- * turns the safety gate into Sentry noise.
- *
- * IMPORTANT: do NOT gate this on `needsMetadataReview`. The server clears that
- * flag when extraction returns null (no suggestions to review) — i.e. the
- * exact zero-fill failure this must catch. The blank-patient-name check is
- * what keeps normal manual recordings from spuriously warning.
- */
-export function shouldReportZeroFill(
-  recording: Recording | null | undefined,
-  recordFirstEnabled: boolean
-): boolean {
-  if (!recording || !shouldEmitExtractionObserved(recording, recordFirstEnabled)) return false;
-  const patientNameBlank = currentFieldValue(recording, 'patientName') === '';
-  if (!patientNameBlank) return false;
-  const meta = recording.aiExtractedMetadata ?? null;
-  if (meta?.multiplePatientsDetected === true) return false;
-  const appliedCount = appliedFieldList(recording).length;
-  return meta == null || appliedCount === 0;
-}
-
-/** Error code for the A2 warning — distinguishes null-extraction from zero-applied. */
-export function zeroFillErrorCode(recording: Recording): 'null_extraction' | 'zero_applied' {
-  return recording.aiExtractedMetadata == null ? 'null_extraction' : 'zero_applied';
 }
 
 export interface MetadataSuggestion {

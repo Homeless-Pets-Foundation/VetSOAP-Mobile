@@ -69,7 +69,8 @@ if (__DEV__ && (!SUPABASE_URL || !SUPABASE_ANON_KEY)) {
   );
 }
 
-// Specific R2 bucket hostname for upload URL validation (e.g. "<account-id>.r2.cloudflarestorage.com")
+// Canonical virtual R2 bucket hostname for upload URL validation
+// (e.g. "captivet-recordings.<account-id>.r2.cloudflarestorage.com").
 // Required in production — missing hostname causes fail-closed upload validation (all uploads rejected).
 // In dev, missing hostname weakens validation to HTTPS + signature only.
 export const R2_BUCKET_HOSTNAME = __DEV__

@@ -230,10 +230,6 @@ async function loadDraftStorage(state, opts = {}) {
       isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
         persistedIntent === true || value === null,
     },
-    './pimsPatientIdIntent': {
-      isPimsPatientIdExplicitlyCleared: (value, persistedIntent) =>
-        persistedIntent === true || value === null,
-    },
   });
   return { draftStorage: mod.draftStorage, ...store };
 }
@@ -299,6 +295,176 @@ test('draftStorage: orphan cleanup preserves missing audio with pending confirma
   assert.equal(cleaned, 0);
   assert.equal(serverDeletes, 0);
   assert.ok(await draftStorage.getDraft('slot-confirm-only'));
+});
+
+test('draftStorage: unknown batch status preserves a server-linked orphan', async () => {
+  let filesPresent = true;
+  let serverDeletes = 0;
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: () => filesPresent,
+  });
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot-unknown-orphan'));
+  await draftStorage.updateServerDraftId(
+    'slot-unknown-orphan',
+    '11111111-1111-4111-8111-111111111111',
+  );
+  filesPresent = false;
+
+  const cleaned = await draftStorage.cleanupOrphaned(
+    async () => {
+      serverDeletes++;
+    },
+    { getStatus: async () => null, isOnline: true },
+  );
+  assert.equal(cleaned, 0);
+  assert.equal(serverDeletes, 0);
+  assert.ok(await draftStorage.getDraft('slot-unknown-orphan'));
+});
+
+test('draftStorage: proven missing server row removes orphan metadata without a delete call', async () => {
+  let filesPresent = true;
+  let serverDeletes = 0;
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: () => filesPresent,
+  });
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot-missing-orphan'));
+  await draftStorage.updateServerDraftId(
+    'slot-missing-orphan',
+    '11111111-1111-4111-8111-111111111111',
+  );
+  filesPresent = false;
+
+  const cleaned = await draftStorage.cleanupOrphaned(
+    async () => {
+      serverDeletes++;
+    },
+    { getStatus: async () => 'missing', isOnline: true },
+  );
+  assert.equal(cleaned, 1);
+  assert.equal(serverDeletes, 0);
+  assert.equal(await draftStorage.getDraft('slot-missing-orphan'), null);
+});
+
+test('draftStorage: missing and unknown status never silently evict local audio', async () => {
+  for (const status of ['missing', null]) {
+    const { draftStorage } = await loadDraftStorage();
+    draftStorage.setUserId('userA');
+    await draftStorage.saveDraft(makeSlot(`slot-evict-${status ?? 'unknown'}`));
+    await draftStorage.updateServerDraftId(
+      `slot-evict-${status ?? 'unknown'}`,
+      '11111111-1111-4111-8111-111111111111',
+    );
+
+    const result = await draftStorage.evictExpired(
+      { maxAgeDays: -1, warnAgeDays: -2, isOnline: true },
+      async () => status,
+    );
+    assert.equal(result.expired.length, 1);
+    assert.ok(await draftStorage.getDraft(`slot-evict-${status ?? 'unknown'}`));
+  }
+});
+
+test('draftStorage: orphan cleanup stops without mutating either user after an A-to-B switch', async () => {
+  let filesPresent = true;
+  let serverDeletes = 0;
+  const { draftStorage } = await loadDraftStorage(undefined, {
+    fileExists: () => filesPresent,
+  });
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot-a-orphan'));
+  await draftStorage.updateServerDraftId(
+    'slot-a-orphan',
+    '11111111-1111-4111-8111-111111111111',
+  );
+  draftStorage.setUserId('userB');
+  await draftStorage.saveDraft(makeSlot('slot-b-safe'));
+  draftStorage.setUserId('userA');
+  filesPresent = false;
+
+  const scopeVersion = draftStorage.getUserScopeVersion();
+  const isScopeValid = () =>
+    draftStorage.getUserId() === 'userA' &&
+    draftStorage.getUserScopeVersion() === scopeVersion;
+  const cleaned = await draftStorage.cleanupOrphaned(
+    async () => {
+      serverDeletes++;
+    },
+    {
+      userId: 'userA',
+      isOnline: true,
+      isScopeValid,
+      getStatus: async () => {
+        draftStorage.setUserId('userB');
+        return 'draft';
+      },
+    },
+  );
+
+  assert.equal(cleaned, 0);
+  assert.equal(serverDeletes, 0);
+  assert.ok((await draftStorage.listDraftsForUser('userA')).some(
+    (draft) => draft.slotId === 'slot-a-orphan',
+  ));
+  assert.ok((await draftStorage.listDraftsForUser('userB')).some(
+    (draft) => draft.slotId === 'slot-b-safe',
+  ));
+});
+
+test('draftStorage: age eviction publishes nothing after an A-to-B switch', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot-a-old'));
+  await draftStorage.updateServerDraftId(
+    'slot-a-old',
+    '11111111-1111-4111-8111-111111111111',
+  );
+  draftStorage.setUserId('userB');
+  await draftStorage.saveDraft(makeSlot('slot-b-safe'));
+  draftStorage.setUserId('userA');
+
+  const scopeVersion = draftStorage.getUserScopeVersion();
+  const isScopeValid = () =>
+    draftStorage.getUserId() === 'userA' &&
+    draftStorage.getUserScopeVersion() === scopeVersion;
+  const result = await draftStorage.evictExpired(
+    {
+      maxAgeDays: -1,
+      warnAgeDays: -2,
+      isOnline: true,
+      userId: 'userA',
+      isScopeValid,
+    },
+    async () => {
+      draftStorage.setUserId('userB');
+      throw new Error('auth scope changed');
+    },
+  );
+
+  assert.equal(result.expired.length, 0);
+  assert.equal(result.expiring.length, 0);
+  assert.ok((await draftStorage.listDraftsForUser('userA')).some(
+    (draft) => draft.slotId === 'slot-a-old',
+  ));
+  assert.ok((await draftStorage.listDraftsForUser('userB')).some(
+    (draft) => draft.slotId === 'slot-b-safe',
+  ));
+});
+
+test('draftStorage: explicit-user deletion cannot rewrite the active successor user index', async () => {
+  const { draftStorage } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot-a-delete'));
+  draftStorage.setUserId('userB');
+  await draftStorage.saveDraft(makeSlot('slot-b-safe'));
+
+  await draftStorage.deleteDraftForUser('userA', 'slot-a-delete');
+
+  assert.equal((await draftStorage.listDraftsForUser('userA')).length, 0);
+  assert.ok((await draftStorage.listDraftsForUser('userB')).some(
+    (draft) => draft.slotId === 'slot-b-safe',
+  ));
 });
 
 test('draftStorage: proof-only save persists metadata when every segment copy is missing', async () => {

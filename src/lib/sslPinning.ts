@@ -17,6 +17,10 @@
  */
 
 import { API_URL, SUPABASE_URL, R2_BUCKET_HOSTNAME } from '../config';
+import {
+  R2UploadUrlValidationError,
+  validateR2PresignedUploadUrl,
+} from './r2UploadUrl';
 
 /** Trusted domains extracted from config at startup */
 const TRUSTED_DOMAINS: string[] = [];
@@ -115,38 +119,12 @@ export function validateRequestUrl(url: string): void {
 export function validateUploadUrl(url: string): void {
   if (__DEV__) return;
 
-  let parsed: URL;
   try {
-    parsed = new URL(url);
-  } catch {
-    reportPinViolation('upload_url', 'invalid_url');
-    throw new Error('Invalid upload URL');
-  }
-
-  if (parsed.protocol !== 'https:') {
-    reportPinViolation('upload_url', `non_https:${parsed.protocol}`);
-    throw new Error('Insecure upload URL rejected: HTTPS required');
-  }
-
-  // Validate hostname against the configured R2 bucket.
-  // Fail-closed: if R2_BUCKET_HOSTNAME is not configured, reject all uploads.
-  if (!R2_BUCKET_HOSTNAME) {
-    reportPinViolation('upload_url', 'r2_hostname_unconfigured');
-    throw new Error('Upload rejected: R2_BUCKET_HOSTNAME is not configured');
-  }
-  if (parsed.hostname !== R2_BUCKET_HOSTNAME) {
-    reportPinViolation('upload_url', `wrong_host:${parsed.hostname}`);
-    throw new Error('Upload URL targets an untrusted storage domain');
-  }
-
-  // Verify presigned URL has a signature parameter (S3/R2 v4 signing)
-  const hasSignature =
-    parsed.searchParams.has('X-Amz-Signature') ||
-    parsed.searchParams.has('X-Amz-Credential') ||
-    parsed.searchParams.has('Signature');
-
-  if (!hasSignature) {
-    reportPinViolation('upload_url', 'missing_signature');
-    throw new Error('Upload URL is missing a presigned signature');
+    validateR2PresignedUploadUrl(url, R2_BUCKET_HOSTNAME);
+  } catch (error) {
+    const reason =
+      error instanceof R2UploadUrlValidationError ? error.reason : 'invalid_url';
+    reportPinViolation('upload_url', reason);
+    throw new Error('Upload URL failed security validation');
   }
 }

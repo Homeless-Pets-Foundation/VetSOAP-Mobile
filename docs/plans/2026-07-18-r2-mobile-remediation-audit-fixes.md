@@ -86,3 +86,17 @@ Source: VetSOAP-Connect
       diff --check` all pass.
 - [ ] Replace the PR head and request another exact-head Codex P0/P1/P2 audit
       before merge.
+
+## Post-merge CI audit — Connect PR #413
+
+- [x] P2, synthetic URI false positive: Connect's TruffleHog check correctly
+      identifies the fixture's deliberate `user:password@` negative vector as
+      an unverified credential-bearing URI. No real secret is present, but the
+      required check must remain strict. Replace only the synthetic password
+      with an all-asterisk redaction value, which still exercises nonempty URL
+      credentials and is explicitly treated as redacted by the URI detector.
+      Update Mobile first, then Connect, preserving byte identity and the
+      cross-repository drift gate.
+- [ ] Re-run the Mobile contract and full validation, merge this fixture-only
+      Mobile correction normally, update Connect to the resulting fixture
+      bytes/hash, and request a fresh exact-head Codex audit on Connect.

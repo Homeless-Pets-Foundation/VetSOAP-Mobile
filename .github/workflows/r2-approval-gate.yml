@@ -26,7 +26,20 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - name: Detect trusted gate installation
+        id: trusted-gate
+        shell: bash
+        run: |
+          if test -f .github/scripts/r2-approval-gate.cjs &&
+             test -f .github/r2-protected-paths.txt; then
+            echo "installed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            echo "Trusted R2 gate is not on the default branch yet; allowing its one-time bootstrap PR."
+          fi
+
       - name: Require current-head approval for protected paths
+        if: steps.trusted-gate.outputs.installed == 'true'
         uses: actions/github-script@v8
         with:
           script: |

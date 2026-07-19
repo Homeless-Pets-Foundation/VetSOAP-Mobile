@@ -260,3 +260,9 @@ Codex GitHub review should flag only serious, merge-relevant issues. Focus on co
 - Check that schema, migration, configuration, and environment changes are documented and backwards compatible.
 - Check that new behavior has tests or a clear reason tests are not practical.
 - Treat generated files, lockfiles, and vendored assets as low priority unless they affect runtime behavior or supply-chain risk.
+
+## R2 Destination Governance
+
+`R2 Destination Contract` and `R2 Approval Gate` are required on `main`. R2-protected paths in `.github/r2-protected-paths.txt` require `@philgooddvm-oss` approval on the current head SHA; a new commit, dismissal, or requested-changes review invalidates the approval. The global approving-review count stays zero so unrelated PRs remain automated, and administrator enforcement stays enabled.
+
+Do not bypass these checks unless the user explicitly authorizes an emergency admin override. If that happens, snapshot branch protection first, temporarily remove only the blocking rules, merge, restore the full snapshot in the same turn, confirm both R2 checks and administrator enforcement are restored, and verify CI on the merge commit. An intentional R2 migration additionally requires coordinated byte-identical Connect/Mobile production-destination contracts and new Mobile builds; never broaden the server back to path-style output.

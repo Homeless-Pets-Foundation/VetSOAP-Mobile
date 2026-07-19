@@ -49,7 +49,8 @@ const SANDBOX_GLOBALS = {
 
 function resolveRelative(fromFile, spec) {
   let resolved = path.resolve(path.dirname(fromFile), spec);
-  if (!resolved.endsWith('.ts')) resolved += '.ts';
+  if (!resolved.endsWith('.ts') && !resolved.endsWith('.json'))
+    resolved += '.ts';
   return resolved;
 }
 
@@ -65,6 +66,11 @@ export async function loadTsModule(relPath, mocks = {}, globals = {}) {
   function loadSync(absFile) {
     if (cache.has(absFile)) return cache.get(absFile);
     const source = readFileSync(absFile, 'utf8');
+    if (absFile.endsWith('.json')) {
+      const parsed = JSON.parse(source);
+      cache.set(absFile, parsed);
+      return parsed;
+    }
     const compiled = ts.transpileModule(source, {
       compilerOptions: {
         module: ts.ModuleKind.CommonJS,

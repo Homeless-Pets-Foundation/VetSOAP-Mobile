@@ -22,14 +22,14 @@ export function recordingInvalidationKeysFor(mutation: RecordingCacheMutation): 
     case 'device_registration_recovered':
       return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts']];
     case 'submit_success':
-      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts']];
+      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts'], ['dashboard', 'quality']];
     case 'detail_deleted':
-      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts']];
+      return [['recordings', 'recent'], ['recordings', 'list'], ['recordings', 'drafts'], ['local-drafts'], ['dashboard', 'quality']];
     case 'processing_retry':
     case 'soap_regenerated':
-      return [['recordings', 'recent'], ['recordings', 'list']];
+      return [['recordings', 'recent'], ['recordings', 'list'], ['dashboard', 'quality']];
     case 'metadata_update':
-      return [['recordings', 'recent'], ['recordings', 'list']];
+      return [['recordings', 'recent'], ['recordings', 'list'], ['dashboard', 'quality']];
     default:
       return [['recordings', 'recent'], ['recordings', 'list']];
   }

@@ -195,10 +195,31 @@ test('qualityAnalyticsApi fetches the existing dashboard endpoint', async () => 
   assert.equal(response.quality.me.completedRecordings, 1);
 });
 
+test('quality analytics access includes every authenticated role after device registration', async () => {
+  const { shouldFetchQualityAnalytics } = await loadQualityAnalytics();
+
+  for (const role of ['owner', 'admin', 'veterinarian', 'support_staff']) {
+    assert.equal(
+      shouldFetchQualityAnalytics({ id: `${role}-id`, role }, false, false),
+      true,
+      `${role} should receive Clinic Quality`
+    );
+  }
+  assert.equal(shouldFetchQualityAnalytics(null, false, false), false);
+  assert.equal(
+    shouldFetchQualityAnalytics({ id: 'support-id', role: 'support_staff' }, true, false),
+    false
+  );
+  assert.equal(
+    shouldFetchQualityAnalytics({ id: 'support-id', role: 'support_staff' }, false, true),
+    false
+  );
+});
+
 test('Home renders clinic quality after Recent Recordings and refreshes it safely', async () => {
   const source = await read('app/(app)/(tabs)/index.tsx');
 
-  assert.match(source, /import \{ qualityAnalyticsApi \} from ['"].*src\/api\/qualityAnalytics['"]/);
+  assert.match(source, /qualityAnalyticsApi,[\s\S]*shouldFetchQualityAnalytics,[\s\S]*src\/api\/qualityAnalytics/);
   assert.match(
     source,
     /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId, user\?\.id, user\?\.role\]/
@@ -211,15 +232,18 @@ test('Home renders clinic quality after Recent Recordings and refreshes it safel
   );
 });
 
-test('Home gates clinic quality fetch, manual refetch, and render by role and device readiness', async () => {
+test('Home gates all-role clinic quality only by auth and device readiness', async () => {
   const source = await read('app/(app)/(tabs)/index.tsx');
 
-  assert.match(source, /const canViewQualityAnalytics = canRecordAppointments\(user\?\.role\)/);
   assert.match(
     source,
     /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId, user\?\.id, user\?\.role\]/
   );
-  assert.match(source, /const canFetchQualityAnalytics = canLoadServerData && canViewQualityAnalytics/);
+  assert.match(
+    source,
+    /const canFetchQualityAnalytics = shouldFetchQualityAnalytics\(\s*user,\s*deviceRegistrationPending,\s*!!deviceRegistrationBlock\s*\)/
+  );
+  assert.doesNotMatch(source, /canFetchQualityAnalytics\s*=.*canRecordAppointments/);
   assert.match(source, /enabled:\s*canFetchQualityAnalytics/);
   assert.match(source, /if \(canFetchQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
   assert.match(source, /\{canFetchQualityAnalytics \? \(\s*<View className="mb-8">\s*<QualityAnalyticsCard/);

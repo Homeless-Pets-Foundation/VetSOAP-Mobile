@@ -55,6 +55,19 @@ export type DashboardQualityEnvelope = {
   quality: DashboardQuality | null;
 };
 
+interface QualityAnalyticsUser {
+  id: string;
+  role?: string | null;
+}
+
+export function shouldFetchQualityAnalytics(
+  user: QualityAnalyticsUser | null | undefined,
+  deviceRegistrationPending: boolean,
+  deviceRegistrationBlocked: boolean
+): boolean {
+  return !!user?.id && !deviceRegistrationPending && !deviceRegistrationBlocked;
+}
+
 export function parseDashboardQualityEnvelope(value: unknown): DashboardQualityEnvelope {
   const parsed = DashboardQualityEnvelopeSchema.parse(value);
   return {

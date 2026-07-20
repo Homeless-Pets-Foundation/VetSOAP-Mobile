@@ -19,7 +19,10 @@ import { useLocalDraftRecordings } from '../../../src/hooks/useLocalDraftRecordi
 import { useRetryableInitialLoadError } from '../../../src/hooks/useRetryableInitialLoadError';
 import { recordingsApi } from '../../../src/api/recordings';
 import { patientsApi } from '../../../src/api/patients';
-import { qualityAnalyticsApi } from '../../../src/api/qualityAnalytics';
+import {
+  qualityAnalyticsApi,
+  shouldFetchQualityAnalytics,
+} from '../../../src/api/qualityAnalytics';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
@@ -68,8 +71,11 @@ export default function HomeScreen() {
   const visibleBannerKeys = bannersExpanded ? activeBannerKeys : activeBannerKeys.slice(0, 1);
   const hiddenBannerCount = activeBannerKeys.length - visibleBannerKeys.length;
   const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
-  const canViewQualityAnalytics = canRecordAppointments(user?.role);
-  const canFetchQualityAnalytics = canLoadServerData && canViewQualityAnalytics;
+  const canFetchQualityAnalytics = shouldFetchQualityAnalytics(
+    user,
+    deviceRegistrationPending,
+    !!deviceRegistrationBlock
+  );
 
   // Parallel fetch — useQueries fires both requests at once instead of letting
   // React Query serialize independent useQuery calls. Saves 100-300 ms on cold

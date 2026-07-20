@@ -16,8 +16,10 @@ import { recordingActivity } from '../lib/recordingActivity';
 import { trackEvent } from '../lib/analytics';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { AUDIO_PLAYER_COPY } from '../constants/strings';
+import { withPromiseTimeout } from '../lib/promiseTimeout';
 
 const LOAD_WATCHDOG_MS = 15_000;
+const SEEK_WATCHDOG_MS = 8_000;
 const SEEK_STEP_SECONDS = 15;
 
 type PlayerPhase = 'idle' | 'fetching' | 'loading' | 'ready' | 'error';
@@ -491,7 +493,14 @@ function ActiveAudioPlayer({
   const commitSeek = useCallback(
     async (request: PendingSeek): Promise<void> => {
       try {
-        const landed = await seekTo(request.seconds);
+        // Rule 24: native seekTo can hang indefinitely after interruptions or
+        // storage/audio-service failures. Bound every coordinated seek so the
+        // post-load path cannot leave the player in "loading" forever.
+        const landed = await withPromiseTimeout(
+          seekTo(request.seconds),
+          SEEK_WATCHDOG_MS,
+          'Audio seek timed out',
+        );
         if (!mountedRef.current || pendingSeekRef.current !== request) return;
 
         pendingSeekRef.current = null;

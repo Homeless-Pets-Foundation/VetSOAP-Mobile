@@ -300,6 +300,17 @@ export default function AudioEditorScreen() {
   const playback = useAudioPlayback();
   const { seekTo, pause, play, toggle, loadSource, isLoaded, isPlaying, duration: playerDuration, currentTimeSV, currentTimeRef } = playback;
 
+  // Recording detail needs seekTo() rejections to coordinate optimistic UI,
+  // loading gates, and scrub resume. The editor predates that contract and
+  // intentionally treats native seek failures as best-effort: its scrub and
+  // preview paths must still run their existing `.then(play)` recovery from
+  // the last confirmed position after an interruption.
+  const seekForEditor = useCallback(
+    (seconds: number): Promise<number> =>
+      seekTo(seconds).catch(() => currentTimeRef.current ?? 0),
+    [seekTo, currentTimeRef]
+  );
+
   // Play All mode — when active, the player is loaded with a temp concat of every
   // segment in order so the user can preview the final stitched output. Auto-stops at
   // natural EOF and restores the selected-segment source.
@@ -566,9 +577,9 @@ export default function AudioEditorScreen() {
 
   const handleSeek = useCallback(
     (seconds: number) => {
-      seekTo(seconds).catch(() => {});
+      seekForEditor(seconds).catch(() => {});
     },
-    [seekTo]
+    [seekForEditor]
   );
 
   // Undo/redo history. Snapshot is taken BEFORE each destructive op (apply trim, delete
@@ -785,7 +796,7 @@ export default function AudioEditorScreen() {
   }, [isPlaying, pause]);
   const handleScrubEnd = useCallback(
     (seconds: number) => {
-      seekTo(seconds)
+      seekForEditor(seconds)
         .then(() => {
           if (scrubWasPlayingRef.current) play();
         })
@@ -794,17 +805,17 @@ export default function AudioEditorScreen() {
           scrubWasPlayingRef.current = false;
         });
     },
-    [seekTo, play]
+    [seekForEditor, play]
   );
 
   const handleSkipBack = useCallback(() => {
-    seekTo(Math.max(0, (currentTimeRef.current ?? 0) - 10)).catch(() => {});
-  }, [seekTo, currentTimeRef]);
+    seekForEditor(Math.max(0, (currentTimeRef.current ?? 0) - 10)).catch(() => {});
+  }, [seekForEditor, currentTimeRef]);
 
   const handleSkipForward = useCallback(() => {
     const maxTime = selectedSegment?.duration ?? 0;
-    seekTo(Math.min(maxTime, (currentTimeRef.current ?? 0) + 10)).catch(() => {});
-  }, [seekTo, currentTimeRef, selectedSegment?.duration]);
+    seekForEditor(Math.min(maxTime, (currentTimeRef.current ?? 0) + 10)).catch(() => {});
+  }, [seekForEditor, currentTimeRef, selectedSegment?.duration]);
 
   // Preview: play only the trimmed region
   const [isPreviewMode, setIsPreviewMode] = useState(false);
@@ -812,10 +823,10 @@ export default function AudioEditorScreen() {
   const handlePreviewStart = useCallback(() => {
     setIsPreviewMode(true);
     isPreviewModeSV.value = true;
-    seekTo(trimStart).then(() => {
+    seekForEditor(trimStart).then(() => {
       play();
     }).catch(() => {});
-  }, [seekTo, play, trimStart, isPreviewModeSV]);
+  }, [seekForEditor, play, trimStart, isPreviewModeSV]);
 
   const handlePreviewStop = useCallback(() => {
     pause();
@@ -835,10 +846,10 @@ export default function AudioEditorScreen() {
   const trimStartRef = useRef(trimStart);
   trimStartRef.current = trimStart;
   const seekAndPlayRef = useRef((start: number) => {
-    seekTo(start).then(() => play()).catch(() => {});
+    seekForEditor(start).then(() => play()).catch(() => {});
   });
   seekAndPlayRef.current = (start: number) => {
-    seekTo(start).then(() => play()).catch(() => {});
+    seekForEditor(start).then(() => play()).catch(() => {});
   };
   const invokePreviewLoop = useCallback(() => {
     // Re-enter the trimmed region — keep playing, do not pause

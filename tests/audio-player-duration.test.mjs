@@ -77,9 +77,34 @@ test('idle seek fetches once, survives loading, and clears on every failure path
 
   const commit = player.match(/const commitSeek = useCallback\([\s\S]*?\n  \);/);
   assert.ok(commit, 'native seek commit should exist');
+  assert.match(player, /const SEEK_WATCHDOG_MS = 8_000/);
+  assert.match(commit[0], /await withPromiseTimeout\(/);
+  assert.match(commit[0], /seekTo\(request\.seconds\)/);
+  assert.match(commit[0], /SEEK_WATCHDOG_MS/);
   assert.match(commit[0], /pendingSeekRef\.current = null/);
   assert.match(commit[0], /const restored = currentTimeRef\.current \?\? 0/);
   assert.match(commit[0], /throw error/);
+});
+
+test('audio editor preserves best-effort seek recovery for scrub and preview playback', async () => {
+  const editor = await read('app/(app)/audio-editor.tsx');
+
+  const wrapper = editor.match(/const seekForEditor = useCallback\([\s\S]*?\n  \);/);
+  assert.ok(wrapper, 'editor compatibility seek wrapper should exist');
+  assert.match(wrapper[0], /seekTo\(seconds\)\.catch\(\(\) => currentTimeRef\.current \?\? 0\)/);
+  assert.equal(
+    (editor.match(/\bseekTo\(/g) ?? []).length,
+    2,
+    'raw seekTo should appear only in the compatibility comment and wrapper'
+  );
+
+  const scrub = editor.match(/const handleScrubEnd = useCallback\([\s\S]*?\n  \);/);
+  assert.ok(scrub, 'editor scrub-end handler should exist');
+  assert.match(scrub[0], /seekForEditor\(seconds\)/);
+  assert.match(scrub[0], /if \(scrubWasPlayingRef\.current\) play\(\)/);
+
+  assert.match(editor, /seekForEditor\(trimStart\)\.then\(\(\) => \{\s*play\(\)/);
+  assert.match(editor, /seekForEditor\(start\)\.then\(\(\) => play\(\)\)/);
 });
 
 test('every segment source swap resets its handled-load guard synchronously', async () => {
@@ -138,7 +163,10 @@ test('scrubbing resumes only after a successful non-EOF native seek', async () =
   const commit = player.match(/const commitSeek = useCallback\([\s\S]*?\n  \);/);
   assert.ok(commit, 'native seek commit should exist');
 
-  assert.match(commit[0], /const landed = await seekTo\(request\.seconds\)/);
+  assert.match(
+    commit[0],
+    /const landed = await withPromiseTimeout\([\s\S]*?seekTo\(request\.seconds\)/
+  );
   assert.match(commit[0], /request\.resumeAfterSeek/);
   assert.match(commit[0], /landed >= duration - 0\.05/);
   assert.match(commit[0], /play\(\)/);

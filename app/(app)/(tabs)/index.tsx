@@ -69,6 +69,7 @@ export default function HomeScreen() {
   const hiddenBannerCount = activeBannerKeys.length - visibleBannerKeys.length;
   const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
   const canViewQualityAnalytics = canRecordAppointments(user?.role);
+  const canFetchQualityAnalytics = canLoadServerData && canViewQualityAnalytics;
 
   // Parallel fetch — useQueries fires both requests at once instead of letting
   // React Query serialize independent useQuery calls. Saves 100-300 ms on cold
@@ -106,7 +107,7 @@ export default function HomeScreen() {
   const qualityQuery = useQuery({
     queryKey: ['dashboard', 'quality', user?.organizationId],
     queryFn: () => qualityAnalyticsApi.getDashboardQuality(),
-    enabled: canLoadServerData && canViewQualityAnalytics,
+    enabled: canFetchQualityAnalytics,
   });
   const {
     data: qualityData,
@@ -142,11 +143,11 @@ export default function HomeScreen() {
     const completedProcessing = [...processingRecordingIdsRef.current].some(
       (id) => !processingRecordingIds.has(id)
     );
-    if (canViewQualityAnalytics && completedProcessing) {
+    if (canFetchQualityAnalytics && completedProcessing) {
       refetchQuality().catch(() => {});
     }
     processingRecordingIdsRef.current = processingRecordingIds;
-  }, [canViewQualityAnalytics, processingRecordingIds, refetchQuality]);
+  }, [canFetchQualityAnalytics, processingRecordingIds, refetchQuality]);
 
   useRetryableInitialLoadError({
     screen: 'home',
@@ -207,12 +208,12 @@ export default function HomeScreen() {
     if (canLoadServerData) {
       refetch().catch(() => {});
       refetchDrafts().catch(() => {});
-      if (canViewQualityAnalytics) {
-        refetchQuality().catch(() => {});
-      }
+    }
+    if (canFetchQualityAnalytics) {
+      refetchQuality().catch(() => {});
     }
     refreshLocalDrafts({ forceReconcile: true });
-  }, [canLoadServerData, canViewQualityAnalytics, refetch, refetchDrafts, refetchQuality, refreshLocalDrafts]);
+  }, [canFetchQualityAnalytics, canLoadServerData, refetch, refetchDrafts, refetchQuality, refreshLocalDrafts]);
 
   const handleRecordPress = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
@@ -226,7 +227,7 @@ export default function HomeScreen() {
   }, [router, user?.role]);
 
   const handleFocusRefresh = useCallback(() => {
-    const qualityStale = canLoadServerData && canViewQualityAnalytics && isQualityStale;
+    const qualityStale = canFetchQualityAnalytics && isQualityStale;
     const staleServerSourceCount =
       Number(canLoadServerData && recordingsQuery.isStale) +
       Number(canLoadServerData && draftsQuery.isStale) +
@@ -253,8 +254,8 @@ export default function HomeScreen() {
       refreshLocalDrafts();
     });
   }, [
+    canFetchQualityAnalytics,
     canLoadServerData,
-    canViewQualityAnalytics,
     draftsQuery.isStale,
     isQualityStale,
     recordingsQuery.isStale,
@@ -554,7 +555,7 @@ export default function HomeScreen() {
         )}
       </View>
 
-      {canViewQualityAnalytics ? (
+      {canFetchQualityAnalytics ? (
         <View className="mb-8">
           <QualityAnalyticsCard
             data={qualityData}

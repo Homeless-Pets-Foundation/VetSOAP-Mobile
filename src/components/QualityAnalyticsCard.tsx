@@ -137,7 +137,7 @@ function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; m
       {badges.length ? (
         <View className="flex-row flex-wrap mt-1">
           {badges.map((badge) => (
-            <Text key={badge} className="text-caption text-warning-500 mr-2 mb-1">
+            <Text key={badge} className="text-caption text-status-warning mr-2 mb-1">
               {badge}
             </Text>
           ))}
@@ -189,7 +189,7 @@ function ProviderRow({ provider }: { provider: QualityProviderSummary }) {
         <Text className="text-body-sm font-semibold text-content-primary">
           {provider.completedRecordings}
         </Text>
-        <Text className={issueCount > 0 ? 'text-caption text-warning-500' : 'text-caption text-content-tertiary'}>
+        <Text className={issueCount > 0 ? 'text-caption text-status-warning' : 'text-caption text-content-tertiary'}>
           {issueCount} issue{issueCount === 1 ? '' : 's'}
         </Text>
       </View>

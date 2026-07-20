@@ -208,13 +208,14 @@ test('Home renders clinic quality after Recent Recordings and refreshes it safel
   );
 });
 
-test('Home gates clinic quality fetch, manual refetch, and render by recording role', async () => {
+test('Home gates clinic quality fetch, manual refetch, and render by role and device readiness', async () => {
   const source = await read('app/(app)/(tabs)/index.tsx');
 
   assert.match(source, /const canViewQualityAnalytics = canRecordAppointments\(user\?\.role\)/);
-  assert.match(source, /enabled:\s*!!user && canViewQualityAnalytics/);
-  assert.match(source, /if \(canViewQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
-  assert.match(source, /\{canViewQualityAnalytics \? \(\s*<View className="mb-8">\s*<QualityAnalyticsCard/);
+  assert.match(source, /const canFetchQualityAnalytics = canLoadServerData && canViewQualityAnalytics/);
+  assert.match(source, /enabled:\s*canFetchQualityAnalytics/);
+  assert.match(source, /if \(canFetchQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(source, /\{canFetchQualityAnalytics \? \(\s*<View className="mb-8">\s*<QualityAnalyticsCard/);
 });
 
 test('Home refreshes clinic quality when recent processing recordings leave processing', async () => {
@@ -223,7 +224,7 @@ test('Home refreshes clinic quality when recent processing recordings leave proc
   assert.match(source, /const processingRecordingIds = useMemo\(\(\) =>/);
   assert.match(source, /const processingRecordingIdsRef = useRef<Set<string>>\(new Set\(\)\)/);
   assert.match(source, /const completedProcessing = \[\.\.\.processingRecordingIdsRef\.current\]\.some/);
-  assert.match(source, /if \(canViewQualityAnalytics && completedProcessing\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(source, /if \(canFetchQualityAnalytics && completedProcessing\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
 });
 
 test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing quality', async () => {

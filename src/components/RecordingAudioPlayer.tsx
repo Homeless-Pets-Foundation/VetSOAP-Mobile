@@ -16,11 +16,18 @@ import { recordingActivity } from '../lib/recordingActivity';
 import { trackEvent } from '../lib/analytics';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { AUDIO_PLAYER_COPY } from '../constants/strings';
+import { withPromiseTimeout } from '../lib/promiseTimeout';
 
 const LOAD_WATCHDOG_MS = 15_000;
+const SEEK_WATCHDOG_MS = 8_000;
 const SEEK_STEP_SECONDS = 15;
 
 type PlayerPhase = 'idle' | 'fetching' | 'loading' | 'ready' | 'error';
+
+interface PendingSeek {
+  seconds: number;
+  resumeAfterSeek: boolean;
+}
 
 function formatTime(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '0:00';
@@ -44,8 +51,8 @@ interface SeekBarProps {
   onScrubStart: () => void;
   onScrubEnd: (seconds: number) => void;
   onScrubCancel: () => void;
-  // Direct seek with no pause/resume dance — used by tap and the a11y
-  // increment/decrement actions (playback, if any, just continues).
+  // Direct positioning request used by taps and accessibility actions. The
+  // parent coordinator handles both idle load-and-seek and loaded playback.
   onSeekTo: (seconds: number) => void;
 }
 
@@ -57,9 +64,9 @@ interface SeekBarProps {
  *
  * While dragging, fill/thumb follow the finger (scrubProgressSV) instead of
  * currentTimeSV so live playback can't fight the drag. The pan pauses playback
- * on start and the parent resumes once the seek lands (or on cancel). The pan
- * uses an activeOffsetX so a vertical drag falls through to the surrounding
- * ScrollView; a separate Tap handles tap-to-seek.
+ * on start and the parent resumes once the seek lands (or on cancel). A
+ * tap-or-pan race gives taps an immediate path while requiring 6dp horizontal
+ * travel before scrubbing; vertical travel still escapes to the ScrollView.
  */
 function SeekBar({
   currentTimeSV,
@@ -116,7 +123,7 @@ function SeekBar({
   // so a vertical scroll-through never pauses playback.
   const pan = Gesture.Pan()
     .enabled(enabled)
-    .activeOffsetX([-10, 10])
+    .activeOffsetX([-6, 6])
     .failOffsetY([-12, 12])
     .onStart((e) => {
       'worklet';
@@ -175,7 +182,7 @@ function SeekBar({
     // Cancel the tap on any finger travel so a short vertical scroll that starts
     // on the 44pt target (and trips the pan's failOffsetY) isn't reported as a
     // tap-to-seek and jump playback while the user meant to scroll the page.
-    .maxDistance(10)
+    .maxDistance(6)
     .onEnd((e, success) => {
       'worklet';
       if (!success) return;
@@ -186,7 +193,7 @@ function SeekBar({
       runOnJS(onSeekTo)(seconds);
     });
 
-  const gesture = Gesture.Exclusive(pan, tap);
+  const gesture = Gesture.Race(pan, tap);
 
   const leftLabel = scrubLabel ?? displayTime;
 
@@ -203,7 +210,7 @@ function SeekBar({
   );
 
   return (
-    <View className="flex-1 ml-3">
+    <View className="w-full">
       <GestureDetector gesture={gesture}>
         {/* Tall transparent hit area (44pt) wraps the thin visible track so the
             timeline is easy to grab; the track is vertically centered in it. */}
@@ -270,10 +277,11 @@ interface RecordingAudioPlayerProps {
 /**
  * Streams a recording's audio from R2 via short-lived presigned URLs
  * (`recordingsApi.getPlaybackUrl`). URLs are fetched lazily on the first Play
- * tap — not on mount — so opening a detail screen never issues (and audits)
- * a playback URL the vet doesn't use. On a load failure the URL is re-fetched
- * once (it may simply have expired), then degrades to an inline
- * "Audio unavailable" — never an Alert loop.
+ * or timeline-positioning action — not on mount — so opening a detail screen
+ * never issues (and audits) a playback URL the vet doesn't use. Positioning
+ * loads and seeks without autoplay. On a load failure the URL is re-fetched
+ * once (it may simply have expired), then degrades to an inline "Audio
+ * unavailable" — never an Alert loop.
  */
 export function RecordingAudioPlayer({
   recordingId,
@@ -328,7 +336,21 @@ function ActiveAudioPlayer({
 }) {
   const colors = useThemeColors();
   const playback = useAudioPlayback();
-  const { isLoaded, isPlaying, duration, isBuffering, currentTimeSV, currentTimeRef, playbackRate, setPlaybackRate } = playback;
+  const {
+    isLoaded,
+    isPlaying,
+    duration,
+    isBuffering,
+    currentTimeSV,
+    currentTimeRef,
+    play,
+    pause,
+    toggle,
+    seekTo,
+    loadSource,
+    playbackRate,
+    setPlaybackRate,
+  } = playback;
   const sanitizedInitialDuration =
     typeof initialDurationSeconds === 'number' &&
     Number.isFinite(initialDurationSeconds) &&
@@ -345,13 +367,18 @@ function ActiveAudioPlayer({
 
   const urlRefetchUsedRef = useRef(false);
   const pendingPlayRef = useRef(false);
+  const pendingSeekRef = useRef<PendingSeek | null>(null);
   const startedEmittedRef = useRef(false);
+  const loadedStatusHandledRef = useRef(false);
+  const loadRequestInFlightRef = useRef(false);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      pendingSeekRef.current = null;
+      loadRequestInFlightRef.current = false;
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
     };
   }, []);
@@ -362,6 +389,8 @@ function ActiveAudioPlayer({
       setPhase('error');
       setErrorCode(errorCode);
       pendingPlayRef.current = false;
+      pendingSeekRef.current = null;
+      loadRequestInFlightRef.current = false;
       trackEvent({
         name: 'audio_playback_failed',
         props: { recording_id: recordingId, error_code: errorCode },
@@ -382,6 +411,11 @@ function ActiveAudioPlayer({
         failPlayback('missing_segment_url');
         return;
       }
+      // Reset synchronously for every source generation. React may batch the
+      // old source's loaded=true with loadSource()'s loaded=false and the new
+      // native loaded=true status, so relying on the effect to observe an
+      // intermediate false can leave a segment switch stuck in "loading".
+      loadedStatusHandledRef.current = false;
       setPhase('loading');
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
       watchdogRef.current = setTimeout(() => {
@@ -401,7 +435,7 @@ function ActiveAudioPlayer({
         }
       }, LOAD_WATCHDOG_MS);
       try {
-        await playback.loadSource(uri);
+        await loadSource(uri);
       } catch (error) {
         if (watchdogRef.current) {
           clearTimeout(watchdogRef.current);
@@ -410,28 +444,125 @@ function ActiveAudioPlayer({
         throw error;
       }
     },
-    [failPlayback, playback, recordingId]
+    [failPlayback, loadSource, recordingId]
   );
 
-  // Load completion: clear the watchdog and start playback if a Play tap is
-  // pending. isLoaded also flips when switching segments.
+  const startLoadingAudio = useCallback(() => {
+    if (loadRequestInFlightRef.current) return;
+    loadRequestInFlightRef.current = true;
+    setPhase('fetching');
+    setErrorCode(null);
+    urlRefetchUsedRef.current = false;
+    recordingsApi
+      .getPlaybackUrl(recordingId)
+      .then((result) => {
+        if (!mountedRef.current) return;
+        setSegmentUrls(result.segmentUrls);
+        setActiveSegment(0);
+
+        // The server duration covers the whole recording, while the native
+        // player seeks within one selected segment. The playback response
+        // provides ordered URLs but no per-segment durations, so an idle
+        // total-recording target cannot be mapped safely when multiple parts
+        // are discovered. Treat that first gesture as audio-access intent:
+        // load part 1 paused at its start and expose the part selector instead
+        // of clamping the total target to the end of part 1.
+        if (result.segmentUrls.length > 1 && pendingSeekRef.current) {
+          pendingSeekRef.current = null;
+          currentTimeSV.value = 0;
+          setDisplayTime(0);
+        }
+
+        return loadSegment(result.segmentUrls, 0);
+      })
+      .catch((error) => {
+        failPlayback(
+          error instanceof ApiError
+            ? (error.code ?? `http_${error.status}`)
+            : 'url_fetch_failed'
+        );
+      });
+  }, [currentTimeSV, failPlayback, loadSegment, recordingId]);
+
+  /**
+   * The sole native positioning path for this player. Keeping the request in a
+   * ref lets an idle tap/drag/skip survive URL fetch + native loading. The hook
+   * returns the native-duration-clamped position, so the optimistic label and
+   * EOF decision use where playback actually landed.
+   */
+  const commitSeek = useCallback(
+    async (request: PendingSeek): Promise<void> => {
+      try {
+        // Rule 24: native seekTo can hang indefinitely after interruptions or
+        // storage/audio-service failures. Bound every coordinated seek so the
+        // post-load path cannot leave the player in "loading" forever.
+        const landed = await withPromiseTimeout(
+          seekTo(request.seconds),
+          SEEK_WATCHDOG_MS,
+          'Audio seek timed out',
+        );
+        if (!mountedRef.current || pendingSeekRef.current !== request) return;
+
+        pendingSeekRef.current = null;
+        setDisplayTime(landed);
+
+        // A scrub that paused active playback resumes only after the native
+        // seek succeeds. Parking at EOF must stay paused; play() would rewind.
+        if (
+          request.resumeAfterSeek &&
+          !(duration > 0 && landed >= duration - 0.05)
+        ) {
+          play();
+        }
+      } catch (error) {
+        if (pendingSeekRef.current === request) {
+          pendingSeekRef.current = null;
+          if (mountedRef.current) {
+            const restored = currentTimeRef.current ?? 0;
+            currentTimeSV.value = restored;
+            setDisplayTime(restored);
+          }
+        }
+        throw error;
+      }
+    },
+    [currentTimeRef, currentTimeSV, duration, play, seekTo]
+  );
+
+  // Load completion: clear the watchdog, commit an idle positioning request,
+  // or start playback if a Play tap is pending. isLoaded also flips when
+  // switching segments.
   useEffect(() => {
-    if (!isLoaded) return;
+    if (!isLoaded) {
+      loadedStatusHandledRef.current = false;
+      return;
+    }
+    if (loadedStatusHandledRef.current) return;
+    loadedStatusHandledRef.current = true;
     if (watchdogRef.current) {
       clearTimeout(watchdogRef.current);
       watchdogRef.current = null;
     }
+    loadRequestInFlightRef.current = false;
+    const pendingSeek = pendingSeekRef.current;
+    if (pendingSeek) {
+      commitSeek(pendingSeek)
+        .then(() => {
+          if (mountedRef.current) setPhase('ready');
+        })
+        .catch(() => failPlayback('seek_failed'));
+      return;
+    }
     setPhase('ready');
     if (pendingPlayRef.current) {
       pendingPlayRef.current = false;
-      playback.play();
+      play();
       if (!startedEmittedRef.current) {
         startedEmittedRef.current = true;
         trackEvent({ name: 'audio_playback_started', props: { recording_id: recordingId } });
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- play/trackEvent are stable; isLoaded is the trigger
-  }, [isLoaded]);
+  }, [commitSeek, failPlayback, isLoaded, play, recordingId]);
 
   // Low-frequency time display (the SV updates at 60 Hz for the progress bar;
   // React state only needs ~2 Hz for the mm:ss label).
@@ -446,70 +577,84 @@ function ActiveAudioPlayer({
     return () => clearInterval(interval);
   }, [isPlaying, currentTimeRef]);
 
+  const coordinateSeek = useCallback(
+    (seconds: number, resumeAfterSeek = false) => {
+      const seekDuration =
+        phase === 'ready'
+          ? duration
+          : phase === 'idle'
+            ? sanitizedInitialDuration
+            : 0;
+      if (seekDuration <= 0) return;
+
+      const target = Math.min(seekDuration, Math.max(0, seconds));
+      const request: PendingSeek = { seconds: target, resumeAfterSeek };
+      pendingSeekRef.current = request;
+
+      // Optimistically move the visible playhead, but leave currentTimeRef at
+      // the last confirmed native position so a failed seek can restore it.
+      setDisplayTime(target);
+      currentTimeSV.value = target;
+
+      if (phase === 'ready') {
+        commitSeek(request).catch(() => {});
+        return;
+      }
+
+      // The first positioning action is explicit audio-access intent, but it
+      // must load and seek without autoplaying.
+      pendingPlayRef.current = false;
+      startLoadingAudio();
+    },
+    [
+      commitSeek,
+      currentTimeSV,
+      duration,
+      phase,
+      sanitizedInitialDuration,
+      startLoadingAudio,
+    ]
+  );
+
   // Scrub: pause while the finger is down so live playback doesn't race the
   // drag, seek to the released position, then resume only if it was playing.
   const wasPlayingBeforeScrubRef = useRef(false);
   const handleScrubStart = useCallback(() => {
     wasPlayingBeforeScrubRef.current = isPlaying;
-    if (isPlaying) playback.pause();
-  }, [isPlaying, playback]);
+    if (isPlaying) pause();
+  }, [isPlaying, pause]);
 
   const handleScrubEnd = useCallback(
     (seconds: number) => {
-      // Update the label immediately: when the recording is paused, isPlaying
-      // never changes across a scrub, so the displayTime effect won't re-run —
-      // without this the label would snap back to the pre-scrub time.
-      setDisplayTime(seconds);
-      // Resume ONLY after the seek lands. Resuming before seekTo settles can
-      // replay from the pre-scrub position / emit stale status ticks (P2).
-      playback
-        .seekTo(seconds)
-        .catch(() => {})
-        .finally(() => {
-          if (!wasPlayingBeforeScrubRef.current) return;
-          // Don't resume when scrubbed to (or within 50ms of) the end: play()
-          // treats currentTime >= dur - 0.05 as EOF and rewinds to 0, which would
-          // restart the recording instead of leaving it parked at the end (P2).
-          if (duration > 0 && seconds >= duration - 0.05) return;
-          playback.play();
-        });
+      const resumeAfterSeek = wasPlayingBeforeScrubRef.current;
+      wasPlayingBeforeScrubRef.current = false;
+      coordinateSeek(seconds, resumeAfterSeek);
     },
-    [playback, duration]
+    [coordinateSeek]
   );
 
   // Pan cancelled before release (system interruption, backgrounding): no seek
   // happened, but onScrubStart already paused — resume so audio isn't stuck.
   const handleScrubCancel = useCallback(() => {
-    if (wasPlayingBeforeScrubRef.current) playback.play();
-  }, [playback]);
+    const shouldResume = wasPlayingBeforeScrubRef.current;
+    wasPlayingBeforeScrubRef.current = false;
+    if (shouldResume) play();
+  }, [play]);
 
-  // Tap / a11y seek: no pause happened, so just seek; playback (if any) continues.
+  // Tap / a11y positioning uses the same coordinator as drag and skip.
   const handleSeekTo = useCallback(
     (seconds: number) => {
-      setDisplayTime(seconds);
-      playback.seekTo(seconds).catch(() => {});
+      coordinateSeek(seconds);
     },
-    [playback]
+    [coordinateSeek]
   );
 
   const handlePlayPause = useCallback(() => {
     if (phase === 'idle' || phase === 'error') {
       // First tap (or retry after error): fetch fresh URLs, then load + play.
-      setPhase('fetching');
-      setErrorCode(null);
+      pendingSeekRef.current = null;
       pendingPlayRef.current = true;
-      urlRefetchUsedRef.current = false;
-      recordingsApi
-        .getPlaybackUrl(recordingId)
-        .then((result) => {
-          if (!mountedRef.current) return;
-          setSegmentUrls(result.segmentUrls);
-          setActiveSegment(0);
-          return loadSegment(result.segmentUrls, 0);
-        })
-        .catch((error) => {
-          failPlayback(error instanceof ApiError ? (error.code ?? `http_${error.status}`) : 'url_fetch_failed');
-        });
+      startLoadingAudio();
       return;
     }
     if (phase !== 'ready') return;
@@ -517,34 +662,52 @@ function ActiveAudioPlayer({
       startedEmittedRef.current = true;
       trackEvent({ name: 'audio_playback_started', props: { recording_id: recordingId } });
     }
-    playback.toggle();
-  }, [phase, isPlaying, playback, recordingId, loadSegment, failPlayback]);
+    toggle();
+  }, [phase, isPlaying, recordingId, startLoadingAudio, toggle]);
 
   const handleSeek = useCallback(
     (deltaSeconds: number) => {
-      if (phase !== 'ready' || duration <= 0) return;
-      const target = Math.min(duration, Math.max(0, (currentTimeRef.current ?? 0) + deltaSeconds));
-      setDisplayTime(target);
-      currentTimeSV.value = target;
-      currentTimeRef.current = target;
-      playback.seekTo(target).catch(() => {});
+      const seekDuration =
+        phase === 'ready'
+          ? duration
+          : phase === 'idle'
+            ? sanitizedInitialDuration
+            : 0;
+      if (seekDuration <= 0) return;
+      const baseTime =
+        phase === 'ready' ? (currentTimeRef.current ?? 0) : displayTime;
+      const target = Math.min(
+        seekDuration,
+        Math.max(0, baseTime + deltaSeconds)
+      );
+      coordinateSeek(target);
     },
-    [phase, duration, playback, currentTimeRef, currentTimeSV]
+    [
+      coordinateSeek,
+      currentTimeRef,
+      displayTime,
+      duration,
+      phase,
+      sanitizedInitialDuration,
+    ]
   );
 
   const handleSelectSegment = useCallback(
     (index: number) => {
       if (index === activeSegment || segmentUrls.length === 0) return;
-      playback.pause();
+      pause();
       setActiveSegment(index);
       pendingPlayRef.current = false;
+      pendingSeekRef.current = null;
       loadSegment(segmentUrls, index).catch(() => failPlayback('segment_load_failed'));
     },
-    [activeSegment, segmentUrls, playback, loadSegment, failPlayback]
+    [activeSegment, segmentUrls, pause, loadSegment, failPlayback]
   );
 
   const isBusy = phase === 'fetching' || phase === 'loading' || (phase === 'ready' && isBuffering);
-  const canSeek = phase === 'ready' && duration > 0;
+  const canSeek =
+    (phase === 'idle' && sanitizedInitialDuration > 0) ||
+    (phase === 'ready' && duration > 0);
   const errorMessage =
     errorCode === 'PLAYBACK_FORBIDDEN' ? AUDIO_PLAYER_COPY.forbidden : AUDIO_PLAYER_COPY.unavailable;
   const canRetry = errorCode !== 'PLAYBACK_FORBIDDEN';
@@ -581,7 +744,18 @@ function ActiveAudioPlayer({
         </View>
       ) : (
         <>
-          <View className="flex-row items-center">
+          <SeekBar
+            currentTimeSV={currentTimeSV}
+            duration={displayDuration}
+            displayTime={displayTime}
+            enabled={canSeek}
+            onScrubStart={handleScrubStart}
+            onScrubEnd={handleScrubEnd}
+            onScrubCancel={handleScrubCancel}
+            onSeekTo={handleSeekTo}
+          />
+
+          <View className="flex-row items-center justify-center mt-2">
             <Pressable
               onPress={() => handleSeek(-SEEK_STEP_SECONDS)}
               disabled={!canSeek}
@@ -620,17 +794,6 @@ function ActiveAudioPlayer({
             >
               <RotateCw size={20} color={colors.contentSecondary} />
             </Pressable>
-
-            <SeekBar
-              currentTimeSV={currentTimeSV}
-              duration={displayDuration}
-              displayTime={displayTime}
-              enabled={canSeek}
-              onScrubStart={handleScrubStart}
-              onScrubEnd={handleScrubEnd}
-              onScrubCancel={handleScrubCancel}
-              onSeekTo={handleSeekTo}
-            />
 
             <Pressable
               onPress={() => {

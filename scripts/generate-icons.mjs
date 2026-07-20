@@ -72,6 +72,23 @@ async function generateSplashIcon() {
   console.log('  splash-icon.png (1024x1024)');
 }
 
+async function generateAndroidSplashPlaceholder() {
+  // Android 12+ masks splash images as app icons, which cannot display the
+  // wide wordmark without clipping. A fully transparent pixel produces a
+  // background-only native launch frame before the React wordmark appears.
+  await sharp({
+    create: {
+      width: 1,
+      height: 1,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .png()
+    .toFile(path.join(ASSETS, 'android-splash-placeholder.png'));
+  console.log('  android-splash-placeholder.png (1x1 transparent)');
+}
+
 async function generateAdaptiveIcons() {
   // Foreground: white "C" on transparent, in 66% safe zone (512x512, letter in ~338px center)
   const fgSize = 512;
@@ -148,6 +165,7 @@ async function main() {
 
   console.log('Splash screen:');
   await generateSplashIcon();
+  await generateAndroidSplashPlaceholder();
 
   console.log('Android adaptive icons:');
   await generateAdaptiveIcons();

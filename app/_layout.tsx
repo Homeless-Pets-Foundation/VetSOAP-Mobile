@@ -9,7 +9,6 @@ import {
   Alert,
   AppState,
   Platform,
-  useWindowDimensions,
 } from 'react-native';
 import { Stack, usePathname, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
@@ -80,7 +79,7 @@ try {
 const COLD_START_AT = Date.now();
 let _coldStartReported = false;
 
-const LOADING_WORDMARK_MAX_WIDTH = 320;
+const LOADING_WORDMARK_WIDTH = 320;
 const ANDROID_SPLASH_HANDOFF_MS = 520;
 
 type AppStateCoarse = 'active' | 'background' | 'inactive' | 'unknown';
@@ -226,13 +225,11 @@ class ErrorBoundary extends React.Component<
 
 function SplashGate() {
   const { isLoading } = useAuthReadiness();
-  const { width } = useWindowDimensions();
   const [minimumDisplayComplete, setMinimumDisplayComplete] = React.useState(false);
-  const wordmarkWidth = Math.min(width * 0.72, LOADING_WORDMARK_MAX_WIDTH);
 
-  // Android 12+ constrains the native splash icon to a 192dp circular safe
-  // zone. Hand off without a native fade, then hold a single near-2x React
-  // wordmark without clipping either end of the brand name.
+  // Android's native launch frame is background-only. Hand off without a
+  // native fade, then keep this single fixed-size React wordmark visible
+  // until auth is ready and the minimum handoff interval has elapsed.
   useEffect(() => {
     if (Platform.OS !== 'android') return;
 
@@ -243,9 +240,9 @@ function SplashGate() {
     }
 
     // A restored SecureStore session can resolve before the first React frame.
-    // Keep the expanded wordmark visible briefly so the requested near-2x
-    // treatment is perceptible instead of flashing past between native splash
-    // and Home. This is a fixed visual handoff, not an unbounded loading gate.
+    // Keep the wordmark visible briefly instead of flashing past between the
+    // background-only native frame and Home. This is a fixed visual handoff,
+    // not an unbounded loading gate.
     const timeout = setTimeout(() => {
       setMinimumDisplayComplete(true);
     }, ANDROID_SPLASH_HANDOFF_MS);
@@ -293,7 +290,7 @@ function SplashGate() {
         accessibilityRole="image"
         accessibilityLabel="Captivet"
         style={{
-          width: wordmarkWidth,
+          width: LOADING_WORDMARK_WIDTH,
           aspectRatio: 600 / 139,
         }}
       />

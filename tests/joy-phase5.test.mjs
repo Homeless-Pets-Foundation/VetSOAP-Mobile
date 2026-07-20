@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { inflateSync } from 'node:zlib';
 
 const root = new URL('../', import.meta.url);
 
@@ -12,6 +13,24 @@ async function readPngDimensions(path) {
   const png = await readFile(new URL(path, root));
   assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG');
   return [png.readUInt32BE(16), png.readUInt32BE(20)];
+}
+
+async function readSinglePixelAlpha(path) {
+  const png = await readFile(new URL(path, root));
+  assert.equal(png.readUInt8(25), 6, 'placeholder must be an RGBA PNG');
+
+  const idat = [];
+  let offset = 8;
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.subarray(offset + 4, offset + 8).toString('ascii');
+    if (type === 'IDAT') idat.push(png.subarray(offset + 8, offset + 8 + length));
+    offset += length + 12;
+  }
+
+  const scanline = inflateSync(Buffer.concat(idat));
+  assert.equal(scanline.length, 5, '1x1 RGBA PNG should have one filter byte and one pixel');
+  return scanline.readUInt8(4);
 }
 
 test('processing stepper is extracted and uses warmth plus paw steps', async () => {
@@ -79,19 +98,32 @@ test('wordmark density assets match the largest 320dp runtime treatment', async 
   assert.match(generator, /const w3x = 960/);
 });
 
-test('startup branding expands to near-2x without exceeding the Android splash safe zone', async () => {
+test('startup branding uses an Android background-only frame and one fixed React wordmark', async () => {
   const config = await read('app.config.ts');
   const rootLayout = await read('app/_layout.tsx');
+  const generator = await read('scripts/generate-icons.mjs');
 
   assert.match(config, /'expo-splash-screen'/);
+  // Top-level settings remain the iOS treatment.
+  assert.match(config, /backgroundColor: '#ffffff',\s*image: '\.\/assets\/logo-wordmark@3x\.png',\s*imageWidth: 320/);
+  // Android uses the same themed surface colors as SplashGate with no visible
+  // masked icon in light or dark mode.
+  assert.match(config, /android: \{[\s\S]*?backgroundColor: '#fafaf9'/);
+  assert.match(config, /image: '\.\/assets\/android-splash-placeholder\.png'/);
+  assert.match(config, /imageWidth: 1/);
+  assert.match(config, /dark: \{[\s\S]*?backgroundColor: '#161412',[\s\S]*?image: '\.\/assets\/android-splash-placeholder\.png'/);
   assert.match(config, /image: '\.\/assets\/logo-wordmark@3x\.png'/);
-  assert.match(config, /imageWidth: 320/);
-  assert.match(config, /android: \{\s*imageWidth: 184/);
+  assert.doesNotMatch(config, /imageWidth: 184/);
   assert.doesNotMatch(config, /^\s+splash:\s*\{/m);
+  assert.deepEqual(await readPngDimensions('assets/android-splash-placeholder.png'), [1, 1]);
+  assert.equal(await readSinglePixelAlpha('assets/android-splash-placeholder.png'), 0);
+  assert.match(generator, /generateAndroidSplashPlaceholder/);
 
-  assert.match(rootLayout, /LOADING_WORDMARK_MAX_WIDTH = 320/);
+  assert.match(rootLayout, /LOADING_WORDMARK_WIDTH = 320/);
   assert.match(rootLayout, /ANDROID_SPLASH_HANDOFF_MS = 520/);
-  assert.match(rootLayout, /Math\.min\(width \* 0\.72, LOADING_WORDMARK_MAX_WIDTH\)/);
+  assert.match(rootLayout, /width: LOADING_WORDMARK_WIDTH/);
+  assert.doesNotMatch(rootLayout, /useWindowDimensions/);
+  assert.doesNotMatch(rootLayout, /Math\.min\(width \* 0\.72/);
   assert.match(rootLayout, /SplashScreen\.setOptions\(\{ duration: 0, fade: false \}\)/);
   assert.match(rootLayout, /SplashScreen\.hide\(\)/);
   assert.doesNotMatch(rootLayout, /Animated\.Image/);
@@ -150,7 +182,7 @@ test('audio playback watchdog arms before loading native source', async () => {
   const player = await read('src/components/RecordingAudioPlayer.tsx');
   const hook = await read('src/hooks/useAudioPlayback.ts');
   const watchdogIndex = player.indexOf('watchdogRef.current = setTimeout');
-  const loadSourceIndex = player.indexOf('playback.loadSource(uri)');
+  const loadSourceIndex = player.indexOf('await loadSource(uri)');
   const resetIndex = hook.indexOf('resetPlaybackStateForNewSource();');
   const ensureModeIndex = hook.indexOf('await ensurePlaybackMode();');
 

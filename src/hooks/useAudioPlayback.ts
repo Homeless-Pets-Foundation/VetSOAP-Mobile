@@ -16,7 +16,7 @@ export interface UseAudioPlaybackReturn {
   play: () => void;
   pause: () => void;
   toggle: () => void;
-  seekTo: (seconds: number) => Promise<void>;
+  seekTo: (seconds: number) => Promise<number>;
   loadSource: (uri: string) => Promise<void>;
   /** Current playback rate (1 = normal). */
   playbackRate: number;
@@ -239,7 +239,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
   }, [isPlaying, play, pause]);
 
   const seekTo = useCallback(
-    async (seconds: number) => {
+    async (seconds: number): Promise<number> => {
       try {
         const clamped = Math.max(0, Math.min(seconds, durationRef.current || 0));
         await player.seekTo(clamped);
@@ -249,8 +249,13 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
         currentTimeSV.value = clamped;
         currentTimeRef.current = clamped;
         lastStatusTimeSV.value = clamped;
+        return clamped;
       } catch (error) {
         if (__DEV__) console.error('[Playback] seekTo failed:', error);
+        // Positioning callers coordinate pause/resume and optimistic UI state
+        // around this result. They must be able to distinguish a native seek
+        // failure from a successfully clamped seek.
+        throw error;
       }
     },
     [player, currentTimeSV, lastStatusTimeSV]

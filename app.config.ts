@@ -54,13 +54,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       {
         backgroundColor: '#ffffff',
         image: './assets/logo-wordmark@3x.png',
-        // iOS can render the requested near-2x wordmark directly. Android 12+
-        // masks splash icons to a 192dp circle, so keep the native wordmark
-        // within that safe zone; SplashGate expands it to 320dp after handoff.
         imageWidth: 320,
         resizeMode: 'contain',
         android: {
-          imageWidth: 184,
+          // Android 12+ masks launch icons, which clips a wide wordmark. Keep
+          // the native frame background-only and let SplashGate render the
+          // same full-size wordmark used throughout React/auth loading.
+          backgroundColor: '#fafaf9',
+          image: './assets/android-splash-placeholder.png',
+          imageWidth: 1,
+          dark: {
+            backgroundColor: '#161412',
+            image: './assets/android-splash-placeholder.png',
+          },
         },
       },
     ],

@@ -55,7 +55,8 @@
       },
       "ios": {
         "distribution": "internal"
-      }
+      },
+      "autoIncrement": true
     },
     "preview-simulator": {
       "distribution": "internal",

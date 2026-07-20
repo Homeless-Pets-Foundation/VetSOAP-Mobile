@@ -5,7 +5,7 @@ import { test } from 'node:test';
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
 
-test('recording detail duration enables idle timeline positioning without autoplay', async () => {
+test('recording detail duration enables single-part idle positioning without autoplay', async () => {
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
   const player = await read('src/components/RecordingAudioPlayer.tsx');
 
@@ -28,6 +28,22 @@ test('recording detail duration enables idle timeline positioning without autopl
   assert.match(coordinator[0], /pendingPlayRef\.current = false/);
   assert.match(coordinator[0], /startLoadingAudio\(\)/);
   assert.match(coordinator[0], /commitSeek\(request\)\.catch\(\(\) => \{\}\)/);
+});
+
+test('multi-part discovery cancels an unmappable total-duration idle seek', async () => {
+  const player = await read('src/components/RecordingAudioPlayer.tsx');
+
+  const startLoading = player.match(/const startLoadingAudio = useCallback\([\s\S]*?\n  \);/);
+  assert.ok(startLoading, 'audio loading coordinator should exist');
+  assert.match(startLoading[0], /result\.segmentUrls\.length > 1 && pendingSeekRef\.current/);
+  assert.match(startLoading[0], /pendingSeekRef\.current = null/);
+  assert.match(startLoading[0], /currentTimeSV\.value = 0/);
+  assert.match(startLoading[0], /setDisplayTime\(0\)/);
+
+  const clearIndex = startLoading[0].indexOf('pendingSeekRef.current = null');
+  const loadIndex = startLoading[0].indexOf('loadSegment(result.segmentUrls, 0)');
+  assert.ok(clearIndex < loadIndex, 'multi-part total seek must be cleared before part 1 loads');
+  assert.match(player, /segmentUrls\.length > 1 && \(/);
 });
 
 test('audio hook returns native-duration-clamped seek position and rejects failures', async () => {
@@ -64,6 +80,24 @@ test('idle seek fetches once, survives loading, and clears on every failure path
   assert.match(commit[0], /pendingSeekRef\.current = null/);
   assert.match(commit[0], /const restored = currentTimeRef\.current \?\? 0/);
   assert.match(commit[0], /throw error/);
+});
+
+test('every segment source swap resets its handled-load guard synchronously', async () => {
+  const player = await read('src/components/RecordingAudioPlayer.tsx');
+
+  const loadSegmentStart = player.indexOf('const loadSegment = useCallback');
+  const startLoadingStart = player.indexOf('const startLoadingAudio = useCallback');
+  assert.notEqual(loadSegmentStart, -1, 'segment loader should exist');
+  assert.notEqual(startLoadingStart, -1, 'loading coordinator should follow segment loader');
+
+  const loadSegment = player.slice(loadSegmentStart, startLoadingStart);
+  assert.match(loadSegment, /loadedStatusHandledRef\.current = false/);
+  assert.match(loadSegment, /await loadSource\(uri\)/);
+  assert.ok(
+    loadSegment.indexOf('loadedStatusHandledRef.current = false') <
+      loadSegment.indexOf('await loadSource(uri)'),
+    'handled-load guard must reset before native source replacement'
+  );
 });
 
 test('timeline is full width and races tap against a 6dp horizontal pan', async () => {

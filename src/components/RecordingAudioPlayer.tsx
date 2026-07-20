@@ -409,6 +409,11 @@ function ActiveAudioPlayer({
         failPlayback('missing_segment_url');
         return;
       }
+      // Reset synchronously for every source generation. React may batch the
+      // old source's loaded=true with loadSource()'s loaded=false and the new
+      // native loaded=true status, so relying on the effect to observe an
+      // intermediate false can leave a segment switch stuck in "loading".
+      loadedStatusHandledRef.current = false;
       setPhase('loading');
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
       watchdogRef.current = setTimeout(() => {
@@ -452,6 +457,20 @@ function ActiveAudioPlayer({
         if (!mountedRef.current) return;
         setSegmentUrls(result.segmentUrls);
         setActiveSegment(0);
+
+        // The server duration covers the whole recording, while the native
+        // player seeks within one selected segment. The playback response
+        // provides ordered URLs but no per-segment durations, so an idle
+        // total-recording target cannot be mapped safely when multiple parts
+        // are discovered. Treat that first gesture as audio-access intent:
+        // load part 1 paused at its start and expose the part selector instead
+        // of clamping the total target to the end of part 1.
+        if (result.segmentUrls.length > 1 && pendingSeekRef.current) {
+          pendingSeekRef.current = null;
+          currentTimeSV.value = 0;
+          setDisplayTime(0);
+        }
+
         return loadSegment(result.segmentUrls, 0);
       })
       .catch((error) => {
@@ -461,7 +480,7 @@ function ActiveAudioPlayer({
             : 'url_fetch_failed'
         );
       });
-  }, [failPlayback, loadSegment, recordingId]);
+  }, [currentTimeSV, failPlayback, loadSegment, recordingId]);
 
   /**
    * The sole native positioning path for this player. Keeping the request in a

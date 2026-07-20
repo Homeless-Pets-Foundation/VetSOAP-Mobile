@@ -3,9 +3,11 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import ts from 'typescript';
 import vm from 'node:vm';
+import { loadTsModule } from './helpers/loadTs.mjs';
 
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
+const realValidation = await loadTsModule('src/lib/validation.ts');
 
 async function loadPure(path) {
   const source = await read(path);
@@ -64,10 +66,6 @@ async function loadHarness({
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const module = { exports: {} };
-  const identitySchema = {
-    parse: (value) => value,
-    partial() { return this; },
-  };
   const require = (specifier) => {
     const modules = {
       'expo-file-system/legacy': {
@@ -82,13 +80,7 @@ async function loadHarness({
         },
       },
       './client': { apiClient, ApiError },
-      '../lib/validation': {
-        recordingIdSchema: identitySchema,
-        recordingTaskIdSchema: identitySchema,
-        createRecordingSchema: identitySchema,
-        createRecordingPartialSchema: identitySchema,
-        searchQuerySchema: identitySchema,
-      },
+      '../lib/validation': realValidation,
       '../lib/aiModels': { normalizeOrgAiModels: (value) => value },
       '../lib/sslPinning': { validateUploadUrl: () => {} },
       '../lib/recordingTasks': { unwrapTaskList: (value) => value },
@@ -123,7 +115,12 @@ async function loadHarness({
     clearTimeout,
     AbortController,
   });
-  return { recordingsApi: module.exports.recordingsApi, events };
+  return {
+    recordingsApi: module.exports.recordingsApi,
+    normalizeCreateRecordingPayload: module.exports.normalizeCreateRecordingPayload,
+    normalizeDraftMetadataPayload: module.exports.normalizeDraftMetadataPayload,
+    events,
+  };
 }
 
 const recordingId = '11111111-1111-4111-8111-111111111111';
@@ -162,6 +159,23 @@ test('missing local audio fails preflight before preparation, create, presign, o
   assert.deepEqual(harness.events, []);
 });
 
+test('ordinary create and omitted-field draft payloads leave an unselected template out', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async () => { throw new Error('network must not run'); },
+  });
+
+  const createPayload = harness.normalizeCreateRecordingPayload({
+    patientName: 'Patient',
+    templateId: null,
+  });
+  const draftPayload = harness.normalizeDraftMetadataPayload({ patientName: 'Patient' });
+
+  assert.equal(Object.hasOwn(createPayload, 'templateId'), false);
+  assert.equal(Object.hasOwn(draftPayload, 'templateId'), false);
+  assert.deepEqual(harness.events, []);
+});
+
 test('prepared multi-file upload anchors first, PUTs exact ordered keys, persists hint, then confirms', async () => {
   const callbackEvents = [];
   const harness = await loadHarness({
@@ -191,6 +205,44 @@ test('prepared multi-file upload anchors first, PUTs exact ordered keys, persist
   assert.equal(result.id, recordingId);
   assert.deepEqual(callbackEvents, ['anchored', 'hint']);
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'put', 'post']);
+});
+
+test('restored durable draft with a null template completes preflight, prepare, PUT, and confirm', async () => {
+  const restoredMetadata = { ...metadata, patientName: 'Frosty Flake', templateId: null };
+  const restoredRecording = { ...recording, ...restoredMetadata };
+  const harness = await loadHarness({
+    getInfoAsync: async (uri) => {
+      assert.equal(uri, 'file:///durable-frosty.aac');
+      return { exists: true, size: 4096 };
+    },
+    post: async (path, body) => {
+      if (path.endsWith('/prepare-upload')) {
+        assert.equal(body.existingRecordingId, recordingId);
+        assert.equal(body.metadata.templateId, null);
+        return prepared(1);
+      }
+      if (path.endsWith('/confirm-upload')) {
+        assert.equal(body.metadata.templateId, null);
+        return restoredRecording;
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  const result = await harness.recordingsApi.createWithFile(
+    restoredMetadata,
+    'file:///durable-frosty.aac',
+    'audio/aac',
+    {
+      existingRecordingId: recordingId,
+      idempotencyKey: 'durable-restored-frosty',
+      mode: 'durable',
+    },
+  );
+
+  assert.equal(result.id, recordingId);
+  assert.equal(result.templateId, null);
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
 test('fresh confirmation accepts a server-supplied Patient ID when the submitted ID is blank', async () => {

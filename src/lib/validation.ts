@@ -25,6 +25,11 @@ const optionalAppointmentTypeSchema = z.preprocess((value) => {
   return sanitized.length > 0 ? sanitized : undefined;
 }, z.enum(APPOINTMENT_TYPES).optional());
 
+const optionalUuidSchema = z.preprocess(
+  (value) => (value === null || value === undefined ? undefined : value),
+  z.string().uuid().optional(),
+);
+
 export const recordingIdSchema = z
   .string()
   .regex(uuidPattern, 'Invalid recording ID format');
@@ -44,7 +49,7 @@ export const createRecordingSchema = z.object({
   breed: optionalSanitizedString(100, 'Breed name too long'),
   appointmentType: optionalAppointmentTypeSchema,
   foreignLanguage: z.boolean().optional(),
-  templateId: z.string().uuid().optional(),
+  templateId: optionalUuidSchema,
 });
 
 export const searchQuerySchema = z

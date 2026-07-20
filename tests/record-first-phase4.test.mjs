@@ -58,6 +58,23 @@ test('record-first validation accepts blank metadata but still trims and bounds 
   }));
 });
 
+test('recording validation accepts a missing template but rejects invalid template values', async () => {
+  const { createRecordingSchema } = await loadTsModule('src/lib/validation.ts');
+  const base = { patientName: 'Patient' };
+  const validUuid = '11111111-1111-4111-8111-111111111111';
+
+  assert.equal(createRecordingSchema.parse({ ...base, templateId: null }).templateId, undefined);
+  assert.equal(createRecordingSchema.parse(base).templateId, undefined);
+  assert.equal(
+    createRecordingSchema.parse({ ...base, templateId: validUuid }).templateId,
+    validUuid,
+  );
+
+  for (const templateId of ['not-a-uuid', '', 42]) {
+    assert.throws(() => createRecordingSchema.parse({ ...base, templateId }));
+  }
+});
+
 test('recording API normalizes create and draft metadata payloads before POST/PATCH', async () => {
   const source = await read('src/api/recordings.ts');
   assert.match(source, /export function normalizeCreateRecordingPayload/);

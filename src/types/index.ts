@@ -92,7 +92,7 @@ export interface CreateRecording {
   species?: string | null;
   breed?: string | null;
   appointmentType?: AppointmentType | '' | null;
-  templateId?: string;
+  templateId?: string | null;
   foreignLanguage?: boolean;
 }
 

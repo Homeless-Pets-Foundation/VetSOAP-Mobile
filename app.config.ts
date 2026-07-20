@@ -152,7 +152,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     name: IS_LOCAL_TEST ? 'Captivet Local' : 'Captivet',
     slug: 'vetsoap-mobile',
     scheme: IS_LOCAL_TEST ? 'captivet-local' : 'captivet',
-    version: '1.13.14',
+    version: '1.13.15',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',

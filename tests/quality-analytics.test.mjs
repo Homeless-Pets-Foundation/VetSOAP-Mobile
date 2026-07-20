@@ -199,7 +199,10 @@ test('Home renders clinic quality after Recent Recordings and refreshes it safel
   const source = await read('app/(app)/(tabs)/index.tsx');
 
   assert.match(source, /import \{ qualityAnalyticsApi \} from ['"].*src\/api\/qualityAnalytics['"]/);
-  assert.match(source, /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId\]/);
+  assert.match(
+    source,
+    /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId, user\?\.id, user\?\.role\]/
+  );
   assert.match(source, /queryFn:\s*\(\) => qualityAnalyticsApi\.getDashboardQuality\(\)/);
   assert.match(source, /refetchQuality\(\)\.catch\(\(\) => \{\}\)/);
   assert(
@@ -212,6 +215,10 @@ test('Home gates clinic quality fetch, manual refetch, and render by role and de
   const source = await read('app/(app)/(tabs)/index.tsx');
 
   assert.match(source, /const canViewQualityAnalytics = canRecordAppointments\(user\?\.role\)/);
+  assert.match(
+    source,
+    /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId, user\?\.id, user\?\.role\]/
+  );
   assert.match(source, /const canFetchQualityAnalytics = canLoadServerData && canViewQualityAnalytics/);
   assert.match(source, /enabled:\s*canFetchQualityAnalytics/);
   assert.match(source, /if \(canFetchQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);

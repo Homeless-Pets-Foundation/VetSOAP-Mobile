@@ -105,7 +105,7 @@ export default function HomeScreen() {
     refetch: refetchDrafts,
   } = draftsQuery;
   const qualityQuery = useQuery({
-    queryKey: ['dashboard', 'quality', user?.organizationId],
+    queryKey: ['dashboard', 'quality', user?.organizationId, user?.id, user?.role],
     queryFn: () => qualityAnalyticsApi.getDashboardQuality(),
     enabled: canFetchQualityAnalytics,
   });

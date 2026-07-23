@@ -2638,11 +2638,20 @@ function RecordingSession() {
                     draftSlotId: slot.draftSlotId ?? slot.id,
                     serverDraftId: recordingId,
                   });
-                  await draftStorage.updateServerDraftId(
+                  const anchorResult = await draftStorage.updateServerDraftId(
                     slot.draftSlotId ?? slot.id,
                     recordingId,
                     uploadKeyForSlot(slot),
                   );
+                  if (anchorResult === 'no_local_meta') {
+                    // This submit still owns the row (upload + confirm follow),
+                    // so it is not an orphan — deleting here would 404 our own
+                    // confirm. Record the anomaly; background reconciliation
+                    // owns cleanup if the submit dies.
+                    breadcrumb('draft', 'draft_anchor_missing_mid_submit', {
+                      slot_id: slot.id,
+                    });
+                  }
                   dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
                   if (hasNativeManifest) {
                     await durableRecorder
@@ -2960,11 +2969,17 @@ function RecordingSession() {
             draftSlotId: slot.draftSlotId ?? slot.id,
             serverDraftId: recordingId,
           });
-          await draftStorage.updateServerDraftId(
+          const anchorResult = await draftStorage.updateServerDraftId(
             slot.draftSlotId ?? slot.id,
             recordingId,
             uploadKeyForSlot(slot),
           );
+          if (anchorResult === 'no_local_meta') {
+            // Submit still owns this row — see the durable branch above.
+            breadcrumb('draft', 'draft_anchor_missing_mid_submit', {
+              slot_id: slot.id,
+            });
+          }
           dispatch({ type: 'CLEAR_DRAFT_DIRTY', slotId: slot.id });
         };
 
@@ -3411,8 +3426,31 @@ function RecordingSession() {
 
             if (!scopeIsCurrent()) return;
             dispatch({ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: serverId });
-            await awaitScoped(() => draftStorage.updateServerDraftId(draftSlotId, serverId));
+            const anchorResult = await awaitScoped(() =>
+              draftStorage.updateServerDraftId(draftSlotId, serverId),
+            );
             if (!scopeIsCurrent()) return;
+            if (
+              anchorResult === 'no_local_meta' &&
+              !submitIntentSlotIdsRef.current.has(slotId) &&
+              !completedUploadSlotIdsRef.current.has(slotId) &&
+              // A durable slot keeps a death-surviving anchor in its native
+              // manifest and re-promotes this row via `durable-${recordingId}`
+              // — the row is not orphaned, so it must not be deleted.
+              !slot.durable?.recordingId
+            ) {
+              // Fresh background create whose local anchor vanished before it
+              // persisted: the row has no owner and would strand forever
+              // (Sentry REACT-NATIVE-1F). Best-effort delete; failure just
+              // leaves it for the pending-sync orphan cleanup.
+              await awaitScoped(() =>
+                recordingsApi
+                  .delete(serverId!, { reason: 'orphan_draft_cleanup' })
+                  .catch(() => {}),
+              );
+              if (!scopeIsCurrent()) return;
+              return;
+            }
             invalidateRecordingCaches(queryClient, 'draft_changed');
           } catch (error) {
             // Auth may have switched while this operation waited behind another

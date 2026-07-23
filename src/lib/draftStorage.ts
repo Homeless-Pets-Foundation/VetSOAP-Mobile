@@ -84,10 +84,31 @@ export interface DraftMetadata {
 
 export type ServerDraftPresence = 'present' | 'missing' | 'unknown';
 
+/**
+ * Only 'no_local_meta' means the just-created server row has no local anchor
+ * and should be cleaned up by the caller. 'persist_failed' and 'no_user' must
+ * NOT trigger deletion: the local draft may still exist, and durable drafts
+ * re-promote the same server row via the deterministic `durable-${recordingId}`
+ * idempotency key — deleting would orphan the local side instead.
+ */
+export type UpdateServerDraftIdResult =
+  | 'updated'
+  | 'no_local_meta'
+  | 'restart_key_mismatch'
+  | 'persist_failed'
+  | 'no_user';
+
 export interface DraftSyncResult {
   attempted: number;
   succeeded: number;
   failed: number;
+  /**
+   * Server rows created by this sync whose local metadata vanished before the
+   * anchor could persist ('no_local_meta'). draftStorage cannot call the API —
+   * the caller (usePendingDraftSync) deletes these best-effort with reason
+   * 'orphan_draft_cleanup'.
+   */
+  orphanedServerIds: string[];
 }
 
 export interface DraftSaveOptions {
@@ -214,11 +235,12 @@ function draftBreadcrumb(
 function draftCaptureWarning(
   message: string,
   extra?: Record<string, unknown>,
+  level: 'warning' | 'info' = 'warning',
 ): void {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { captureMessage } = require('./monitoring') as typeof import('./monitoring');
-    captureMessage(message, 'warning', {
+    captureMessage(message, level, {
       tags: { component: 'draft_storage' },
       extra,
     });
@@ -1240,20 +1262,23 @@ export const draftStorage = {
     slotId: string,
     serverId: string,
     expectedUploadKey?: string,
-  ): Promise<void> {
+  ): Promise<UpdateServerDraftIdResult> {
     const userId = currentUserId;
-    if (!userId) return;
+    if (!userId) return 'no_user';
 
     try {
       const metadata = await readDraftChunks(userId, slotId);
       if (!metadata) {
-        // Server row exists (caller just created it) but local meta is gone.
-        // Without this signal the server row strands silently — exactly the
-        // rule-24 duplicate-on-submit risk.
-        draftCaptureWarning('draft_update_server_id_no_local_meta', {
-          slot_id: slotId,
-        });
-        return;
+        // Server row exists (caller just created it) but local meta is gone —
+        // the rule-24 duplicate-on-submit risk. Callers observe the returned
+        // 'no_local_meta' and delete the orphan server row, so this is an
+        // observed-and-handled event now: info breadcrumb, not an open issue.
+        draftCaptureWarning(
+          'draft_update_server_id_no_local_meta',
+          { slot_id: slotId },
+          'info',
+        );
+        return 'no_local_meta';
       }
 
       if (metadata.uploadRestartPending) {
@@ -1262,7 +1287,7 @@ export const draftStorage = {
           draftCaptureWarning('draft_update_server_id_restart_key_mismatch', {
             slot_id: slotId,
           });
-          return;
+          return 'restart_key_mismatch';
         }
         metadata.uploadKeyOverride = metadata.uploadRestartPending.replacementKey;
         metadata.supersededUploadKey = isAudioChangeUploadIdempotencyKey(
@@ -1279,6 +1304,7 @@ export const draftStorage = {
 
       await writeDraftChunks(userId, slotId, JSON.stringify(metadata));
       invalidateDraftsCache();
+      return 'updated';
     } catch (error) {
       // Failure here = local meta keeps `serverDraftId=null` while the server
       // has a draft row → next Submit creates a duplicate (rule 24). Surface
@@ -1287,6 +1313,7 @@ export const draftStorage = {
         slot_id: slotId,
         reason: classifyDraftFailure(error),
       });
+      return 'persist_failed';
     }
   },
 
@@ -1860,7 +1887,12 @@ export const draftStorage = {
     createFn: (draft: DraftMetadata) => Promise<{ id: string }>
   ): Promise<DraftSyncResult> {
     const previousUserId = currentUserId;
-    const result: DraftSyncResult = { attempted: 0, succeeded: 0, failed: 0 };
+    const result: DraftSyncResult = {
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      orphanedServerIds: [],
+    };
     try {
       currentUserId = userId;
 
@@ -1877,7 +1909,13 @@ export const draftStorage = {
 
         try {
           const created = await createFn(draft);
-          await this.updateServerDraftId(draft.slotId, created.id);
+          const anchor = await this.updateServerDraftId(draft.slotId, created.id);
+          // Durable drafts keep a death-surviving anchor in the native
+          // manifest (createFn persists it) and re-promote this row via the
+          // deterministic `durable-${recordingId}` key — not orphaned.
+          if (anchor === 'no_local_meta' && !draft.durable?.recordingId) {
+            result.orphanedServerIds.push(created.id);
+          }
           result.succeeded++;
         } catch {
           // Best-effort — skip drafts that fail to sync, but emit a

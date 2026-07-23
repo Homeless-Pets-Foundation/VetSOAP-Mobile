@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/react-native';
-import { DeviceEventEmitter, Platform } from 'react-native';
+import { AppState, DeviceEventEmitter, Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { SENTRY_DSN } from '../config';
 import { shouldEmit } from './rateLimitMonitoring';
@@ -385,7 +385,30 @@ export function measurePhase<T>(
       : typeof configuredThreshold === 'number' && configuredThreshold > 0
         ? configuredThreshold
         : 5000;
+  // performance.now() keeps counting while Android suspends the app, so a
+  // phase awaited across a suspension reports minutes of wall time (observed:
+  // a 614s registerDevice). Track whether the app left 'active' during the
+  // measured window and suppress the slow-phase warning — the breadcrumb
+  // keeps the raw duration so genuine latency stays observable.
+  let leftActiveState = false;
+  let appStateSubscription: { remove: () => void } | null = null;
+  try {
+    if (AppState.currentState != null && AppState.currentState !== 'active') {
+      leftActiveState = true;
+    }
+    appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') leftActiveState = true;
+    });
+  } catch {
+    // Guard is best-effort; measurement must never fail because of it.
+  }
   const finish = (outcome: 'success' | 'error') => {
+    try {
+      appStateSubscription?.remove();
+    } catch {
+      // swallow
+    }
+    appStateSubscription = null;
     const durationMs = Math.max(0, Math.round(nowMs() - startedAt));
     const sanitizedTags: Record<string, string> = {
       phase: name,
@@ -404,9 +427,10 @@ export function measurePhase<T>(
       outcome,
       skipped: sanitizedTags.skipped,
       count: sanitizedTags.count,
+      ...(leftActiveState ? { app_suspended: 'true' } : {}),
     });
 
-    if (warningThresholdMs !== null && durationMs >= warningThresholdMs) {
+    if (warningThresholdMs !== null && durationMs >= warningThresholdMs && !leftActiveState) {
       captureMessage(`slow_phase_${name}`, 'warning', {
         tags: sanitizedTags,
         extra: { duration_ms: durationMs, warning_threshold_ms: warningThresholdMs },

@@ -1535,6 +1535,40 @@ export const recordingsApi = {
   },
 
   /**
+   * Best-effort cleanup of a server draft row whose local anchor vanished
+   * ('no_local_meta'). A concurrent Submit shares the same effective upload
+   * idempotency key and can therefore own the very same row — but a Submit
+   * only removes the local draft AFTER confirm-upload succeeds, which moves
+   * the row off 'draft'. The authoritative guard is SERVER-side: with
+   * reason 'orphan_draft_cleanup' the API deletes atomically on a
+   * status='draft' precondition and answers 409 RECORDING_NOT_DRAFT for a
+   * claimed row (any client-side read would race the confirm). The
+   * draft-presence pre-check here is only a cheap short-circuit and a
+   * safety net against servers predating the atomic guard. Never throws.
+   */
+  async deleteOrphanDraftIfUnclaimed(
+    id: string,
+  ): Promise<'deleted' | 'skipped' | 'failed'> {
+    try {
+      recordingIdSchema.parse(id);
+      const presence = await this.draftPresence([id]);
+      const row = presence.recordings.find((entry) => entry.id === id);
+      // Absent (already gone / replaced) or no longer 'draft' (a submit,
+      // upload confirm, or processing pipeline claimed it) — leave it alone.
+      if (!row || row.status !== 'draft') return 'skipped';
+      await this.delete(id, { reason: 'orphan_draft_cleanup' });
+      return 'deleted';
+    } catch (error) {
+      // The atomic server precondition refused: a concurrent submit claimed
+      // the row between the presence read and the delete. Desired outcome.
+      if (error instanceof ApiError && error.code === 'RECORDING_NOT_DRAFT') {
+        return 'skipped';
+      }
+      return 'failed';
+    }
+  },
+
+  /**
    * PATCH metadata on a recording still in `draft` status. Used by the
    * draft-save-on-finish upload flow to flush edited formData to the server
    * before confirm-upload commits the draft into processing.

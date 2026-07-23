@@ -783,7 +783,7 @@ test('draftStorage: durable restart marker blocks sync until phase 2 commits', a
     creates++;
     return { id: 'must-not-create' };
   });
-  assert.deepEqual({ ...result }, { attempted: 0, succeeded: 0, failed: 0 });
+  assert.deepEqual({ ...result, orphanedServerIds: [...result.orphanedServerIds] }, { attempted: 0, succeeded: 0, failed: 0, orphanedServerIds: [] });
   assert.equal(creates, 0);
 
   assert.equal(
@@ -827,7 +827,7 @@ test('draftStorage: re-saving a restarted draft cannot enter ordinary background
     creates++;
     return { id: 'must-not-create' };
   });
-  assert.deepEqual({ ...result }, { attempted: 0, succeeded: 0, failed: 0 });
+  assert.deepEqual({ ...result, orphanedServerIds: [...result.orphanedServerIds] }, { attempted: 0, succeeded: 0, failed: 0, orphanedServerIds: [] });
   assert.equal(creates, 0);
 });
 

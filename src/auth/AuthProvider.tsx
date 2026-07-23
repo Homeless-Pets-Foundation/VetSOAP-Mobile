@@ -921,7 +921,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } finally {
         registerDeviceInFlightRef.current = null;
       }
-    });
+    // Cold-start network round trip; the 5s default is wrong for low-end
+    // clinic tablets (Sentry REACT-NATIVE-1A).
+    }, { warningThresholdMs: 10_000 });
     registerDeviceInFlightRef.current = promise;
     return promise;
   }, [handleMfaRequiredResponse]);
@@ -1088,7 +1090,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
     return false;
-  }), [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
+  // Cold-start network round trip; the 5s default is wrong for low-end
+  // clinic tablets (Sentry REACT-NATIVE-1B).
+  }, { warningThresholdMs: 10_000 }), [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
 
   const applyBearerMfaTokens = useCallback(async (tokens?: MfaApiResponse['tokens']) => {
     if (!tokens) return;

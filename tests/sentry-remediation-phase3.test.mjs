@@ -397,7 +397,10 @@ test('deleteOrphanDraftIfUnclaimed requires a still-draft server status and neve
   assert.match(body, /row\.status !== 'draft'/);
   assert.match(body, /return 'skipped'/);
   assert.match(body, /reason: 'orphan_draft_cleanup'/);
-  assert.match(body, /catch\s*\{\s*\n\s*return 'failed'/);
+  // The authoritative guard is server-side and atomic: the 409 from the
+  // conditional delete must be treated as skipped, not failed.
+  assert.match(body, /error\.code === 'RECORDING_NOT_DRAFT'/);
+  assert.match(body, /return 'failed'/);
 });
 
 test('record.tsx deletes the unanchored background create and never deletes mid-submit', async () => {

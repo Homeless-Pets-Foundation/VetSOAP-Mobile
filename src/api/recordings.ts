@@ -1539,9 +1539,12 @@ export const recordingsApi = {
    * ('no_local_meta'). A concurrent Submit shares the same effective upload
    * idempotency key and can therefore own the very same row — but a Submit
    * only removes the local draft AFTER confirm-upload succeeds, which moves
-   * the row off 'draft'. So a status precondition ("still draft on the
-   * server") is what distinguishes a genuinely abandoned row from one a
-   * submit just claimed and completed. Never throws.
+   * the row off 'draft'. The authoritative guard is SERVER-side: with
+   * reason 'orphan_draft_cleanup' the API deletes atomically on a
+   * status='draft' precondition and answers 409 RECORDING_NOT_DRAFT for a
+   * claimed row (any client-side read would race the confirm). The
+   * draft-presence pre-check here is only a cheap short-circuit and a
+   * safety net against servers predating the atomic guard. Never throws.
    */
   async deleteOrphanDraftIfUnclaimed(
     id: string,
@@ -1555,7 +1558,12 @@ export const recordingsApi = {
       if (!row || row.status !== 'draft') return 'skipped';
       await this.delete(id, { reason: 'orphan_draft_cleanup' });
       return 'deleted';
-    } catch {
+    } catch (error) {
+      // The atomic server precondition refused: a concurrent submit claimed
+      // the row between the presence read and the delete. Desired outcome.
+      if (error instanceof ApiError && error.code === 'RECORDING_NOT_DRAFT') {
+        return 'skipped';
+      }
       return 'failed';
     }
   },

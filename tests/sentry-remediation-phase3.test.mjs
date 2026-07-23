@@ -351,7 +351,9 @@ test('record.tsx deletes the unanchored background create and never deletes mid-
   const src = await read('app/(app)/(tabs)/record.tsx');
   // Background reconciliation create: delete on no_local_meta, guarded by
   // scope + submit-intent + durable checks.
-  assert.match(src, /anchorResult === 'no_local_meta' &&\s*\n\s*!submitIntentSlotIdsRef\.current\.has\(slotId\)/);
+  assert.match(src, /anchorResult === 'no_local_meta' &&/);
+  assert.match(src, /createdFreshServerRow &&/);
+  assert.match(src, /!submitIntentSlotIdsRef\.current\.has\(slotId\)/);
   assert.match(src, /!slot\.durable\?\.recordingId/);
   assert.match(src, /\.delete\(serverId!, \{ reason: 'orphan_draft_cleanup' \}\)/);
   // Mid-submit anchor loss must breadcrumb, not delete.

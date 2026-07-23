@@ -3344,6 +3344,7 @@ function RecordingSession() {
             if (!isConnected || submitIntentSlotIdsRef.current.has(slotId)) return;
 
             let serverId: string | null = null;
+            let createdFreshServerRow = false;
             if (slot.serverDraftId) {
               const outcome = await awaitScoped(() =>
                 patchDraftMetadataWithRetry(
@@ -3399,6 +3400,7 @@ function RecordingSession() {
                 }),
               );
               serverId = result.id;
+              createdFreshServerRow = true;
               if (durableRecordingId) {
                 await awaitScoped(() =>
                   durableRecorder.setServerRecordingId({
@@ -3432,6 +3434,10 @@ function RecordingSession() {
             if (!scopeIsCurrent()) return;
             if (
               anchorResult === 'no_local_meta' &&
+              // Only a row THIS pass created can be an unanchored orphan. A
+              // pre-existing server draft (patch branch) is owned by the
+              // snapshot-driven reconciliation/orphan-cleanup flows instead.
+              createdFreshServerRow &&
               !submitIntentSlotIdsRef.current.has(slotId) &&
               !completedUploadSlotIdsRef.current.has(slotId) &&
               // A durable slot keeps a death-surviving anchor in its native

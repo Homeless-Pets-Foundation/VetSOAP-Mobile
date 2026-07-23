@@ -3447,13 +3447,11 @@ function RecordingSession() {
             ) {
               // Fresh background create whose local anchor vanished before it
               // persisted: the row has no owner and would strand forever
-              // (Sentry REACT-NATIVE-1F). Best-effort delete; failure just
-              // leaves it for the pending-sync orphan cleanup.
-              await awaitScoped(() =>
-                recordingsApi
-                  .delete(serverId!, { reason: 'orphan_draft_cleanup' })
-                  .catch(() => {}),
-              );
+              // (Sentry REACT-NATIVE-1F). Status-preconditioned: a row a
+              // racing Submit claimed via the shared idempotency key is no
+              // longer 'draft' after confirm and is left alone. Best-effort;
+              // failure just leaves it for the pending-sync orphan cleanup.
+              await awaitScoped(() => recordingsApi.deleteOrphanDraftIfUnclaimed(serverId!));
               if (!scopeIsCurrent()) return;
               return;
             }

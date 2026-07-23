@@ -287,6 +287,46 @@ test('updateServerDraftId returns no_local_meta at info level when the draft van
   assert.equal(event.level, 'info', 'handled event must not reopen a warning-level issue');
 });
 
+test('updateServerDraftId refuses no_local_meta when storage is unreadable', async () => {
+  const { draftStorage, mock, captured } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+
+  const originalGet = mock.getItemAsync;
+  mock.getItemAsync = async () => {
+    throw new Error('Keystore unavailable');
+  };
+  try {
+    const result = await draftStorage.updateServerDraftId('slot1', 'server-1');
+    assert.equal(
+      result,
+      'persist_failed',
+      'unprovable absence must take the non-deleting path',
+    );
+  } finally {
+    mock.getItemAsync = originalGet;
+  }
+  const event = captured.find((c) => c.message === 'draft_update_server_id_meta_unreadable');
+  assert.ok(event, 'unreadable storage must surface its own event');
+  assert.equal(
+    captured.some((c) => c.message === 'draft_update_server_id_no_local_meta'),
+    false,
+  );
+});
+
+test('updateServerDraftId treats corrupt meta as unreadable, not absent', async () => {
+  const { draftStorage, state } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+
+  for (const key of [...state.keys()]) {
+    if (key.includes('slot1')) state.set(key, '{not json');
+  }
+
+  const result = await draftStorage.updateServerDraftId('slot1', 'server-1');
+  assert.equal(result, 'persist_failed', 'corrupt-but-present meta must not orphan-delete');
+});
+
 test('updateServerDraftId returns persist_failed when the write throws', async () => {
   const { draftStorage, mock } = await loadDraftStorage();
   draftStorage.setUserId('userA');
@@ -339,12 +379,25 @@ test('syncPending reports no orphans when the anchor persists', async () => {
 test('usePendingDraftSync deletes surfaced orphans best-effort with orphan_draft_cleanup', async () => {
   const src = await read('src/hooks/usePendingDraftSync.ts');
   assert.match(src, /for \(const orphanId of result\.orphanedServerIds\)/);
-  assert.match(src, /\.delete\(orphanId, \{ reason: 'orphan_draft_cleanup' \}\)/);
   assert.match(
     src,
-    /\.delete\(orphanId, \{ reason: 'orphan_draft_cleanup' \}\)\s*\n\s*\.catch\(\(\) => \{\}\)/,
-    'orphan delete must be best-effort and never throw into the sync path',
+    /await recordingsApi\.deleteOrphanDraftIfUnclaimed\(orphanId\);/,
+    'orphan cleanup must go through the status-preconditioned never-throwing helper',
   );
+});
+
+test('deleteOrphanDraftIfUnclaimed requires a still-draft server status and never throws', async () => {
+  const src = await read('src/api/recordings.ts');
+  const helper = src.slice(src.indexOf('async deleteOrphanDraftIfUnclaimed'));
+  assert.ok(helper.length > 0, 'helper must exist on recordingsApi');
+  const body = helper.slice(0, helper.indexOf('},'));
+  // Status precondition: a row a concurrent submit claimed (shared
+  // idempotency key) leaves 'draft' at confirm and must be skipped.
+  assert.match(body, /this\.draftPresence\(\[id\]\)/);
+  assert.match(body, /row\.status !== 'draft'/);
+  assert.match(body, /return 'skipped'/);
+  assert.match(body, /reason: 'orphan_draft_cleanup'/);
+  assert.match(body, /catch\s*\{\s*\n\s*return 'failed'/);
 });
 
 test('record.tsx deletes the unanchored background create and never deletes mid-submit', async () => {
@@ -355,7 +408,7 @@ test('record.tsx deletes the unanchored background create and never deletes mid-
   assert.match(src, /createdFreshServerRow &&/);
   assert.match(src, /!submitIntentSlotIdsRef\.current\.has\(slotId\)/);
   assert.match(src, /!slot\.durable\?\.recordingId/);
-  assert.match(src, /\.delete\(serverId!, \{ reason: 'orphan_draft_cleanup' \}\)/);
+  assert.match(src, /recordingsApi\.deleteOrphanDraftIfUnclaimed\(serverId!\)/);
   // Mid-submit anchor loss must breadcrumb, not delete.
   const midSubmit = src.match(/draft_anchor_missing_mid_submit/g) ?? [];
   assert.equal(midSubmit.length, 2, 'both submit-path call sites record the anomaly instead of deleting');

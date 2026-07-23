@@ -490,6 +490,27 @@ async function readDraftChunks(
   }
 }
 
+/**
+ * Prove the draft's meta keys are genuinely absent — as opposed to present
+ * but unreadable (Keystore/Direct Boot/low-storage failures, chunk loss,
+ * JSON corruption). Only proven absence may classify as 'no_local_meta',
+ * because callers delete the server row on that result; anything less
+ * certain must take the non-deleting path.
+ */
+async function draftMetaKeysAbsent(userId: string, slotId: string): Promise<boolean> {
+  try {
+    const metaRaw = await SecureStore.getItemAsync(draftMetaKeyForUser(userId, slotId));
+    if (metaRaw !== null) return false;
+    const legacyRaw = await SecureStore.getItemAsync(
+      legacyDraftMetadataKeyForUser(userId, slotId),
+    );
+    return legacyRaw === null;
+  } catch {
+    // Read failure — absence cannot be proven.
+    return false;
+  }
+}
+
 function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -1269,6 +1290,17 @@ export const draftStorage = {
     try {
       const metadata = await readDraftChunks(userId, slotId);
       if (!metadata) {
+        // readDraftChunks conflates "absent" with "unreadable/corrupt" —
+        // Keystore or chunk-read failures also yield null while the draft
+        // still exists. Callers delete the server row on 'no_local_meta',
+        // so only PROVEN absence may return it; anything unreadable takes
+        // the non-deleting 'persist_failed' path and retries later.
+        if (!(await draftMetaKeysAbsent(userId, slotId))) {
+          draftCaptureWarning('draft_update_server_id_meta_unreadable', {
+            slot_id: slotId,
+          });
+          return 'persist_failed';
+        }
         // Server row exists (caller just created it) but local meta is gone —
         // the rule-24 duplicate-on-submit risk. Callers observe the returned
         // 'no_local_meta' and delete the orphan server row, so this is an

@@ -66,12 +66,12 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
       });
       // A 'no_local_meta' anchor result means the freshly created server row
       // has no surviving local draft — without cleanup it strands forever
-      // (Sentry REACT-NATIVE-1F). Best-effort delete; a failure just leaves
-      // the row for the next server-side orphan sweep, never fails the sync.
+      // (Sentry REACT-NATIVE-1F). The status-preconditioned helper refuses to
+      // delete a row a concurrent Submit claimed (same idempotency key) once
+      // confirm moved it off 'draft'. Best-effort; a failure just leaves the
+      // row for a later sweep, never fails the sync.
       for (const orphanId of result.orphanedServerIds) {
-        await recordingsApi
-          .delete(orphanId, { reason: 'orphan_draft_cleanup' })
-          .catch(() => {});
+        await recordingsApi.deleteOrphanDraftIfUnclaimed(orphanId);
       }
       if (result.failed > 0) {
         lastFailedAtByUser.set(userId, Date.now());

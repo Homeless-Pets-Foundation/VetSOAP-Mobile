@@ -378,10 +378,10 @@ test('syncPending reports no orphans when the anchor persists', async () => {
 
 test('usePendingDraftSync deletes surfaced orphans best-effort with orphan_draft_cleanup', async () => {
   const src = await read('src/hooks/usePendingDraftSync.ts');
-  assert.match(src, /for \(const orphanId of result\.orphanedServerIds\)/);
+  assert.match(src, /for \(const orphanId of orphanIds\)/);
   assert.match(
     src,
-    /await recordingsApi\.deleteOrphanDraftIfUnclaimed\(orphanId\);/,
+    /await recordingsApi\.deleteOrphanDraftIfUnclaimed\(orphanId\)/,
     'orphan cleanup must go through the status-preconditioned never-throwing helper',
   );
 });
@@ -415,6 +415,43 @@ test('record.tsx deletes the unanchored background create and never deletes mid-
   // Mid-submit anchor loss must breadcrumb, not delete.
   const midSubmit = src.match(/draft_anchor_missing_mid_submit/g) ?? [];
   assert.equal(midSubmit.length, 2, 'both submit-path call sites record the anomaly instead of deleting');
+});
+
+test('orphanDraftRetry retains ids per user until drained', async () => {
+  const mod = await loadTsModuleWithMocks('src/lib/orphanDraftRetry.ts', {});
+  mod.rememberOrphanDraftId('userA', 'rec-1');
+  mod.rememberOrphanDraftId('userA', 'rec-2');
+  mod.rememberOrphanDraftId('userA', 'rec-1');
+  mod.rememberOrphanDraftId('userB', 'rec-3');
+
+  const drainedA = mod.takeOrphanDraftIds('userA').sort();
+  assert.equal(drainedA.length, 2);
+  assert.equal(drainedA[0], 'rec-1');
+  assert.equal(drainedA[1], 'rec-2');
+  assert.equal(mod.takeOrphanDraftIds('userA').length, 0, 'drain empties the set');
+  assert.equal(mod.takeOrphanDraftIds('userB').length, 1, 'users are isolated');
+});
+
+test('failed orphan cleanups are retained for the next sync run', async () => {
+  const hookSrc = await read('src/hooks/usePendingDraftSync.ts');
+  assert.match(hookSrc, /\.\.\.takeOrphanDraftIds\(userId\)/, 'sync must drain retained ids');
+  assert.match(
+    hookSrc,
+    /if \(outcome === 'failed'\) rememberOrphanDraftId\(userId, orphanId\);/,
+    'a transient failure must re-retain the id — nothing local can rediscover it',
+  );
+  const recordSrc = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(recordSrc, /rememberOrphanDraftId\(initiatingUserId, serverId!\)/);
+});
+
+test('record.tsx clears the slot draft anchor after deleting its orphan row', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+  const cleanup = src.slice(src.indexOf('deleteOrphanDraftIfUnclaimed(serverId!)'));
+  assert.match(
+    cleanup.slice(0, 800),
+    /dispatch\(\{ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: null \}\)/,
+    'a deleted row must not remain the slot anchor or Submit promotes a dead draft',
+  );
 });
 
 test('AuthProvider raises fetchUser and registerDevice thresholds to 10s', async () => {

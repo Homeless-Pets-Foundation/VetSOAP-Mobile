@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { recordingsApi } from '../api/recordings';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import { draftStorage, type DraftSyncResult } from '../lib/draftStorage';
+import { rememberOrphanDraftId, takeOrphanDraftIds } from '../lib/orphanDraftRetry';
 import { measurePhase } from '../lib/monitoring';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 import { canRecordAppointments } from '../lib/recordingPermissions';
@@ -68,10 +69,16 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
       // has no surviving local draft — without cleanup it strands forever
       // (Sentry REACT-NATIVE-1F). The status-preconditioned helper refuses to
       // delete a row a concurrent Submit claimed (same idempotency key) once
-      // confirm moved it off 'draft'. Best-effort; a failure just leaves the
-      // row for a later sweep, never fails the sync.
-      for (const orphanId of result.orphanedServerIds) {
-        await recordingsApi.deleteOrphanDraftIfUnclaimed(orphanId);
+      // confirm moved it off 'draft'. Best-effort and never throws — but a
+      // transiently failed id is the ONLY copy (nothing local can rediscover
+      // it), so retain it for the next sync run instead of dropping it.
+      const orphanIds = new Set([
+        ...result.orphanedServerIds,
+        ...takeOrphanDraftIds(userId),
+      ]);
+      for (const orphanId of orphanIds) {
+        const outcome = await recordingsApi.deleteOrphanDraftIfUnclaimed(orphanId);
+        if (outcome === 'failed') rememberOrphanDraftId(userId, orphanId);
       }
       if (result.failed > 0) {
         lastFailedAtByUser.set(userId, Date.now());

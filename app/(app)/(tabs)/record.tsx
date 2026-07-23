@@ -27,6 +27,7 @@ import {
 import { Toast } from '../../../src/components/Toast';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
+import { rememberOrphanDraftId } from '../../../src/lib/orphanDraftRetry';
 import { stashStorage, MAX_STASHES } from '../../../src/lib/stashStorage';
 import { recoveryIntent, type RecoveryIntentReason } from '../../../src/lib/recoveryIntent';
 import {
@@ -3450,9 +3451,19 @@ function RecordingSession() {
               // (Sentry REACT-NATIVE-1F). Status-preconditioned: a row a
               // racing Submit claimed via the shared idempotency key is no
               // longer 'draft' after confirm and is left alone. Best-effort;
-              // failure just leaves it for the pending-sync orphan cleanup.
-              await awaitScoped(() => recordingsApi.deleteOrphanDraftIfUnclaimed(serverId!));
+              // a transient failure hands the id to the pending-sync retry
+              // queue (nothing local can rediscover it otherwise).
+              const cleanupOutcome = await awaitScoped(() =>
+                recordingsApi.deleteOrphanDraftIfUnclaimed(serverId!),
+              );
+              if (cleanupOutcome === 'failed' && initiatingUserId) {
+                rememberOrphanDraftId(initiatingUserId, serverId!);
+              }
               if (!scopeIsCurrent()) return;
+              // The SET_DRAFT_IDS above anchored this slot to the row we just
+              // deleted — clear it, or the next recording in this slot would
+              // try to promote a deleted draft on Submit.
+              dispatch({ type: 'SET_DRAFT_IDS', slotId, draftSlotId, serverDraftId: null });
               return;
             }
             invalidateRecordingCaches(queryClient, 'draft_changed');

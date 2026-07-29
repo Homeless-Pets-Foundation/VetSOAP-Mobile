@@ -848,6 +848,35 @@ test('anchor: a vet needs COMPLETE local audio to reuse a pending-confirm slot',
   assert.match(local, /vaultSlotIsRecoverableStrict\(slot, user\)/);
 });
 
+test('a PRESENT but malformed active pointer is unknown, never a fallback', async () => {
+  // Codex round 5: only `null` means pre-migration. A corrupt pointer value fell
+  // through and returned the first readable legacy/inactive generation, which may
+  // predate the newest stash.
+  for (const corrupt of ['x', 'A', 'ab', '', ' a']) {
+    const secure = makeSecureStoreMock();
+    secure.__store.set(`captivet_stash_${USER}_active`, corrupt);
+    secure.__store.set(`captivet_stash_${USER}_count`, '1');
+    secure.__store.set(
+      `captivet_stash_${USER}_chunk_0`,
+      JSON.stringify([
+        { id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [] }] },
+      ])
+    );
+    const stashStorage = await loadStashStorage(secure);
+    await assert.rejects(
+      () => stashStorage.getStashedSessionsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      `pointer ${JSON.stringify(corrupt)} must be unknown`
+    );
+  }
+
+  // Both readers guard it.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(vault, /vault:invalid_active_pointer/);
+  const stash = await read('src/lib/stashStorage.ts');
+  assert.match(stash, /stash:invalid_active_pointer/);
+});
+
 test('both strict chunk-count readers use the whole-string integer parser', async () => {
   const strictRead = await read('src/lib/strictRead.ts');
   assert.match(strictRead, /export function parseStrictChunkCount/);

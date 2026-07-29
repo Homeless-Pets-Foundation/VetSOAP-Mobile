@@ -112,7 +112,11 @@ export default function AttentionScreen() {
    */
   const emptyState = useMemo(() => {
     if (feed.items.length > 0) return null;
-    if (feed.isLoading && !feed.isSettled) {
+    // EITHER unsettled source is still "loading". Keying off `isSettled` alone
+    // left a cold open blank for up to the eight-second local timeout whenever
+    // the server page won the race: no rows, `isClean` false, and no local
+    // notice yet, so every branch below fell through to `null`.
+    if (!feed.isSettled || !feed.localSettled) {
       return (
         <View>
           <SkeletonCard />
@@ -143,8 +147,8 @@ export default function AttentionScreen() {
     colors.statusSuccessFg,
     coverageFooter,
     feed.isClean,
-    feed.isLoading,
     feed.isSettled,
+    feed.localSettled,
     feed.items.length,
   ]);
 

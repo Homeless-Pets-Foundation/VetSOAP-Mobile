@@ -271,6 +271,14 @@ async function getStashedSessionsForUserStrictInternal(
   // `none` recovery anchor would unlock deleting the server recording while its
   // audio is still stashed on this device. An older generation may prove
   // PRESENCE, never absence or a complete count.
+  // A PRESENT but malformed pointer is corruption, not a pre-migration absence.
+  // Letting it fall through returned the first readable legacy/inactive
+  // generation, which may predate the newest stash — the same known-zero count
+  // and `none` anchor the checks above exist to prevent.
+  if (activeGeneration !== null && activeGeneration !== 'a' && activeGeneration !== 'b') {
+    throw new StrictReadUnavailableError('stash:invalid_active_pointer');
+  }
+
   if (activeGeneration === 'a' || activeGeneration === 'b') {
     const activeSessions = await readSessionsForKeysStrict(
       generationCountKeyForUser(userId, activeGeneration),

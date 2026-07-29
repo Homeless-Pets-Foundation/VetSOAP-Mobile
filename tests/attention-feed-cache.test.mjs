@@ -402,6 +402,24 @@ test('Home hides the section only for a settled, coverage-complete, clean feed',
   assert.match(section, /ATTENTION_FEED_COPY\.loading/);
 });
 
+test('the full attention screen shows a loader until BOTH sources settle', async () => {
+  // Codex round 5: keying the loader off `isSettled` alone left a cold open blank
+  // for up to the local read's eight-second timeout whenever the server page won
+  // the race — no rows, isClean false, no local notice, so every branch fell to
+  // null.
+  const screen = await read('app/(app)/(tabs)/recordings/attention.tsx');
+  assert.match(screen, /if \(!feed\.isSettled \|\| !feed\.localSettled\) \{/);
+  const emptyState = screen.slice(
+    screen.indexOf('const emptyState = useMemo'),
+    screen.indexOf('return (\n    <SafeAreaView')
+  );
+  assert.ok(
+    emptyState.indexOf('!feed.localSettled') < emptyState.indexOf('feed.isClean'),
+    'the loader is chosen before any clean claim'
+  );
+  assert.match(screen, /feed\.localSettled,\n/);
+});
+
 test('a pagination total smaller than the returned page is malformed', async () => {
   // Codex P2: rows and pagination were validated independently, so five rows
   // reporting `total: 0` passed and attentionCoverage() called it COMPLETE —

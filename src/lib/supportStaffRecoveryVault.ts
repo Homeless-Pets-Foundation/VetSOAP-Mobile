@@ -571,6 +571,13 @@ async function readItemsStrict(): Promise<RecoveryItem[]> {
   // real recovery work and let the unavailable-recording guard conclude there is
   // no vault anchor, exposing a destructive server delete. An older generation
   // can establish a positive match, never absence or a complete count.
+  // A PRESENT but malformed pointer is corruption, not a pre-migration absence
+  // (see the matching guard in stashStorage): falling through could certify a
+  // generation that predates newly preserved recordings.
+  if (active !== null && active !== 'a' && active !== 'b') {
+    throw new StrictReadUnavailableError('vault:invalid_active_pointer');
+  }
+
   if (active === 'a' || active === 'b') {
     const activeItems = await readItemsForGenerationStrict(active);
     if (activeItems === null) {

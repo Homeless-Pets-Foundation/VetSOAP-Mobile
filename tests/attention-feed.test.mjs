@@ -720,7 +720,11 @@ test('an unknown local source contributes NO row (never a false zero, never a fa
   assert.equal(FEED.isUnsentWorkSummaryKnown({ draftsKnown: true, stashesKnown: true }), true);
 });
 
-test('support staff keep the local data-loss warning but get a recovery CTA, never Resume', () => {
+test('support staff keep the local data-loss warning but get NO link, never Resume', () => {
+  // Codex round 6: `/recording-recovery` is gated on canRecordAppointments, so it
+  // renders "Recovery Not Available" for exactly this cohort, and their current
+  // work is not in the owner/admin/vet vault until sign-out preservation runs —
+  // so any destination was a dead end. The warning stays; the tap does not.
   const local = FEED.buildLocalAttentionItems(
     { draftCount: 1, stashSessionCount: 1, draftsKnown: true, stashesKnown: true },
     SUPPORT
@@ -728,10 +732,30 @@ test('support staff keep the local data-loss warning but get a recovery CTA, nev
   assert.equal(local.length, 2);
   for (const item of local) {
     assert.equal(item.actionable, true, 'stays in Needs you — it is this account’s data');
-    assert.equal(item.destination.kind, 'recovery');
-    assert.equal(item.ctaLabel, COPY.ctaViewSavedWork);
+    assert.equal(item.destination.kind, 'informational');
+    assert.equal(item.ctaLabel, null, 'no CTA that would dead-end');
+    // The body still names who can act on it.
     assert.ok(item.body.includes(COPY.localSupportStaffNote));
   }
+
+  // A submitting role still gets its real routes.
+  const vetLocal = FEED.buildLocalAttentionItems(
+    { draftCount: 1, stashSessionCount: 1, draftsKnown: true, stashesKnown: true },
+    VET
+  );
+  assert.deepEqual(
+    plain(vetLocal.map((item) => item.destination.kind)).sort(),
+    ['record_tab', 'recordings_list']
+  );
+  assert.ok(vetLocal.every((item) => item.ctaLabel));
+});
+
+test('an informational row renders without a tap target or chevron', async () => {
+  const section = await read('src/components/AttentionFeedSection.tsx');
+  assert.match(section, /const isInformational = item\.destination\.kind === 'informational';/);
+  assert.match(section, /showChevron=\{!isInformational\}/);
+  // `ListItem` renders a plain View when onPress is undefined.
+  assert.match(section, /onPress=\{\s*\n\s*isInformational\s*\n\s*\? undefined/);
 });
 
 test('groupAttentionItems splits by actionability without dropping practice-wide rows', () => {

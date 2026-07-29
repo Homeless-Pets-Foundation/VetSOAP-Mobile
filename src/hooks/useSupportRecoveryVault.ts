@@ -26,11 +26,25 @@ export interface SupportRecoveryVaultSummary {
   refresh: () => void;
 }
 
+/**
+ * The ROLE is part of the key because `listItemsForUserStrict` is role-dependent:
+ * owner/admin may recover a pending-confirm-only item, while a veterinarian
+ * needs complete local audio. Without it, the same signed-in user changing role
+ * without a sign-out would keep the previous role's count and completeness —
+ * advertising work the new role cannot restore, or hiding work after promotion.
+ */
 export function supportRecoveryVaultQueryKey(
   userId: string | null | undefined,
-  organizationId: string | null | undefined
+  organizationId: string | null | undefined,
+  role: string | null | undefined
 ): unknown[] {
-  return ['support-recovery', 'vault-summary', userId ?? 'anonymous', organizationId ?? 'none'];
+  return [
+    'support-recovery',
+    'vault-summary',
+    userId ?? 'anonymous',
+    organizationId ?? 'none',
+    role ?? 'none',
+  ];
 }
 
 export function useSupportRecoveryVaultSummary(): SupportRecoveryVaultSummary {
@@ -38,9 +52,16 @@ export function useSupportRecoveryVaultSummary(): SupportRecoveryVaultSummary {
   const enabled = !!user?.id && !!user.organizationId && canRecordAppointments(user.role);
 
   const query = useQuery({
-    queryKey: supportRecoveryVaultQueryKey(user?.id, user?.organizationId),
+    queryKey: supportRecoveryVaultQueryKey(user?.id, user?.organizationId, user?.role),
     enabled,
     staleTime: 60_000,
+    // No retries: this read is ALREADY bounded by its own timeout, and the global
+    // policy retries non-ApiError failures twice. A hanging SecureStore or
+    // filesystem probe would therefore hold the hook in `loading` for ~3 timeout
+    // windows plus backoff — Home suppresses the recovery banner throughout —
+    // and each retry would start another native read while the timed-out one may
+    // still be running. One bounded attempt, then the advertised `unknown`.
+    retry: false,
     queryFn: async () => {
       const snapshot = await withPromiseTimeout(
         supportStaffRecoveryVault.listItemsForUserStrict({

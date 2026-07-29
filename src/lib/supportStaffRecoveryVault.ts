@@ -531,6 +531,26 @@ function parseItemsStrict(raw: string): RecoveryItem[] {
     ) {
       throw new StrictReadUnavailableError('vault:item_shape');
     }
+    // Validating only the wrapper let a slot carry a malformed segment uri
+    // through; `fileExistsStrict` then read it as `missing`, so the snapshot
+    // could be certified COMPLETE and the anchor answer `none` while the item's
+    // audio directory still existed.
+    for (const slot of candidate.slots) {
+      if (!slot || typeof slot !== 'object') throw new StrictReadUnavailableError('vault:slot_shape');
+      const slotRecord = slot as Record<string, unknown>;
+      if (!Array.isArray(slotRecord.segments)) {
+        throw new StrictReadUnavailableError('vault:slot_shape');
+      }
+      for (const segment of slotRecord.segments) {
+        if (!segment || typeof segment !== 'object') {
+          throw new StrictReadUnavailableError('vault:segment_shape');
+        }
+        const uri = (segment as Record<string, unknown>).uri;
+        if (typeof uri !== 'string' || uri.length === 0) {
+          throw new StrictReadUnavailableError('vault:segment_shape');
+        }
+      }
+    }
   }
   return parsed as RecoveryItem[];
 }

@@ -55,6 +55,10 @@ interface AttentionItemRowProps {
 export function AttentionItemRow({ item, surface }: AttentionItemRowProps) {
   const router = useRouter();
 
+  // A non-navigating row: every candidate screen would reject this viewer, so a
+  // tap would dead-end. `ListItem` renders a plain View without `onPress`.
+  const isInformational = item.destination.kind === 'informational';
+
   /**
    * The visit date, falling back to the row's last-updated date for rows that
    * were never submitted (prepared uploads, stuck drafts) — the same precedence
@@ -88,23 +92,27 @@ export function AttentionItemRow({ item, surface }: AttentionItemRowProps) {
           </Text>
         ) : undefined
       }
-      showChevron
+      showChevron={!isInformational}
       accessibilityLabel={
         dateLabel ? `${item.accessibilityLabel}. ${dateLabel}` : item.accessibilityLabel
       }
-      onPress={() => {
-        trackEvent({
-          name: 'attention_feed_item_opened',
-          props: {
-            surface,
-            category: item.category,
-            reason_code: item.primaryReason,
-            field_code: item.primaryField ?? 'none',
-            actionable: item.actionable,
-          },
-        });
-        router.push(attentionDestinationHref(item.destination) as never);
-      }}
+      onPress={
+        isInformational
+          ? undefined
+          : () => {
+              trackEvent({
+                name: 'attention_feed_item_opened',
+                props: {
+                  surface,
+                  category: item.category,
+                  reason_code: item.primaryReason,
+                  field_code: item.primaryField ?? 'none',
+                  actionable: item.actionable,
+                },
+              });
+              router.push(attentionDestinationHref(item.destination) as never);
+            }
+      }
     />
   );
 }

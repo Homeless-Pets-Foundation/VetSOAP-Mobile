@@ -592,6 +592,32 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
 }
 
 /**
+ * Every segment entry must be usable BEFORE `normalizeDraftMetadata` sees it.
+ *
+ * That normalizer `continue`s past a malformed entry and still returns a draft,
+ * which is right for the lenient path and lossy for a strict one: if the dropped
+ * entry was the draft's only audio reference, `draftHasLocalAudioStrict` reports
+ * `missing`, the feed publishes a KNOWN zero, and `findLocalRecoveryAnchor`
+ * answers `none` — exposing deletion while the draft directory may still hold
+ * recoverable audio.
+ */
+function assertDraftSegmentsUsable(raw: unknown, source: string): void {
+  if (!raw || typeof raw !== 'object') return;
+  const segments = (raw as { segments?: unknown }).segments;
+  if (!Array.isArray(segments)) return; // normalizeDraftMetadata rejects this anyway.
+  for (const segment of segments) {
+    if (!segment || typeof segment !== 'object') throw new StrictReadUnavailableError(source);
+    const candidate = segment as Record<string, unknown>;
+    if (typeof candidate.uri !== 'string' || candidate.uri.length === 0) {
+      throw new StrictReadUnavailableError(source);
+    }
+    if (typeof candidate.duration !== 'number' || !Number.isFinite(candidate.duration)) {
+      throw new StrictReadUnavailableError(source);
+    }
+  }
+}
+
+/**
  * ── STRICT read path ───────────────────────────────────────────────────────
  *
  * The lenient readers above turn a Keystore failure, a torn chunk set, a
@@ -663,6 +689,7 @@ async function readDraftChunksStrict(
     } catch {
       throw new StrictReadUnavailableError('draft_meta:payload_parse');
     }
+    assertDraftSegmentsUsable(parsed, 'draft_meta:segment_shape');
     const normalized = normalizeDraftMetadata(parsed);
     if (!normalized) throw new StrictReadUnavailableError('draft_meta:shape');
     return normalized;
@@ -679,6 +706,7 @@ async function readDraftChunksStrict(
   } catch {
     throw new StrictReadUnavailableError('draft_legacy_meta:parse');
   }
+  assertDraftSegmentsUsable(legacyParsed, 'draft_legacy_meta:segment_shape');
   const normalizedLegacy = normalizeDraftMetadata(legacyParsed);
   if (!normalizedLegacy) throw new StrictReadUnavailableError('draft_legacy_meta:shape');
   return normalizedLegacy;

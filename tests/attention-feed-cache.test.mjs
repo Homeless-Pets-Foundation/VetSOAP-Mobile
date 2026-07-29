@@ -420,6 +420,73 @@ test('the full attention screen shows a loader until BOTH sources settle', async
   assert.match(screen, /feed\.localSettled,\n/);
 });
 
+test('a present-but-corrupt nested AI contract fails the row', () => {
+  // Codex round 6: an unchecked cast accepted the blob and the downstream
+  // normalizers silently discarded the unusable part, while
+  // classificationComplete tracked only TIMING — so a coverage-complete response
+  // could still claim all-clear for a row it never classified.
+  for (const meta of [
+    { review: 42 },
+    { appliedFields: 'patientName' },
+    { appliedFields: [1, 2] },
+    { dropReasons: 'nope' },
+    { conflicts: {} },
+    { fields: [] },
+    { multiplePatientsDetected: 'yes' },
+  ]) {
+    expectMalformed(
+      envelope([row({ aiExtractedMetadata: meta })], { page: 1, limit: 100, total: 1, totalPages: 1 }),
+      JSON.stringify(meta)
+    );
+  }
+
+  // Absent/null keys stay legitimate, and a well-formed blob still parses.
+  const ok = parse(
+    envelope(
+      [row({ aiExtractedMetadata: { review: 'unconfirmed', appliedFields: ['patientName'], dropReasons: [] } })],
+      { page: 1, limit: 100, total: 1, totalPages: 1 }
+    )
+  );
+  assert.equal(ok.data.length, 1);
+});
+
+test('dropReasons beyond the bounded scan marks the row classification-INCOMPLETE', () => {
+  const OBS = FEED;
+  void OBS;
+  const huge = Array.from({ length: 200 }, () => ({ field: 'breed', reason: 'low_confidence' }));
+  const parsed = parse(
+    envelope([row({ aiExtractedMetadata: { review: 'unconfirmed', dropReasons: huge } })], {
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    })
+  );
+  const derived = FEED.deriveRecordingAttention(parsed.data, OWNER, {
+    nowMs: NOW,
+    recordFirstEnabled: true,
+  });
+  assert.equal(derived.classificationComplete, false, 'a partially scanned row is not fully classified');
+  assert.equal(derived.uncheckableMetadataRowCount, 1);
+  assert.equal(derived.uncheckableTimingRowCount, 0, 'this is a metadata gap, not a timing one');
+
+  // A normal-sized dropReasons array stays complete.
+  const small = parse(
+    envelope([row({ aiExtractedMetadata: { review: 'unconfirmed', dropReasons: [{ field: 'breed', reason: 'low_confidence' }] } })], {
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    })
+  );
+  const smallDerived = FEED.deriveRecordingAttention(small.data, OWNER, {
+    nowMs: NOW,
+    recordFirstEnabled: true,
+  });
+  assert.equal(smallDerived.classificationComplete, true);
+  assert.equal(smallDerived.uncheckableMetadataRowCount, 0);
+});
+
 test('a pagination total smaller than the returned page is malformed', async () => {
   // Codex P2: rows and pagination were validated independently, so five rows
   // reporting `total: 0` passed and attentionCoverage() called it COMPLETE —

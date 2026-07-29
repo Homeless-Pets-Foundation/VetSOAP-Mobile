@@ -848,6 +848,53 @@ test('anchor: a vet needs COMPLETE local audio to reuse a pending-confirm slot',
   assert.match(local, /vaultSlotIsRecoverableStrict\(slot, user\)/);
 });
 
+test('a draft segment with a malformed uri makes the strict read unknown', async () => {
+  // Codex round 6: normalizeDraftMetadata `continue`s past a bad entry and still
+  // returns a draft. If the dropped entry was the only audio reference,
+  // draftHasLocalAudioStrict said `missing` — a KNOWN zero, and a `none` anchor.
+  for (const badSegments of [[{}], [{ uri: 42, duration: 1 }], [{ uri: '', duration: 1 }], [null], [{ uri: 'file:///a', duration: 'x' }]]) {
+    const secure = makeSecureStoreMock();
+    seedDraft(secure, 'slot-1', draftPayload({ segments: badSegments }));
+    const { draftStorage } = await loadDraftStorage(secure, makeFileSystemMock());
+    await assert.rejects(
+      () => draftStorage.listDraftsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      `segments ${JSON.stringify(badSegments)} must be unknown`
+    );
+  }
+
+  // A well-formed draft still reads.
+  const clean = makeSecureStoreMock();
+  seedDraft(clean, 'slot-1', draftPayload());
+  const { draftStorage } = await loadDraftStorage(clean, makeFileSystemMock());
+  assert.equal((await draftStorage.listDraftsForUserStrict(USER)).length, 1);
+});
+
+test('the strict vault parser validates nested slots and segments', async () => {
+  // Codex round 6: validating only the item wrapper let a malformed segment uri
+  // through, and fileExistsStrict then read it as `missing` — so the snapshot
+  // could be certified COMPLETE and the anchor answer `none`.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  const parser = vault.slice(
+    vault.indexOf('function parseItemsStrict'),
+    vault.indexOf('async function readItemsForGenerationStrict')
+  );
+  assert.match(parser, /vault:slot_shape/);
+  assert.match(parser, /vault:segment_shape/);
+  assert.match(parser, /typeof uri !== 'string' \|\| uri\.length === 0/);
+});
+
+test('the bounded vault-summary read does not retry, and keys on the ROLE', async () => {
+  // Codex round 6: the global policy retries non-ApiError twice, so a hanging
+  // native read held the hook in `loading` for ~3 timeout windows while Home
+  // suppressed the banner; and the read is role-dependent, so the key must be.
+  const hook = await read('src/hooks/useSupportRecoveryVault.ts');
+  assert.match(hook, /retry: false,/);
+  assert.match(hook, /role: string \| null \| undefined/);
+  assert.match(hook, /role \?\? 'none',/);
+  assert.match(hook, /supportRecoveryVaultQueryKey\(user\?\.id, user\?\.organizationId, user\?\.role\)/);
+});
+
 test('a PRESENT but malformed active pointer is unknown, never a fallback', async () => {
   // Codex round 5: only `null` means pre-migration. A corrupt pointer value fell
   // through and returned the first readable legacy/inactive generation, which may

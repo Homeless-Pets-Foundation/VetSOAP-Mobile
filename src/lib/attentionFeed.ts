@@ -11,6 +11,7 @@ import { canRecordAppointments, getRecordingPermissions } from './recordingPermi
 import {
   computeMetadataAttentionSignals,
   currentMetadataValue,
+  DROP_REASON_SCAN_LIMIT,
   normalizeDisplayText,
   normalizeMetadataValue,
   type MetadataSuggestion,
@@ -131,7 +132,13 @@ export type AttentionDestination =
   | { kind: 'recording_detail'; recordingId: string; focus: AttentionFocus | null }
   | { kind: 'recordings_list' }
   | { kind: 'record_tab' }
-  | { kind: 'recovery' };
+  | { kind: 'recovery' }
+  /**
+   * Non-navigating: the row states what must happen and offers no tap.
+   * Used where every candidate screen would reject this viewer, so a link would
+   * be a dead end.
+   */
+  | { kind: 'informational' };
 
 export interface AttentionReason {
   code: AttentionReasonCode;
@@ -336,6 +343,51 @@ export function projectAttentionRecording(raw: unknown): AttentionRecording | nu
 }
 
 /**
+ * The AI-metadata keys this feed actually consumes, with the type each must have
+ * WHEN PRESENT. An absent key is always fine — the server omits what it has not
+ * computed.
+ *
+ * Without this, a present-but-corrupt nested contract passed the boundary on an
+ * unchecked cast and the downstream normalizers silently discarded the unusable
+ * part. `classificationComplete` tracks only TIMING, so a coverage-complete
+ * response could then produce the positive all-clear for a row whose metadata was
+ * never actually classified.
+ */
+const AI_METADATA_SHAPE: Record<string, (value: unknown) => boolean> = {
+  review: (v) => typeof v === 'string',
+  appliedFields: (v) => Array.isArray(v) && v.every((f) => typeof f === 'string'),
+  dropReasons: (v) => Array.isArray(v) || (!!v && typeof v === 'object'),
+  conflicts: (v) => Array.isArray(v),
+  fields: (v) => !!v && typeof v === 'object' && !Array.isArray(v),
+  multiplePatientsDetected: (v) => typeof v === 'boolean',
+};
+
+/**
+ * True when `dropReasons` is longer than the bounded scan, so the parser read
+ * only part of it. The row is then not fully classified and the derivation must
+ * report classification-incomplete rather than let the surface claim all-clear.
+ * (The bound itself stays — an unbounded scan is the thing it protects against.)
+ */
+function dropReasonsExceedScan(meta: AiExtractedMetadata | null | undefined): boolean {
+  if (!meta || typeof meta !== 'object') return false;
+  const raw = (meta as { dropReasons?: unknown }).dropReasons;
+  if (Array.isArray(raw)) return raw.length > DROP_REASON_SCAN_LIMIT;
+  if (raw && typeof raw === 'object') return Object.keys(raw).length > DROP_REASON_SCAN_LIMIT;
+  return false;
+}
+
+function aiMetadataShapeIsUsable(meta: unknown): boolean {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return true;
+  const record = meta as Record<string, unknown>;
+  for (const [key, isValid] of Object.entries(AI_METADATA_SHAPE)) {
+    const value = record[key];
+    if (value === undefined || value === null) continue;
+    if (!isValid(value)) return false;
+  }
+  return true;
+}
+
+/**
  * Network-boundary validation: everything `projectAttentionRecording` checks
  * PLUS UUID ids (a malformed id must never be interpolated into navigation) and
  * the server's own field length bounds. A row that fails here makes the whole
@@ -352,6 +404,9 @@ export function validateAttentionListRow(raw: unknown): AttentionRecording | nul
   for (const timestamp of [projected.updatedAt, projected.submittedAt]) {
     if (typeof timestamp === 'string' && timestamp.length > MAX_TIMESTAMP_LENGTH) return null;
   }
+  // A present-but-corrupt nested AI contract must fail the response rather than
+  // be partially discarded behind a "classification complete" claim.
+  if (!aiMetadataShapeIsUsable(projected.aiExtractedMetadata)) return null;
   return projected;
 }
 
@@ -374,13 +429,15 @@ export interface DeriveAttentionOptions {
 export interface AttentionDerivation {
   items: AttentionFeedItem[];
   /**
-   * False when a row has a supported time-dependent predicate whose clock input
-   * could not be evaluated. Reported SEPARATELY from pagination coverage: a
-   * response can be lifetime-complete yet classification-partial.
+   * False when a row could not be fully classified — either a supported
+   * time-dependent predicate whose clock input was unusable, or AI metadata the
+   * bounded scan could only read part of. Reported SEPARATELY from pagination
+   * coverage: a response can be lifetime-complete yet classification-partial.
    */
   classificationComplete: boolean;
-  /** Bounded count of those rows — never their ids or contents. */
+  /** Bounded counts of those rows — never their ids or contents. */
   uncheckableTimingRowCount: number;
+  uncheckableMetadataRowCount: number;
 }
 
 function fieldLabel(field: RecordingMetadataField): string {
@@ -619,6 +676,7 @@ export function deriveRecordingAttention(
 ): AttentionDerivation {
   const items: AttentionFeedItem[] = [];
   let uncheckableTimingRowCount = 0;
+  let uncheckableMetadataRowCount = 0;
 
   const source = Array.isArray(recordings) ? recordings : [];
   for (const recording of source) {
@@ -626,6 +684,7 @@ export function deriveRecordingAttention(
 
     const reasons: AttentionReason[] = [];
     let timingUncheckable = false;
+    let metadataUncheckable = false;
     const updatedAtMs = parseTimestampMs(recording.updatedAt);
     const submittedAtMs = parseTimestampMs(recording.submittedAt);
 
@@ -644,6 +703,12 @@ export function deriveRecordingAttention(
         message: ATTENTION_FEED_COPY.retryScheduled,
       });
     } else if (recording.status === 'completed') {
+      // A dropReasons array longer than the bounded scan is only PARTIALLY read,
+      // so this row's metadata was not fully classified. `classificationComplete`
+      // must say so rather than let a coverage-complete response claim all-clear.
+      if (dropReasonsExceedScan(recording.aiExtractedMetadata)) {
+        metadataUncheckable = true;
+      }
       reasons.push(...collectMetadataReasons(recording, options.recordFirstEnabled));
 
       const warnings = normalizedWarnings(recording);
@@ -680,6 +745,7 @@ export function deriveRecordingAttention(
     }
 
     if (timingUncheckable) uncheckableTimingRowCount += 1;
+    if (metadataUncheckable) uncheckableMetadataRowCount += 1;
     if (reasons.length === 0) continue;
 
     reasons.sort(compareReasons);
@@ -722,8 +788,11 @@ export function deriveRecordingAttention(
 
   return {
     items,
-    classificationComplete: uncheckableTimingRowCount === 0,
+    // Completeness now covers BOTH kinds of unclassifiable row: an unusable clock
+    // input and metadata that could only be partially scanned.
+    classificationComplete: uncheckableTimingRowCount === 0 && uncheckableMetadataRowCount === 0,
     uncheckableTimingRowCount,
+    uncheckableMetadataRowCount,
   };
 }
 
@@ -789,8 +858,14 @@ export function buildLocalAttentionItems(
       extraIssueCount: 0,
       warningCount: 0,
       actionable: true,
-      destination: canSubmit ? submitDestination : { kind: 'recovery' },
-      ctaLabel: canSubmit ? submitCta : ATTENTION_FEED_COPY.ctaViewSavedWork,
+      // Support staff get NO link. `/recording-recovery` is gated on
+      // `canRecordAppointments`, so it renders "Recovery Not Available" for
+      // exactly this cohort, and their current work is not in the owner/admin/vet
+      // vault until the sign-out preservation flow runs — so any destination here
+      // is a dead end. The row keeps its place in "Needs you" (it is a data-loss
+      // warning) and `localSupportStaffNote` in the body says who can act.
+      destination: canSubmit ? submitDestination : { kind: 'informational' },
+      ctaLabel: canSubmit ? submitCta : null,
       accessibilityLabel: buildAccessibilityLabel({
         title,
         body,

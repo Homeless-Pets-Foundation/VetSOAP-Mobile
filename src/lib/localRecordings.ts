@@ -303,20 +303,29 @@ async function findVaultAnchor(user: AnchorUser, target: string): Promise<Anchor
   // Lazy-required so the vault's expo-file-system/native surface is not pulled
   // into every consumer of this module (rule 19 discipline).
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { supportStaffRecoveryVault } = require('./supportStaffRecoveryVault') as
+  const vaultModule = require('./supportStaffRecoveryVault') as
     typeof import('./supportStaffRecoveryVault');
+  const { supportStaffRecoveryVault, vaultSlotIsRecoverableStrict } = vaultModule;
   const snapshot = await supportStaffRecoveryVault.listItemsForUserStrict(user);
+  let sawUnknown = false;
   for (const item of snapshot.items) {
     for (const slot of item.slots ?? []) {
       const matches =
         normalizeId(slot.sourceServerDraftId) === target ||
         pendingConfirmMatches(slot.pendingConfirm, target);
-      if (matches) {
+      if (!matches) continue;
+      // Prove recovery on the MATCHING slot. The item-level snapshot only says
+      // SOME slot is recoverable, so for a multi-slot item a metadata match
+      // could otherwise block deletion (and route to recovery) for a target
+      // whose own audio is gone.
+      const existence = vaultSlotIsRecoverableStrict(slot);
+      if (existence === 'present') {
         return { match: { kind: 'support_recovery', vaultItemId: item.id }, unknown: false };
       }
+      if (existence === 'unknown') sawUnknown = true;
     }
   }
-  return { match: null, unknown: !snapshot.recoverabilityComplete };
+  return { match: null, unknown: sawUnknown || !snapshot.recoverabilityComplete };
 }
 
 /**

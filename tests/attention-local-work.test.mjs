@@ -303,10 +303,10 @@ test('a TORN ACTIVE generation is unknown even when an older one is readable', a
   );
 });
 
-test('an ABSENT active generation still falls through to the legacy layout', async () => {
-  // The migration path must keep working: absent ≠ unreadable.
+test('an ABSENT active POINTER still falls through to the legacy layout', async () => {
+  // The pre-migration path must keep working. Note the pointer itself is absent
+  // here — that, not a missing generation, is what licenses a fallback.
   const secure = makeSecureStoreMock();
-  secure.__store.set(`captivet_stash_${USER}_active`, 'a');
   secure.__store.set(`captivet_stash_${USER}_count`, '1');
   secure.__store.set(
     `captivet_stash_${USER}_chunk_0`,
@@ -315,6 +315,47 @@ test('an ABSENT active generation still falls through to the legacy layout', asy
   const stashStorage = await loadStashStorage(secure);
   const sessions = await stashStorage.getStashedSessionsForUserStrict(USER);
   assert.equal(sessions.length, 1);
+});
+
+test('a DANGLING active pointer (no generation count) is unknown, not a fallback', async () => {
+  // Codex round 2: saveSessions writes chunks + count and only THEN flips the
+  // pointer, so a valid pointer asserts its generation was committed. A missing
+  // count key is damage; using an older generation could omit the newest stash.
+  const secure = makeSecureStoreMock();
+  secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+  secure.__store.set(`captivet_stash_${USER}_count`, '1');
+  secure.__store.set(
+    `captivet_stash_${USER}_chunk_0`,
+    JSON.stringify([{ id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [] }] }])
+  );
+  const stashStorage = await loadStashStorage(secure);
+  await assert.rejects(
+    () => stashStorage.getStashedSessionsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+});
+
+test('a count that merely STARTS with a number is unknown, never a proven empty store', async () => {
+  // Codex round 2: parseInt('0junk') === 0 would certify the store as empty
+  // without reading a chunk — the same false all-clear the strict path prevents.
+  for (const corrupt of ['0junk', '0.5', ' 1', '-1', '1e3', '']) {
+    const secure = makeSecureStoreMock();
+    secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+    secure.__store.set(`captivet_stash_${USER}_a_count`, corrupt);
+    const stashStorage = await loadStashStorage(secure);
+    await assert.rejects(
+      () => stashStorage.getStashedSessionsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      `count ${JSON.stringify(corrupt)} must be unknown`
+    );
+  }
+
+  // A genuine "0" is still a PROVEN empty store.
+  const clean = makeSecureStoreMock();
+  clean.__store.set(`captivet_stash_${USER}_active`, 'a');
+  clean.__store.set(`captivet_stash_${USER}_a_count`, '0');
+  const ok = await loadStashStorage(clean);
+  assert.deepEqual(plain(await ok.getStashedSessionsForUserStrict(USER)), []);
 });
 
 test('every present layout unusable and no healthy fallback is UNKNOWN', async () => {
@@ -387,6 +428,17 @@ function makeLocalRecordingsHarness({
           if (vaultError) throw vaultError;
           return vault;
         },
+      },
+      // Slot-level proof, mirroring the real implementation closely enough to
+      // exercise the anchor's present/missing/unknown branches.
+      vaultSlotIsRecoverableStrict: (slot) => {
+        if (slot?.pendingConfirm) return 'present';
+        let sawUnknown = false;
+        for (const segment of slot?.segments ?? []) {
+          if (fileThrowing.has(segment.uri)) sawUnknown = true;
+          else if (filePresent.has(segment.uri)) return 'present';
+        }
+        return sawUnknown ? 'unknown' : 'missing';
       },
     },
     '../../modules/captivet-durable-recorder': {
@@ -553,15 +605,63 @@ test('anchor: a standalone durable manifest is used only when no indexed owner m
 });
 
 test('anchor: an authorized vault item matches and routes to recovery', async () => {
+  const vaultUri = 'file:///vault/seg-0.m4a';
   const mod = await makeLocalRecordingsHarness({
     vault: {
-      items: [{ id: 'vault-1', slots: [{ sourceServerDraftId: SERVER_ID, segments: [] }] }],
+      items: [
+        {
+          id: 'vault-1',
+          slots: [{ sourceServerDraftId: SERVER_ID, segments: [{ uri: vaultUri }] }],
+        },
+      ],
       recoverabilityComplete: true,
     },
+    filePresent: new Set([vaultUri]),
   });
   assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
     kind: 'support_recovery',
     vaultItemId: 'vault-1',
+  });
+});
+
+test('anchor: the MATCHING vault slot must prove its own audio, not a sibling slot', async () => {
+  // Codex round 2: the item-level snapshot only says SOME slot is recoverable.
+  // Slot A still has audio; the target-matching slot B has lost its segments, so
+  // routing to recovery would promise a recovery that cannot happen.
+  const siblingUri = 'file:///vault/other-0.m4a';
+  const mod = await makeLocalRecordingsHarness({
+    vault: {
+      items: [
+        {
+          id: 'vault-1',
+          slots: [
+            { sourceServerDraftId: 'unrelated', segments: [{ uri: siblingUri }] },
+            { sourceServerDraftId: SERVER_ID, segments: [{ uri: 'file:///vault/gone.m4a' }] },
+          ],
+        },
+      ],
+      recoverabilityComplete: true,
+    },
+    filePresent: new Set([siblingUri]),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'none',
+  });
+});
+
+test('anchor: an UNPROBEABLE matching vault slot is unknown, never none', async () => {
+  const lockedUri = 'file:///vault/locked-0.m4a';
+  const mod = await makeLocalRecordingsHarness({
+    vault: {
+      items: [
+        { id: 'vault-1', slots: [{ sourceServerDraftId: SERVER_ID, segments: [{ uri: lockedUri }] }] },
+      ],
+      recoverabilityComplete: true,
+    },
+    fileThrowing: new Set([lockedUri]),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'unknown',
   });
 });
 
@@ -665,8 +765,35 @@ test('the strict vault read reads the ACTIVE generation before any fallback', as
   assert.match(activeRead, /if \(active === 'a' \|\| active === 'b'\) \{/);
   assert.match(activeRead, /await readItemsForGenerationStrict\(active\)/);
   assert.ok(!activeRead.includes('catch'), 'a failing active generation must propagate');
-  // …and the fallback order excludes the active generation entirely.
-  assert.match(strict, /active === 'a' \? \['b'\] : active === 'b' \? \['a'\] : \['b', 'a'\]/);
+  // A dangling pointer is unknown, and the generation fallback below is reached
+  // ONLY when the pointer itself is absent.
+  assert.match(activeRead, /vault:dangling_active_pointer/);
+  assert.match(activeRead, /return activeItems;/);
+  assert.match(strict, /const order: Generation\[\] = \['b', 'a'\];/);
+});
+
+test('both strict chunk-count readers use the whole-string integer parser', async () => {
+  const strictRead = await read('src/lib/strictRead.ts');
+  assert.match(strictRead, /export function parseStrictChunkCount/);
+  assert.match(strictRead, /\/\^\[0-9\]\{1,6\}\$\//);
+
+  // Bound each slice to the strict section only — the lenient best-effort
+  // readers elsewhere in these files legitimately still use parseInt.
+  for (const [file, endMarker] of [
+    ['src/lib/stashStorage.ts', 'Encrypted stash storage'],
+    ['src/lib/supportStaffRecoveryVault.ts', 'interface AddItemsResult'],
+  ]) {
+    const source = await read(file);
+    const start = source.indexOf('── STRICT read path');
+    const end = source.indexOf(endMarker);
+    assert.ok(start > 0 && end > start, `${file} has a bounded strict section`);
+    const strictSection = source.slice(start, end);
+    assert.match(strictSection, /parseStrictChunkCount\(/);
+    assert.ok(
+      !/parseInt\(/.test(strictSection),
+      `${file}: the strict path must not use parseInt (it accepts a numeric prefix)`
+    );
+  }
 });
 
 test('a MATCHING durable manifest whose audio cannot be probed is unknown, never none', async () => {

@@ -1,7 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
 import { secureStorage } from './secureStorage';
-import { StrictReadUnavailableError } from './strictRead';
+import { StrictReadUnavailableError, parseStrictChunkCount } from './strictRead';
 
 export const MAX_STASHES = 5;
 type Generation = 'a' | 'b';
@@ -232,8 +232,7 @@ async function readSessionsForKeysStrict(
   const countStr = await secureStorage.getRawItemStrict(scopedCountKey, 'stashCountStrict');
   if (countStr === null) return null;
 
-  const count = parseInt(countStr, 10);
-  if (isNaN(count) || count < 0) throw new StrictReadUnavailableError('stash:count');
+  const count = parseStrictChunkCount(countStr, 'stash:count');
   if (count === 0) return [];
 
   const chunks: string[] = [];
@@ -268,10 +267,18 @@ async function getStashedSessionsForUserStrictInternal(
       generationCountKeyForUser(userId, activeGeneration),
       generationPrefixForUser(userId, activeGeneration)
     );
-    if (activeSessions !== null) return activeSessions;
-    // Absent (not unreadable) — a legitimate pre-migration state, so the legacy
-    // and inactive layouts below may still answer.
+    if (activeSessions === null) {
+      // A DANGLING pointer, not a pre-migration absence: `saveSessions` writes
+      // the chunks and the count and only THEN flips this pointer, so a valid
+      // pointer asserts its generation was committed. A missing count key is
+      // therefore damage, and falling back to an older generation here could
+      // omit the newest stash — the exact false all-clear this path prevents.
+      throw new StrictReadUnavailableError('stash:dangling_active_pointer');
+    }
+    return activeSessions;
   }
+  // Only an ABSENT/invalid pointer may fall through to the legacy and
+  // generation layouts below (the real pre-migration path).
 
   const sources: { countKey: string; prefix: string }[] = [
     { countKey: legacyCountKeyForUser(userId), prefix: legacyPrefixForUser(userId) },

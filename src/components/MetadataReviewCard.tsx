@@ -141,7 +141,14 @@ export function MetadataReviewCard({
   // A blank patient name with nothing applied is the `metadata_missing` state:
   // no terminal action may claim resolution until it is filled in.
   const resolutionBlocked = signals.missingDetails && !form.patientName.trim();
-  const canFinishReview = mode === 'review' && hasMetadataObject && !resolutionBlocked;
+  // Keyed off the CURRENT form value, not just `signals.missingDetails`: when a
+  // review starts WITH a patient name that signal is false, so clearing the name
+  // in the sheet used to leave `canFinishReview` true — saving a blank name plus
+  // `review: 'confirmed'`, and the resolved-state gate then suppressed the
+  // `metadata_missing` reason the updated recording would have raised. A
+  // confirmed review must never assert a blank patient name (Codex round 2).
+  const canFinishReview =
+    mode === 'review' && hasMetadataObject && !resolutionBlocked && !!form.patientName.trim();
   // Never let a dismissal hide a blank-patient-name missing-metadata item, and
   // never offer it when the server has no blob to attach the state to.
   const canDismissReview =

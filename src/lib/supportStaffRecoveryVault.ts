@@ -10,7 +10,7 @@ import {
   safeDeleteFile,
   writeFilePrefix,
 } from './fileOps';
-import { StrictReadUnavailableError, type StrictExistence } from './strictRead';
+import { StrictReadUnavailableError, parseStrictChunkCount, type StrictExistence } from './strictRead';
 import { secureStorage } from './secureStorage';
 import { captureMessage } from './monitoring';
 import type { CreateRecording, User } from '../types';
@@ -543,8 +543,7 @@ async function readItemsForGenerationStrict(
     'supportStaffRecovery.getGenerationCountStrict'
   );
   if (countRaw === null) return null;
-  const count = parseInt(countRaw, 10);
-  if (Number.isNaN(count) || count < 0) throw new StrictReadUnavailableError('vault:count');
+  const count = parseStrictChunkCount(countRaw, 'vault:count');
   if (count === 0) return [];
 
   const prefix = generationPrefix(generation);
@@ -574,11 +573,18 @@ async function readItemsStrict(): Promise<RecoveryItem[]> {
   // can establish a positive match, never absence or a complete count.
   if (active === 'a' || active === 'b') {
     const activeItems = await readItemsForGenerationStrict(active);
-    if (activeItems !== null) return activeItems;
-    // Absent (not unreadable) — fall through to the other generation.
+    if (activeItems === null) {
+      // Dangling pointer, not a pre-migration absence: `saveItems` writes the
+      // chunks and the count and only THEN flips this pointer, so a valid
+      // pointer asserts its generation was committed. Falling back to the
+      // inactive generation here could omit newly preserved recordings.
+      throw new StrictReadUnavailableError('vault:dangling_active_pointer');
+    }
+    return activeItems;
   }
 
-  const order: Generation[] = active === 'a' ? ['b'] : active === 'b' ? ['a'] : ['b', 'a'];
+  // Only an ABSENT/invalid pointer may consult the generations directly.
+  const order: Generation[] = ['b', 'a'];
 
   let sawUnrecoverable = false;
   for (const generation of order) {
@@ -600,18 +606,34 @@ function vaultSlotHasDurableAudioStrict(
   return fileExistsStrict(durable.recoveredAudioUri);
 }
 
+/**
+ * Whether ONE vault slot still has something recoverable.
+ *
+ * Exported because a destructive decision must be proved on the slot that
+ * actually matches the server recording: an item-level answer only says *some*
+ * slot is recoverable, so a multi-slot item could hide deletion for a target
+ * slot whose own audio is gone (Codex round 2).
+ */
+export function vaultSlotIsRecoverableStrict(slot: RecoverySlot): StrictExistence {
+  if (clonePendingConfirm(slot.pendingConfirm)) return 'present';
+  let sawUnknown = false;
+  const durable = vaultSlotHasDurableAudioStrict(slot.durable);
+  if (durable === 'present') return 'present';
+  if (durable === 'unknown') sawUnknown = true;
+  for (const segment of slot.segments ?? []) {
+    const existence = fileExistsStrict(segment.uri);
+    if (existence === 'present') return 'present';
+    if (existence === 'unknown') sawUnknown = true;
+  }
+  return sawUnknown ? 'unknown' : 'missing';
+}
+
 function itemIsRecoverableStrict(item: RecoveryItem): StrictExistence {
   let sawUnknown = false;
   for (const slot of item.slots) {
-    if (clonePendingConfirm(slot.pendingConfirm)) return 'present';
-    const durable = vaultSlotHasDurableAudioStrict(slot.durable);
-    if (durable === 'present') return 'present';
-    if (durable === 'unknown') sawUnknown = true;
-    for (const segment of slot.segments) {
-      const existence = fileExistsStrict(segment.uri);
-      if (existence === 'present') return 'present';
-      if (existence === 'unknown') sawUnknown = true;
-    }
+    const slotExistence = vaultSlotIsRecoverableStrict(slot);
+    if (slotExistence === 'present') return 'present';
+    if (slotExistence === 'unknown') sawUnknown = true;
   }
   return sawUnknown ? 'unknown' : 'missing';
 }

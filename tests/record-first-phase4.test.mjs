@@ -176,7 +176,12 @@ test('metadata review flow is capability-gated and PHI-free in analytics', async
   // action over the complete unresolved set (never an ordinary edit-mode save).
   assert.match(reviewCard, /if \(opts\.includeReview\) payload\.review = 'confirmed';/);
   assert.match(reviewCard, /includeReview: canFinishReview/);
-  assert.match(reviewCard, /const canFinishReview = mode === 'review' && hasMetadataObject && !resolutionBlocked;/);
+  assert.match(
+    reviewCard,
+    /const canFinishReview =\s*\n\s*mode === 'review' && hasMetadataObject && !resolutionBlocked && !!form\.patientName\.trim\(\);/
+  );
+  // Clearing the patient name in the sheet must retract the resolution claim.
+  assert.match(reviewCard, /!!form\.patientName\.trim\(\)/);
   assert.match(reviewCard, /correctedFieldCount|changedFieldList/);
   assert.match(reviewCard, /SegmentedControl/);
   assert.match(reviewCard, /mode: 'review' \| 'add' \| 'edit'/);

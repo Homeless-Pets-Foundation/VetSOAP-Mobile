@@ -316,6 +316,24 @@ test('device-registration pending stays loading; a real block settles as blocked
   assert.match(hook, /serverPhase === 'success' &&\s*\n\s*coverage === 'complete'/);
 });
 
+test('an impression waits for BOTH sources, so it cannot double on a race', async () => {
+  // Codex round 2: gating on the server alone emitted once with the loading
+  // local fingerprint and again when the local read landed, so whether
+  // impressions doubled depended on network-vs-storage timing.
+  const hook = await read('src/hooks/useAttentionFeed.ts');
+  assert.match(hook, /if \(!feed\.localSettled\) return;/);
+  const effect = hook.slice(hook.indexOf('export function useAttentionImpression'));
+  assert.ok(
+    effect.indexOf('if (!feed.localSettled) return;') <
+      effect.indexOf('lastFingerprintRef.current = feed.fingerprint'),
+    'the local gate runs before the fingerprint is recorded'
+  );
+  assert.match(effect, /feed\.localSettled,\s*\n\s*\]\);/);
+  // An explicitly settled UNKNOWN local read still counts as settled, so a
+  // Keystore failure cannot suppress impressions forever.
+  assert.match(hook, /localSettled: localSummary !== null \|\| localQuery\.isError,/);
+});
+
 test('the clean claim requires all six conditions', async () => {
   const hook = await read('src/hooks/useAttentionFeed.ts');
   const cleanBlock = hook.slice(hook.indexOf('const isClean ='), hook.indexOf('const fingerprint'));

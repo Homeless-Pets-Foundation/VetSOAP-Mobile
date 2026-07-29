@@ -103,7 +103,10 @@ test('the terminal action is explicit; an ordinary edit never claims resolution'
   assert.match(CARD, /METADATA_REVIEW_COPY\.saveAndFinish/);
   assert.match(CARD, /if \(opts\.includeReview\) payload\.review = 'confirmed';/);
   assert.match(CARD, /includeReview: canFinishReview/);
-  assert.match(CARD, /const canFinishReview = mode === 'review' && hasMetadataObject && !resolutionBlocked;/);
+  assert.match(
+    CARD,
+    /const canFinishReview =\s*\n\s*mode === 'review' && hasMetadataObject && !resolutionBlocked && !!form\.patientName\.trim\(\);/
+  );
 });
 
 test('a null aiExtractedMetadata never sends the server-ineffective review key', () => {

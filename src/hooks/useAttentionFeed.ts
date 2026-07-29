@@ -300,7 +300,11 @@ export function useAttentionFeed(options: { focused: boolean }): UseAttentionFee
     uncheckableTimingRowCount: derivation.uncheckableTimingRowCount,
     localSummary,
     localComplete,
-    localSettled: localSummary !== null,
+    // An explicitly settled UNKNOWN counts as settled; only a still-running read
+    // does not. `getUnsentWorkSummary` resolves to UNKNOWN rather than throwing,
+    // so `isError` here is a belt-and-braces guard against a permanently
+    // suppressed impression.
+    localSettled: localSummary !== null || localQuery.isError,
     isClean,
     isLoading: serverQuery.isLoading || localQuery.isLoading,
     isRefreshing: serverQuery.isRefetching || localQuery.isRefetching,
@@ -332,6 +336,12 @@ export function useAttentionImpression(
       return;
     }
     if (!feed.isSettled || !feed.serverState) return;
+    // The LOCAL snapshot must be settled too. Otherwise a server response that
+    // lands first emits an impression carrying `local_complete: false` and the
+    // loading fingerprint, and the local result then changes the fingerprint and
+    // emits a second one — so whether impressions double depends on a
+    // network-versus-storage race (Codex round 2).
+    if (!feed.localSettled) return;
     if (lastFingerprintRef.current === feed.fingerprint) return;
     lastFingerprintRef.current = feed.fingerprint;
 
@@ -373,5 +383,6 @@ export function useAttentionImpression(
     feed.classificationComplete,
     feed.uncheckableTimingRowCount,
     feed.localComplete,
+    feed.localSettled,
   ]);
 }

@@ -217,9 +217,30 @@ async function loadDraftStorage(state) {
     },
     './fileOps': {
       fileExists: () => true,
+      fileExistsStrict: () => 'present',
       safeDeleteFile: () => {},
       safeDeleteDirectory: () => {},
       ensureDirectory: () => true,
+    },
+    './secureStorage': {
+      secureStorage: {
+        async getRawItemStrict(key) {
+          return state.has(key) ? state.get(key) : null;
+        },
+      },
+    },
+    './strictRead': {
+      StrictReadUnavailableError: class StrictReadUnavailableError extends Error {
+        constructor(source) {
+          super('A local read could not be completed');
+          this.code = 'STRICT_READ_UNAVAILABLE';
+          this.source = source;
+        }
+      },
+    },
+    './durableAudio/manifest': {
+      isConfirmedUploaded: (m) => typeof m?.confirmedUploadAt === 'string',
+      validateManifestObject: (m) => ({ ok: true, manifest: m }),
     },
     './durableAudio/paths': {
       isValidDurableId: (id) => typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id),

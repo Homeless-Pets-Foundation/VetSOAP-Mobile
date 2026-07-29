@@ -12,7 +12,6 @@ import type {
   RecordingStatus,
   SoapNote,
   UpdateRecordingMetadata,
-  ReviewStatus,
   RecordingTask,
   OrgAiModels,
 } from '../types';
@@ -280,7 +279,6 @@ export interface ListRecordingsParams {
   sortBy?: string;
   sortOrder?: string;
   status?: RecordingStatus;
-  reviewStatus?: ReviewStatus;
   search?: string;
 }
 
@@ -1743,13 +1741,6 @@ export const recordingsApi = {
   ): Promise<Recording> {
     recordingIdSchema.parse(recordingId);
     return apiClient.post<Recording>(`/api/recordings/${recordingId}/reprocess`, models);
-  },
-
-  async updateReview(recordingId: string, opts: { reviewed: boolean }): Promise<Recording> {
-    recordingIdSchema.parse(recordingId);
-    return apiClient.patch(`/api/recordings/${recordingId}/review`, {
-      reviewed: opts.reviewed,
-    });
   },
 
   async regenerateSoap(

@@ -75,6 +75,22 @@ async function loadStashStorage(state) {
   const store = makeSecureStore(state);
   const mod = await loadTsModuleWithMocks('src/lib/stashStorage.ts', {
     'expo-secure-store': store.mock,
+    './secureStorage': {
+      secureStorage: {
+        async getRawItemStrict(key) {
+          return state.has(key) ? state.get(key) : null;
+        },
+      },
+    },
+    './strictRead': {
+      StrictReadUnavailableError: class StrictReadUnavailableError extends Error {
+        constructor(source) {
+          super('A local read could not be completed');
+          this.code = 'STRICT_READ_UNAVAILABLE';
+          this.source = source;
+        }
+      },
+    },
   });
   return { stashStorage: mod.stashStorage, ...store };
 }
@@ -200,9 +216,30 @@ async function loadDraftStorage(state, opts = {}) {
     },
     './fileOps': {
       fileExists: opts.fileExists ?? (() => true),
+      fileExistsStrict: (uri) => ((opts.fileExists ?? (() => true))(uri) ? 'present' : 'missing'),
       safeDeleteFile: opts.safeDeleteFile ?? (() => {}),
       safeDeleteDirectory: () => {},
       ensureDirectory: () => true,
+    },
+    './secureStorage': {
+      secureStorage: {
+        async getRawItemStrict(key) {
+          return state.has(key) ? state.get(key) : null;
+        },
+      },
+    },
+    './strictRead': {
+      StrictReadUnavailableError: class StrictReadUnavailableError extends Error {
+        constructor(source) {
+          super('A local read could not be completed');
+          this.code = 'STRICT_READ_UNAVAILABLE';
+          this.source = source;
+        }
+      },
+    },
+    './durableAudio/manifest': {
+      isConfirmedUploaded: (m) => typeof m?.confirmedUploadAt === 'string',
+      validateManifestObject: (m) => ({ ok: true, manifest: m }),
     },
     './durableAudio/paths': {
       isValidDurableId: (id) => typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id),

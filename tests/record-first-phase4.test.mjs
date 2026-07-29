@@ -160,15 +160,24 @@ test('metadata review flow is capability-gated and PHI-free in analytics', async
   assert.doesNotMatch(analytics, /patientName.*ai_metadata_review/);
 
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
-  assert.match(detail, /recordFirstEnabled[\s\S]*showMetadataReview/);
+  // The unresolved-AI predicate is now shared and deliberately NOT gated on the
+  // current record-first capability (an explicit AI blob stays reviewable after
+  // the capability is disabled); only the ambiguous null-extraction add/empty
+  // state keeps the gate.
+  assert.match(detail, /hasUnresolvedAiMetadataAttention\(recording\)[\s\S]*const showAddMetadata =/);
+  assert.match(detail, /const showAddMetadata =\s*\n\s*recordingPermissions\.canEdit &&\s*\n\s*recordFirstEnabled/);
   assert.match(detail, /recordingsApi\.updateMetadata/);
   assert.match(detail, /<MetadataReviewCard/);
   assert.match(detail, /showHeaderPatientMetadataGlyph[\s\S]*appliedMetadataFields\.has\('patientName'\)/);
   assert.match(detail, /showHeaderPatientMetadataGlyph \? \([\s\S]*<Sparkles/);
 
   const reviewCard = await read('src/components/MetadataReviewCard.tsx');
-  assert.match(reviewCard, /review: 'confirmed'/);
-  assert.match(reviewCard, /correctedFieldCount/);
+  // `review: 'confirmed'` now rides ONLY on an explicit whole-review terminal
+  // action over the complete unresolved set (never an ordinary edit-mode save).
+  assert.match(reviewCard, /if \(opts\.includeReview\) payload\.review = 'confirmed';/);
+  assert.match(reviewCard, /includeReview: canFinishReview/);
+  assert.match(reviewCard, /const canFinishReview = mode === 'review' && hasMetadataObject && !resolutionBlocked;/);
+  assert.match(reviewCard, /correctedFieldCount|changedFieldList/);
   assert.match(reviewCard, /SegmentedControl/);
   assert.match(reviewCard, /mode: 'review' \| 'add' \| 'edit'/);
 });
@@ -210,10 +219,11 @@ test('MetadataReviewCard surfaces PIMS Patient ID without polluting AI corrected
   assert.ok(buildPayload, 'buildPayload should exist');
   assert.match(buildPayload[0], /pimsPatientId: trimOrNull\(pimsPatientId\)/);
 
-  // ...but is excluded from the AI-only correctedCount.
-  const correctedCount = reviewCard.match(/function correctedCount\([\s\S]*?\n\}/);
-  assert.ok(correctedCount, 'correctedCount should exist');
-  assert.doesNotMatch(correctedCount[0], /pimsPatientId/);
+  // ...but is excluded from the AI-only changed-field list (which feeds both
+  // correctedFieldCount and the bounded `changed_fields` analytics prop).
+  const changedFields = reviewCard.match(/function changedFieldList\([\s\S]*?\n\}/);
+  assert.ok(changedFields, 'changedFieldList should exist');
+  assert.doesNotMatch(changedFields[0], /pimsPatientId/);
 
   // The payload type is widened to carry pimsPatientId outside the AI field union.
   const types = await read('src/types/index.ts');

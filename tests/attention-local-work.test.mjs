@@ -1,0 +1,623 @@
+// Attention Feed — device-local work: STRICT reads must distinguish a
+// legitimate absence from an unreadable store. A swallowed failure would render
+// as "all clear", which is exactly the data-loss blindness this feed exists to
+// fix. Covers verification section 4 of the 2026-07-29 plan.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { readFile } from 'node:fs/promises';
+import { loadTsModule } from './helpers/loadTs.mjs';
+
+const root = new URL('../', import.meta.url);
+const read = (p) => readFile(new URL(p, root), 'utf8');
+// vm-realm objects fail deepStrictEqual's prototype identity check.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+const USER = 'user-1';
+const OTHER = 'user-2';
+const SERVER_ID = '11111111-1111-4111-8111-111111111111';
+
+// ─── Mocks ─────────────────────────────────────────────────────────────────
+
+function makeSecureStoreMock({ failKeys = new Set() } = {}) {
+  const store = new Map();
+  return {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(k) {
+      if (failKeys.has(k) || failKeys.has('*')) throw new Error('keystore exploded');
+      return store.has(k) ? store.get(k) : null;
+    },
+    async setItemAsync(k, v) {
+      store.set(k, v);
+    },
+    async deleteItemAsync(k) {
+      store.delete(k);
+    },
+    __store: store,
+    __failKeys: failKeys,
+  };
+}
+
+function makeFileSystemMock({ present = new Set(), throwing = new Set() } = {}) {
+  return {
+    File: class {
+      constructor(uri) {
+        if (throwing.has(uri)) throw new Error('fs exploded');
+        this.uri = uri;
+        this.exists = present.has(uri);
+      }
+      create() {}
+      write() {}
+      copy() {}
+      move() {}
+      delete() {}
+      open() {
+        return { readBytes: () => new Uint8Array(), writeBytes: () => {}, close: () => {} };
+      }
+    },
+    Directory: class {
+      constructor(uri) {
+        this.uri = uri;
+        this.exists = false;
+      }
+      create() {
+        this.exists = true;
+      }
+      delete() {}
+    },
+    Paths: {
+      document: { uri: 'file:///doc/' },
+      cache: { uri: 'file:///cache/' },
+      availableDiskSpace: 1024 * 1024 * 1024,
+    },
+  };
+}
+
+const legacyFsMock = { async copyAsync() {}, async moveAsync() {} };
+
+async function loadDraftStorage(secure, fs) {
+  const mod = await loadTsModule('src/lib/draftStorage.ts', {
+    'expo-secure-store': secure,
+    'expo-file-system': fs,
+    'expo-file-system/legacy': legacyFsMock,
+  });
+  return mod;
+}
+
+async function loadStashStorage(secure) {
+  const mod = await loadTsModule('src/lib/stashStorage.ts', {
+    'expo-secure-store': secure,
+  });
+  return mod.stashStorage;
+}
+
+function draftMetaKey(slotId) {
+  return `captivet_draft_${USER}_${slotId}_meta`;
+}
+function draftChunkKey(slotId, i) {
+  return `captivet_draft_${USER}_${slotId}_chunk_${i}`;
+}
+function draftIndexKey(userId = USER) {
+  return `captivet_drafts_index_${userId}`;
+}
+
+function draftPayload(overrides = {}) {
+  return JSON.stringify({
+    slotId: 'slot-1',
+    savedAt: '2026-07-29T00:00:00.000Z',
+    formData: { patientName: 'Bella' },
+    segments: [{ uri: 'file:///doc/drafts/user-1/slot-1/seg_0.m4a', duration: 10 }],
+    audioDuration: 10,
+    serverDraftId: SERVER_ID,
+    pendingSync: false,
+    ...overrides,
+  });
+}
+
+function seedDraft(secure, slotId, payload) {
+  secure.__store.set(draftIndexKey(), JSON.stringify([slotId]));
+  secure.__store.set(draftMetaKey(slotId), JSON.stringify({ chunks: 1, version: 1 }));
+  secure.__store.set(draftChunkKey(slotId, 0), payload);
+}
+
+function seedStash(secure, sessions, generation = 'a') {
+  const raw = JSON.stringify(sessions);
+  secure.__store.set(`captivet_stash_${USER}_active`, generation);
+  secure.__store.set(`captivet_stash_${USER}_${generation}_count`, '1');
+  secure.__store.set(`captivet_stash_${USER}_${generation}_chunk_0`, raw);
+}
+
+// ─── draftStorage strict reads ─────────────────────────────────────────────
+
+test('a genuinely absent draft index is a KNOWN empty list', async () => {
+  const secure = makeSecureStoreMock();
+  const { draftStorage } = await loadDraftStorage(secure, makeFileSystemMock());
+  assert.deepEqual(plain(await draftStorage.listDraftsForUserStrict(USER)), []);
+});
+
+test('a Keystore exception on the index is UNKNOWN, not empty', async () => {
+  const secure = makeSecureStoreMock({ failKeys: new Set([draftIndexKey()]) });
+  const { draftStorage } = await loadDraftStorage(secure, makeFileSystemMock());
+  await assert.rejects(
+    () => draftStorage.listDraftsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+});
+
+test('a malformed index, invalid entry, torn chunk, or bad payload is UNKNOWN', async () => {
+  const cases = [
+    ['malformed index json', (secure) => secure.__store.set(draftIndexKey(), '{oops')],
+    ['non-array index', (secure) => secure.__store.set(draftIndexKey(), '{"a":1}')],
+    ['path-traversal entry', (secure) => secure.__store.set(draftIndexKey(), '["../evil"]')],
+    [
+      'torn chunk set',
+      (secure) => {
+        secure.__store.set(draftIndexKey(), JSON.stringify(['slot-1']));
+        secure.__store.set(draftMetaKey('slot-1'), JSON.stringify({ chunks: 2 }));
+        secure.__store.set(draftChunkKey('slot-1', 0), draftPayload());
+      },
+    ],
+    [
+      'unparseable payload',
+      (secure) => {
+        secure.__store.set(draftIndexKey(), JSON.stringify(['slot-1']));
+        secure.__store.set(draftMetaKey('slot-1'), JSON.stringify({ chunks: 1 }));
+        secure.__store.set(draftChunkKey('slot-1', 0), '{not json');
+      },
+    ],
+    [
+      'shape that fails normalization',
+      (secure) => seedDraft(secure, 'slot-1', JSON.stringify({ slotId: 'slot-1' })),
+    ],
+  ];
+  for (const [label, seed] of cases) {
+    const secure = makeSecureStoreMock();
+    seed(secure);
+    const { draftStorage } = await loadDraftStorage(secure, makeFileSystemMock());
+    await assert.rejects(
+      () => draftStorage.listDraftsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      label
+    );
+  }
+});
+
+test('an indexed draft whose metadata is proven absent is skipped, not an error', async () => {
+  const secure = makeSecureStoreMock();
+  secure.__store.set(draftIndexKey(), JSON.stringify(['slot-gone']));
+  const { draftStorage } = await loadDraftStorage(secure, makeFileSystemMock());
+  assert.deepEqual(plain(await draftStorage.listDraftsForUserStrict(USER)), []);
+});
+
+test('strict audio proof: segment present / missing / unreadable', async () => {
+  const uri = 'file:///doc/drafts/user-1/slot-1/seg_0.m4a';
+  const meta = { segments: [{ uri, duration: 10 }], durable: null, pendingConfirm: null };
+
+  const present = await loadDraftStorage(
+    makeSecureStoreMock(),
+    makeFileSystemMock({ present: new Set([uri]) })
+  );
+  assert.equal(await present.draftStorage.draftHasLocalAudioStrict(meta, new Map()), 'present');
+
+  const missing = await loadDraftStorage(makeSecureStoreMock(), makeFileSystemMock());
+  assert.equal(await missing.draftStorage.draftHasLocalAudioStrict(meta, new Map()), 'missing');
+
+  const broken = await loadDraftStorage(
+    makeSecureStoreMock(),
+    makeFileSystemMock({ throwing: new Set([uri]) })
+  );
+  assert.equal(await broken.draftStorage.draftHasLocalAudioStrict(meta, new Map()), 'unknown');
+});
+
+test('a syntactically valid durable pointer alone is NOT audio proof', async () => {
+  const { draftStorage } = await loadDraftStorage(makeSecureStoreMock(), makeFileSystemMock());
+  const meta = { segments: [], durable: { recordingId: 'dr-abc123' }, pendingConfirm: null };
+
+  // Native snapshot available but the manifest is gone → proven missing.
+  assert.equal(await draftStorage.draftHasLocalAudioStrict(meta, new Map()), 'missing');
+  // Native snapshot unavailable → unknown, never "no audio".
+  assert.equal(await draftStorage.draftHasLocalAudioStrict(meta, null), 'unknown');
+});
+
+test('a validated non-uploaded manifest with on-disk audio IS proof', async () => {
+  const audioUri = 'file:///doc/durable/user-1/dr-abc123/audio.aac';
+  const { draftStorage, durableManifestHasCompleteAudio } = await loadDraftStorage(
+    makeSecureStoreMock(),
+    makeFileSystemMock({ present: new Set([audioUri]) })
+  );
+  const manifest = {
+    schemaVersion: 3,
+    recordingId: 'dr-abc123',
+    userId: 'user-1',
+    slotId: 'slot-1',
+    state: 'stopped',
+    startedAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:01:00.000Z',
+    container: 'adts',
+    codec: 'aac_lc',
+    bitrate: 48000,
+    sampleRate: 16000,
+    channels: 1,
+    adtsFrameCount: 120,
+    durationMs: 6400,
+    capturedDurationMs: 6400,
+    audioFile: { uri: audioUri, committedBytes: 4096, completeFrameBytes: 4096 },
+    peakDb: -12,
+    appVersion: '1.13.16',
+    buildNumber: '1',
+  };
+  assert.equal(durableManifestHasCompleteAudio(manifest), true);
+  assert.equal(
+    durableManifestHasCompleteAudio({ ...manifest, confirmedUploadAt: '2026-07-29T00:02:00.000Z' }),
+    false,
+    'a confirmed-uploaded manifest is not un-sent work'
+  );
+  assert.equal(durableManifestHasCompleteAudio({ ...manifest, adtsFrameCount: 0 }), false);
+
+  const meta = { segments: [], durable: { recordingId: 'dr-abc123' }, pendingConfirm: null };
+  const snapshot = new Map([['dr-abc123', manifest]]);
+  assert.equal(await draftStorage.draftHasLocalAudioStrict(meta, snapshot), 'present');
+});
+
+// ─── stashStorage strict reads ─────────────────────────────────────────────
+
+test('an absent stash store is a KNOWN empty list; a Keystore failure is unknown', async () => {
+  const clean = await loadStashStorage(makeSecureStoreMock());
+  assert.deepEqual(plain(await clean.getStashedSessionsForUserStrict(USER)), []);
+
+  const broken = await loadStashStorage(makeSecureStoreMock({ failKeys: new Set(['*']) }));
+  await assert.rejects(
+    () => broken.getStashedSessionsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+});
+
+test('a corrupt session entry is UNKNOWN instead of being silently filtered out', async () => {
+  const secure = makeSecureStoreMock();
+  seedStash(secure, [{ id: 's1', stashedAt: 'x', slots: [{ id: 'a', segments: [] }] }, { id: 5 }]);
+  const stashStorage = await loadStashStorage(secure);
+  await assert.rejects(
+    () => stashStorage.getStashedSessionsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+});
+
+test('a healthy fallback generation still PROVES the result', async () => {
+  const secure = makeSecureStoreMock();
+  // Active pointer names a torn generation; generation "b" is intact.
+  secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+  secure.__store.set(`captivet_stash_${USER}_a_count`, '2');
+  secure.__store.set(`captivet_stash_${USER}_a_chunk_0`, '[');
+  secure.__store.set(`captivet_stash_${USER}_b_count`, '1');
+  secure.__store.set(
+    `captivet_stash_${USER}_b_chunk_0`,
+    JSON.stringify([{ id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [] }] }])
+  );
+  const stashStorage = await loadStashStorage(secure);
+  const sessions = await stashStorage.getStashedSessionsForUserStrict(USER);
+  assert.equal(sessions.length, 1);
+});
+
+test('every present layout unusable and no healthy fallback is UNKNOWN', async () => {
+  const secure = makeSecureStoreMock();
+  secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+  secure.__store.set(`captivet_stash_${USER}_a_count`, '1');
+  secure.__store.set(`captivet_stash_${USER}_a_chunk_0`, '[');
+  const stashStorage = await loadStashStorage(secure);
+  await assert.rejects(
+    () => stashStorage.getStashedSessionsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+});
+
+// ─── localRecordings orchestration ─────────────────────────────────────────
+
+function makeLocalRecordingsHarness({
+  scopedUserId = USER,
+  drafts = [],
+  draftsError = null,
+  draftAudio = () => 'present',
+  stashes = [],
+  stashError = null,
+  manifests = new Map(),
+  manifestUnavailable = false,
+  vault = { items: [], recoverabilityComplete: true },
+  vaultError = null,
+  filePresent = new Set(),
+  fileThrowing = new Set(),
+} = {}) {
+  const draftStorage = {
+    getUserId: () => scopedUserId,
+    async listDraftsForUserStrict() {
+      if (draftsError) throw draftsError;
+      return drafts;
+    },
+    async draftHasLocalAudioStrict(meta, snapshot) {
+      return draftAudio(meta, snapshot);
+    },
+  };
+  const stashStorage = {
+    getUserId: () => scopedUserId,
+    async getStashedSessionsForUserStrict() {
+      if (stashError) throw stashError;
+      return stashes;
+    },
+  };
+  return loadTsModule('src/lib/localRecordings.ts', {
+    './draftStorage': {
+      draftStorage,
+      durableManifestHasCompleteAudio: (m) => !!m && m.__complete === true,
+    },
+    './stashStorage': { stashStorage },
+    './fileOps': {
+      fileExistsStrict: (uri) => {
+        if (fileThrowing.has(uri)) return 'unknown';
+        return filePresent.has(uri) ? 'present' : 'missing';
+      },
+    },
+    './supportStaffRecoveryVault': {
+      supportStaffRecoveryVault: {
+        async listItemsForUserStrict() {
+          if (vaultError) throw vaultError;
+          return vault;
+        },
+      },
+    },
+    '../../modules/captivet-durable-recorder': {
+      isAvailable: () => !manifestUnavailable,
+      async listRecoverableSessions() {
+        if (manifestUnavailable) throw new Error('native unavailable');
+        return [...manifests.values()];
+      },
+    },
+  });
+}
+
+test('getUnsentWorkSummary is user-scoped: a scope mismatch is unknown, never zero', async () => {
+  const mod = await makeLocalRecordingsHarness({ scopedUserId: OTHER });
+  const summary = await mod.getUnsentWorkSummary(USER);
+  assert.deepEqual(plain(summary), {
+    draftCount: 0,
+    stashSessionCount: 0,
+    draftsKnown: false,
+    stashesKnown: false,
+  });
+});
+
+test('draft and saved-session counts stay separate and are both known when readable', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'a' }, { slotId: 'b' }],
+    stashes: [{ id: 's1', slots: [] }],
+  });
+  const summary = await mod.getUnsentWorkSummary(USER);
+  assert.deepEqual(plain(summary), {
+    draftCount: 2,
+    stashSessionCount: 1,
+    draftsKnown: true,
+    stashesKnown: true,
+  });
+});
+
+test('a resumed stash still counts as un-sent work', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    stashes: [{ id: 's1', slots: [], resumedAt: '2026-07-29T00:00:00.000Z' }],
+  });
+  const summary = await mod.getUnsentWorkSummary(USER);
+  assert.equal(summary.stashSessionCount, 1);
+});
+
+test('only drafts with proven audio count; an unclassifiable proof marks the SOURCE unknown', async () => {
+  const partial = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'a' }, { slotId: 'b' }],
+    draftAudio: (meta) => (meta.slotId === 'a' ? 'present' : 'missing'),
+    stashes: [],
+  });
+  const counted = await partial.getUnsentWorkSummary(USER);
+  assert.equal(counted.draftCount, 1);
+  assert.equal(counted.draftsKnown, true);
+
+  const ambiguous = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'a' }, { slotId: 'b' }],
+    draftAudio: (meta) => (meta.slotId === 'a' ? 'present' : 'unknown'),
+    stashes: [{ id: 's1', slots: [] }],
+  });
+  const summary = await ambiguous.getUnsentWorkSummary(USER);
+  assert.equal(summary.draftsKnown, false);
+  assert.equal(summary.draftCount, 0);
+  assert.equal(summary.stashesKnown, true, 'one failing source must not erase the other');
+  assert.equal(summary.stashSessionCount, 1);
+});
+
+test('one source failing leaves the other source known (partial, never all-clear)', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    draftsError: Object.assign(new Error('x'), { code: 'STRICT_READ_UNAVAILABLE' }),
+    stashes: [{ id: 's1', slots: [] }],
+  });
+  const summary = await mod.getUnsentWorkSummary(USER);
+  assert.equal(summary.draftsKnown, false);
+  assert.equal(summary.stashesKnown, true);
+  assert.equal(summary.stashSessionCount, 1);
+});
+
+// ─── findLocalRecoveryAnchor ───────────────────────────────────────────────
+
+const ANCHOR_USER = { id: USER, role: 'veterinarian', organizationId: 'org-1' };
+
+test('anchor: a proven draft match routes to its slot', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'slot-9', serverDraftId: SERVER_ID }],
+    draftAudio: () => 'present',
+  });
+  const anchor = await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID);
+  assert.deepEqual(plain(anchor), { kind: 'draft', draftSlotId: 'slot-9' });
+});
+
+test('anchor: a matching draft with NO recoverable audio does not block deletion', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'slot-9', serverDraftId: SERVER_ID }],
+    draftAudio: () => 'missing',
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), { kind: 'none' });
+});
+
+test('anchor: a matching draft with an UNREADABLE audio proof fails closed', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'slot-9', serverDraftId: SERVER_ID }],
+    draftAudio: () => 'unknown',
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), { kind: 'unknown' });
+});
+
+test('anchor: a committed stash beats its crash-window draft duplicate', async () => {
+  const segmentUri = 'file:///doc/stashed-audio/user-1/s1/seg_0.m4a';
+  const mod = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'slot-9', serverDraftId: SERVER_ID }],
+    draftAudio: () => 'present',
+    stashes: [
+      {
+        id: 'stash-1',
+        slots: [{ id: 'slot-9', serverDraftId: SERVER_ID, segments: [{ uri: segmentUri }] }],
+      },
+    ],
+    filePresent: new Set([segmentUri]),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'saved_session',
+    stashSessionId: 'stash-1',
+  });
+});
+
+test('anchor: stale stash metadata for a DIFFERENT slot does not block deletion', async () => {
+  const otherUri = 'file:///doc/stashed-audio/user-1/s1/other.m4a';
+  const mod = await makeLocalRecordingsHarness({
+    stashes: [
+      {
+        id: 'stash-1',
+        slots: [
+          { id: 'slot-match', serverDraftId: SERVER_ID, segments: [] },
+          { id: 'slot-other', serverDraftId: 'different', segments: [{ uri: otherUri }] },
+        ],
+      },
+    ],
+    filePresent: new Set([otherUri]),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), { kind: 'none' });
+});
+
+test('anchor: a standalone durable manifest is used only when no indexed owner matches', async () => {
+  const manifest = {
+    recordingId: 'dr-1',
+    serverRecordingId: SERVER_ID,
+    __complete: true,
+  };
+  const mod = await makeLocalRecordingsHarness({
+    manifests: new Map([['dr-1', manifest]]),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'durable_recovery',
+    durableRecordingId: 'dr-1',
+  });
+
+  const withDraft = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'slot-9', serverDraftId: SERVER_ID }],
+    draftAudio: () => 'present',
+    manifests: new Map([['dr-1', manifest]]),
+  });
+  assert.equal((await withDraft.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)).kind, 'draft');
+});
+
+test('anchor: an authorized vault item matches and routes to recovery', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    vault: {
+      items: [{ id: 'vault-1', slots: [{ sourceServerDraftId: SERVER_ID, segments: [] }] }],
+      recoverabilityComplete: true,
+    },
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'support_recovery',
+    vaultItemId: 'vault-1',
+  });
+});
+
+test('anchor: an unavailable native bridge or unreadable vault is unknown, not none', async () => {
+  const noNative = await makeLocalRecordingsHarness({ manifestUnavailable: true });
+  assert.equal((await noNative.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)).kind, 'unknown');
+
+  const badVault = await makeLocalRecordingsHarness({
+    vaultError: Object.assign(new Error('x'), { code: 'STRICT_READ_UNAVAILABLE' }),
+  });
+  assert.equal((await badVault.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)).kind, 'unknown');
+
+  const uncertainVault = await makeLocalRecordingsHarness({
+    vault: { items: [], recoverabilityComplete: false },
+  });
+  assert.equal(
+    (await uncertainVault.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)).kind,
+    'unknown'
+  );
+});
+
+test('anchor: a PROVEN match wins even when another source is unknown', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    drafts: [{ slotId: 'slot-9', serverDraftId: SERVER_ID }],
+    draftAudio: () => 'present',
+    vaultError: Object.assign(new Error('x'), { code: 'STRICT_READ_UNAVAILABLE' }),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'draft',
+    draftSlotId: 'slot-9',
+  });
+});
+
+test('anchor: none requires every source to complete and prove no match', async () => {
+  const mod = await makeLocalRecordingsHarness({});
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), { kind: 'none' });
+});
+
+test('anchor: a scope mismatch or missing id never returns none', async () => {
+  const wrongScope = await makeLocalRecordingsHarness({ scopedUserId: OTHER });
+  assert.equal((await wrongScope.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)).kind, 'unknown');
+
+  const mod = await makeLocalRecordingsHarness({});
+  assert.equal((await mod.findLocalRecoveryAnchor(null, SERVER_ID)).kind, 'unknown');
+  assert.equal((await mod.findLocalRecoveryAnchor(ANCHOR_USER, '')).kind, 'unknown');
+});
+
+// ─── Source fences ─────────────────────────────────────────────────────────
+
+test('the new strict readers use the SecureStore adapter, never a raw native call', async () => {
+  const local = await read('src/lib/localRecordings.ts');
+  assert.ok(!local.includes('SecureStore.'), 'localRecordings must not call SecureStore directly');
+  assert.match(local, /withPromiseTimeout\(/);
+  assert.match(local, /LOCAL_ATTENTION_READ_TIMEOUT_MS = 8_000/);
+
+  const draft = await read('src/lib/draftStorage.ts');
+  const strictSection = draft.slice(draft.indexOf('── STRICT read path'), draft.indexOf('Delete every SecureStore entry'));
+  assert.ok(
+    !strictSection.includes('SecureStore.'),
+    'the strict draft readers go through secureStorage.getRawItemStrict'
+  );
+  assert.match(strictSection, /secureStorage\.getRawItemStrict/);
+
+  const stash = await read('src/lib/stashStorage.ts');
+  const stashStrict = stash.slice(stash.indexOf('── STRICT read path'), stash.indexOf('Encrypted stash storage'));
+  assert.ok(!stashStrict.includes('SecureStore.'));
+  assert.match(stashStrict, /secureStorage\.getRawItemStrict/);
+
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(vault, /listItemsForUserStrict/);
+  const vaultStrict = vault.slice(vault.indexOf('── STRICT read path'), vault.indexOf('interface AddItemsResult'));
+  assert.ok(
+    !/await readValidItemsAndPrune\(/.test(vaultStrict),
+    'the strict vault read must not prune'
+  );
+  assert.ok(!/await saveItems\(/.test(vaultStrict), 'the strict vault read must not write');
+});
+
+test('the SecureStore adapter reports Keystore failures without leaking native text', async () => {
+  const src = await read('src/lib/secureStorage.ts');
+  assert.match(src, /async getRawItemStrict/);
+  assert.match(src, /reportSecureStoreFailure\(op, error\);\s*\n\s*throw new StrictReadUnavailableError/);
+  const strictRead = await read('src/lib/strictRead.ts');
+  assert.match(strictRead, /A local read could not be completed/);
+  assert.ok(!strictRead.includes('error.message'));
+});

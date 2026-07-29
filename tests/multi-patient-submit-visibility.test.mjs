@@ -112,7 +112,10 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(list, /const submittedIds = useMemo\(\(\) => normalizeSubmittedIdsParam\(submittedIdsParam\), \[submittedIdsParam\]\)/);
   assert.match(list, /function recordingMatchesStatusFilter\(recording: Recording, selectedStatusFilter: StatusFilterValue\): boolean/);
   assert.match(list, /function recordingMatchesSearch\(recording: Recording, searchQuery: string\): boolean/);
-  assert.match(list, /selectedStatusFilter === 'needs_review'[\s\S]*getRecordingReviewStatus\(recording\) === 'needs_review'/);
+  // The unsupported `needs_review` filter is gone (Connect has no recording
+  // review contract); Needs Attention is a navigation entry instead.
+  assert.doesNotMatch(list, /needs_review/);
+  assert.match(list, /ATTENTION_FEED_COPY\.sectionTitle/);
   assert.match(list, /recordingMatchesStatusFilter\(recording, selectedStatusFilter\)/);
   assert.match(list, /recordingMatchesSearch\(recording, debouncedSearch\)/);
   assert.match(list, /sortBy: 'submittedAt'/);

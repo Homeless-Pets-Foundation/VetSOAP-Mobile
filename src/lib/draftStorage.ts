@@ -3,10 +3,14 @@ import { File as ExpoFile, Paths } from 'expo-file-system';
 import { copyAsync as legacyCopyAsync, moveAsync as legacyMoveAsync } from 'expo-file-system/legacy';
 import {
   fileExists,
+  fileExistsStrict,
   safeDeleteFile,
   safeDeleteDirectory,
   ensureDirectory,
 } from './fileOps';
+import { secureStorage } from './secureStorage';
+import { StrictReadUnavailableError, type StrictExistence } from './strictRead';
+import { isConfirmedUploaded, validateManifestObject, type DurableRecordingManifest } from './durableAudio/manifest';
 import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '../types/multiPatient';
 import type { CreateRecording } from '../types/index';
 import { isValidDurableId } from './durableAudio/paths';
@@ -585,6 +589,163 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
     pendingConfirm: clonePendingConfirm(parsed.pendingConfirm),
     durable,
   };
+}
+
+/**
+ * ── STRICT read path ───────────────────────────────────────────────────────
+ *
+ * The lenient readers above turn a Keystore failure, a torn chunk set, a
+ * malformed JSON payload, or an invalid index entry into `[]`/`null` — which a
+ * feed would render as "all clear". These variants distinguish legitimate
+ * ABSENCE (resolve) from present-but-unrecoverable data (throw
+ * StrictReadUnavailableError). They deliberately bypass `draftsListCache`,
+ * which is populated by the lenient sweep and therefore is not strict evidence.
+ */
+
+/** Strict draft index read. Absent key → known-empty; corrupt → unknown. */
+async function readDraftIndexForUserStrict(userId: string): Promise<string[]> {
+  const raw = await secureStorage.getRawItemStrict(
+    draftIndexKeyForUser(userId),
+    'draftIndexStrict',
+  );
+  if (raw === null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new StrictReadUnavailableError('draft_index:parse');
+  }
+  if (!Array.isArray(parsed)) throw new StrictReadUnavailableError('draft_index:shape');
+  const slotIds: string[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== 'string' || !entry || /[/\\.]/.test(entry)) {
+      throw new StrictReadUnavailableError('draft_index:entry');
+    }
+    slotIds.push(entry);
+  }
+  return slotIds;
+}
+
+/**
+ * Strict per-draft metadata read. Returns `null` ONLY when both the chunked
+ * meta key and the legacy key are proven absent; a torn chunk set, unparseable
+ * JSON, or a shape that fails normalization throws.
+ */
+async function readDraftChunksStrict(
+  userId: string,
+  slotId: string,
+): Promise<DraftMetadata | null> {
+  const metaRaw = await secureStorage.getRawItemStrict(
+    draftMetaKeyForUser(userId, slotId),
+    'draftMetaStrict',
+  );
+  if (metaRaw !== null) {
+    let meta: { chunks?: unknown };
+    try {
+      meta = JSON.parse(metaRaw) as { chunks?: unknown };
+    } catch {
+      throw new StrictReadUnavailableError('draft_meta:parse');
+    }
+    const count = meta.chunks;
+    if (!Number.isInteger(count) || (count as number) <= 0) {
+      throw new StrictReadUnavailableError('draft_meta:chunk_count');
+    }
+    const prefix = draftChunkPrefixForUser(userId, slotId);
+    const parts: string[] = [];
+    for (let i = 0; i < (count as number); i++) {
+      const chunk = await secureStorage.getRawItemStrict(`${prefix}${i}`, 'draftChunkStrict');
+      if (chunk === null) throw new StrictReadUnavailableError('draft_meta:torn_chunk');
+      parts.push(chunk);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(parts.join(''));
+    } catch {
+      throw new StrictReadUnavailableError('draft_meta:payload_parse');
+    }
+    const normalized = normalizeDraftMetadata(parsed);
+    if (!normalized) throw new StrictReadUnavailableError('draft_meta:shape');
+    return normalized;
+  }
+
+  const legacyRaw = await secureStorage.getRawItemStrict(
+    legacyDraftMetadataKeyForUser(userId, slotId),
+    'draftLegacyMetaStrict',
+  );
+  if (legacyRaw === null) return null;
+  let legacyParsed: unknown;
+  try {
+    legacyParsed = JSON.parse(legacyRaw);
+  } catch {
+    throw new StrictReadUnavailableError('draft_legacy_meta:parse');
+  }
+  const normalizedLegacy = normalizeDraftMetadata(legacyParsed);
+  if (!normalizedLegacy) throw new StrictReadUnavailableError('draft_legacy_meta:shape');
+  return normalizedLegacy;
+}
+
+/**
+ * A bounded, consistent snapshot of the signed-in user's native durable
+ * manifests, indexed by durable recordingId. `null` means the native read was
+ * unavailable/ambiguous — callers must treat that as UNKNOWN, never as "no
+ * durable audio". Taken ONCE per strict operation (never per draft/slot) so a
+ * large unsent store stays inside the caller's hard deadline.
+ */
+export type DurableManifestSnapshot = Map<string, DurableRecordingManifest> | null;
+
+/**
+ * Strict recoverable-audio proof for one draft. Mirrors
+ * `draftHasLocalAudio()`'s semantics but never collapses an error into "no":
+ *  - a valid post-PUT confirmation proof is enough even with no local bytes;
+ *  - a durable pointer must resolve to an existing recovered file OR a
+ *    validated, non-uploaded native manifest with complete audio — a
+ *    syntactically valid, non-tombstoned id is NOT proof;
+ *  - a filesystem/native error is `unknown`.
+ */
+async function draftHasLocalAudioStrictInternal(
+  meta: DraftMetadata,
+  manifests: DurableManifestSnapshot,
+): Promise<StrictExistence> {
+  if (clonePendingConfirm(meta.pendingConfirm)) return 'present';
+
+  if (meta.durable && isValidDurableId(meta.durable.recordingId)) {
+    const recoveredUri = meta.durable.recoveredAudioUri;
+    if (recoveredUri) {
+      const recovered = fileExistsStrict(recoveredUri);
+      if (recovered !== 'missing') return recovered;
+    }
+    if (!manifests) return 'unknown';
+    const manifest = manifests.get(meta.durable.recordingId);
+    if (!manifest) return 'missing';
+    return durableManifestHasCompleteAudio(manifest) ? 'present' : 'missing';
+  }
+
+  if (!meta.segments || meta.segments.length === 0) return 'missing';
+  let sawUnknown = false;
+  for (const segment of meta.segments) {
+    const existence = fileExistsStrict(segment.uri);
+    if (existence === 'present') return 'present';
+    if (existence === 'unknown') sawUnknown = true;
+  }
+  return sawUnknown ? 'unknown' : 'missing';
+}
+
+/**
+ * Whether a native manifest proves un-uploaded, recoverable audio: validated
+ * shape, not confirmed-uploaded, at least one complete ADTS frame, and the
+ * audio file actually on disk.
+ */
+export function durableManifestHasCompleteAudio(
+  manifest: DurableRecordingManifest | null | undefined,
+): boolean {
+  if (!manifest) return false;
+  const validation = validateManifestObject(manifest);
+  if (!validation.ok) return false;
+  const valid = validation.manifest;
+  if (isConfirmedUploaded(valid)) return false;
+  if (!(valid.adtsFrameCount > 0)) return false;
+  if (!(valid.audioFile?.completeFrameBytes > 0)) return false;
+  return fileExistsStrict(valid.audioFile.uri) === 'present';
 }
 
 /**
@@ -1596,6 +1757,31 @@ export const draftStorage = {
     } catch {
       // Best-effort cleanup
     }
+  },
+
+  /**
+   * STRICT list for the current-or-explicit user. Throws
+   * StrictReadUnavailableError when the index or any indexed draft is present
+   * but unrecoverable; a proven-absent draft entry is skipped (it was deleted
+   * without an index update — legitimate absence, not corruption).
+   */
+  async listDraftsForUserStrict(userId: string): Promise<DraftMetadata[]> {
+    if (!userId) throw new StrictReadUnavailableError('draft_list:no_user');
+    const slotIds = await readDraftIndexForUserStrict(userId);
+    const drafts: DraftMetadata[] = [];
+    for (const slotId of slotIds) {
+      const draft = await readDraftChunksStrict(userId, slotId);
+      if (draft) drafts.push(draft);
+    }
+    return drafts;
+  },
+
+  /** STRICT recoverable-audio proof. See draftHasLocalAudioStrictInternal. */
+  async draftHasLocalAudioStrict(
+    meta: DraftMetadata,
+    manifests: DurableManifestSnapshot,
+  ): Promise<StrictExistence> {
+    return draftHasLocalAudioStrictInternal(meta, manifests);
   },
 
   /** True if this draft still has at least one segment audio file on disk. */

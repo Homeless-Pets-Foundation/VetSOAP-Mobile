@@ -1,5 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
+import { secureStorage } from './secureStorage';
+import { StrictReadUnavailableError } from './strictRead';
 
 export const MAX_STASHES = 5;
 type Generation = 'a' | 'b';
@@ -180,6 +182,111 @@ async function getStashedSessionsForUserId(
 }
 
 /**
+ * ── STRICT read path ───────────────────────────────────────────────────────
+ *
+ * `parseSessions` FILTERS invalid entries and `readSessionsForKeys` collapses a
+ * torn generation to `null`; both are right for the resilient double-buffer
+ * read and wrong for a caller that must not mistake an unreadable store for
+ * "no saved sessions". These variants reject present-but-unrecoverable data.
+ */
+
+function parseSessionsStrict(raw: string): StashedSession[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new StrictReadUnavailableError('stash:payload_parse');
+  }
+  if (!Array.isArray(parsed)) throw new StrictReadUnavailableError('stash:payload_shape');
+  for (const session of parsed) {
+    const candidate = session as Record<string, unknown> | null;
+    if (
+      !candidate ||
+      typeof candidate !== 'object' ||
+      typeof candidate.id !== 'string' ||
+      typeof candidate.stashedAt !== 'string' ||
+      !Array.isArray(candidate.slots) ||
+      !candidate.slots.every(
+        (slot: unknown) =>
+          slot != null &&
+          typeof slot === 'object' &&
+          typeof (slot as Record<string, unknown>).id === 'string' &&
+          Array.isArray((slot as Record<string, unknown>).segments)
+      )
+    ) {
+      throw new StrictReadUnavailableError('stash:session_shape');
+    }
+  }
+  return parsed as StashedSession[];
+}
+
+/**
+ * Read one generation strictly. `null` = the layout is genuinely ABSENT (no
+ * count key). A present-but-torn/corrupt generation throws so a healthy
+ * fallback generation can still prove the result without masking corruption.
+ */
+async function readSessionsForKeysStrict(
+  scopedCountKey: string,
+  scopedPrefix: string
+): Promise<StashedSession[] | null> {
+  const countStr = await secureStorage.getRawItemStrict(scopedCountKey, 'stashCountStrict');
+  if (countStr === null) return null;
+
+  const count = parseInt(countStr, 10);
+  if (isNaN(count) || count < 0) throw new StrictReadUnavailableError('stash:count');
+  if (count === 0) return [];
+
+  const chunks: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const chunk = await secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict');
+    if (chunk === null) throw new StrictReadUnavailableError('stash:torn_chunk');
+    chunks.push(chunk);
+  }
+  return parseSessionsStrict(chunks.join(''));
+}
+
+async function getStashedSessionsForUserStrictInternal(
+  userId: string
+): Promise<StashedSession[]> {
+  if (!userId) throw new StrictReadUnavailableError('stash:no_user');
+
+  const activeGeneration = await secureStorage.getRawItemStrict(
+    activeGenerationKeyForUser(userId),
+    'stashActiveGenerationStrict'
+  );
+
+  const sources: { countKey: string; prefix: string }[] = [];
+  if (activeGeneration === 'a' || activeGeneration === 'b') {
+    sources.push({
+      countKey: generationCountKeyForUser(userId, activeGeneration),
+      prefix: generationPrefixForUser(userId, activeGeneration),
+    });
+  }
+  sources.push({ countKey: legacyCountKeyForUser(userId), prefix: legacyPrefixForUser(userId) });
+  for (const generation of ['b', 'a'] as const) {
+    sources.push({
+      countKey: generationCountKeyForUser(userId, generation),
+      prefix: generationPrefixForUser(userId, generation),
+    });
+  }
+
+  let sawUnrecoverable = false;
+  for (const source of sources) {
+    try {
+      const sessions = await readSessionsForKeysStrict(source.countKey, source.prefix);
+      // A healthy fallback generation still PROVES the result.
+      if (sessions !== null) return sessions;
+    } catch {
+      sawUnrecoverable = true;
+    }
+  }
+  // Every layout was absent → a known-empty store. Any present-but-unusable
+  // layout with no healthy fallback → unknown.
+  if (sawUnrecoverable) throw new StrictReadUnavailableError('stash:no_recoverable_generation');
+  return [];
+}
+
+/**
  * Encrypted stash storage using expo-secure-store with chunked writes.
  *
  * SecureStore uses EncryptedSharedPreferences on Android and Keychain on iOS,
@@ -210,6 +317,16 @@ export const stashStorage = {
   /** Read stashes for a specific user without rebinding the global stash scope. */
   async getStashedSessionsForUser(userId: string): Promise<StashedSession[]> {
     return getStashedSessionsForUserId(userId);
+  },
+
+  /**
+   * STRICT explicit-user read. Rejects with StrictReadUnavailableError when the
+   * store is present but unrecoverable (torn chunks, invalid count, malformed
+   * JSON, invalid session shape) and resolves `[]` only for a genuinely absent
+   * store. Never rebinds the global stash scope.
+   */
+  async getStashedSessionsForUserStrict(userId: string): Promise<StashedSession[]> {
+    return getStashedSessionsForUserStrictInternal(userId);
   },
 
   /**

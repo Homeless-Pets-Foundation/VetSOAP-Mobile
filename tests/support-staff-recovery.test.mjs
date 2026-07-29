@@ -126,6 +126,7 @@ async function loadRecoveryVaultForTest() {
       directoryExists: () => false,
       ensureDirectory: () => true,
       fileExists: (uri) => files.has(uri),
+      fileExistsStrict: (uri) => (files.has(uri) ? 'present' : 'missing'),
       safeCopyFile: async (from, to) => {
         if (!files.has(from) || copyFailures.has(from)) return false;
         files.delete(to);
@@ -144,6 +145,7 @@ async function loadRecoveryVaultForTest() {
     './secureStorage': {
       secureStorage: {
         getRawItem: async (key) => secureStore.get(key) ?? null,
+        getRawItemStrict: async (key) => secureStore.get(key) ?? null,
         setRawItem: async (key, value) => {
           secureStore.set(key, value);
           return true;
@@ -151,6 +153,15 @@ async function loadRecoveryVaultForTest() {
         deleteRawItem: async (key) => {
           secureStore.delete(key);
         },
+      },
+    },
+    './strictRead': {
+      StrictReadUnavailableError: class StrictReadUnavailableError extends Error {
+        constructor(source) {
+          super('A local read could not be completed');
+          this.code = 'STRICT_READ_UNAVAILABLE';
+          this.source = source;
+        }
       },
     },
     './monitoring': {

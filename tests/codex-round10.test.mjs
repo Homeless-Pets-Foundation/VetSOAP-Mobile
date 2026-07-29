@@ -15,12 +15,12 @@ const read = (rel) => readFile(path.join(root, rel), 'utf8');
 function isPersistableListVariant(queryKey) {
   const [rootKey, sub] = queryKey;
   if (rootKey === 'patients' && sub === 'list') return !queryKey[2];
+  // The bounded Attention Feed page is never dehydrated (attention-feed plan).
+  if (rootKey === 'recordings' && sub === 'attention') return false;
   if (rootKey === 'recordings' && sub === 'list') {
-    return (
-      !queryKey[2] &&
-      (queryKey[3] === 'all' || queryKey[3] == null) &&
-      (queryKey[4] === 'any' || queryKey[4] == null)
-    );
+    // ['recordings', 'list', search, status, sort] — the unsupported review
+    // filter slot was removed, so index 4 is the sort token, not a review value.
+    return !queryKey[2] && (queryKey[3] === 'all' || queryKey[3] == null);
   }
   if (rootKey === 'recordings' && sub === 'drafts') return !queryKey[3];
   return true;
@@ -29,7 +29,7 @@ function isPersistableListVariant(queryKey) {
 test('only default (unsearched/unfiltered) list variants are persistable', () => {
   // Default variants persist.
   assert.ok(isPersistableListVariant(['patients', 'list', '']));
-  assert.ok(isPersistableListVariant(['recordings', 'list', '', 'all', 'any', 'submittedAt-desc']));
+  assert.ok(isPersistableListVariant(['recordings', 'list', '', 'all', 'submittedAt-desc']));
   assert.ok(isPersistableListVariant(['recordings', 'drafts', 'list', '', 'desc']));
   // Home's recent + detail queries are unaffected.
   assert.ok(isPersistableListVariant(['recordings', 'recent']));
@@ -37,9 +37,10 @@ test('only default (unsearched/unfiltered) list variants are persistable', () =>
   assert.ok(isPersistableListVariant(['patient', 'abc-123', 'recordings', 20]));
   // Search / filter variants do NOT persist — this is what bounds the snapshot.
   assert.ok(!isPersistableListVariant(['patients', 'list', 'bella']));
-  assert.ok(!isPersistableListVariant(['recordings', 'list', 'rex', 'all', 'any', 'submittedAt-desc']));
-  assert.ok(!isPersistableListVariant(['recordings', 'list', '', 'processing', 'any', 'submittedAt-desc']));
-  assert.ok(!isPersistableListVariant(['recordings', 'list', '', 'all', 'needs_review', 'submittedAt-desc']));
+  assert.ok(!isPersistableListVariant(['recordings', 'list', 'rex', 'all', 'submittedAt-desc']));
+  assert.ok(!isPersistableListVariant(['recordings', 'list', '', 'completed', 'submittedAt-desc']));
+  // The 100-row attention page never reaches disk.
+  assert.ok(!isPersistableListVariant(['recordings', 'attention', 'updated-v1']));
   assert.ok(!isPersistableListVariant(['recordings', 'drafts', 'list', 'rex', 'desc']));
 });
 
@@ -66,6 +67,6 @@ test('post-submit detail Back returns to the recordings list, not the reset form
   assert.match(rec, /\/recordings\/\$\{serverRecordingId\}\?from=submit/);
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
   // …and the detail Back honors it instead of router.back()-ing into the form.
-  assert.match(detail, /const \{ id, from \} = useLocalSearchParams/);
+  assert.match(detail, /const \{ id, from, focus \} = useLocalSearchParams/);
   assert.match(detail, /if \(from === 'submit'\) \{\s*\n\s*router\.replace\('\/recordings'\);/);
 });

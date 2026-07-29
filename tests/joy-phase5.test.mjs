@@ -45,24 +45,29 @@ test('processing stepper is extracted and uses warmth plus paw steps', async () 
   assert.match(strings, /PROCESSING_WARMTH/);
 });
 
-test('review workflow is wired through list filter, card chip, detail toggle, and API', async () => {
+test('the unsupported human-review contract is fully removed', async () => {
+  // Connect has no Recording review column, no `reviewStatus` list filter, and
+  // no PATCH /:id/review route — the old mobile filter/chip/mutation were
+  // contract drift that could never return results (attention-feed plan,
+  // pass 2). Discovery now lives on the Needs Attention screen.
   const api = await read('src/api/recordings.ts');
   const list = await read('app/(app)/(tabs)/recordings/index.tsx');
   const card = await read('src/components/RecordingCard.tsx');
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
   const types = await read('src/types/index.ts');
 
-  assert.match(types, /ReviewStatus = 'needs_review' \| 'reviewed'/);
-  assert.match(api, /reviewStatus\?: ReviewStatus/);
-  assert.match(api, /patch\(`\/api\/recordings\/\$\{recordingId\}\/review`/);
-  assert.match(list, /value: 'needs_review'/);
-  // WP22: the Needs Review option is always present — visibility no longer
-  // shifts with which pages happen to be loaded.
-  assert.match(list, /NEEDS_REVIEW_STATUS_FILTER_OPTION/);
+  assert.doesNotMatch(types, /export type ReviewStatus/);
+  assert.doesNotMatch(api, /reviewStatus\?: ReviewStatus/);
+  assert.doesNotMatch(api, /\/review`/);
+  assert.doesNotMatch(list, /value: 'needs_review'/);
+  assert.doesNotMatch(card, /ReviewStatusChip/);
+  assert.doesNotMatch(detail, /ReviewStatusChip/);
+
+  // The status filter still works, and the list keeps a real Needs Attention
+  // navigation entry in its place.
   assert.match(list, /options=\{statusFilterOptions\}/);
-  assert.match(list, /reviewStatus: reviewStatusFilter/);
-  assert.match(card, /ReviewStatusChip/);
-  assert.match(detail, /ReviewStatusChip/);
+  assert.match(list, /ATTENTION_FEED_COPY\.sectionTitle/);
+  assert.match(list, /router\.push\('\/recordings\/attention' as never\)/);
 });
 
 test('home shows recent patient AI summary from existing patient API', async () => {
@@ -196,19 +201,18 @@ test('audio playback watchdog arms before loading native source', async () => {
   assert.doesNotMatch(player, /isLoadedRef\.current &&/);
 });
 
-test('Phase 5 copy is centralized for profile subscription account deletion and review chip', async () => {
+test('Phase 5 copy is centralized for profile, subscription, account deletion, and attention', async () => {
   const strings = await read('src/constants/strings.ts');
   const profile = await read('app/(app)/profile.tsx');
   const subscription = await read('app/(app)/subscription.tsx');
   const deleteAccount = await read('app/(app)/delete-account.tsx');
-  const reviewChip = await read('src/components/ReviewStatusChip.tsx');
   const record = await read('app/(app)/(tabs)/record.tsx');
 
   for (const exportName of [
     'PROFILE_COPY',
     'SUBSCRIPTION_COPY',
     'DELETE_ACCOUNT_COPY',
-    'REVIEW_STATUS_COPY',
+    'ATTENTION_FEED_COPY',
   ]) {
     assert.match(strings, new RegExp(`export const ${exportName}`));
   }
@@ -226,9 +230,7 @@ test('Phase 5 copy is centralized for profile subscription account deletion and 
   assert.doesNotMatch(deleteAccount, /'Sign Out Failed'/);
   assert.doesNotMatch(deleteAccount, /'Request Deletion'/);
 
-  assert.match(reviewChip, /REVIEW_STATUS_COPY/);
-  assert.doesNotMatch(reviewChip, /'Reviewed'/);
-  assert.doesNotMatch(reviewChip, /'Needs review'/);
+  assert.ok(!strings.includes('REVIEW_STATUS_COPY'), 'the dead review chip copy is gone');
 
   assert.match(record, /TEMPLATE_DEFAULT_COPY\.saveFailed\.title/);
   assert.doesNotMatch(record, /'Default Not Saved'/);

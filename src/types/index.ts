@@ -10,8 +10,6 @@ export type RecordingStatus =
   | 'failed'
   | 'pending_metadata';
 
-export type ReviewStatus = 'needs_review' | 'reviewed';
-
 // Reprocess (re-transcribe + regenerate SOAP) model selection. Sourced from
 // GET /api/organization/ai-models (org-scoped, key/allow-list filtered server-side).
 export interface AiModelOption {
@@ -71,9 +69,10 @@ export interface Recording {
   exportedAt: string | null;
   exportedTo: string | null;
   exportedBy: { id: string; fullName: string } | null;
-  reviewStatus?: ReviewStatus | null;
-  reviewedAt?: string | null;
-  reviewedBy?: { id: string; fullName: string } | null;
+  // NOTE: there is deliberately no human `reviewStatus` here. Connect has no
+  // Recording review column, list filter, or PATCH /:id/review route; the old
+  // mobile-only fields were contract drift and were removed with the attention
+  // feed (2026-07-29 plan). Reintroduce only alongside a real server contract.
   costBreakdown: CostBreakdown | null;
   importSource: 'google_drive' | null;
   aiExtractedMetadata?: AiExtractedMetadata | null;
@@ -106,18 +105,47 @@ export type RecordingMetadataField =
 export type MetadataReviewState = 'none' | 'unconfirmed' | 'confirmed' | 'dismissed';
 
 export interface AiExtractedMetadataField {
-  value: string;
+  /**
+   * The server schema permits a nullable extracted value
+   * (`packages/core/src/schemas/recording.schema.ts`); copy must never
+   * interpolate it without a `typeof value === 'string'` guard.
+   */
+  value: string | null;
   confidence?: number;
 }
 
+/**
+ * Closed drop-reason vocabulary emitted by Connect's C7 telemetry
+ * (`AI_METADATA_DROP_REASONS` in `packages/core/src/schemas/recording.schema.ts`).
+ * The runtime array lives in `src/lib/recordFirstObservability.ts` (with a
+ * `satisfies` exhaustiveness check) so this types module stays import-free for
+ * the pure unit-test loaders.
+ */
+export type AiMetadataDropReasonCode =
+  | 'null_extraction'
+  | 'already_filled'
+  | 'conflicts_with_existing'
+  | 'low_confidence'
+  | 'not_verbatim'
+  | 'multi_patient';
+
+/**
+ * The server drop-reason payload is `.strict()` and deliberately PHI-free:
+ * `{ field, reason, score? }` only. Suggested/current VALUES come from
+ * `aiExtractedMetadata.fields[field].value` and the recording row — never from
+ * here. Do not re-add value-bearing members (attention-feed plan, pass 1).
+ */
 export interface AiMetadataDropReason {
   field: RecordingMetadataField;
-  reason: string;
-  currentValue?: string | null;
-  suggestedValue?: string | null;
-  value?: string | null;
+  reason: AiMetadataDropReasonCode;
+  score?: number;
 }
 
+/**
+ * Forward-compat only: Connect never populates `aiExtractedMetadata.conflicts[]`
+ * today. Conflict UI is driven from `dropReasons`. Kept (with values) because a
+ * future server payload for this key is specified to carry them.
+ */
 export interface AiMetadataConflict {
   field: RecordingMetadataField;
   reason?: string;

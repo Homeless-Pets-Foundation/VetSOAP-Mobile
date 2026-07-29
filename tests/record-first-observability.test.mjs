@@ -244,7 +244,11 @@ test('B6: filled fields still do not suggest without an explicit conflict reason
   assert.deepEqual(plain(OBS.computeSuggestionFields(rec)), []);
 });
 
-test('B6: conflict suggestions tolerate object/drop-only server shapes', () => {
+test('B6: a PHI-bearing value on a legacy DROP reason is discarded, not shown', () => {
+  // The server drop-reason payload is `.strict()` — `{ field, reason, score? }`
+  // only. A historical blob that smuggled a value key must NOT become a
+  // suggestion: only `fields` (or the forward-compatible `conflicts[]` payload)
+  // may supply an on-device value (attention-feed plan, pass 1).
   const rec = makeRecording({
     species: 'Canine',
     aiExtractedMetadata: {
@@ -258,9 +262,68 @@ test('B6: conflict suggestions tolerate object/drop-only server shapes', () => {
       },
     },
   });
+  assert.deepEqual(plain(OBS.computeSuggestionFields(rec)), []);
+  // ...but the reason itself still normalizes, so the generic conflict signal survives.
+  assert.deepEqual(plain(OBS.parseMetadataDropReasons(rec)), [
+    { field: 'species', reason: 'conflicts_with_existing' },
+  ]);
+  assert.deepEqual(plain(OBS.computeMetadataAttentionSignals(rec).conflictFields), ['species']);
+});
+
+test('B6: the forward-compatible conflicts[] payload may still supply a value', () => {
+  const rec = makeRecording({
+    species: 'Canine',
+    aiExtractedMetadata: {
+      appliedFields: [],
+      conflicts: [{ field: 'species', reason: 'conflicts_with_existing', suggestedValue: 'Feline' }],
+    },
+  });
   assert.deepEqual(plain(OBS.computeSuggestionFields(rec)), [
     { field: 'species', value: 'Feline', conflict: true, currentValue: 'Canine' },
   ]);
+});
+
+test('B6: array and legacy record drop-reason shapes normalize identically', () => {
+  const arrayShape = makeRecording({
+    aiExtractedMetadata: {
+      appliedFields: [],
+      dropReasons: [
+        { field: 'breed', reason: 'low_confidence', score: 0.4 },
+        { field: 'breed', reason: 'low_confidence', score: 0.4 },
+        { field: 'patientName', reason: 'not_verbatim' },
+        { field: 'nope', reason: 'low_confidence' },
+        { field: 'species', reason: 'invented_reason' },
+      ],
+    },
+  });
+  const recordShape = makeRecording({
+    aiExtractedMetadata: {
+      appliedFields: [],
+      dropReasons: {
+        breed: { reason: 'low_confidence', score: 0.4 },
+        patientName: 'not_verbatim',
+        nope: 'low_confidence',
+        species: 'invented_reason',
+      },
+    },
+  });
+  const expected = [
+    { field: 'patientName', reason: 'not_verbatim' },
+    { field: 'breed', reason: 'low_confidence', score: 0.4 },
+  ];
+  assert.deepEqual(plain(OBS.parseMetadataDropReasons(arrayShape)), expected);
+  assert.deepEqual(plain(OBS.parseMetadataDropReasons(recordShape)), expected);
+});
+
+test('B6: a corrupt oversized drop payload stays bounded and deterministic', () => {
+  const dropReasons = [];
+  for (let i = 0; i < 5000; i++) {
+    dropReasons.push({ field: 'breed', reason: 'low_confidence' });
+  }
+  const rec = makeRecording({ aiExtractedMetadata: { appliedFields: [], dropReasons } });
+  const parsed = OBS.parseMetadataDropReasons(rec);
+  assert.equal(parsed.length, 1);
+  assert.ok(OBS.DROP_REASON_SCAN_LIMIT <= 60);
 });
 
 test('B6: tapping a suggestion applies its value (helper exposes value)', () => {
@@ -291,9 +354,23 @@ test('B5: empty state hidden when suggestions exist', () => {
 test('B5: empty state hidden when something was applied', () => {
   const rec = makeRecording({
     patientName: '',
+    // The applied field must actually be non-blank on the ROW — a server that
+    // named an applied field it never populated must not suppress the
+    // "couldn't read the details" state (attention-feed hardening).
+    species: 'Canine',
     aiExtractedMetadata: { appliedFields: ['species'], fields: { species: { value: 'Canine' } } },
   });
   assert.equal(OBS.shouldShowNoExtractionEmptyState(rec), false);
+});
+
+test('B5: an applied field that left the row blank does NOT suppress the empty state', () => {
+  const rec = makeRecording({
+    patientName: '',
+    species: null,
+    aiExtractedMetadata: { appliedFields: ['species'], fields: {} },
+  });
+  assert.equal(OBS.shouldShowNoExtractionEmptyState(rec), true);
+  assert.deepEqual(plain(OBS.validAppliedFields(rec)), []);
 });
 
 test('B5: empty state hidden when patient name already populated', () => {

@@ -1,12 +1,14 @@
 import React from 'react';
 import { View, Text, Alert, Pressable } from 'react-native';
-import { Check, Edit2, Plus, Sparkles } from 'lucide-react-native';
+import { AlertCircle, Check, Edit2, Plus, Sparkles } from 'lucide-react-native';
 import type { Recording, RecordingMetadataField, UpdateRecordingMetadata } from '../types';
-import { METADATA_REVIEW_COPY } from '../constants/strings';
+import { METADATA_FIELD_LABELS, METADATA_REVIEW_COPY } from '../constants/strings';
 import {
+  computeMetadataAttentionSignals,
   computeSuggestionFields,
   shouldShowNoExtractionEmptyState,
 } from '../lib/recordFirstObservability';
+import { metadataAttentionReasons } from '../lib/attentionFeed';
 import { buildMetadataFormSeed } from '../lib/recordingMetadataSync';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { Card } from './ui/Card';
@@ -15,13 +17,7 @@ import { Sheet } from './ui/Sheet';
 import { TextInputField } from './ui/TextInputField';
 import { SegmentedControl } from './ui/SegmentedControl';
 
-const FIELD_LABELS: Record<RecordingMetadataField, string> = {
-  patientName: 'Patient',
-  clientName: 'Client',
-  species: 'Species',
-  breed: 'Breed',
-  appointmentType: 'Visit Type',
-};
+const FIELD_LABELS: Record<RecordingMetadataField, string> = METADATA_FIELD_LABELS;
 
 const APPOINTMENT_TYPE_OPTIONS = [
   { label: 'Wellness Exam', value: 'Wellness Exam' },
@@ -35,9 +31,18 @@ type MetadataForm = Record<RecordingMetadataField, string>;
 interface MetadataReviewCardProps {
   recording: Recording;
   mode: 'review' | 'add' | 'edit';
+  /** Gates only the ambiguous null-extraction inference, never a real blob. */
+  recordFirstEnabled?: boolean;
   saving?: boolean;
+  /** Whole-review confirm with no field changes. */
   onConfirm?: () => void;
-  onSave: (payload: UpdateRecordingMetadata, correctedFieldCount: number) => void;
+  /** Deliberate `review: 'dismissed'` — "Keep current details". */
+  onDismiss?: () => void;
+  onSave: (
+    payload: UpdateRecordingMetadata,
+    correctedFieldCount: number,
+    changedFields: RecordingMetadataField[]
+  ) => void;
 }
 
 function trimOrNull(value: string): string | null {
@@ -45,8 +50,12 @@ function trimOrNull(value: string): string | null {
   return trimmed ? trimmed : null;
 }
 
-function buildPayload(form: MetadataForm, pimsPatientId: string): UpdateRecordingMetadata {
-  return {
+function buildPayload(
+  form: MetadataForm,
+  pimsPatientId: string,
+  opts: { includeReview: boolean }
+): UpdateRecordingMetadata {
+  const payload: UpdateRecordingMetadata = {
     fields: {
       patientName: form.patientName.trim(),
       clientName: trimOrNull(form.clientName),
@@ -57,21 +66,30 @@ function buildPayload(form: MetadataForm, pimsPatientId: string): UpdateRecordin
       // out of `correctedCount` so AI-review analytics stay AI-only.
       pimsPatientId: trimOrNull(pimsPatientId),
     },
-    review: 'confirmed',
   };
+  // Only an EXPLICIT whole-review terminal action over the complete unresolved
+  // set may claim resolution, and only when the server can actually attach it
+  // (a null `aiExtractedMetadata` has nowhere to store a review state).
+  if (opts.includeReview) payload.review = 'confirmed';
+  return payload;
 }
 
-function correctedCount(before: MetadataForm, after: MetadataForm): number {
+function changedFieldList(
+  before: MetadataForm,
+  after: MetadataForm
+): RecordingMetadataField[] {
   return (Object.keys(before) as RecordingMetadataField[]).filter(
     (field) => before[field].trim() !== after[field].trim()
-  ).length;
+  );
 }
 
 export function MetadataReviewCard({
   recording,
   mode,
+  recordFirstEnabled = false,
   saving = false,
   onConfirm,
+  onDismiss,
   onSave,
 }: MetadataReviewCardProps) {
   const colors = useThemeColors();
@@ -96,12 +114,19 @@ export function MetadataReviewCard({
   }, [pimsSeed]);
 
   const before = formSeed;
-  const appliedFields = Array.isArray(recording.aiExtractedMetadata?.appliedFields)
-    ? recording.aiExtractedMetadata.appliedFields
-    : [];
+  const signals = React.useMemo(
+    () => computeMetadataAttentionSignals(recording),
+    [recording]
+  );
   // Applied (auto-filled) fields render as confirmed rows.
-  const appliedRowFields = appliedFields.filter(
-    (field, index, arr) => arr.indexOf(field) === index && FIELD_LABELS[field]
+  const appliedRowFields = signals.validAppliedFields;
+  // Every unresolved reason, in deterministic order — including generic
+  // reason-only rows when the extracted value is unavailable.
+  // Review mode only: in `add`/`edit` the card body already states the single
+  // relevant condition, and a duplicate reason row would just repeat it.
+  const reasonRows = React.useMemo(
+    () => (mode === 'review' ? metadataAttentionReasons(recording, { recordFirstEnabled }) : []),
+    [mode, recording, recordFirstEnabled]
   );
   // B6 — fields the AI extracted but did NOT auto-apply (low confidence /
   // multi-patient), still blank on the recording. Rendered as tappable
@@ -111,7 +136,16 @@ export function MetadataReviewCard({
   const showNoExtraction = shouldShowNoExtractionEmptyState(recording);
   const hasAnyFormValue = Object.values(form).some((value) => value.trim().length > 0);
   const suggestionOnlyReview = mode === 'review' && appliedRowFields.length === 0;
-  const primaryDetailsAction = mode !== 'review' || suggestionOnlyReview;
+
+  const hasMetadataObject = signals.hasMetadataObject;
+  // A blank patient name with nothing applied is the `metadata_missing` state:
+  // no terminal action may claim resolution until it is filled in.
+  const resolutionBlocked = signals.missingDetails && !form.patientName.trim();
+  const canFinishReview = mode === 'review' && hasMetadataObject && !resolutionBlocked;
+  // Never let a dismissal hide a blank-patient-name missing-metadata item, and
+  // never offer it when the server has no blob to attach the state to.
+  const canDismissReview =
+    mode === 'review' && hasMetadataObject && !signals.missingDetails && !!onDismiss;
 
   const updateField = (field: RecordingMetadataField, value: string | null) => {
     setForm((current) => ({ ...current, [field]: value ?? '' }));
@@ -127,11 +161,28 @@ export function MetadataReviewCard({
 
   const handleSave = () => {
     try {
-      onSave(buildPayload(form, pimsPatientId), correctedCount(before, form));
+      const changed = changedFieldList(before, form);
+      onSave(
+        buildPayload(form, pimsPatientId, { includeReview: canFinishReview }),
+        changed.length,
+        changed
+      );
       setSheetOpen(false);
     } catch {
       Alert.alert('Save Failed', METADATA_REVIEW_COPY.failed);
     }
+  };
+
+  const handleKeepCurrent = () => {
+    if (!onDismiss) return;
+    Alert.alert(
+      METADATA_REVIEW_COPY.keepCurrentConfirmTitle,
+      METADATA_REVIEW_COPY.keepCurrentConfirmBody,
+      [
+        { text: METADATA_REVIEW_COPY.cancel, style: 'cancel' },
+        { text: METADATA_REVIEW_COPY.keepCurrentConfirm, onPress: onDismiss },
+      ]
+    );
   };
 
   const title =
@@ -182,6 +233,30 @@ export function MetadataReviewCard({
               </View>
             ) : null}
 
+            {/* The COMPLETE unresolved reason set, before either terminal
+                action. Reason-only rows appear even when the extracted value
+                is unavailable — the copy never fabricates a value. */}
+            {reasonRows.length > 0 ? (
+              <View className="mb-3">
+                <Text className="text-caption text-content-tertiary font-medium uppercase mb-1.5">
+                  {METADATA_REVIEW_COPY.reasonsTitle}
+                </Text>
+                {reasonRows.map((reason) => (
+                  <View
+                    key={`${reason.code}:${reason.field ?? 'none'}`}
+                    className="flex-row items-start mb-1.5"
+                  >
+                    <View style={{ marginRight: 6, marginTop: 2, flexShrink: 0 }}>
+                      <AlertCircle color={colors.contentTertiary} size={12} />
+                    </View>
+                    <Text className="text-body-sm text-content-secondary flex-1" numberOfLines={3}>
+                      {reason.message}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
             {/* B6 — tappable below-confidence / multi-patient suggestions. */}
             {(mode === 'review' || mode === 'add') && suggestions.length > 0 ? (
               <View className="mb-3">
@@ -217,8 +292,14 @@ export function MetadataReviewCard({
               </View>
             ) : null}
 
+            {resolutionBlocked ? (
+              <Text className="text-caption text-content-tertiary mb-2" numberOfLines={2}>
+                {METADATA_REVIEW_COPY.missingPatientNameHint}
+              </Text>
+            ) : null}
+
             <View className="flex-row flex-wrap gap-2">
-              {mode === 'review' && onConfirm && appliedRowFields.length > 0 ? (
+              {canFinishReview && onConfirm ? (
                 <Button
                   variant="primary"
                   size="sm"
@@ -226,17 +307,17 @@ export function MetadataReviewCard({
                   loading={saving}
                   icon={<Check color={colors.contentOnBrand} size={14} />}
                 >
-                  {METADATA_REVIEW_COPY.looksRight}
+                  {METADATA_REVIEW_COPY.saveAndFinish}
                 </Button>
               ) : null}
               <Button
-                variant={primaryDetailsAction ? 'primary' : 'secondary'}
+                variant={canFinishReview ? 'secondary' : 'primary'}
                 size="sm"
                 onPress={() => setSheetOpen(true)}
                 disabled={saving}
                 icon={
                   <Edit2
-                    color={primaryDetailsAction ? colors.contentOnBrand : colors.contentBody}
+                    color={canFinishReview ? colors.contentBody : colors.contentOnBrand}
                     size={14}
                   />
                 }
@@ -249,6 +330,11 @@ export function MetadataReviewCard({
                     ? METADATA_REVIEW_COPY.editDetails
                   : METADATA_REVIEW_COPY.addDetails}
               </Button>
+              {canDismissReview ? (
+                <Button variant="ghost" size="sm" onPress={handleKeepCurrent} disabled={saving}>
+                  {METADATA_REVIEW_COPY.keepCurrent}
+                </Button>
+              ) : null}
             </View>
           </View>
         </View>
@@ -271,14 +357,38 @@ export function MetadataReviewCard({
                 variant="primary"
                 onPress={handleSave}
                 loading={saving}
-                disabled={!hasAnyFormValue}
+                disabled={!hasAnyFormValue || resolutionBlocked}
               >
-                {METADATA_REVIEW_COPY.save}
+                {canFinishReview ? METADATA_REVIEW_COPY.saveAndFinish : METADATA_REVIEW_COPY.save}
               </Button>
             </View>
           </View>
         }
       >
+        {/* Every remaining suggestion stays visible here too, so editing one
+            field cannot silently retire the others. */}
+        {suggestions.length > 0 ? (
+          <View className="mb-3">
+            <Text className="text-caption text-content-tertiary font-medium uppercase mb-1.5">
+              {METADATA_REVIEW_COPY.suggestionsTitle}
+            </Text>
+            {suggestions.map(({ field, value }) => (
+              <Pressable
+                key={`sheet-${field}`}
+                onPress={() => applySuggestion(field, value)}
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${FIELD_LABELS[field]}: ${value}`}
+                className="flex-row items-center mb-1.5 py-1"
+              >
+                <Plus color={colors.brand500} size={12} style={{ marginRight: 6 }} />
+                <Text className="text-body-sm text-content-secondary flex-1" numberOfLines={2}>
+                  <Text className="font-semibold">{FIELD_LABELS[field]}: </Text>
+                  {value}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {/* PIMS Patient ID — vet-entered, never AI-filled; shown in both modes.
             Label/placeholder mirror PatientForm.tsx for consistency. */}
         <TextInputField

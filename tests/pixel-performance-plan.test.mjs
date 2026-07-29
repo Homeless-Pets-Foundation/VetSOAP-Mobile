@@ -222,9 +222,12 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
 
   assert.match(cache, /export type RecordingCacheMutation/);
   assert.match(cache, /refetchType: 'active'/);
-  assert.match(cache, /case 'review_update':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\]\]/);
-  assert.match(cache, /case 'draft_changed':\s*case 'draft_deleted':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
-  assert.match(cache, /case 'device_registration_recovered':\s*return \[\['recordings', 'recent'\], \['recordings', 'list'\], \['recordings', 'drafts'\], \['local-drafts'\]\]/);
+  // Per-mutation key narrowing is asserted FUNCTIONALLY in
+  // tests/recording-query-cache.test.mjs (the attention page joined these key
+  // sets); keep the structural guarantees here.
+  assert.match(cache, /case 'draft_changed':\s*case 'draft_deleted':/);
+  assert.match(cache, /case 'device_registration_recovered':/);
+  assert.doesNotMatch(cache, /queryKey: \['recordings'\]/);
 });
 
 test('Pixel performance plan keeps startup, device-capacity, orientation, audio, and smoke-script changes', async () => {

@@ -614,8 +614,24 @@ function vaultSlotHasDurableAudioStrict(
  * slot is recoverable, so a multi-slot item could hide deletion for a target
  * slot whose own audio is gone (Codex round 2).
  */
-export function vaultSlotIsRecoverableStrict(slot: RecoverySlot): StrictExistence {
-  if (clonePendingConfirm(slot.pendingConfirm)) return 'present';
+export function vaultSlotIsRecoverableStrict(
+  slot: RecoverySlot,
+  /**
+   * Pass the VIEWER to get the same answer the authorization-filtered listing
+   * would give. Omit it for the role-agnostic item-level question.
+   */
+  user?: Pick<RecoveryUser, 'role'> | null
+): StrictExistence {
+  const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
+  if (pendingConfirm) {
+    // A confirmation token alone is enough for owner/admin, but a veterinarian
+    // cannot reuse another user's upload without COMPLETE local audio — the same
+    // extra condition `itemRestorableByUserStrict` applies. Without this, a
+    // caller could certify a slot the listing then filters out, promising a
+    // recovery route that leads nowhere (Codex round 4).
+    if (!user || user.role === 'owner' || user.role === 'admin') return 'present';
+    return vaultSlotHasCompleteLocalAudioStrict(slot);
+  }
   let sawUnknown = false;
   const durable = vaultSlotHasDurableAudioStrict(slot.durable);
   if (durable === 'present') return 'present';

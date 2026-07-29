@@ -185,6 +185,13 @@ export interface LocalRecoveryAnchor {
 
 export const LOCAL_ANCHOR_LOOKUP_TIMEOUT_MS = 8_000;
 
+/**
+ * The slice of the anchor deadline the optional native durable-recorder bridge
+ * may consume. Bounded so a hanging bridge cannot starve the draft/stash/vault
+ * reads that must still answer within the same window.
+ */
+export const MANIFEST_SNAPSHOT_BUDGET_MS = LOCAL_ANCHOR_LOOKUP_TIMEOUT_MS / 2;
+
 type AnchorUser = Pick<User, 'id' | 'role' | 'organizationId'>;
 
 function pendingConfirmMatches(pendingConfirm: unknown, target: string): boolean {
@@ -314,11 +321,14 @@ async function findVaultAnchor(user: AnchorUser, target: string): Promise<Anchor
         normalizeId(slot.sourceServerDraftId) === target ||
         pendingConfirmMatches(slot.pendingConfirm, target);
       if (!matches) continue;
-      // Prove recovery on the MATCHING slot. The item-level snapshot only says
-      // SOME slot is recoverable, so for a multi-slot item a metadata match
-      // could otherwise block deletion (and route to recovery) for a target
-      // whose own audio is gone.
-      const existence = vaultSlotIsRecoverableStrict(slot);
+      // Prove recovery on the MATCHING slot, AS THIS VIEWER. The item-level
+      // snapshot only says SOME slot is recoverable, so for a multi-slot item a
+      // metadata match could otherwise block deletion (and route to recovery)
+      // for a target whose own audio is gone. Passing the user also applies the
+      // role rule the listing applies — a veterinarian cannot reuse another
+      // user's pending-confirm token without complete local audio, so certifying
+      // the token alone would promise a route the listing filters out.
+      const existence = vaultSlotIsRecoverableStrict(slot, user);
       if (existence === 'present') {
         return { match: { kind: 'support_recovery', vaultItemId: item.id }, unknown: false };
       }
@@ -362,15 +372,29 @@ export async function findLocalRecoveryAnchor(
   const bound = <T>(promise: Promise<T>, label: string): Promise<T> =>
     withPromiseTimeout(promise, remaining(), label);
 
-  const manifests = await bound(
-    loadDurableManifestSnapshot(userId),
-    'anchor_durable_manifests_timeout',
-  ).catch((): DurableManifestSnapshot => null);
+  // The optional durable-recorder bridge is the one source that can hang for the
+  // WHOLE window, and the draft/stash proofs need its snapshot. Awaiting it
+  // first and unbounded starved every other read down to `remaining()` === 1ms,
+  // so a perfectly recoverable segment-based draft or stash came back `unknown`
+  // and the detail screen offered neither its recovery route nor deletion — on
+  // every Recheck. Cap it at half the deadline so the dependent reads always
+  // keep a meaningful slice, and run the INDEPENDENT vault read alongside it.
+  const manifestBudget = Math.max(1, Math.min(remaining(), MANIFEST_SNAPSHOT_BUDGET_MS));
+  const [manifests, vaultResult] = await Promise.all([
+    withPromiseTimeout(
+      loadDurableManifestSnapshot(userId),
+      manifestBudget,
+      'anchor_durable_manifests_timeout',
+    ).catch((): DurableManifestSnapshot => null),
+    // Settled shape so a vault failure does not reject this Promise.all.
+    bound(findVaultAnchor(user as AnchorUser, target), 'anchor_vault_timeout')
+      .then((value): PromiseSettledResult<AnchorSourceResult> => ({ status: 'fulfilled', value }))
+      .catch((reason): PromiseSettledResult<AnchorSourceResult> => ({ status: 'rejected', reason })),
+  ]);
 
-  const [draftResult, stashResult, vaultResult] = await Promise.allSettled([
+  const [draftResult, stashResult] = await Promise.allSettled([
     bound(findDraftAnchor(userId, target, manifests), 'anchor_drafts_timeout'),
     bound(findStashAnchor(userId, target, manifests), 'anchor_stashes_timeout'),
-    bound(findVaultAnchor(user as AnchorUser, target), 'anchor_vault_timeout'),
   ]);
 
   if (!scopeMatches(userId)) return { kind: 'unknown' };

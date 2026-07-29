@@ -386,7 +386,13 @@ test('Home hides the section only for a settled, coverage-complete, clean feed',
   assert.match(fn, /if \(attentionStateNotices\(feed\)\.length > 0\) return true;/);
   // Codex P2: an UNSETTLED feed has checked nothing, so hiding the block would
   // present "not looked yet" as "nothing to do" on an otherwise normal Home.
-  assert.match(fn, /if \(!feed\.isSettled\) return true;/);
+  // BOTH sources count — the server page routinely settles before the slower
+  // SecureStore/native local read (Codex round 4).
+  assert.match(fn, /if \(!feed\.isSettled \|\| !feed\.localSettled\) return true;/);
+  assert.match(
+    section,
+    /homeAttentionIsChecking\(feed: UseAttentionFeedResult\): boolean \{\s*\n\s*return \(!feed\.isSettled \|\| !feed\.localSettled\) && feed\.items\.length === 0;/
+  );
   // A truncated / unknown-coverage page still shows the section: an absent
   // "Needs Attention" block would itself read as all-clear.
   assert.match(fn, /return feed\.coverage !== 'complete';/);

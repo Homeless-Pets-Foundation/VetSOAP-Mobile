@@ -206,13 +206,22 @@ function parseSessionsStrict(raw: string): StashedSession[] {
       typeof candidate.id !== 'string' ||
       typeof candidate.stashedAt !== 'string' ||
       !Array.isArray(candidate.slots) ||
-      !candidate.slots.every(
-        (slot: unknown) =>
-          slot != null &&
-          typeof slot === 'object' &&
-          typeof (slot as Record<string, unknown>).id === 'string' &&
-          Array.isArray((slot as Record<string, unknown>).segments)
-      )
+      !candidate.slots.every((slot: unknown) => {
+        if (slot == null || typeof slot !== 'object') return false;
+        const slotRecord = slot as Record<string, unknown>;
+        if (typeof slotRecord.id !== 'string') return false;
+        if (!Array.isArray(slotRecord.segments)) return false;
+        // Every SEGMENT must carry a usable uri. Accepting a malformed entry let
+        // `stashSlotProof` turn it into `missing` via `segment?.uri ?? ''`, so a
+        // corrupt payload could contribute a KNOWN zero and let
+        // findLocalRecoveryAnchor answer `none` — exposing deletion while the
+        // stash metadata and its audio directory may still exist.
+        return slotRecord.segments.every((segment: unknown) => {
+          if (segment == null || typeof segment !== 'object') return false;
+          const uri = (segment as Record<string, unknown>).uri;
+          return typeof uri === 'string' && uri.length > 0;
+        });
+      })
     ) {
       throw new StrictReadUnavailableError('stash:session_shape');
     }

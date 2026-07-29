@@ -772,6 +772,82 @@ test('the strict vault read reads the ACTIVE generation before any fallback', as
   assert.match(strict, /const order: Generation\[\] = \['b', 'a'\];/);
 });
 
+// ─── Codex round 4 ─────────────────────────────────────────────────────────
+
+test('a stash segment with a missing or non-string uri makes the store unknown', async () => {
+  // Codex P1: `stashSlotProof` turns a malformed uri into `missing` via
+  // `segment?.uri ?? ''`, so accepting the payload let a corrupt store
+  // contribute a KNOWN zero and expose deletion.
+  for (const badSegments of [[{}], [{ uri: 42 }], [{ uri: '' }], [{ uri: null }], [null]]) {
+    const secure = makeSecureStoreMock();
+    secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+    secure.__store.set(`captivet_stash_${USER}_a_count`, '1');
+    secure.__store.set(
+      `captivet_stash_${USER}_a_chunk_0`,
+      JSON.stringify([
+        { id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: badSegments }] },
+      ])
+    );
+    const stashStorage = await loadStashStorage(secure);
+    await assert.rejects(
+      () => stashStorage.getStashedSessionsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      `segments ${JSON.stringify(badSegments)} must be unknown`
+    );
+  }
+
+  // A well-formed segment list is still readable.
+  const clean = makeSecureStoreMock();
+  clean.__store.set(`captivet_stash_${USER}_active`, 'a');
+  clean.__store.set(`captivet_stash_${USER}_a_count`, '1');
+  clean.__store.set(
+    `captivet_stash_${USER}_a_chunk_0`,
+    JSON.stringify([
+      {
+        id: 's1',
+        stashedAt: '2026-07-29T00:00:00.000Z',
+        slots: [{ id: 'a', segments: [{ uri: 'file:///a/seg-0.m4a' }] }],
+      },
+    ])
+  );
+  const ok = await loadStashStorage(clean);
+  assert.equal((await ok.getStashedSessionsForUserStrict(USER)).length, 1);
+});
+
+test('a hanging durable bridge cannot starve the other anchor sources', async () => {
+  // Codex P2: the manifest read was awaited FIRST and unbounded, so a hanging
+  // native bridge left `remaining()` at 1ms and every other source reported
+  // unknown — on every Recheck.
+  const local = await read('src/lib/localRecordings.ts');
+  assert.match(local, /export const MANIFEST_SNAPSHOT_BUDGET_MS = LOCAL_ANCHOR_LOOKUP_TIMEOUT_MS \/ 2;/);
+  const anchorFn = local.slice(local.indexOf('export async function findLocalRecoveryAnchor'));
+  // The manifest read is capped, not given the whole window…
+  assert.match(anchorFn, /Math\.min\(remaining\(\), MANIFEST_SNAPSHOT_BUDGET_MS\)/);
+  // …and the independent vault read runs alongside it rather than after it.
+  assert.match(anchorFn, /await Promise\.all\(\[\s*\n\s*withPromiseTimeout\(\s*\n\s*loadDurableManifestSnapshot/);
+  assert.ok(
+    anchorFn.indexOf('findVaultAnchor') < anchorFn.indexOf('findDraftAnchor'),
+    'the vault read is issued with the manifest read, before the dependent reads'
+  );
+});
+
+test('anchor: a vet needs COMPLETE local audio to reuse a pending-confirm slot', async () => {
+  // Codex P2: the role-agnostic proof certified a pending-confirm token alone,
+  // so the anchor promised a recovery route the authorization-filtered listing
+  // would have filtered out for a veterinarian.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  const fn = vault.slice(
+    vault.indexOf('export function vaultSlotIsRecoverableStrict'),
+    vault.indexOf('function itemIsRecoverableStrict')
+  );
+  assert.match(fn, /user\?: Pick<RecoveryUser, 'role'> \| null/);
+  assert.match(fn, /if \(!user \|\| user\.role === 'owner' \|\| user\.role === 'admin'\) return 'present';/);
+  assert.match(fn, /return vaultSlotHasCompleteLocalAudioStrict\(slot\);/);
+  // The anchor passes the viewer through.
+  const local = await read('src/lib/localRecordings.ts');
+  assert.match(local, /vaultSlotIsRecoverableStrict\(slot, user\)/);
+});
+
 test('both strict chunk-count readers use the whole-string integer parser', async () => {
   const strictRead = await read('src/lib/strictRead.ts');
   assert.match(strictRead, /export function parseStrictChunkCount/);

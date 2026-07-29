@@ -304,6 +304,13 @@ export type ErrorPhase =
   | 'prepare'
   | 'probe'
   | 'delete_draft'
+  /**
+   * The DESTRUCTIVE non-draft delete behind "Delete unavailable recording",
+   * which cascades the SOAP note and tasks server-side. Deliberately separate
+   * from `delete_draft` so a regression in this new path is distinguishable
+   * from ordinary draft cleanup in the rate-limit key and the dashboards.
+   */
+  | 'delete_recording'
   | 'stash_write'
   | 'stash_read'
   | 'recorder_start'

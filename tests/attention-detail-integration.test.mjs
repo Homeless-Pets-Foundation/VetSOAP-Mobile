@@ -356,6 +356,18 @@ test('the destructive confirmation states the cascade and the cross-device limit
   assert.match(DETAIL, /DELETE_RECORDING_COPY\.colleagueSuffix/);
 });
 
+test('the destructive non-draft delete is tagged with its OWN telemetry phase', async () => {
+  // Codex round 4: sharing `delete_draft` made a regression in this new
+  // destructive path indistinguishable from ordinary draft cleanup in both the
+  // rate-limit key and the dashboards.
+  assert.match(
+    DETAIL,
+    /phase: recording\?\.status === 'draft' \? 'delete_draft' : 'delete_recording',/
+  );
+  const analytics = await read('src/lib/analytics.ts');
+  assert.match(analytics, /\| 'delete_recording'/);
+});
+
 test('a terminal non-draft delete purges every cascaded cache before navigating', () => {
   const successBlock = DETAIL.slice(
     DETAIL.indexOf('const deleteMutation = useMutation'),

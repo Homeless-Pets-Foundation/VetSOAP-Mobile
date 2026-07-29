@@ -792,7 +792,11 @@ export default function RecordingDetailScreen() {
     onError: (error: Error) => {
       if (id) {
         reportClientError({
-          phase: 'delete_draft',
+          // The destructive non-draft path gets its OWN phase: sharing
+          // `delete_draft` made a regression in it indistinguishable from
+          // ordinary draft cleanup in both the rate-limit key and the
+          // dashboards.
+          phase: recording?.status === 'draft' ? 'delete_draft' : 'delete_recording',
           severity: 'error',
           errorCode: error instanceof ApiError ? error.code ?? String(error.status) : 'unknown',
           message: error instanceof Error ? error.message : 'Recording delete failed',

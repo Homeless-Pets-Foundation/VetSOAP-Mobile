@@ -1006,7 +1006,14 @@ export function parseAttentionEnvelope(
     data.push(validated);
   }
 
-  return { data, pagination: parsePagination(body.pagination, opts) };
+  const pagination = parsePagination(body.pagination, opts);
+  // Cross-check the two halves. Validated independently, a page of N rows
+  // reporting `total < N` (e.g. five rows with `total: 0`) would satisfy both —
+  // and `attentionCoverage()` would then call it COMPLETE, letting the surface
+  // make its one positive all-clear claim off a self-contradictory proof.
+  if (pagination && pagination.total < data.length) throw new MalformedAttentionResponseError();
+
+  return { data, pagination };
 }
 
 export type AttentionCoverage = 'complete' | 'recent_page_only' | 'unknown';

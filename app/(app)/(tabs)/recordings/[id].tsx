@@ -1020,13 +1020,19 @@ export default function RecordingDetailScreen() {
   // this the destination shows NO trace of what the feed flagged, so the tap
   // reads as a dead end. Informational only — every mutation affordance stays
   // behind `canEdit`, and the copy names who can actually fix it.
-  const showMetadataReadOnlyNotice =
-    !recordingPermissions.canEdit &&
-    recording.status === 'completed' &&
-    hasUnresolvedAiMetadataAttention(recording);
-  const readOnlyMetadataReasons = showMetadataReadOnlyNotice
-    ? metadataAttentionReasons(recording, { recordFirstEnabled })
-    : [];
+  //
+  // Derived from the SAME reason builder the feed uses, not from
+  // `hasUnresolvedAiMetadataAttention` — that predicate returns false for the
+  // `aiExtractedMetadata === null` cohort, which the feed still surfaces as
+  // `metadata_missing` when record-first is enabled. Gating on the predicate
+  // therefore left exactly those practice-wide rows landing on a screen with no
+  // trace of what was flagged. Mirroring the builder makes the two agree by
+  // construction (it applies the same capability gate to that null cohort).
+  const readOnlyMetadataReasons =
+    !recordingPermissions.canEdit && recording.status === 'completed'
+      ? metadataAttentionReasons(recording, { recordFirstEnabled })
+      : [];
+  const showMetadataReadOnlyNotice = readOnlyMetadataReasons.length > 0;
   const renderInfoField = (
     field: RecordingMetadataField | null,
     label: string,
@@ -1127,7 +1133,7 @@ export default function RecordingDetailScreen() {
           />
         )}
 
-        {showMetadataReadOnlyNotice && readOnlyMetadataReasons.length > 0 && (
+        {showMetadataReadOnlyNotice && (
           <View onLayout={(event) => registerFocusTarget('metadata', event.nativeEvent.layout.y)}>
             <Card className="mx-5 mb-4 border-status-warning">
               <View className="flex-row items-start">

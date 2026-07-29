@@ -191,7 +191,17 @@ export function attentionCoverageFooter(feed: UseAttentionFeedResult): string | 
 export function homeAttentionHasContent(feed: UseAttentionFeedResult): boolean {
   if (feed.items.length > 0) return true;
   if (attentionStateNotices(feed).length > 0) return true;
-  return feed.isSettled && feed.coverage !== 'complete';
+  // An UNSETTLED feed has checked nothing yet, so hiding the block would present
+  // "not looked yet" as "nothing to do" on an otherwise normal Home — exactly
+  // the claim this function exists to avoid. Stay visible with the checking
+  // line; only a settled, coverage-complete, clean feed hides.
+  if (!feed.isSettled) return true;
+  return feed.coverage !== 'complete';
+}
+
+/** True while the section is visible but has no verdict to show yet. */
+export function homeAttentionIsChecking(feed: UseAttentionFeedResult): boolean {
+  return !feed.isSettled && feed.items.length === 0;
 }
 
 interface AttentionFeedSectionProps {
@@ -253,6 +263,13 @@ export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
           onRetry={notice.retryable ? feed.refresh : undefined}
         />
       ))}
+
+      {/* "Checking…" is a state, not a verdict — it must never read as clean. */}
+      {homeAttentionIsChecking(feed) ? (
+        <Text className="text-body-sm text-content-tertiary mb-2">
+          {ATTENTION_FEED_COPY.loading}
+        </Text>
+      ) : null}
 
       {visibleRows.map((item) => (
         <AttentionItemRow key={item.key} item={item} surface="home" />

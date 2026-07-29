@@ -565,8 +565,20 @@ async function readItemsStrict(): Promise<RecoveryItem[]> {
     ACTIVE_KEY,
     'supportStaffRecovery.getActiveGenerationStrict'
   );
-  const order: Generation[] =
-    active === 'a' ? ['a', 'b'] : active === 'b' ? ['b', 'a'] : ['b', 'a'];
+  // A valid active pointer names the ONLY authoritative generation. If that
+  // generation is present-but-unreadable, the answer is unknown — the inactive
+  // generation is the previous snapshot and may omit newly preserved
+  // support-staff recordings, so certifying it as complete would let Home hide
+  // real recovery work and let the unavailable-recording guard conclude there is
+  // no vault anchor, exposing a destructive server delete. An older generation
+  // can establish a positive match, never absence or a complete count.
+  if (active === 'a' || active === 'b') {
+    const activeItems = await readItemsForGenerationStrict(active);
+    if (activeItems !== null) return activeItems;
+    // Absent (not unreadable) — fall through to the other generation.
+  }
+
+  const order: Generation[] = active === 'a' ? ['b'] : active === 'b' ? ['a'] : ['b', 'a'];
 
   let sawUnrecoverable = false;
   for (const generation of order) {

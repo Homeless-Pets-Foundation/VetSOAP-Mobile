@@ -249,16 +249,35 @@ test('a feed entry routes back deterministically, never through root history', a
 
 test('a read-only viewer still sees WHAT the feed flagged on the destination', () => {
   // Practice-wide rows navigate here; without this the tap is a dead end.
+  //
+  // Codex P2: gating on `hasUnresolvedAiMetadataAttention` silently excluded the
+  // `aiExtractedMetadata === null` cohort, which the feed DOES surface as
+  // `metadata_missing`. Deriving the notice from the same reason builder the
+  // feed uses makes the two agree by construction.
   assert.match(
     DETAIL,
-    /const showMetadataReadOnlyNotice =\s*\n\s*!recordingPermissions\.canEdit &&/
+    /const readOnlyMetadataReasons =\s*\n\s*!recordingPermissions\.canEdit && recording\.status === 'completed'\s*\n\s*\? metadataAttentionReasons\(recording, \{ recordFirstEnabled \}\)/
   );
-  assert.match(DETAIL, /hasUnresolvedAiMetadataAttention\(recording\);/);
-  assert.match(DETAIL, /readOnlyMetadataReasons = showMetadataReadOnlyNotice/);
+  assert.match(DETAIL, /const showMetadataReadOnlyNotice = readOnlyMetadataReasons\.length > 0;/);
   assert.match(DETAIL, /\{ATTENTION_FEED_COPY\.readOnlyNote\}/);
+
+  // Functional proof: the null-extraction cohort the feed emits is now covered.
+  const nullExtraction = rec({
+    patientName: '',
+    status: 'completed',
+    aiExtractedMetadata: null,
+  });
+  const feedReasons = FEED.metadataAttentionReasons(nullExtraction, { recordFirstEnabled: true });
+  assert.ok(feedReasons.length > 0, 'the feed flags this cohort…');
+  assert.equal(plain(feedReasons)[0].code, 'metadata_missing');
+  assert.equal(
+    OBS.hasUnresolvedAiMetadataAttention(nullExtraction),
+    false,
+    '…while the old predicate did not, which is why the notice must not use it'
+  );
   // Informational only — it must not introduce a mutation affordance.
   const noticeBlock = DETAIL.slice(
-    DETAIL.indexOf('{showMetadataReadOnlyNotice && readOnlyMetadataReasons.length > 0 && ('),
+    DETAIL.indexOf('{showMetadataReadOnlyNotice && ('),
     DETAIL.indexOf('{/* Patient Info */}')
   );
   assert.ok(noticeBlock.length > 0, 'the read-only notice block renders');

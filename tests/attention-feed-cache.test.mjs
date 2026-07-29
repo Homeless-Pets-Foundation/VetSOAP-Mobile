@@ -366,9 +366,57 @@ test('Home hides the section only for a settled, coverage-complete, clean feed',
   );
   assert.match(fn, /if \(feed\.items\.length > 0\) return true;/);
   assert.match(fn, /if \(attentionStateNotices\(feed\)\.length > 0\) return true;/);
+  // Codex P2: an UNSETTLED feed has checked nothing, so hiding the block would
+  // present "not looked yet" as "nothing to do" on an otherwise normal Home.
+  assert.match(fn, /if \(!feed\.isSettled\) return true;/);
   // A truncated / unknown-coverage page still shows the section: an absent
   // "Needs Attention" block would itself read as all-clear.
-  assert.match(fn, /return feed\.isSettled && feed\.coverage !== 'complete';/);
+  assert.match(fn, /return feed\.coverage !== 'complete';/);
+  // …and while visible-but-unsettled it renders a checking line, not a verdict.
+  assert.match(section, /export function homeAttentionIsChecking/);
+  assert.match(section, /homeAttentionIsChecking\(feed\) \?/);
+  assert.match(section, /ATTENTION_FEED_COPY\.loading/);
+});
+
+test('a pagination total smaller than the returned page is malformed', async () => {
+  // Codex P2: rows and pagination were validated independently, so five rows
+  // reporting `total: 0` passed and attentionCoverage() called it COMPLETE —
+  // letting the surface make its one positive all-clear claim off a
+  // self-contradictory proof.
+  const row = (id) => ({
+    id,
+    userId: 'aaaaaaaa-0000-4000-8000-000000000001',
+    status: 'completed',
+    patientName: 'Bella',
+    clientName: null,
+    species: null,
+    breed: null,
+    appointmentType: null,
+    qualityWarnings: [],
+    aiExtractedMetadata: null,
+    submittedAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:00:00.000Z',
+  });
+  const ids = [
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+  ];
+  assert.throws(
+    () =>
+      FEED.parseAttentionEnvelope({
+        data: ids.map(row),
+        pagination: { page: 1, limit: 100, total: 0, totalPages: 0 },
+      }),
+    (error) => error.code === 'ATTENTION_RESPONSE_MALFORMED'
+  );
+
+  // A consistent envelope still parses, and equal total/length is complete.
+  const ok = FEED.parseAttentionEnvelope({
+    data: ids.map(row),
+    pagination: { page: 1, limit: 100, total: 2, totalPages: 1 },
+  });
+  assert.equal(ok.data.length, 2);
+  assert.equal(FEED.attentionCoverage(ok), 'complete');
 });
 
 test('the surface copy is qualified: no "View all", dynamic M, feed-scoped clean claim', async () => {

@@ -717,7 +717,9 @@ async function draftHasLocalAudioStrictInternal(
     if (!manifests) return 'unknown';
     const manifest = manifests.get(meta.durable.recordingId);
     if (!manifest) return 'missing';
-    return durableManifestHasCompleteAudio(manifest) ? 'present' : 'missing';
+    // Tri-state: a locked/unreadable volume must stay `unknown` here, never
+    // collapse to "no audio" (that is what would unlock a destructive delete).
+    return durableManifestAudioExistence(manifest);
   }
 
   if (!meta.segments || meta.segments.length === 0) return 'missing';
@@ -738,14 +740,34 @@ async function draftHasLocalAudioStrictInternal(
 export function durableManifestHasCompleteAudio(
   manifest: DurableRecordingManifest | null | undefined,
 ): boolean {
-  if (!manifest) return false;
+  return durableManifestAudioExistence(manifest) === 'present';
+}
+
+/**
+ * TRI-STATE durable-audio existence — the variant every STRICT caller must use.
+ *
+ * `durableManifestHasCompleteAudio()` above collapses an unreadable filesystem
+ * to `false`, which is right for best-effort cleanup and fatal for a decision
+ * that must fail closed: a locked/unavailable volume would read as "this
+ * manifest definitely has no audio", letting `getUnsentWorkSummary()` publish a
+ * KNOWN zero and `findLocalRecoveryAnchor()` answer `none` — which is what
+ * unlocks the destructive server delete.
+ *
+ * Everything above the file check is a decided FACT about the manifest (absent,
+ * malformed, already confirmed-uploaded, no complete frames), so those stay
+ * `missing`. Only the filesystem probe can be `unknown`.
+ */
+export function durableManifestAudioExistence(
+  manifest: DurableRecordingManifest | null | undefined,
+): StrictExistence {
+  if (!manifest) return 'missing';
   const validation = validateManifestObject(manifest);
-  if (!validation.ok) return false;
+  if (!validation.ok) return 'missing';
   const valid = validation.manifest;
-  if (isConfirmedUploaded(valid)) return false;
-  if (!(valid.adtsFrameCount > 0)) return false;
-  if (!(valid.audioFile?.completeFrameBytes > 0)) return false;
-  return fileExistsStrict(valid.audioFile.uri) === 'present';
+  if (isConfirmedUploaded(valid)) return 'missing';
+  if (!(valid.adtsFrameCount > 0)) return 'missing';
+  if (!(valid.audioFile?.completeFrameBytes > 0)) return 'missing';
+  return fileExistsStrict(valid.audioFile.uri);
 }
 
 /**

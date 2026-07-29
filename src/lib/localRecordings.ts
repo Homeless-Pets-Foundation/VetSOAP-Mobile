@@ -1,4 +1,4 @@
-import { draftStorage, durableManifestHasCompleteAudio, type DurableManifestSnapshot } from './draftStorage';
+import { draftStorage, durableManifestAudioExistence, type DurableManifestSnapshot } from './draftStorage';
 import { stashStorage } from './stashStorage';
 import { countUnsentStashSessions } from './unsentCount';
 import { fileExistsStrict } from './fileOps';
@@ -211,7 +211,11 @@ function stashSlotProof(slot: StashedSlot, manifests: DurableManifestSnapshot): 
   if (slot.durable?.recordingId) {
     if (!manifests) return 'unknown';
     const manifest = manifests.get(slot.durable.recordingId);
-    if (durableManifestHasCompleteAudio(manifest)) return 'present';
+    // Tri-state: an unreadable volume is not proof that the durable audio is
+    // gone, so it must not fall through to `missing`.
+    const durable = durableManifestAudioExistence(manifest);
+    if (durable === 'present') return 'present';
+    if (durable === 'unknown') sawUnknown = true;
   }
 
   return sawUnknown ? 'unknown' : 'missing';
@@ -274,19 +278,25 @@ function findDurableAnchor(
   manifests: DurableManifestSnapshot,
 ): AnchorSourceResult {
   if (!manifests) return { match: null, unknown: true };
+  let sawUnknown = false;
   for (const manifest of manifests.values()) {
     const matches =
       normalizeId(manifest.serverRecordingId) === target ||
       pendingConfirmMatches(manifest.pendingConfirm, target);
     if (!matches) continue;
-    if (durableManifestHasCompleteAudio(manifest)) {
+    // A manifest that MATCHES this recording but whose audio cannot be probed is
+    // the most dangerous case: reporting no-match here is what would expose the
+    // destructive delete for a visit that is still recoverable on this device.
+    const durable = durableManifestAudioExistence(manifest);
+    if (durable === 'present') {
       return {
         match: { kind: 'durable_recovery', durableRecordingId: manifest.recordingId },
         unknown: false,
       };
     }
+    if (durable === 'unknown') sawUnknown = true;
   }
-  return { match: null, unknown: false };
+  return { match: null, unknown: sawUnknown };
 }
 
 async function findVaultAnchor(user: AnchorUser, target: string): Promise<AnchorSourceResult> {

@@ -255,14 +255,27 @@ async function getStashedSessionsForUserStrictInternal(
     'stashActiveGenerationStrict'
   );
 
-  const sources: { countKey: string; prefix: string }[] = [];
+  // The ACTIVE generation is the only authoritative snapshot. If a valid active
+  // pointer exists and THAT generation is present-but-unreadable, the answer is
+  // unknown — full stop. Falling through to an older generation would return a
+  // stale snapshot as authoritative: a stash written into the broken active
+  // generation would be missing from it, so a known-zero unsent count and a
+  // `none` recovery anchor would unlock deleting the server recording while its
+  // audio is still stashed on this device. An older generation may prove
+  // PRESENCE, never absence or a complete count.
   if (activeGeneration === 'a' || activeGeneration === 'b') {
-    sources.push({
-      countKey: generationCountKeyForUser(userId, activeGeneration),
-      prefix: generationPrefixForUser(userId, activeGeneration),
-    });
+    const activeSessions = await readSessionsForKeysStrict(
+      generationCountKeyForUser(userId, activeGeneration),
+      generationPrefixForUser(userId, activeGeneration)
+    );
+    if (activeSessions !== null) return activeSessions;
+    // Absent (not unreadable) — a legitimate pre-migration state, so the legacy
+    // and inactive layouts below may still answer.
   }
-  sources.push({ countKey: legacyCountKeyForUser(userId), prefix: legacyPrefixForUser(userId) });
+
+  const sources: { countKey: string; prefix: string }[] = [
+    { countKey: legacyCountKeyForUser(userId), prefix: legacyPrefixForUser(userId) },
+  ];
   for (const generation of ['b', 'a'] as const) {
     sources.push({
       countKey: generationCountKeyForUser(userId, generation),

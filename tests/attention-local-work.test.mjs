@@ -281,15 +281,35 @@ test('a corrupt session entry is UNKNOWN instead of being silently filtered out'
   );
 });
 
-test('a healthy fallback generation still PROVES the result', async () => {
+test('a TORN ACTIVE generation is unknown even when an older one is readable', async () => {
+  // Codex P1: an older generation cannot disprove the active one. A stash
+  // written into the broken active generation is absent from the fallback, so
+  // returning the fallback as authoritative would publish a known-zero unsent
+  // count and let findLocalRecoveryAnchor answer `none` — unlocking a
+  // destructive server delete while that audio is still stashed here.
   const secure = makeSecureStoreMock();
-  // Active pointer names a torn generation; generation "b" is intact.
   secure.__store.set(`captivet_stash_${USER}_active`, 'a');
   secure.__store.set(`captivet_stash_${USER}_a_count`, '2');
   secure.__store.set(`captivet_stash_${USER}_a_chunk_0`, '[');
   secure.__store.set(`captivet_stash_${USER}_b_count`, '1');
   secure.__store.set(
     `captivet_stash_${USER}_b_chunk_0`,
+    JSON.stringify([{ id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [] }] }])
+  );
+  const stashStorage = await loadStashStorage(secure);
+  await assert.rejects(
+    () => stashStorage.getStashedSessionsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+});
+
+test('an ABSENT active generation still falls through to the legacy layout', async () => {
+  // The migration path must keep working: absent ≠ unreadable.
+  const secure = makeSecureStoreMock();
+  secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+  secure.__store.set(`captivet_stash_${USER}_count`, '1');
+  secure.__store.set(
+    `captivet_stash_${USER}_chunk_0`,
     JSON.stringify([{ id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [] }] }])
   );
   const stashStorage = await loadStashStorage(secure);
@@ -345,7 +365,14 @@ function makeLocalRecordingsHarness({
   return loadTsModule('src/lib/localRecordings.ts', {
     './draftStorage': {
       draftStorage,
-      durableManifestHasCompleteAudio: (m) => !!m && m.__complete === true,
+      // Tri-state on purpose: `__audioUnknown` models a manifest whose audio
+      // path could not be probed (locked/unavailable storage), which must never
+      // collapse to "missing".
+      durableManifestAudioExistence: (m) => {
+        if (!m) return 'missing';
+        if (m.__audioUnknown === true) return 'unknown';
+        return m.__complete === true ? 'present' : 'missing';
+      },
     },
     './stashStorage': { stashStorage },
     './fileOps': {
@@ -620,4 +647,68 @@ test('the SecureStore adapter reports Keystore failures without leaking native t
   const strictRead = await read('src/lib/strictRead.ts');
   assert.match(strictRead, /A local read could not be completed/);
   assert.ok(!strictRead.includes('error.message'));
+});
+
+// ─── Codex round: an older generation can never disprove the active one ────
+
+test('the strict vault read reads the ACTIVE generation before any fallback', async () => {
+  // Codex P1: catching the active generation's failure and returning the
+  // inactive one certifies a stale snapshot as recoverability-complete, which
+  // hides available recovery work and exposes a destructive delete.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  const strict = vault.slice(
+    vault.indexOf('async function readItemsStrict'),
+    vault.indexOf('function vaultSlotHasDurableAudioStrict')
+  );
+  // The active read is NOT inside the try/catch that tolerates a failure.
+  const activeRead = strict.slice(0, strict.indexOf('let sawUnrecoverable'));
+  assert.match(activeRead, /if \(active === 'a' \|\| active === 'b'\) \{/);
+  assert.match(activeRead, /await readItemsForGenerationStrict\(active\)/);
+  assert.ok(!activeRead.includes('catch'), 'a failing active generation must propagate');
+  // …and the fallback order excludes the active generation entirely.
+  assert.match(strict, /active === 'a' \? \['b'\] : active === 'b' \? \['a'\] : \['b', 'a'\]/);
+});
+
+test('a MATCHING durable manifest whose audio cannot be probed is unknown, never none', async () => {
+  // Codex P1: `fileExistsStrict` returns 'unknown' for locked/unavailable
+  // storage; collapsing that to false made the anchor answer `none`, which is
+  // exactly what unlocks the destructive server delete.
+  const mod = await makeLocalRecordingsHarness({
+    manifests: new Map([
+      ['dur-1', { recordingId: 'dur-1', serverRecordingId: SERVER_ID, __audioUnknown: true }],
+    ]),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'unknown',
+  });
+});
+
+test('a matching durable manifest with proven-absent audio still allows deletion', async () => {
+  const mod = await makeLocalRecordingsHarness({
+    manifests: new Map([
+      ['dur-1', { recordingId: 'dur-1', serverRecordingId: SERVER_ID, __complete: false }],
+    ]),
+  });
+  assert.deepEqual(plain(await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)), {
+    kind: 'none',
+  });
+});
+
+test('the tri-state durable helper is what the strict paths call', async () => {
+  const draft = await read('src/lib/draftStorage.ts');
+  assert.match(draft, /export function durableManifestAudioExistence\(/);
+  // The boolean form is derived from the tri-state, so they cannot drift.
+  assert.match(
+    draft,
+    /export function durableManifestHasCompleteAudio\([\s\S]*?durableManifestAudioExistence\(manifest\) === 'present';/
+  );
+  // …and the strict draft proof propagates the tri-state rather than collapsing.
+  assert.match(draft, /return durableManifestAudioExistence\(manifest\);/);
+
+  const local = await read('src/lib/localRecordings.ts');
+  assert.ok(
+    !local.includes('durableManifestHasCompleteAudio'),
+    'localRecordings is strict-only and must use the tri-state helper'
+  );
+  assert.match(local, /if \(durable === 'unknown'\) sawUnknown = true;/);
 });

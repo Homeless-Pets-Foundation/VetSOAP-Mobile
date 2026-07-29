@@ -2,6 +2,8 @@ import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
 import { secureStorage } from './secureStorage';
 import { StrictReadUnavailableError, parseStrictChunkCount } from './strictRead';
+import { isValidDurableId } from './durableAudio/paths';
+import { clonePendingConfirm } from './pendingConfirm';
 
 export const MAX_STASHES = 5;
 type Generation = 'a' | 'b';
@@ -190,6 +192,25 @@ async function getStashedSessionsForUserId(
  * "no saved sessions". These variants reject present-but-unrecoverable data.
  */
 
+/**
+ * A present `durable`/`pendingConfirm` must be USABLE. `null`/absent are
+ * legitimate ("this slot has no such claim"); a present-but-invalid value is
+ * corruption that the proof helpers would otherwise normalize to "no audio".
+ */
+function audioClaimsAreUsable(slot: Record<string, unknown>): boolean {
+  const durable = slot.durable;
+  if (durable !== undefined && durable !== null) {
+    if (typeof durable !== 'object' || Array.isArray(durable)) return false;
+    if (!isValidDurableId((durable as { recordingId?: unknown }).recordingId)) return false;
+  }
+  const pendingConfirm = slot.pendingConfirm;
+  if (pendingConfirm !== undefined && pendingConfirm !== null) {
+    if (typeof pendingConfirm !== 'object' || Array.isArray(pendingConfirm)) return false;
+    if (!clonePendingConfirm(pendingConfirm as never)) return false;
+  }
+  return true;
+}
+
 function parseSessionsStrict(raw: string): StashedSession[] {
   let parsed: unknown;
   try {
@@ -216,11 +237,20 @@ function parseSessionsStrict(raw: string): StashedSession[] {
         // corrupt payload could contribute a KNOWN zero and let
         // findLocalRecoveryAnchor answer `none` — exposing deletion while the
         // stash metadata and its audio directory may still exist.
-        return slotRecord.segments.every((segment: unknown) => {
-          if (segment == null || typeof segment !== 'object') return false;
-          const uri = (segment as Record<string, unknown>).uri;
-          return typeof uri === 'string' && uri.length > 0;
-        });
+        if (
+          !slotRecord.segments.every((segment: unknown) => {
+            if (segment == null || typeof segment !== 'object') return false;
+            const uri = (segment as Record<string, unknown>).uri;
+            return typeof uri === 'string' && uri.length > 0;
+          })
+        ) {
+          return false;
+        }
+        // The OTHER audio-bearing claims count too. `stashSlotProof` reduces a
+        // present-but-corrupt `pendingConfirm`/`durable` to `missing`, so a slot
+        // with empty segments and a malformed claim could contribute a KNOWN zero
+        // and let findLocalRecoveryAnchor answer `none` for its serverDraftId.
+        return audioClaimsAreUsable(slotRecord);
       })
     ) {
       throw new StrictReadUnavailableError('stash:session_shape');

@@ -594,13 +594,17 @@ export function hasUnresolvedAiMetadataAttention(
   // `signals.multiplePatients` is deliberately NOT a term here. It raises no
   // user-facing reason any more (2026-07-29 owner decision), so counting it
   // would open a review card whose reason list is empty.
-  return (
+  const specificReason =
     signals.conflictFields.length > 0 ||
     signals.lowConfidenceFields.length > 0 ||
     signals.notVerbatimFields.length > 0 ||
     signals.unclassifiedSuggestionFields.length > 0 ||
     signals.validAppliedFields.length > 0 ||
-    signals.missingDetails ||
-    signals.explicitUnconfirmed
-  );
+    signals.missingDetails;
+  if (specificReason) return true;
+  // Connect sets `review: 'unconfirmed'` for multi-patient alone, so treating the
+  // bare flag as attention-worthy would reintroduce the suppressed alert here
+  // too — and open a review card with nothing in it. It only counts when
+  // something OTHER than multi-patient could have set it.
+  return signals.explicitUnconfirmed && !signals.multiplePatients;
 }

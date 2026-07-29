@@ -52,6 +52,13 @@ export interface AttentionRecording {
   breed: string | null;
   appointmentType: string | null;
   qualityWarnings: string[];
+  /**
+   * Bounded facts about a `qualityWarnings` array longer than the scan window.
+   * Optional so a full detail `Recording` stays assignable. Never the dropped
+   * strings themselves.
+   */
+  qualityWarningsTruncated?: boolean;
+  qualityWarningsTotal?: number;
   aiExtractedMetadata?: AiExtractedMetadata | null;
   submittedAt?: string | null;
   updatedAt: string;
@@ -336,6 +343,8 @@ export function projectAttentionRecording(raw: unknown): AttentionRecording | nu
     breed,
     appointmentType,
     qualityWarnings: (rawWarnings as string[]).slice(0, MAX_QUALITY_WARNINGS_SCANNED),
+    qualityWarningsTruncated: rawWarnings.length > MAX_QUALITY_WARNINGS_SCANNED,
+    qualityWarningsTotal: rawWarnings.length,
     aiExtractedMetadata: (meta ?? null) as AiExtractedMetadata | null,
     submittedAt,
     updatedAt: row.updatedAt,
@@ -428,12 +437,28 @@ function dropReasonsExceedScan(meta: AiExtractedMetadata | null | undefined): bo
   return false;
 }
 
+/**
+ * Keys where an explicit `null` is NOT interchangeable with omission. A null
+ * enum cannot be a valid `MetadataReviewState`, and `review` is the key whose
+ * value decides whether the whole blob counts as resolved — so `{ review: null }`
+ * slipping through produced no reason while classification stayed complete.
+ *
+ * The collection keys deliberately still accept `null` as "none": a server that
+ * encodes an empty set that way is not corrupt, and failing the whole response
+ * over it would take out the feed for every user.
+ */
+const AI_METADATA_NULL_IS_INVALID: readonly string[] = ['review'];
+
 function aiMetadataShapeIsUsable(meta: unknown): boolean {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return true;
   const record = meta as Record<string, unknown>;
   for (const [key, isValid] of Object.entries(AI_METADATA_SHAPE)) {
     const value = record[key];
-    if (value === undefined || value === null) continue;
+    if (value === undefined) continue;
+    if (value === null) {
+      if (AI_METADATA_NULL_IS_INVALID.includes(key)) return false;
+      continue;
+    }
     if (!isValid(value)) return false;
   }
   return true;
@@ -650,7 +675,15 @@ function collectMetadataReasons(
 
   // Fail-safe: an explicit `review: 'unconfirmed'` blob must never vanish just
   // because every detailed legacy field failed normalization.
-  if (reasons.length === 0 && signals.explicitUnconfirmed) {
+  //
+  // …EXCEPT when multi-patient is the only thing that set it. Connect sets
+  // `review: 'unconfirmed'` when `appliedFields.length > 0 || multiplePatientsDetected
+  // || hasConflict` (metadata-extraction.ts:409-427), so on the real payload a
+  // multi-patient-only recording arrives WITH that flag — and this fallback would
+  // resurrect the suppressed alert under a different code, defeating the
+  // 2026-07-29 owner decision. We are inside `reasons.length === 0`, so by
+  // definition no other supported reason exists to preserve here.
+  if (reasons.length === 0 && signals.explicitUnconfirmed && !signals.multiplePatients) {
     reasons.push({
       code: 'metadata_confirm',
       field: null,
@@ -764,6 +797,12 @@ export function deriveRecordingAttention(
       reasons.push(...collectMetadataReasons(recording, options.recordFirstEnabled));
 
       const warnings = normalizedWarnings(recording);
+      // A truncated array whose scanned window yielded NOTHING usable cannot be
+      // called clean: a real warning may sit in the unscanned tail. Report the
+      // row as partially classified instead of silently emitting no item.
+      if (warnings.length === 0 && recording.qualityWarningsTruncated === true) {
+        metadataUncheckable = true;
+      }
       if (warnings.length > 0) {
         if (submittedAtMs === null || submittedAtMs > options.nowMs) {
           timingUncheckable = true;
@@ -772,7 +811,14 @@ export function deriveRecordingAttention(
             code: 'quality_warning',
             field: null,
             message: warnings[0],
-            warningCount: warnings.length,
+            // The SERVER's total when it is known, so "+N more warnings" does not
+            // under-report a list longer than the scan window.
+            warningCount: Math.max(
+              warnings.length,
+              typeof recording.qualityWarningsTotal === 'number'
+                ? recording.qualityWarningsTotal
+                : 0
+            ),
           });
         }
       }

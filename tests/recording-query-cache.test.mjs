@@ -118,6 +118,10 @@ test('the attention cache stores only the narrow projection on a detail merge', 
     'id',
     'patientName',
     'qualityWarnings',
+    // Bounded truncation facts (counts/booleans only, never the dropped strings)
+    // so a >20-warning row cannot under-report or read as clean.
+    'qualityWarningsTotal',
+    'qualityWarningsTruncated',
     'species',
     'status',
     'submittedAt',

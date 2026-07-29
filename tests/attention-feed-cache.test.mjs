@@ -74,6 +74,10 @@ test('a valid page-1/limit-100 envelope parses to projected rows', () => {
     'id',
     'patientName',
     'qualityWarnings',
+    // Bounded truncation facts (counts/booleans only, never the dropped strings)
+    // so a >20-warning row cannot under-report or read as clean.
+    'qualityWarningsTotal',
+    'qualityWarningsTruncated',
     'species',
     'status',
     'submittedAt',
@@ -525,6 +529,37 @@ test('the nested AI metadata VALUES are validated, not just their containers', (
     { conflicts: [{ field: 'species' }] },
     { fields: { breed: { value: null } } },
     { fields: { breed: { value: 'Golden', confidence: 0.9 } } },
+  ]) {
+    const parsed = parse(
+      envelope([row({ aiExtractedMetadata: meta })], { page: 1, limit: 100, total: 1, totalPages: 1 })
+    );
+    assert.equal(parsed.data.length, 1, JSON.stringify(meta));
+  }
+});
+
+test('an explicit null review is rejected; null collections stay legitimate', () => {
+  // Codex round 8: the unconditional null bypass ran before the per-key
+  // validators, so `{ review: null }` was accepted even though a null enum cannot
+  // be a MetadataReviewState — producing no reason while classification stayed
+  // complete.
+  expectMalformed(
+    envelope([row({ aiExtractedMetadata: { review: null } })], {
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    }),
+    'null review'
+  );
+
+  // A server encoding an empty collection as null is not corrupt — failing the
+  // whole response over it would take out the feed for every user.
+  for (const meta of [
+    { dropReasons: null },
+    { appliedFields: null },
+    { conflicts: null },
+    { fields: null },
+    { multiplePatientsDetected: null },
   ]) {
     const parsed = parse(
       envelope([row({ aiExtractedMetadata: meta })], { page: 1, limit: 100, total: 1, totalPages: 1 })

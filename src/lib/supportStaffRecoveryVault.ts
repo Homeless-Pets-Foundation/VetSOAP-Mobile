@@ -558,6 +558,29 @@ function parseItemsStrict(raw: string): RecoveryItem[] {
           throw new StrictReadUnavailableError('vault:segment_shape');
         }
       }
+      // The other audio-bearing claims count too: the strict recoverability
+      // helpers normalize a present-but-corrupt `durable`/`pendingConfirm` to
+      // absent, which would filter the item while leaving the snapshot
+      // `recoverabilityComplete` — and let the anchor answer `none` for its
+      // `sourceServerDraftId`. `null`/absent stay legitimate.
+      const slotDurable = slotRecord.durable;
+      if (slotDurable !== undefined && slotDurable !== null) {
+        if (typeof slotDurable !== 'object' || Array.isArray(slotDurable)) {
+          throw new StrictReadUnavailableError('vault:slot_durable_shape');
+        }
+        if (!isValidDurableId((slotDurable as { recordingId?: unknown }).recordingId)) {
+          throw new StrictReadUnavailableError('vault:slot_durable_shape');
+        }
+      }
+      const slotPendingConfirm = slotRecord.pendingConfirm;
+      if (slotPendingConfirm !== undefined && slotPendingConfirm !== null) {
+        if (typeof slotPendingConfirm !== 'object' || Array.isArray(slotPendingConfirm)) {
+          throw new StrictReadUnavailableError('vault:slot_pending_confirm_shape');
+        }
+        if (!clonePendingConfirm(slotPendingConfirm as never)) {
+          throw new StrictReadUnavailableError('vault:slot_pending_confirm_shape');
+        }
+      }
     }
   }
   return parsed as RecoveryItem[];

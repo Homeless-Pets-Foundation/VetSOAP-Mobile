@@ -90,6 +90,22 @@ async function loadStashStorage(state) {
           this.source = source;
         }
       },
+      parseStrictChunkCount: (raw, source) => {
+        if (typeof raw !== 'string' || !/^[0-9]{1,6}$/.test(raw)) {
+          throw new Error(`strict count: ${source}`);
+        }
+        return Number(raw);
+      },
+    },
+    // The strict stash parser validates a slot's durable/pendingConfirm claims.
+    './durableAudio/paths': {
+      isValidDurableId: (id) => typeof id === 'string' && id.length > 0 && !/[/\\.]/.test(id),
+    },
+    './pendingConfirm': {
+      clonePendingConfirm: (value) =>
+        value && typeof value === 'object' && typeof value.recordingId === 'string'
+          ? { ...value }
+          : null,
     },
   });
   return { stashStorage: mod.stashStorage, ...store };

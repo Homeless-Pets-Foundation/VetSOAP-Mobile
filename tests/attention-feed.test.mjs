@@ -304,6 +304,100 @@ test('a suggestion WITH a known reason does not also get the unclassified fallba
   assert.deepEqual(plain(reasonCodes(derive(r).items[0])), ['metadata_low_confidence']);
 });
 
+test('the PRODUCTION multi-patient shape raises no alert (review:unconfirmed included)', () => {
+  // Codex round 8, and the most important miss of the whole review: Connect sets
+  // `review: 'unconfirmed'` when `appliedFields.length > 0 || multiplePatientsDetected
+  // || hasConflict`, so the real payload for a multi-patient-only recording
+  // ARRIVES with that flag. The generic confirm fallback then resurrected the
+  // suppressed alert as `metadata_confirm` — the owner's removal did not hold in
+  // production, only in a fixture that omitted `review`.
+  const production = rec({
+    patientName: 'Bella',
+    aiExtractedMetadata: {
+      review: 'unconfirmed',
+      multiplePatientsDetected: true,
+      appliedFields: [],
+    },
+  });
+  assert.equal(derive(production).items.length, 0, 'no alert on the production shape');
+
+  // The same via the drop-reason spelling.
+  const viaDrop = rec({
+    id: ID_B,
+    patientName: 'Bella',
+    aiExtractedMetadata: {
+      review: 'unconfirmed',
+      appliedFields: [],
+      dropReasons: [{ field: 'species', reason: 'multi_patient' }],
+    },
+  });
+  assert.equal(derive(viaDrop).items.length, 0);
+
+  // The fallback still fires when something OTHER than multi-patient set the flag.
+  const genuinelyUnrecoverable = rec({
+    id: ID_C,
+    patientName: 'Bella',
+    aiExtractedMetadata: {
+      review: 'unconfirmed',
+      appliedFields: ['not_a_field'],
+      dropReasons: [{ field: 'breed', reason: 'low_confidence' }],
+    },
+  });
+  const { items } = derive(genuinelyUnrecoverable);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].primaryReason, 'metadata_low_confidence');
+});
+
+test('the detail review predicate agrees: multi-patient-only opens no review card', async () => {
+  // Otherwise the card renders with an EMPTY reason list.
+  const OBS = await loadTsModule('src/lib/recordFirstObservability.ts');
+  const production = rec({
+    patientName: 'Bella',
+    aiExtractedMetadata: { review: 'unconfirmed', multiplePatientsDetected: true, appliedFields: [] },
+  });
+  assert.equal(OBS.hasUnresolvedAiMetadataAttention(production), false);
+  // …but a real signal alongside it still opens the card.
+  const withConflict = rec({
+    patientName: 'Bella',
+    species: 'Canine',
+    aiExtractedMetadata: {
+      review: 'unconfirmed',
+      multiplePatientsDetected: true,
+      appliedFields: [],
+      fields: { species: { value: 'Feline' } },
+      dropReasons: [{ field: 'species', reason: 'conflicts_with_existing' }],
+    },
+  });
+  assert.equal(OBS.hasUnresolvedAiMetadataAttention(withConflict), true);
+});
+
+test('a quality-warning list longer than the scan window cannot read as clean', () => {
+  // Codex round 8: the projection capped at 20 BEFORE derivation, so if the first
+  // 20 normalized to empty while a real warning sat in the tail, the row emitted
+  // no item and still counted as fully classified.
+  const many = Array.from({ length: 25 }, (_, i) => (i < 20 ? '   ' : 'Audio was very quiet'));
+  const projected = FEED.projectAttentionRecording(
+    rec({ patientName: 'Bella', status: 'completed', qualityWarnings: many })
+  );
+  assert.equal(projected.qualityWarningsTruncated, true);
+  assert.equal(projected.qualityWarningsTotal, 25);
+
+  const derived = derive(projected);
+  assert.equal(derived.items.length, 0, 'no fabricated row from the unscanned tail');
+  assert.equal(derived.classificationComplete, false, 'but it is NOT clean either');
+  assert.equal(derived.uncheckableMetadataRowCount, 1);
+
+  // A truncated list whose scanned window DOES yield a warning reports the
+  // server's total, not the scanned count.
+  const usable = Array.from({ length: 25 }, () => 'Audio was very quiet');
+  const p2 = FEED.projectAttentionRecording(
+    rec({ patientName: 'Bella', status: 'completed', qualityWarnings: usable })
+  );
+  const d2 = derive(p2);
+  assert.equal(d2.items.length, 1);
+  assert.equal(d2.items[0].warningCount, 25, 'reports the server total, not the 20-item cap');
+});
+
 test('multi-patient raises NO alert, and does not resurface as an unclassified suggestion', () => {
   // Owner decision 2026-07-29: discussing several patients in one visit is
   // routine, so this is not an attention item on any surface. The signal must
@@ -800,6 +894,10 @@ test('projectAttentionRecording keeps ONLY the narrow list fields', () => {
     'id',
     'patientName',
     'qualityWarnings',
+    // Bounded truncation facts (counts/booleans only, never the dropped strings)
+    // so a >20-warning row cannot under-report or read as clean.
+    'qualityWarningsTotal',
+    'qualityWarningsTruncated',
     'species',
     'status',
     'submittedAt',

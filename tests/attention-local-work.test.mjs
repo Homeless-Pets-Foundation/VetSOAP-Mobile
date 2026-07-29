@@ -895,6 +895,59 @@ test('the bounded vault-summary read does not retry, and keys on the ROLE', asyn
   assert.match(hook, /supportRecoveryVaultQueryKey\(user\?\.id, user\?\.organizationId, user\?\.role\)/);
 });
 
+test('a malformed stash audio claim makes the strict read unknown', async () => {
+  // Codex round 8: stashSlotProof reduces a corrupt pendingConfirm/durable to
+  // `missing`, so a slot with empty segments and a malformed claim could
+  // contribute a KNOWN zero and let the anchor answer `none` for its serverDraftId.
+  const badSlots = [
+    ['durable id not a string', { id: 'a', segments: [], durable: { recordingId: 7 } }],
+    ['durable traversal', { id: 'a', segments: [], durable: { recordingId: '../evil' } }],
+    ['durable not an object', { id: 'a', segments: [], durable: 'nope' }],
+    ['pendingConfirm not an object', { id: 'a', segments: [], pendingConfirm: 'nope' }],
+    ['unparseable pendingConfirm', { id: 'a', segments: [], pendingConfirm: { recordingId: 42 } }],
+  ];
+  for (const [label, slot] of badSlots) {
+    const secure = makeSecureStoreMock();
+    secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+    secure.__store.set(`captivet_stash_${USER}_a_count`, '1');
+    secure.__store.set(
+      `captivet_stash_${USER}_a_chunk_0`,
+      JSON.stringify([{ id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [slot] }])
+    );
+    const stashStorage = await loadStashStorage(secure);
+    await assert.rejects(
+      () => stashStorage.getStashedSessionsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      label
+    );
+  }
+
+  // null/absent claims stay legitimate.
+  const clean = makeSecureStoreMock();
+  clean.__store.set(`captivet_stash_${USER}_active`, 'a');
+  clean.__store.set(`captivet_stash_${USER}_a_count`, '1');
+  clean.__store.set(
+    `captivet_stash_${USER}_a_chunk_0`,
+    JSON.stringify([
+      { id: 's1', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [], durable: null, pendingConfirm: null }] },
+    ])
+  );
+  const ok = await loadStashStorage(clean);
+  assert.equal((await ok.getStashedSessionsForUserStrict(USER)).length, 1);
+});
+
+test('the strict vault parser validates slot audio claims too', async () => {
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  const parser = vault.slice(
+    vault.indexOf('function parseItemsStrict'),
+    vault.indexOf('async function readItemsForGenerationStrict')
+  );
+  assert.match(parser, /vault:slot_durable_shape/);
+  assert.match(parser, /vault:slot_pending_confirm_shape/);
+  assert.match(parser, /isValidDurableId/);
+  assert.match(parser, /clonePendingConfirm/);
+});
+
 test('a malformed durable pointer or pendingConfirm makes the strict draft read unknown', async () => {
   // Codex round 7: normalizeDraftMetadata turns a present-but-invalid durable or
   // pendingConfirm into `undefined`. If that was the draft's only audio claim,

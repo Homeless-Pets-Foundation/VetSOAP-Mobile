@@ -619,7 +619,12 @@ export const ATTENTION_FEED_COPY = {
     `No attention items found in the ${checked} most recently updated practice recordings checked.`,
   truncatedSummary: (items: number, checked: number): string =>
     `${items} attention item${items === 1 ? '' : 's'} found in the ${checked} most recently updated practice recordings checked.`,
+  // Three variants because a row can be unclassifiable for either reason, and
+  // naming the wrong one sends whoever investigates to the wrong place: a
+  // recurring metadata-contract problem must not be reported as a clock problem.
   classificationPartial: 'Some recording timing data could not be checked',
+  classificationPartialMetadata: 'Some recording details could not be checked',
+  classificationPartialMixed: 'Some recordings could not be fully checked',
   localUnknown: 'Could not check all saved work',
   serverError: 'Could not check recent recordings.',
   coverageUnknown: 'Could not confirm how much of the practice was checked.',

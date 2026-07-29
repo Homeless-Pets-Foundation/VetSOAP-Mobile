@@ -353,12 +353,64 @@ export function projectAttentionRecording(raw: unknown): AttentionRecording | nu
  * response could then produce the positive all-clear for a row whose metadata was
  * never actually classified.
  */
+const METADATA_REVIEW_STATES: readonly string[] = ['none', 'unconfirmed', 'confirmed', 'dismissed'];
+
+/** One `dropReasons` entry, in either the array or the legacy record form. */
+function dropReasonEntryIsUsable(field: unknown, value: unknown): boolean {
+  if (typeof field !== 'string') return false;
+  // The reason may be the bare code (record form) or live on an object.
+  if (typeof value === 'string') return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  if (entry.reason !== undefined && typeof entry.reason !== 'string') return false;
+  if (entry.score !== undefined && typeof entry.score !== 'number') return false;
+  return true;
+}
+
 const AI_METADATA_SHAPE: Record<string, (value: unknown) => boolean> = {
-  review: (v) => typeof v === 'string',
+  // The ENUM, not merely a string: `review: 'corrupt'` used to pass, raise no
+  // reason, and still count as fully classified — a coverage-complete response
+  // could then claim all-clear for a row whose review state was unreadable.
+  review: (v) => typeof v === 'string' && METADATA_REVIEW_STATES.includes(v),
   appliedFields: (v) => Array.isArray(v) && v.every((f) => typeof f === 'string'),
-  dropReasons: (v) => Array.isArray(v) || (!!v && typeof v === 'object'),
-  conflicts: (v) => Array.isArray(v),
-  fields: (v) => !!v && typeof v === 'object' && !Array.isArray(v),
+  dropReasons: (v) => {
+    if (Array.isArray(v)) {
+      return v.every((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+        const record = entry as Record<string, unknown>;
+        return dropReasonEntryIsUsable(record.field, record);
+      });
+    }
+    if (!v || typeof v !== 'object') return false;
+    return Object.entries(v as Record<string, unknown>).every(([field, value]) =>
+      dropReasonEntryIsUsable(field, value)
+    );
+  },
+  conflicts: (v) =>
+    Array.isArray(v) &&
+    v.every((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.field !== 'string') return false;
+      return record.reason === undefined || typeof record.reason === 'string';
+    }),
+  fields: (v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    return Object.values(v as Record<string, unknown>).every((entry) => {
+      if (entry === null || entry === undefined) return true;
+      if (typeof entry !== 'object' || Array.isArray(entry)) return false;
+      const record = entry as Record<string, unknown>;
+      // `value` is nullable by contract; `confidence` must be numeric if present.
+      if (
+        record.value !== undefined &&
+        record.value !== null &&
+        typeof record.value !== 'string'
+      ) {
+        return false;
+      }
+      return record.confidence === undefined || typeof record.confidence === 'number';
+    });
+  },
   multiplePatientsDetected: (v) => typeof v === 'boolean',
 };
 

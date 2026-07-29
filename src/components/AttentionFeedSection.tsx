@@ -162,7 +162,20 @@ export function attentionStateNotices(feed: UseAttentionFeedResult): {
   } else if (feed.serverPhase === 'error' || feed.serverPhase === 'stale_error') {
     notices.push({ message: ATTENTION_FEED_COPY.serverError, retryable: true });
   } else if (feed.serverPhase === 'partial') {
-    notices.push({ message: ATTENTION_FEED_COPY.classificationPartial, retryable: true });
+    // Name the ACTUAL cause. `partial` now covers two different failures, and
+    // reporting a metadata-contract problem as a timing one would send whoever
+    // investigates to the wrong place.
+    const timing = feed.uncheckableTimingRowCount > 0;
+    const metadata = feed.uncheckableMetadataRowCount > 0;
+    notices.push({
+      message:
+        timing && metadata
+          ? ATTENTION_FEED_COPY.classificationPartialMixed
+          : metadata
+            ? ATTENTION_FEED_COPY.classificationPartialMetadata
+            : ATTENTION_FEED_COPY.classificationPartial,
+      retryable: true,
+    });
   }
   // A response with no usable pagination proof cannot claim to have covered
   // anything — it is qualified, never all-clear.

@@ -487,6 +487,71 @@ test('dropReasons beyond the bounded scan marks the row classification-INCOMPLET
   assert.equal(smallDerived.uncheckableMetadataRowCount, 0);
 });
 
+test('the nested AI metadata VALUES are validated, not just their containers', () => {
+  // Codex round 7: `review: 'corrupt'` passed container-level validation, raised
+  // no reason, and stayed classification-complete — so a coverage-complete
+  // response could claim all-clear for a row whose review state was unreadable.
+  expectMalformed(
+    envelope([row({ aiExtractedMetadata: { review: 'corrupt' } })], {
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    }),
+    'review outside the enum'
+  );
+  for (const meta of [
+    { dropReasons: [{ reason: 'low_confidence' }] },
+    { dropReasons: [{ field: 'breed', score: 'high' }] },
+    { dropReasons: { breed: 42 } },
+    { conflicts: [{ reason: 'x' }] },
+    { fields: { breed: { value: 42 } } },
+    { fields: { breed: { value: 'Golden', confidence: 'high' } } },
+  ]) {
+    expectMalformed(
+      envelope([row({ aiExtractedMetadata: meta })], { page: 1, limit: 100, total: 1, totalPages: 1 }),
+      JSON.stringify(meta)
+    );
+  }
+
+  // Every legitimate shape still parses, including the record dropReasons form
+  // and a nullable extracted value.
+  for (const meta of [
+    { review: 'unconfirmed' },
+    { review: 'none' },
+    { dropReasons: [{ field: 'breed', reason: 'low_confidence', score: 0.4 }] },
+    { dropReasons: { breed: 'low_confidence' } },
+    { dropReasons: { breed: { reason: 'low_confidence' } } },
+    { conflicts: [{ field: 'species' }] },
+    { fields: { breed: { value: null } } },
+    { fields: { breed: { value: 'Golden', confidence: 0.9 } } },
+  ]) {
+    const parsed = parse(
+      envelope([row({ aiExtractedMetadata: meta })], { page: 1, limit: 100, total: 1, totalPages: 1 })
+    );
+    assert.equal(parsed.data.length, 1, JSON.stringify(meta));
+  }
+});
+
+test('the partial notice names the ACTUAL cause, never a clock problem for metadata', async () => {
+  // Codex round 7: a dropReasons-scan gap made serverPhase `partial`, whose copy
+  // claimed timing data could not be checked — sending an investigator to the
+  // wrong place for a recurring metadata-contract problem.
+  const section = await read('src/components/AttentionFeedSection.tsx');
+  assert.match(section, /const timing = feed\.uncheckableTimingRowCount > 0;/);
+  assert.match(section, /const metadata = feed\.uncheckableMetadataRowCount > 0;/);
+  assert.match(section, /classificationPartialMixed/);
+  assert.match(section, /classificationPartialMetadata/);
+
+  const strings = await read('src/constants/strings.ts');
+  assert.match(strings, /classificationPartialMetadata: 'Some recording details could not be checked'/);
+  assert.match(strings, /classificationPartialMixed: 'Some recordings could not be fully checked'/);
+  // The metadata cause is exposed by the hook so the surfaces can tell them apart.
+  const hook = await read('src/hooks/useAttentionFeed.ts');
+  assert.match(hook, /uncheckableMetadataRowCount: number;/);
+  assert.match(hook, /uncheckableMetadataRowCount: derivation\.uncheckableMetadataRowCount,/);
+});
+
 test('a pagination total smaller than the returned page is malformed', async () => {
   // Codex P2: rows and pagination were validated independently, so five rows
   // reporting `total: 0` passed and attentionCoverage() called it COMPLETE —

@@ -592,26 +592,56 @@ function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
 }
 
 /**
- * Every segment entry must be usable BEFORE `normalizeDraftMetadata` sees it.
+ * Every AUDIO-BEARING field must be usable BEFORE `normalizeDraftMetadata` sees
+ * it.
  *
- * That normalizer `continue`s past a malformed entry and still returns a draft,
- * which is right for the lenient path and lossy for a strict one: if the dropped
- * entry was the draft's only audio reference, `draftHasLocalAudioStrict` reports
- * `missing`, the feed publishes a KNOWN zero, and `findLocalRecoveryAnchor`
- * answers `none` — exposing deletion while the draft directory may still hold
- * recoverable audio.
+ * That normalizer silently discards what it cannot parse — it `continue`s past a
+ * malformed segment and turns a present-but-invalid `durable`/`pendingConfirm`
+ * into `undefined`. Right for the lenient path, lossy for a strict one: whichever
+ * of the three was the draft's only audio reference, `draftHasLocalAudioStrict`
+ * then reports `missing`, the feed publishes a KNOWN zero, and
+ * `findLocalRecoveryAnchor` answers `none` — exposing deletion while the draft
+ * directory (or a recovered durable file) may still hold recoverable audio.
  */
-function assertDraftSegmentsUsable(raw: unknown, source: string): void {
+function assertDraftAudioFieldsUsable(raw: unknown, source: string): void {
   if (!raw || typeof raw !== 'object') return;
-  const segments = (raw as { segments?: unknown }).segments;
-  if (!Array.isArray(segments)) return; // normalizeDraftMetadata rejects this anyway.
-  for (const segment of segments) {
-    if (!segment || typeof segment !== 'object') throw new StrictReadUnavailableError(source);
-    const candidate = segment as Record<string, unknown>;
-    if (typeof candidate.uri !== 'string' || candidate.uri.length === 0) {
+  const record = raw as Record<string, unknown>;
+
+  const segments = record.segments;
+  if (Array.isArray(segments)) {
+    // A non-array is rejected by normalizeDraftMetadata itself.
+    for (const segment of segments) {
+      if (!segment || typeof segment !== 'object') throw new StrictReadUnavailableError(source);
+      const candidate = segment as Record<string, unknown>;
+      if (typeof candidate.uri !== 'string' || candidate.uri.length === 0) {
+        throw new StrictReadUnavailableError(source);
+      }
+      if (typeof candidate.duration !== 'number' || !Number.isFinite(candidate.duration)) {
+        throw new StrictReadUnavailableError(source);
+      }
+    }
+  }
+
+  // `null`/absent are legitimate ("this draft has no durable pointer"); a present
+  // object whose id does not validate is CORRUPTION, not absence.
+  const durable = record.durable;
+  if (durable !== undefined && durable !== null) {
+    if (typeof durable !== 'object' || Array.isArray(durable)) {
       throw new StrictReadUnavailableError(source);
     }
-    if (typeof candidate.duration !== 'number' || !Number.isFinite(candidate.duration)) {
+    if (!isValidDurableId((durable as { recordingId?: unknown }).recordingId)) {
+      throw new StrictReadUnavailableError(source);
+    }
+  }
+
+  const pendingConfirm = record.pendingConfirm;
+  if (pendingConfirm !== undefined && pendingConfirm !== null) {
+    if (typeof pendingConfirm !== 'object' || Array.isArray(pendingConfirm)) {
+      throw new StrictReadUnavailableError(source);
+    }
+    // The proof is the strongest audio claim there is — an unparseable one must
+    // never be quietly downgraded to "no audio".
+    if (!clonePendingConfirm(pendingConfirm as never)) {
       throw new StrictReadUnavailableError(source);
     }
   }
@@ -689,7 +719,7 @@ async function readDraftChunksStrict(
     } catch {
       throw new StrictReadUnavailableError('draft_meta:payload_parse');
     }
-    assertDraftSegmentsUsable(parsed, 'draft_meta:segment_shape');
+    assertDraftAudioFieldsUsable(parsed, 'draft_meta:audio_field_shape');
     const normalized = normalizeDraftMetadata(parsed);
     if (!normalized) throw new StrictReadUnavailableError('draft_meta:shape');
     return normalized;
@@ -706,7 +736,7 @@ async function readDraftChunksStrict(
   } catch {
     throw new StrictReadUnavailableError('draft_legacy_meta:parse');
   }
-  assertDraftSegmentsUsable(legacyParsed, 'draft_legacy_meta:segment_shape');
+  assertDraftAudioFieldsUsable(legacyParsed, 'draft_legacy_meta:audio_field_shape');
   const normalizedLegacy = normalizeDraftMetadata(legacyParsed);
   if (!normalizedLegacy) throw new StrictReadUnavailableError('draft_legacy_meta:shape');
   return normalizedLegacy;

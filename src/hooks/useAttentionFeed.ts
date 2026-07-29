@@ -74,6 +74,7 @@ export interface UseAttentionFeedResult {
   checkedCount: number;
   classificationComplete: boolean;
   uncheckableTimingRowCount: number;
+  uncheckableMetadataRowCount: number;
   localSummary: UnsentWorkSummary | null;
   localComplete: boolean;
   /** The local read has produced a result (known or explicitly unknown). */
@@ -298,6 +299,7 @@ export function useAttentionFeed(options: { focused: boolean }): UseAttentionFee
     checkedCount,
     classificationComplete: derivation.classificationComplete,
     uncheckableTimingRowCount: derivation.uncheckableTimingRowCount,
+    uncheckableMetadataRowCount: derivation.uncheckableMetadataRowCount,
     localSummary,
     localComplete,
     // An explicitly settled UNKNOWN counts as settled; only a still-running read

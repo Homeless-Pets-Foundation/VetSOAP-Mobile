@@ -527,7 +527,15 @@ function parseItemsStrict(raw: string): RecoveryItem[] {
       typeof candidate !== 'object' ||
       typeof candidate.id !== 'string' ||
       typeof candidate.recoveryKey !== 'string' ||
-      !Array.isArray(candidate.slots)
+      !Array.isArray(candidate.slots) ||
+      // AUTHORIZATION fields must be valid too. `itemVisibleToUser` reads
+      // `status` and `sourceOrganizationId`; a missing or malformed one made the
+      // item read as definitively INVISIBLE (filtered out with the snapshot still
+      // marked complete) rather than unreadable, so an item that still held local
+      // audio could yield a `none` anchor and expose the server delete.
+      (candidate.status !== 'available' && candidate.status !== 'restored') ||
+      (typeof candidate.sourceOrganizationId !== 'string' &&
+        candidate.sourceOrganizationId !== null)
     ) {
       throw new StrictReadUnavailableError('vault:item_shape');
     }

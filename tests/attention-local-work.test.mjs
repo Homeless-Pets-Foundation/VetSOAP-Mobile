@@ -895,6 +895,53 @@ test('the bounded vault-summary read does not retry, and keys on the ROLE', asyn
   assert.match(hook, /supportRecoveryVaultQueryKey\(user\?\.id, user\?\.organizationId, user\?\.role\)/);
 });
 
+test('a malformed durable pointer or pendingConfirm makes the strict draft read unknown', async () => {
+  // Codex round 7: normalizeDraftMetadata turns a present-but-invalid durable or
+  // pendingConfirm into `undefined`. If that was the draft's only audio claim,
+  // draftHasLocalAudioStrict said `missing` — a KNOWN zero and a `none` anchor.
+  const cases = [
+    ['non-numeric durable id', { segments: [], durable: { recordingId: 7, recoveredAudioUri: 'file:///r.aac' } }],
+    ['durable id with traversal', { segments: [], durable: { recordingId: '../evil' } }],
+    ['durable not an object', { segments: [], durable: 'nope' }],
+    ['pendingConfirm not an object', { segments: [], pendingConfirm: 'nope' }],
+    ['unparseable pendingConfirm', { segments: [], pendingConfirm: { recordingId: 'not-a-uuid' } }],
+  ];
+  for (const [label, overrides] of cases) {
+    const secure = makeSecureStoreMock();
+    seedDraft(secure, 'slot-1', draftPayload(overrides));
+    const { draftStorage } = await loadDraftStorage(secure, makeFileSystemMock());
+    await assert.rejects(
+      () => draftStorage.listDraftsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      label
+    );
+  }
+
+  // Absent / explicit null stay legitimate.
+  for (const overrides of [{ durable: null }, { pendingConfirm: null }, {}]) {
+    const secure = makeSecureStoreMock();
+    seedDraft(secure, 'slot-1', draftPayload(overrides));
+    const { draftStorage } = await loadDraftStorage(secure, makeFileSystemMock());
+    assert.equal((await draftStorage.listDraftsForUserStrict(USER)).length, 1);
+  }
+});
+
+test('the strict vault parser validates the AUTHORIZATION fields it filters on', async () => {
+  // Codex round 7: itemVisibleToUser reads `status` and `sourceOrganizationId`.
+  // A missing/malformed one made the item read as definitively INVISIBLE with the
+  // snapshot still complete — so an item holding audio could yield `none`.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  const parser = vault.slice(
+    vault.indexOf('function parseItemsStrict'),
+    vault.indexOf('async function readItemsForGenerationStrict')
+  );
+  assert.match(parser, /candidate\.status !== 'available' && candidate\.status !== 'restored'/);
+  assert.match(parser, /typeof candidate\.sourceOrganizationId !== 'string' &&/);
+  assert.match(parser, /candidate\.sourceOrganizationId !== null/);
+  // The visibility predicate reads exactly those two fields.
+  assert.match(vault, /item\.status === 'available' &&\s*\n\s*item\.sourceOrganizationId === user\.organizationId/);
+});
+
 test('a PRESENT but malformed active pointer is unknown, never a fallback', async () => {
   // Codex round 5: only `null` means pre-migration. A corrupt pointer value fell
   // through and returned the first readable legacy/inactive generation, which may

@@ -344,11 +344,27 @@ export const QUALITY_ANALYTICS_COPY = {
     averageLength: 'Avg length',
     uploadIssues: 'Upload issues',
     silentAudio: 'Silent audio',
-    reprocessRate: 'Reprocessed',
+    // A COUNT, not a rate: reprocessRate legitimately exceeds 1 (several
+    // reprocess actions on one recording), so the tile used to render '200%'
+    // above an alert reading 'Reprocessed 6 times across 5 recordings'. Tile
+    // and alert both speak counts now; the denominator is already on screen
+    // (Completed tile / 'N rec' row header). Do not relabel back to a rate.
+    reprocesses: 'Reprocesses',
     soapEditRate: 'Edited notes',
     missingDetails: 'Missing details',
     p90Processing: '90% done by',
   },
+  // Breakdown-row alerts. Each is its own wrapping line, so the reprocess
+  // templates are capitalized — a line opening on a lowercase word reads as a
+  // rendering fault. The other two open on a digit.
+  issues: {
+    missingDetails: '{pct}% missing patient details',
+    soapEdited: '{pct}% of notes edited',
+    reprocessedOnce: 'Reprocessed once across {recordings} recordings',
+    reprocessedMany: 'Reprocessed {count} times across {recordings} recordings',
+  },
+  // Server `label` is `z.string()` and accepts '', which rendered a blank row title.
+  unlabeledGroup: 'Not specified',
 } as const;
 
 export const TEMPLATE_DEFAULT_COPY = {

@@ -1,20 +1,15 @@
 import React from 'react';
 import { ActivityIndicator, Text, View, type DimensionValue } from 'react-native';
-import {
-  AlertTriangle,
-  BarChart3,
-  CheckCircle2,
-  Clock3,
-  RefreshCw,
-  Users,
-} from 'lucide-react-native';
+import { AlertTriangle, BarChart3, CheckCircle2, RefreshCw, Users } from 'lucide-react-native';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { QUALITY_ANALYTICS_COPY } from '../constants/strings';
+import { breakdownIssueAlerts, hasActivity, visibleBreakdownItems } from '../api/qualityAnalytics';
 import type {
   DashboardQualityEnvelope,
   QualityBreakdownSummary,
+  QualityIssueAlert,
   QualityProviderSummary,
   QualitySummary,
 } from '../api/qualityAnalytics';
@@ -46,23 +41,20 @@ function formatLastRecordingAt(value: Date | null): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function hasActivity(summary: QualitySummary): boolean {
-  return (
-    summary.completedRecordings > 0 ||
-    summary.failedUploadAttempts > 0 ||
-    summary.silentAudioEvents > 0 ||
-    summary.reprocessCount > 0 ||
-    summary.soapEditedCount > 0 ||
-    summary.missingMetadataCount > 0
-  );
-}
-
-function issueLabels(summary: QualitySummary): string[] {
-  const labels: string[] = [];
-  if ((summary.missingMetadataRate ?? 0) >= 0.2) labels.push(QUALITY_ANALYTICS_COPY.metrics.missingDetails);
-  if ((summary.reprocessRate ?? 0) >= 0.2) labels.push(QUALITY_ANALYTICS_COPY.metrics.reprocessRate);
-  if ((summary.soapEditRate ?? 0) >= 0.5) labels.push(QUALITY_ANALYTICS_COPY.metrics.soapEditRate);
-  return labels.slice(0, 2);
+// Exhaustive switch on purpose: a fourth QualityIssueAlert kind must fail
+// typecheck ("lacks ending return statement"), not silently render nothing.
+function formatIssueAlert(alert: QualityIssueAlert): string {
+  const c = QUALITY_ANALYTICS_COPY.issues;
+  switch (alert.kind) {
+    case 'missingDetails':
+      return c.missingDetails.replace('{pct}', String(alert.pct));
+    case 'soapEdited':
+      return c.soapEdited.replace('{pct}', String(alert.pct));
+    case 'reprocessed':
+      return (alert.count === 1 ? c.reprocessedOnce : c.reprocessedMany)
+        .replace('{count}', String(alert.count))
+        .replace('{recordings}', String(alert.recordings));
+  }
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {
@@ -88,7 +80,7 @@ function SummaryBlock({ title, summary }: { title: string; summary: QualitySumma
         <Metric label={c.averageLength} value={formatDuration(summary.averageRecordingLengthSeconds)} />
         <Metric label={c.uploadIssues} value={summary.failedUploadAttempts} />
         <Metric label={c.silentAudio} value={summary.silentAudioEvents} />
-        <Metric label={c.reprocessRate} value={formatRate(summary.reprocessRate)} />
+        <Metric label={c.reprocesses} value={summary.reprocessCount} />
         <Metric label={c.soapEditRate} value={formatRate(summary.soapEditRate)} />
         <Metric label={c.missingDetails} value={formatRate(summary.missingMetadataRate)} />
         <Metric
@@ -110,13 +102,13 @@ function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; m
     maxCompleted > 0 && item.completedRecordings > 0
       ? `${Math.max(8, Math.round((item.completedRecordings / maxCompleted) * 100))}%`
       : '0%';
-  const badges = issueLabels(item);
+  const alerts = breakdownIssueAlerts(item);
 
   return (
     <View className="border-t border-border-default py-3">
       <View className="flex-row items-start justify-between">
         <Text className="text-body-sm font-semibold text-content-primary flex-1 pr-2" numberOfLines={2}>
-          {item.label}
+          {item.label.trim() || QUALITY_ANALYTICS_COPY.unlabeledGroup}
         </Text>
         <Text className="text-caption font-semibold text-content-secondary ml-2" numberOfLines={1}>
           {item.completedRecordings} rec
@@ -127,19 +119,27 @@ function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; m
       </View>
       <View className="flex-row flex-wrap mt-3">
         <Metric label={QUALITY_ANALYTICS_COPY.metrics.averageLength} value={formatDuration(item.averageRecordingLengthSeconds)} />
-        <Metric label={QUALITY_ANALYTICS_COPY.metrics.reprocessRate} value={formatRate(item.reprocessRate)} />
+        <Metric label={QUALITY_ANALYTICS_COPY.metrics.reprocesses} value={item.reprocessCount} />
         <Metric label={QUALITY_ANALYTICS_COPY.metrics.soapEditRate} value={formatRate(item.soapEditRate)} />
         <Metric
           label={QUALITY_ANALYTICS_COPY.metrics.p90Processing}
           value={item.processingLatencyP90Seconds === null ? 'n/a' : formatDuration(item.processingLatencyP90Seconds)}
         />
       </View>
-      {badges.length ? (
-        <View className="flex-row flex-wrap mt-1">
-          {badges.map((badge) => (
-            <Text key={badge} className="text-caption text-status-warning mr-2 mb-1">
-              {badge}
-            </Text>
+      {/* One row per alert, never a flex-wrap bag of unconstrained <Text>:
+          Android under-measures an unconstrained Text in a wrapping row and
+          clips the overflow with no ellipsis. `flex-1` gives it a real width
+          constraint, and no numberOfLines means a sentence needing three lines
+          at 1.3x font scale gets three lines instead of an ellipsis. */}
+      {alerts.length ? (
+        <View className="mt-2">
+          {alerts.map((alert) => (
+            <View key={alert.kind} className="flex-row items-start mt-1">
+              <View className="mr-1.5 mt-0.5" style={{ flexShrink: 0 }}>
+                <AlertTriangle color={colors.statusWarningFg} size={12} />
+              </View>
+              <Text className="text-caption text-status-warning flex-1">{formatIssueAlert(alert)}</Text>
+            </View>
           ))}
         </View>
       ) : null}
@@ -149,18 +149,22 @@ function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; m
 
 function BreakdownSection({ title, items }: { title: string; items: QualityBreakdownSummary[] }) {
   const colors = useThemeColors();
-  if (!items.length) return null;
-  const maxCompleted = Math.max(...items.map((item) => item.completedRecordings), 0);
+  // Filter + sort + cap all live in visibleBreakdownItems; when nothing clears
+  // the minimum the whole section disappears, header included (intended).
+  const visibleItems = visibleBreakdownItems(items);
+  if (!visibleItems.length) return null;
+  // Scale bars to what is on screen, not to a group that got filtered out.
+  const maxCompleted = Math.max(...visibleItems.map((item) => item.completedRecordings), 0);
 
   return (
     <View className="mb-4">
       <View className="flex-row items-center mb-1">
-        <Clock3 color={colors.contentTertiary} size={14} />
+        <BarChart3 color={colors.contentTertiary} size={14} />
         <Text className="text-body-sm font-semibold text-content-secondary ml-1">
           {title}
         </Text>
       </View>
-      {items.slice(0, 5).map((item) => (
+      {visibleItems.map((item) => (
         <BreakdownRow key={`${title}:${item.key}`} item={item} maxCompleted={maxCompleted} />
       ))}
     </View>
@@ -275,7 +279,7 @@ export function QualityAnalyticsCard({
           {quality.byProvider?.length ? (
             <View>
               <View className="flex-row items-center mb-1">
-                <Clock3 color={colors.contentTertiary} size={14} />
+                <Users color={colors.contentTertiary} size={14} />
                 <Text className="text-body-sm font-semibold text-content-secondary ml-1">
                   {QUALITY_ANALYTICS_COPY.providers}
                 </Text>

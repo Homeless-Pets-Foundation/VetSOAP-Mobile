@@ -6,7 +6,8 @@ import { clonePendingConfirm } from './pendingConfirm';
 import { withPromiseTimeout } from './promiseTimeout';
 import type { StrictExistence } from './strictRead';
 import type { StashedSlot } from '../types/stash';
-import type { DurableRecordingManifest } from './durableAudio/manifest';
+import { validateManifestObject, type DurableRecordingManifest } from './durableAudio/manifest';
+import { isValidDurableId } from './durableAudio/paths';
 import type { User } from '../types';
 
 /**
@@ -86,9 +87,19 @@ async function loadDurableManifestSnapshot(userId: string): Promise<DurableManif
     if (!Array.isArray(manifests)) return null;
     const byRecordingId = new Map<string, DurableRecordingManifest>();
     for (const manifest of manifests) {
-      if (manifest && typeof manifest.recordingId === 'string') {
-        byRecordingId.set(manifest.recordingId, manifest);
-      }
+      // A string `recordingId` was the only gate, so a manifest with malformed
+      // required fields — or a malformed `serverRecordingId` anchor — was indexed
+      // and later reduced to `missing`/no-match. With the other sources known
+      // that let findLocalRecoveryAnchor answer `none` despite recoverable
+      // durable audio. One invalid entry makes the whole SNAPSHOT unknown rather
+      // than silently dropping it: a partial index is indistinguishable from
+      // "this recording has no durable audio".
+      if (!manifest || typeof manifest.recordingId !== 'string') return null;
+      if (!isValidDurableId(manifest.recordingId)) return null;
+      if (!validateManifestObject(manifest).ok) return null;
+      const anchor = (manifest as { serverRecordingId?: unknown }).serverRecordingId;
+      if (anchor !== undefined && anchor !== null && typeof anchor !== 'string') return null;
+      byRecordingId.set(manifest.recordingId, manifest);
     }
     return byRecordingId;
   } catch {
@@ -379,23 +390,31 @@ export async function findLocalRecoveryAnchor(
   // and the detail screen offered neither its recovery route nor deletion — on
   // every Recheck. Cap it at half the deadline so the dependent reads always
   // keep a meaningful slice, and run the INDEPENDENT vault read alongside it.
-  const manifestBudget = Math.max(1, Math.min(remaining(), MANIFEST_SNAPSHOT_BUDGET_MS));
-  const [manifests, vaultResult] = await Promise.all([
-    withPromiseTimeout(
-      loadDurableManifestSnapshot(userId),
-      manifestBudget,
-      'anchor_durable_manifests_timeout',
-    ).catch((): DurableManifestSnapshot => null),
-    // Settled shape so a vault failure does not reject this Promise.all.
-    bound(findVaultAnchor(user as AnchorUser, target), 'anchor_vault_timeout')
-      .then((value): PromiseSettledResult<AnchorSourceResult> => ({ status: 'fulfilled', value }))
-      .catch((reason): PromiseSettledResult<AnchorSourceResult> => ({ status: 'rejected', reason })),
-  ]);
+  // START the independent vault read, but do NOT await it here: including it in
+  // the same `Promise.all` as the manifest meant a vault read that consumed the
+  // whole deadline delayed the draft/stash reads to `remaining()` === 1ms, which
+  // is the very starvation this restructure was meant to remove. Only the
+  // manifest snapshot actually gates them.
+  const vaultPromise = bound(findVaultAnchor(user as AnchorUser, target), 'anchor_vault_timeout')
+    .then((value): PromiseSettledResult<AnchorSourceResult> => ({ status: 'fulfilled', value }))
+    .catch((reason): PromiseSettledResult<AnchorSourceResult> => ({ status: 'rejected', reason }));
 
-  const [draftResult, stashResult] = await Promise.allSettled([
-    bound(findDraftAnchor(userId, target, manifests), 'anchor_drafts_timeout'),
-    bound(findStashAnchor(userId, target, manifests), 'anchor_stashes_timeout'),
-  ]);
+  const manifestBudget = Math.max(1, Math.min(remaining(), MANIFEST_SNAPSHOT_BUDGET_MS));
+  const manifests = await withPromiseTimeout(
+    loadDurableManifestSnapshot(userId),
+    manifestBudget,
+    'anchor_durable_manifests_timeout',
+  ).catch((): DurableManifestSnapshot => null);
+
+  // The dependent reads start as soon as the bounded snapshot settles; the vault
+  // is awaited alongside them, so all three share the remaining window.
+  const [draftResult, stashResult, vaultResult] = await Promise.all([
+    Promise.allSettled([
+      bound(findDraftAnchor(userId, target, manifests), 'anchor_drafts_timeout'),
+      bound(findStashAnchor(userId, target, manifests), 'anchor_stashes_timeout'),
+    ]).then(([draft, stash]) => ({ draft, stash })),
+    vaultPromise,
+  ]).then(([both, vault]) => [both.draft, both.stash, vault] as const);
 
   if (!scopeMatches(userId)) return { kind: 'unknown' };
 

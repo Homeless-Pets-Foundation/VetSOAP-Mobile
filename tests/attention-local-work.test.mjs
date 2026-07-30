@@ -441,6 +441,13 @@ function makeLocalRecordingsHarness({
         return sawUnknown ? 'unknown' : 'missing';
       },
     },
+    // localRecordings now validates every manifest before indexing it.
+    './durableAudio/manifest': {
+      validateManifestObject: (m) => ({ ok: !!m && m.__invalidManifest !== true, manifest: m }),
+    },
+    './durableAudio/paths': {
+      isValidDurableId: (id) => typeof id === 'string' && id.length > 0 && !/[/\\.]/.test(id),
+    },
     '../../modules/captivet-durable-recorder': {
       isAvailable: () => !manifestUnavailable,
       async listRecoverableSessions() {
@@ -823,12 +830,24 @@ test('a hanging durable bridge cannot starve the other anchor sources', async ()
   const anchorFn = local.slice(local.indexOf('export async function findLocalRecoveryAnchor'));
   // The manifest read is capped, not given the whole window…
   assert.match(anchorFn, /Math\.min\(remaining\(\), MANIFEST_SNAPSHOT_BUDGET_MS\)/);
-  // …and the independent vault read runs alongside it rather than after it.
-  assert.match(anchorFn, /await Promise\.all\(\[\s*\n\s*withPromiseTimeout\(\s*\n\s*loadDurableManifestSnapshot/);
+  // …the independent vault read is STARTED early but not awaited there (Codex
+  // round 9: awaiting it alongside the manifest meant a slow vault delayed the
+  // dependent reads to remaining() === 1ms — the same starvation)…
+  assert.match(anchorFn, /const vaultPromise = bound\(findVaultAnchor\(/);
   assert.ok(
-    anchorFn.indexOf('findVaultAnchor') < anchorFn.indexOf('findDraftAnchor'),
-    'the vault read is issued with the manifest read, before the dependent reads'
+    anchorFn.indexOf('const vaultPromise') < anchorFn.indexOf('const manifests = await'),
+    'the vault read is issued before the manifest await'
   );
+  const manifestAwait = anchorFn.indexOf('const manifests = await withPromiseTimeout(');
+  assert.ok(manifestAwait > 0, 'only the manifest snapshot gates the dependent reads');
+  // …and the dependent reads start after the snapshot settles, with the vault
+  // awaited alongside them.
+  assert.ok(
+    manifestAwait < anchorFn.indexOf('findDraftAnchor'),
+    'draft/stash start after the bounded snapshot'
+  );
+  assert.match(anchorFn, /Promise\.allSettled\(\[\s*\n\s*bound\(findDraftAnchor/);
+  assert.match(anchorFn, /vaultPromise,\s*\n\s*\]\)/);
 });
 
 test('anchor: a vet needs COMPLETE local audio to reuse a pending-confirm slot', async () => {
@@ -893,6 +912,76 @@ test('the bounded vault-summary read does not retry, and keys on the ROLE', asyn
   assert.match(hook, /role: string \| null \| undefined/);
   assert.match(hook, /role \?\? 'none',/);
   assert.match(hook, /supportRecoveryVaultQueryKey\(user\?\.id, user\?\.organizationId, user\?\.role\)/);
+});
+
+test('a malformed durable MANIFEST makes the whole snapshot unknown', async () => {
+  // Codex round 10: a string recordingId was the only gate, so a manifest with
+  // malformed required fields or a malformed serverRecordingId anchor was indexed
+  // and later reduced to missing/no-match — yielding `none` despite recoverable
+  // durable audio. One bad entry makes the SNAPSHOT unknown, because a partial
+  // index is indistinguishable from "no durable audio for this recording".
+  const cases = [
+    ['invalid manifest shape', { recordingId: 'dur-1', __invalidManifest: true }],
+    ['traversal id', { recordingId: '../evil' }],
+    ['non-string id', { recordingId: 7 }],
+    ['non-string anchor', { recordingId: 'dur-1', serverRecordingId: 42 }],
+  ];
+  for (const [label, manifest] of cases) {
+    const mod = await makeLocalRecordingsHarness({
+      manifests: new Map([['dur-1', manifest]]),
+    });
+    assert.equal(
+      (await mod.findLocalRecoveryAnchor(ANCHOR_USER, SERVER_ID)).kind,
+      'unknown',
+      label
+    );
+  }
+});
+
+test('with NO active pointer, competing readable layouts are ambiguous', async () => {
+  // Codex round 10: returning the first readable layout let a stale legacy
+  // snapshot win over a newer generation that still referenced the audio.
+  const session = (id) =>
+    JSON.stringify([{ id, stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [] }] }]);
+
+  const ambiguous = makeSecureStoreMock();
+  ambiguous.__store.set(`captivet_stash_${USER}_count`, '1');
+  ambiguous.__store.set(`captivet_stash_${USER}_chunk_0`, session('legacy'));
+  ambiguous.__store.set(`captivet_stash_${USER}_b_count`, '1');
+  ambiguous.__store.set(`captivet_stash_${USER}_b_chunk_0`, session('newer'));
+  const stash = await loadStashStorage(ambiguous);
+  await assert.rejects(
+    () => stash.getStashedSessionsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+
+  // ONE readable non-empty layout still proves the result.
+  const single = makeSecureStoreMock();
+  single.__store.set(`captivet_stash_${USER}_count`, '1');
+  single.__store.set(`captivet_stash_${USER}_chunk_0`, session('legacy'));
+  const ok = await loadStashStorage(single);
+  assert.equal((await ok.getStashedSessionsForUserStrict(USER)).length, 1);
+
+  // Layouts that AGREE the store is empty are a proven empty store.
+  const empties = makeSecureStoreMock();
+  empties.__store.set(`captivet_stash_${USER}_count`, '0');
+  empties.__store.set(`captivet_stash_${USER}_b_count`, '0');
+  const emptyOk = await loadStashStorage(empties);
+  assert.deepEqual(plain(await emptyOk.getStashedSessionsForUserStrict(USER)), []);
+
+  // The vault applies the same rule.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(vault, /vault:ambiguous_generations/);
+});
+
+test('a vault durable pointer needs a usable recovery URI, not just a valid id', async () => {
+  // Codex round 9 (missed on my first pass): vault durable audio IS the
+  // cross-user copy at `recoveredAudioUri`, and the strict proof turns a missing
+  // URI into `missing` — filtering the item while recoverabilityComplete stayed
+  // true, so the anchor could answer `none` while the copied AAC still existed.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(vault, /vault:slot_durable_uri/);
+  assert.match(vault, /typeof durableRecord\.recoveredAudioUri !== 'string'/);
 });
 
 test('a malformed recovery-anchor id makes the strict read unknown', async () => {

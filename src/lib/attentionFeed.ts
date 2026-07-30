@@ -9,9 +9,11 @@ import { ATTENTION_FEED_COPY, METADATA_FIELD_LABELS } from '../constants/strings
 import { displayPatientName } from './recordingDisplay';
 import { canRecordAppointments, getRecordingPermissions } from './recordingPermissions';
 import {
+  AI_METADATA_DROP_REASONS,
   computeMetadataAttentionSignals,
   currentMetadataValue,
   DROP_REASON_SCAN_LIMIT,
+  METADATA_FIELDS,
   normalizeDisplayText,
   normalizeMetadataValue,
   type MetadataSuggestion,
@@ -324,8 +326,12 @@ export function projectAttentionRecording(raw: unknown): AttentionRecording | nu
   const submittedAt = optionalString(row.submittedAt);
   if (submittedAt === undefined) return null;
 
-  if (row.qualityWarnings !== undefined && !Array.isArray(row.qualityWarnings)) return null;
-  const rawWarnings = Array.isArray(row.qualityWarnings) ? row.qualityWarnings : [];
+  // The list select ALWAYS returns this column, so absence is contract drift or a
+  // truncated payload — not a proven empty array. Treating it as empty let a
+  // completed row contribute no quality item while the envelope still read as
+  // classification-complete.
+  if (!Array.isArray(row.qualityWarnings)) return null;
+  const rawWarnings = row.qualityWarnings;
   if (rawWarnings.some((warning) => typeof warning !== 'string')) return null;
 
   const meta = row.aiExtractedMetadata;
@@ -365,10 +371,17 @@ export function projectAttentionRecording(raw: unknown): AttentionRecording | nu
 const METADATA_REVIEW_STATES: readonly string[] = ['none', 'unconfirmed', 'confirmed', 'dismissed'];
 
 /** One `dropReasons` entry, in either the array or the legacy record form. */
+const DROP_REASON_CODES: readonly string[] = AI_METADATA_DROP_REASONS;
+const DROP_REASON_FIELDS: readonly string[] = METADATA_FIELDS;
+
 function dropReasonEntryIsUsable(field: unknown, value: unknown): boolean {
-  if (typeof field !== 'string') return false;
+  // Both values are ENUMS, not free strings. `{ field: 'species', reason: 'corrupt' }`
+  // used to pass here while `parseMetadataDropReasons` discarded the unknown code,
+  // so a row with no other signal stayed classification-complete and the feed
+  // could claim all-clear over metadata it never classified.
+  if (typeof field !== 'string' || !DROP_REASON_FIELDS.includes(field)) return false;
   // The reason may be the bare code (record form) or live on an object.
-  if (typeof value === 'string') return true;
+  if (typeof value === 'string') return DROP_REASON_CODES.includes(value);
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entry = value as Record<string, unknown>;
   // `reason` is REQUIRED on the object form — the declared contract is
@@ -376,7 +389,7 @@ function dropReasonEntryIsUsable(field: unknown, value: unknown): boolean {
   // pass here while the canonical parser discarded it, so a row with no other
   // signal stayed classification-complete and the feed could claim all-clear over
   // malformed metadata.
-  if (typeof entry.reason !== 'string') return false;
+  if (typeof entry.reason !== 'string' || !DROP_REASON_CODES.includes(entry.reason)) return false;
   if (entry.score !== undefined && typeof entry.score !== 'number') return false;
   return true;
 }

@@ -537,6 +537,61 @@ test('the nested AI metadata VALUES are validated, not just their containers', (
   }
 });
 
+test('drop-reason FIELD and REASON are validated against their enums', () => {
+  // Codex round 10: requiring `reason` still only checked that it was a string, so
+  // `{ field: 'species', reason: 'corrupt' }` passed while the canonical parser
+  // discarded the unknown code — leaving the row classification-complete.
+  for (const dropReasons of [
+    [{ field: 'species', reason: 'corrupt' }],
+    [{ field: 'not_a_field', reason: 'low_confidence' }],
+    { species: 'corrupt' },
+    { not_a_field: 'low_confidence' },
+  ]) {
+    expectMalformed(
+      envelope([row({ aiExtractedMetadata: { dropReasons } })], {
+        page: 1,
+        limit: 100,
+        total: 1,
+        totalPages: 1,
+      }),
+      JSON.stringify(dropReasons)
+    );
+  }
+
+  // Every declared (field, reason) pair still parses.
+  const ok = parse(
+    envelope(
+      [
+        row({
+          aiExtractedMetadata: {
+            dropReasons: [
+              { field: 'species', reason: 'conflicts_with_existing' },
+              { field: 'breed', reason: 'low_confidence', score: 0.4 },
+              { field: 'patientName', reason: 'not_verbatim' },
+            ],
+          },
+        }),
+      ],
+      { page: 1, limit: 100, total: 1, totalPages: 1 }
+    )
+  );
+  assert.equal(ok.data.length, 1);
+});
+
+test('a row that OMITS qualityWarnings is malformed, not a proven empty array', () => {
+  // Codex round 10: the list select always returns this column, so absence is
+  // contract drift — treating it as [] let a completed row contribute no quality
+  // item while the envelope still read as classification-complete.
+  const { qualityWarnings: _omitted, ...withoutWarnings } = row();
+  expectMalformed(
+    envelope([withoutWarnings], { page: 1, limit: 100, total: 1, totalPages: 1 }),
+    'omitted qualityWarnings'
+  );
+  // An explicitly EMPTY array is still a proven "no warnings".
+  const ok = parse(envelope([row({ qualityWarnings: [] })], { page: 1, limit: 100, total: 1, totalPages: 1 }));
+  assert.equal(ok.data.length, 1);
+});
+
 test('a drop-reason object without a reason is malformed, not silently dropped', () => {
   // Codex round 9: `reason` is required on the object form. Treating it as
   // optional let `{ field: 'species' }` pass while the canonical parser discarded

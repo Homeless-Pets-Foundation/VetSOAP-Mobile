@@ -350,15 +350,34 @@ async function getStashedSessionsForUserStrictInternal(
     });
   }
 
+  // With no pointer to say which layout is authoritative, EVERY readable layout
+  // is read before answering. Returning the first readable one let a stale legacy
+  // snapshot win over a newer generation that still references the audio — a
+  // known zero, and a `none` anchor. A single readable layout still proves the
+  // result; several that disagree are ambiguous, and any non-empty one is kept as
+  // a positive match (which can only ever block a delete, never enable one).
   let sawUnrecoverable = false;
+  const readable: StashedSession[][] = [];
   for (const source of sources) {
     try {
       const sessions = await readSessionsForKeysStrict(source.countKey, source.prefix);
-      // A healthy fallback generation still PROVES the result.
-      if (sessions !== null) return sessions;
+      if (sessions !== null) readable.push(sessions);
     } catch {
       sawUnrecoverable = true;
     }
+  }
+  if (readable.length > 0) {
+    const nonEmpty = readable.filter((sessions) => sessions.length > 0);
+    if (nonEmpty.length === 1) return nonEmpty[0];
+    if (nonEmpty.length === 0) {
+      // Every readable layout agrees the store is empty.
+      if (sawUnrecoverable) {
+        throw new StrictReadUnavailableError('stash:no_recoverable_generation');
+      }
+      return [];
+    }
+    // Several layouts hold sessions and nothing says which is current.
+    throw new StrictReadUnavailableError('stash:ambiguous_generations');
   }
   // Every layout was absent → a known-empty store. Any present-but-unusable
   // layout with no healthy fallback → unknown.

@@ -578,8 +578,22 @@ function parseItemsStrict(raw: string): RecoveryItem[] {
         if (typeof slotDurable !== 'object' || Array.isArray(slotDurable)) {
           throw new StrictReadUnavailableError('vault:slot_durable_shape');
         }
-        if (!isValidDurableId((slotDurable as { recordingId?: unknown }).recordingId)) {
+        const durableRecord = slotDurable as Record<string, unknown>;
+        if (!isValidDurableId(durableRecord.recordingId)) {
           throw new StrictReadUnavailableError('vault:slot_durable_shape');
+        }
+        // A valid id is NOT enough here. Unlike a draft — which can point at the
+        // user's own native durable dir — vault durable audio IS the cross-user
+        // copy at `recoveredAudioUri`, and `vaultSlotHasDurableAudioStrict`
+        // converts a missing/unusable URI to `missing`. An otherwise empty
+        // matching slot would then be filtered while `recoverabilityComplete`
+        // stayed true, so the anchor could answer `none` even though the copied
+        // AAC may still sit in the vault directory.
+        if (
+          typeof durableRecord.recoveredAudioUri !== 'string' ||
+          durableRecord.recoveredAudioUri.length === 0
+        ) {
+          throw new StrictReadUnavailableError('vault:slot_durable_uri');
         }
       }
       const slotPendingConfirm = slotRecord.pendingConfirm;
@@ -654,14 +668,29 @@ async function readItemsStrict(): Promise<RecoveryItem[]> {
   // Only an ABSENT/invalid pointer may consult the generations directly.
   const order: Generation[] = ['b', 'a'];
 
+  // Same rule as the stash: with no pointer naming the authoritative generation,
+  // read BOTH before answering. Returning the first readable one let a stale
+  // generation win over a newer one that still holds preserved recordings.
   let sawUnrecoverable = false;
+  const readable: RecoveryItem[][] = [];
   for (const generation of order) {
     try {
       const items = await readItemsForGenerationStrict(generation);
-      if (items !== null) return items;
+      if (items !== null) readable.push(items);
     } catch {
       sawUnrecoverable = true;
     }
+  }
+  if (readable.length > 0) {
+    const nonEmpty = readable.filter((items) => items.length > 0);
+    if (nonEmpty.length === 1) return nonEmpty[0];
+    if (nonEmpty.length === 0) {
+      if (sawUnrecoverable) {
+        throw new StrictReadUnavailableError('vault:no_recoverable_generation');
+      }
+      return [];
+    }
+    throw new StrictReadUnavailableError('vault:ambiguous_generations');
   }
   if (sawUnrecoverable) throw new StrictReadUnavailableError('vault:no_recoverable_generation');
   return [];

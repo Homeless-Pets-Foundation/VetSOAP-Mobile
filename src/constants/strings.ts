@@ -344,11 +344,38 @@ export const QUALITY_ANALYTICS_COPY = {
     averageLength: 'Avg length',
     uploadIssues: 'Upload issues',
     silentAudio: 'Silent audio',
-    reprocessRate: 'Reprocessed',
+    // A COUNT, not a rate: reprocessRate legitimately exceeds 1 (several
+    // reprocess actions on one recording), so the tile used to render '200%'
+    // above an alert reading 'Reprocessed 6 times across 5 recordings'. Tile
+    // and alert both speak counts now; the denominator is already on screen
+    // (Completed tile / 'N rec' row header). Do not relabel back to a rate.
+    reprocesses: 'Reprocesses',
     soapEditRate: 'Edited notes',
     missingDetails: 'Missing details',
+    // Distinct label from `missingDetails` on purpose. That one is a RATE in
+    // SummaryBlock; this is the raw count in BreakdownRow, where a group can be
+    // on screen solely because of it. One label meaning both a percentage and a
+    // count is the trap the `Reprocesses` relabel above exists to avoid.
+    missingDetailsCount: 'Awaiting details',
     p90Processing: '90% done by',
   },
+  // Breakdown-row alerts. Each is its own wrapping line, so the reprocess
+  // templates are capitalized — a line opening on a lowercase word reads as a
+  // rendering fault. The other two open on a digit.
+  //
+  // The reprocess templates carry NO denominator. `reprocessCount` counts
+  // audit-log reprocess actions in the window, which may target recordings
+  // created before it, so "Reprocessed 6 times across 5 recordings" claimed a
+  // relationship to `completedRecordings` that does not hold. Do not reintroduce
+  // a denominator here without a server field for distinct recordings reprocessed.
+  issues: {
+    missingDetails: '{pct}% missing patient details',
+    soapEdited: '{pct}% of notes edited',
+    reprocessedOnce: 'Reprocessed once',
+    reprocessedMany: 'Reprocessed {count} times',
+  },
+  // Server `label` is `z.string()` and accepts '', which rendered a blank row title.
+  unlabeledGroup: 'Not specified',
 } as const;
 
 export const TEMPLATE_DEFAULT_COPY = {

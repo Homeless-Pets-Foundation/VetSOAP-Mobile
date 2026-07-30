@@ -545,6 +545,41 @@ test('QualityAnalyticsCard renders each breakdown alert as one wrapping sentence
   assert.match(copy, /unlabeledGroup: 'Not specified'/);
 });
 
+test('QualityAnalyticsCard fills every placeholder the alert templates declare', async () => {
+  const source = await read('src/components/QualityAnalyticsCard.tsx');
+  const copy = await read('src/constants/strings.ts');
+
+  // Derive the placeholder set from the shipped catalog rather than restating
+  // it, then require the card to fill each one. Without this, a renamed
+  // placeholder on either side (or a dropped .replace) ships the raw template
+  // text — "{pct}% missing patient details" — with no test or typecheck signal.
+  const issuesBlock = copy.match(/issues: \{([\s\S]*?)\n {2}\},/);
+  assert.ok(issuesBlock, 'QUALITY_ANALYTICS_COPY.issues block not found');
+  const placeholders = [
+    ...new Set([...issuesBlock[1].matchAll(/\{(\w+)\}/g)].map((match) => match[1])),
+  ].sort();
+
+  // A new placeholder in the catalog must come with a fill below.
+  assert.deepEqual(placeholders, ['count', 'pct', 'recordings']);
+
+  // Pin each switch branch whole. A per-placeholder "appears somewhere in the
+  // file" search is NOT enough: breaking {pct} in the missingDetails branch
+  // still matches the soapEdited branch's own {pct} fill (verified by mutating
+  // one branch and watching a looser version of this test stay green).
+  assert.match(
+    source,
+    /case 'missingDetails':\s*return c\.missingDetails\.replace\('\{pct\}', String\(alert\.pct\)\);/
+  );
+  assert.match(
+    source,
+    /case 'soapEdited':\s*return c\.soapEdited\.replace\('\{pct\}', String\(alert\.pct\)\);/
+  );
+  assert.match(
+    source,
+    /case 'reprocessed':\s*return \(alert\.count === 1 \? c\.reprocessedOnce : c\.reprocessedMany\)\s*\.replace\('\{count\}', String\(alert\.count\)\)\s*\.replace\('\{recordings\}', String\(alert\.recordings\)\);/
+  );
+});
+
 test('QualityAnalyticsCard reports reprocessing as a count everywhere, never a rate', async () => {
   const source = await read('src/components/QualityAnalyticsCard.tsx');
   const copy = await read('src/constants/strings.ts');

@@ -81,14 +81,18 @@ export function AttentionItemRow({ item, surface }: AttentionItemRowProps) {
       metaClassName={item.actionable ? 'text-brand-500 font-medium' : undefined}
       badge={
         dateLabel ? (
-          /* flexShrink:0 — Android under-measures short Text in a flex-row and
-             clips the last glyph; the title beside it is the flexible one. */
+          /* Trailing space + flexShrink:0 + paddingRight — the shared Button's
+             mitigation, needed here for the same reason: Android under-measures
+             short Text in a flex-row, so `Jul 30` rendered as `Jul …` inside its
+             own 114px box on a Pixel 10 Pro XL at font scale 1.15 (well inside
+             the app's 1.3 cap). The space is measured but not drawn; the
+             accessibility label below uses the UNPADDED `dateLabel`. */
           <Text
             className="text-caption text-content-tertiary"
-            style={{ flexShrink: 0 }}
+            style={{ flexShrink: 0, paddingRight: 2 }}
             numberOfLines={1}
           >
-            {dateLabel}
+            {`${dateLabel} `}
           </Text>
         ) : undefined
       }

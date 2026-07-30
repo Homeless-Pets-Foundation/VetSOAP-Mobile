@@ -1,9 +1,9 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { View, Text, Pressable, SectionList, RefreshControl, BackHandler } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
-import { ChevronDown, ChevronLeft, ChevronRight, CheckCircle2 } from 'lucide-react-native';
+import { ChevronLeft, CheckCircle2 } from 'lucide-react-native';
 import { useAttentionFeed, useAttentionImpression } from '../../../../src/hooks/useAttentionFeed';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
@@ -24,8 +24,6 @@ interface AttentionSection {
   data: AttentionFeedItem[];
   /** Row count actually LOADED for this group (never a server-page estimate). */
   count: number;
-  collapsible: boolean;
-  expanded: boolean;
 }
 
 export default function AttentionScreen() {
@@ -36,13 +34,21 @@ export default function AttentionScreen() {
   const feed = useAttentionFeed({ focused });
   useAttentionImpression('attention_screen', feed, focused);
 
-  // "Across the practice" starts collapsed so read-only rows never bury
-  // actionable work. Expanding it must not alter "Needs you" order.
-  const [practiceExpanded, setPracticeExpanded] = useState(false);
-
   const notices = attentionStateNotices(feed);
   const coverageFooter = attentionCoverageFooter(feed);
 
+  /**
+   * Every loaded group renders its rows immediately — there is no collapsed
+   * state on this screen.
+   *
+   * "Across the practice" used to start collapsed so read-only rows could not
+   * bury actionable ones, but on a practice where every row is read-only that
+   * turned the whole screen into a lone count over blank space: the header said
+   * 15 and showed nothing until you discovered the header was a button
+   * (2026-07-30 owner decision, seen on a physical Pixel). Ordering already
+   * protects actionable work — "Needs you" is pushed first and SectionList
+   * preserves that order — so precedence costs nothing here.
+   */
   const sections = useMemo<AttentionSection[]>(() => {
     const result: AttentionSection[] = [];
     if (feed.groups.needsYou.length > 0) {
@@ -51,22 +57,18 @@ export default function AttentionScreen() {
         title: ATTENTION_FEED_COPY.needsYouGroup,
         data: feed.groups.needsYou,
         count: feed.groups.needsYou.length,
-        collapsible: false,
-        expanded: true,
       });
     }
     if (feed.groups.acrossPractice.length > 0) {
       result.push({
         key: 'across_practice',
         title: ATTENTION_FEED_COPY.acrossPracticeGroup,
-        data: practiceExpanded ? feed.groups.acrossPractice : [],
+        data: feed.groups.acrossPractice,
         count: feed.groups.acrossPractice.length,
-        collapsible: true,
-        expanded: practiceExpanded,
       });
     }
     return result;
-  }, [feed.groups.acrossPractice, feed.groups.needsYou, practiceExpanded]);
+  }, [feed.groups.acrossPractice, feed.groups.needsYou]);
 
   /**
    * Deterministically return to this tab's list instead of trusting history.
@@ -102,9 +104,9 @@ export default function AttentionScreen() {
   }, [refreshFeed]);
 
   /**
-   * A collapsed "Across the practice" group renders zero ITEMS while still
-   * representing loaded rows, so the empty/clean state keys off the loaded row
-   * count rather than SectionList's item count.
+   * Keyed off the loaded row count rather than SectionList's item count: the
+   * two agree now that no group can hide its rows, and keying off the feed
+   * keeps the clean/empty claim owned by the feed's own six-condition state.
    *
    * There is deliberately no early-return loader: the screen, its Back control,
    * and every state line stay usable even if a query or a native local read
@@ -185,30 +187,13 @@ export default function AttentionScreen() {
           renderSectionHeader={({ section }) => {
             const typed = section as unknown as AttentionSection;
             const label = `${typed.title} (${typed.count})`;
-            if (!typed.collapsible) {
-              return (
-                <Text className="section-title mt-2 mb-3" accessibilityRole="header">
-                  {label}
-                </Text>
-              );
-            }
+            // A label, never a control — the rows below it are always rendered.
+            // Each row already carries its own read-only note, so the group
+            // header does not repeat it.
             return (
-              <Pressable
-                onPress={() => setPracticeExpanded((expanded) => !expanded)}
-                accessibilityRole="button"
-                accessibilityLabel={`${label}. ${ATTENTION_FEED_COPY.acrossPracticeExpandHint}`}
-                accessibilityState={{ expanded: typed.expanded }}
-                className="flex-row items-center justify-between mt-4 mb-3 py-2"
-              >
-                <Text className="section-title flex-1" numberOfLines={1}>
-                  {label}
-                </Text>
-                {typed.expanded ? (
-                  <ChevronDown color={colors.contentTertiary} size={18} />
-                ) : (
-                  <ChevronRight color={colors.contentTertiary} size={18} />
-                )}
-              </Pressable>
+              <Text className="section-title mt-4 mb-3" accessibilityRole="header">
+                {label}
+              </Text>
             );
           }}
           ListHeaderComponent={

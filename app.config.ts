@@ -1,5 +1,23 @@
 import { ExpoConfig, ConfigContext } from 'expo/config';
 import r2ProductionDestination from './contracts/r2-production-destination-v1.json';
+import packageJson from './package.json';
+
+/**
+ * The marketing version is single-sourced from `package.json`.
+ *
+ * It used to be a literal here, which meant every store release edited
+ * `app.config.ts` — an R2-PROTECTED path (`.github/r2-protected-paths.txt`),
+ * because this file also owns `requireProductionR2BuildConfig()`. So a routine
+ * version bump demanded an R2 approval review that had nothing to do with R2,
+ * and a reviewer waving through "just a version bump" is exactly how a weakened
+ * bucket guard would slip past. Reading the version from `package.json` keeps
+ * the guard protected while taking release bumps off the protected path.
+ *
+ * CLAUDE.md still requires bumping all three files (`package.json`,
+ * `package-lock.json`, and — before this change — `app.config.ts`) for a store
+ * release; the first two now carry it.
+ */
+const MARKETING_VERSION = packageJson.version;
 
 const IS_DEV = process.env.APP_VARIANT === 'development';
 const IS_PRODUCTION = process.env.APP_VARIANT === 'production';
@@ -158,7 +176,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     name: IS_LOCAL_TEST ? 'Captivet Local' : 'Captivet',
     slug: 'vetsoap-mobile',
     scheme: IS_LOCAL_TEST ? 'captivet-local' : 'captivet',
-    version: '1.13.16',
+    version: MARKETING_VERSION,
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',

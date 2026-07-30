@@ -207,6 +207,32 @@ test('production upload wrapper fails closed and accepts both exact contract sty
   assert.deepEqual(violations, []);
 });
 
+test('the marketing version is single-sourced from package.json, not a literal here', async () => {
+  // `app.config.ts` is an R2-PROTECTED path because it owns
+  // `requireProductionR2BuildConfig()`. While the version was a literal in this
+  // file, EVERY store release edited a protected path for a reason unrelated to
+  // R2 — and a reviewer rubber-stamping "just a version bump" is exactly how a
+  // weakened bucket guard would slip through. Keep release bumps off this file.
+  const [appConfig, pkgRaw, lockRaw] = await Promise.all([
+    readFile(new URL('../app.config.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    readFile(new URL('../package-lock.json', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(appConfig, /import packageJson from '\.\/package\.json'/);
+  assert.match(appConfig, /const MARKETING_VERSION = packageJson\.version;/);
+  assert.match(appConfig, /version: MARKETING_VERSION,/);
+  // No hardcoded semver left to drift out of sync with package.json.
+  assert.doesNotMatch(appConfig, /version: ['"]\d+\.\d+\.\d+['"]/);
+
+  // The three files CLAUDE.md ties together must still agree.
+  const pkg = JSON.parse(pkgRaw);
+  const lock = JSON.parse(lockRaw);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages?.['']?.version, pkg.version);
+});
+
 test('production request validator is not broadened to arbitrary R2 hosts', async () => {
   const [sslPinning, config, example] = await Promise.all([
     readFile(new URL('../src/lib/sslPinning.ts', import.meta.url), 'utf8'),

@@ -399,7 +399,12 @@ const AI_METADATA_SHAPE: Record<string, (value: unknown) => boolean> = {
   // reason, and still count as fully classified — a coverage-complete response
   // could then claim all-clear for a row whose review state was unreadable.
   review: (v) => typeof v === 'string' && METADATA_REVIEW_STATES.includes(v),
-  appliedFields: (v) => Array.isArray(v) && v.every((f) => typeof f === 'string'),
+  // Every entry must be a SUPPORTED metadata field. Accepting any string let
+  // `appliedFields: ['corrupt']` pass while `validAppliedFields` discarded it, so
+  // a row with no other signal stayed classification-complete and the feed could
+  // claim all-clear over metadata it never classified.
+  appliedFields: (v) =>
+    Array.isArray(v) && v.every((f) => typeof f === 'string' && DROP_REASON_FIELDS.includes(f)),
   dropReasons: (v) => {
     if (Array.isArray(v)) {
       return v.every((entry) => {

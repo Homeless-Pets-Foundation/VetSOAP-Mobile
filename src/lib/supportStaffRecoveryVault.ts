@@ -681,18 +681,15 @@ async function readItemsStrict(): Promise<RecoveryItem[]> {
       sawUnrecoverable = true;
     }
   }
+  // Same rule as the stash: a readable layout cannot prove what a damaged one
+  // does not contain, so any unreadable present layout keeps the answer unknown.
+  if (sawUnrecoverable) throw new StrictReadUnavailableError('vault:no_recoverable_generation');
   if (readable.length > 0) {
     const nonEmpty = readable.filter((items) => items.length > 0);
     if (nonEmpty.length === 1) return nonEmpty[0];
-    if (nonEmpty.length === 0) {
-      if (sawUnrecoverable) {
-        throw new StrictReadUnavailableError('vault:no_recoverable_generation');
-      }
-      return [];
-    }
+    if (nonEmpty.length === 0) return [];
     throw new StrictReadUnavailableError('vault:ambiguous_generations');
   }
-  if (sawUnrecoverable) throw new StrictReadUnavailableError('vault:no_recoverable_generation');
   return [];
 }
 

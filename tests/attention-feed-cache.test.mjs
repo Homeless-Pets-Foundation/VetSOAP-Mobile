@@ -578,6 +578,30 @@ test('drop-reason FIELD and REASON are validated against their enums', () => {
   assert.equal(ok.data.length, 1);
 });
 
+test('appliedFields entries must be supported metadata fields', () => {
+  // Codex round 11: any string was accepted while `validAppliedFields` discarded
+  // the unknown value, leaving the row classification-complete.
+  for (const appliedFields of [['corrupt'], ['patientName', 'nope'], [42]]) {
+    expectMalformed(
+      envelope([row({ aiExtractedMetadata: { appliedFields } })], {
+        page: 1,
+        limit: 100,
+        total: 1,
+        totalPages: 1,
+      }),
+      JSON.stringify(appliedFields)
+    );
+  }
+
+  const ok = parse(
+    envelope(
+      [row({ aiExtractedMetadata: { appliedFields: ['patientName', 'species', 'breed'] } })],
+      { page: 1, limit: 100, total: 1, totalPages: 1 }
+    )
+  );
+  assert.equal(ok.data.length, 1);
+});
+
 test('a row that OMITS qualityWarnings is malformed, not a proven empty array', () => {
   // Codex round 10: the list select always returns this column, so absence is
   // contract drift — treating it as [] let a completed row contribute no quality

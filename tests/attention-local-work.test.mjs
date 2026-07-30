@@ -938,6 +938,39 @@ test('a malformed durable MANIFEST makes the whole snapshot unknown', async () =
   }
 });
 
+test('with NO active pointer, ANY unreadable layout keeps the answer unknown', async () => {
+  // Codex round 11: returning a clean non-empty layout while another present
+  // layout was damaged assumed the damaged one held nothing relevant. It cannot
+  // prove that — and if the target anchor lived there, findStashAnchor would
+  // report no match and unlock "Delete unavailable recording".
+  const secure = makeSecureStoreMock();
+  // Readable legacy layout with an UNRELATED session…
+  secure.__store.set(`captivet_stash_${USER}_count`, '1');
+  secure.__store.set(
+    `captivet_stash_${USER}_chunk_0`,
+    JSON.stringify([
+      { id: 'unrelated', stashedAt: '2026-07-29T00:00:00.000Z', slots: [{ id: 'a', segments: [] }] },
+    ])
+  );
+  // …plus a present-but-torn generation that could hold the target.
+  secure.__store.set(`captivet_stash_${USER}_b_count`, '2');
+  secure.__store.set(`captivet_stash_${USER}_b_chunk_0`, '[');
+  const stash = await loadStashStorage(secure);
+  await assert.rejects(
+    () => stash.getStashedSessionsForUserStrict(USER),
+    (error) => error.code === 'STRICT_READ_UNAVAILABLE'
+  );
+
+  // The vault applies the same rule before consulting readable layouts.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  const strict = vault.slice(vault.indexOf('async function readItemsStrict'));
+  assert.ok(
+    strict.indexOf("throw new StrictReadUnavailableError('vault:no_recoverable_generation')") <
+      strict.indexOf('if (readable.length > 0)'),
+    'the unreadable-layout guard runs before any readable layout is trusted'
+  );
+});
+
 test('with NO active pointer, competing readable layouts are ambiguous', async () => {
   // Codex round 10: returning the first readable layout let a stale legacy
   // snapshot win over a newer generation that still referenced the audio.

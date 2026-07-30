@@ -366,16 +366,19 @@ async function getStashedSessionsForUserStrictInternal(
       sawUnrecoverable = true;
     }
   }
+  // ANY present-but-unreadable layout makes the whole answer unknown, even when
+  // another layout read cleanly and non-empty. A readable layout holding an
+  // unrelated session cannot prove the DAMAGED one does not hold the target
+  // anchor — and that gap is what would let `findStashAnchor` report no match and
+  // unlock "Delete unavailable recording".
+  if (sawUnrecoverable) {
+    throw new StrictReadUnavailableError('stash:no_recoverable_generation');
+  }
   if (readable.length > 0) {
     const nonEmpty = readable.filter((sessions) => sessions.length > 0);
     if (nonEmpty.length === 1) return nonEmpty[0];
-    if (nonEmpty.length === 0) {
-      // Every readable layout agrees the store is empty.
-      if (sawUnrecoverable) {
-        throw new StrictReadUnavailableError('stash:no_recoverable_generation');
-      }
-      return [];
-    }
+    // Every readable layout agrees the store is empty.
+    if (nonEmpty.length === 0) return [];
     // Several layouts hold sessions and nothing says which is current.
     throw new StrictReadUnavailableError('stash:ambiguous_generations');
   }

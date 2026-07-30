@@ -1,18 +1,11 @@
 import React from 'react';
-import { Alert, View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { ChevronRight, CloudOff, Smartphone, Sparkles } from 'lucide-react-native';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import * as Haptics from 'expo-haptics';
-import { ApiError } from '../api/client';
-import { recordingsApi } from '../api/recordings';
 import { StatusBadge } from './StatusBadge';
-import { ReviewStatusChip } from './ReviewStatusChip';
 import type { Recording } from '../types';
 import { METADATA_REVIEW_COPY } from '../constants/strings';
 import { displayPatientName, isUntitledVisit } from '../lib/recordingDisplay';
-import { getRecordingReviewStatus } from '../lib/recordingReview';
-import { invalidateRecordingCaches, mergeRecordingIntoCachedLists } from '../lib/recordingQueryCache';
 import { useThemeColors } from '../hooks/useThemeColors';
 
 interface RecordingCardProps {
@@ -67,30 +60,7 @@ export const RecordingCard = React.memo(function RecordingCard({
   highlighted = false,
 }: RecordingCardProps) {
   const router = useRouter();
-  const queryClient = useQueryClient();
   const colors = useThemeColors();
-  const reviewStatus = getRecordingReviewStatus(recording);
-
-  const reviewMutation = useMutation({
-    mutationFn: (reviewed: boolean) => recordingsApi.updateReview(recording.id, { reviewed }),
-    onSuccess: (updatedRecording) => {
-      if (updatedRecording?.id) {
-        queryClient.setQueryData(['recording', updatedRecording.id], updatedRecording);
-        mergeRecordingIntoCachedLists(queryClient, updatedRecording);
-      }
-      invalidateRecordingCaches(queryClient, 'review_update');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    },
-    onError: (error: Error) => {
-      if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
-        return;
-      }
-      Alert.alert(
-        'Review Update Failed',
-        error instanceof ApiError ? error.message : 'Could not update the review status. Please try again.'
-      );
-    },
-  });
 
   const formattedDate = React.useMemo(() => {
     const parsedDate = new Date(recording.createdAt);
@@ -128,7 +98,6 @@ export const RecordingCard = React.memo(function RecordingCard({
       ? ', audio on this device'
       : ', audio not on this device'
     : '';
-  const showReviewChip = recording.status === 'completed' && reviewStatus !== null;
 
   return (
     <Pressable
@@ -141,21 +110,15 @@ export const RecordingCard = React.memo(function RecordingCard({
       }}
       accessibilityRole="button"
       accessibilityLabel={`${patientLabel}${clientLabel ? `, client ${clientLabel}` : ''}, ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
-      // Nested Pressables (patient-history link, review chip) are unreliable
-      // for screen readers inside a parent Pressable — surface them as custom
-      // actions on the card instead; the inner controls are hidden from the
-      // a11y tree below.
-      accessibilityActions={[
-        ...(recording.patientId ? [{ name: 'open_patient_history', label: 'Open patient history' }] : []),
-        ...(showReviewChip
-          ? [{ name: 'toggle_reviewed', label: reviewStatus === 'reviewed' ? 'Mark as needs review' : 'Mark as reviewed' }]
-          : []),
-      ]}
+      // A nested Pressable (the patient-history link) is unreliable for screen
+      // readers inside a parent Pressable — surface it as a custom action on
+      // the card instead; the inner control is hidden from the a11y tree below.
+      accessibilityActions={
+        recording.patientId ? [{ name: 'open_patient_history', label: 'Open patient history' }] : []
+      }
       onAccessibilityAction={(event) => {
         if (event.nativeEvent.actionName === 'open_patient_history' && recording.patientId) {
           router.push(`/patient/${recording.patientId}` as `/patient/${string}`);
-        } else if (event.nativeEvent.actionName === 'toggle_reviewed' && showReviewChip) {
-          reviewMutation.mutate(reviewStatus !== 'reviewed');
         }
       }}
       className={`card mb-2 ${highlighted ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}`}
@@ -224,25 +187,6 @@ export const RecordingCard = React.memo(function RecordingCard({
           <View className="items-end gap-1">
             <StatusBadge status={recording.status} />
             {showAiLabeledChip ? <AiLabeledChip /> : null}
-            {showReviewChip ? (
-              /* Hidden from the a11y tree like the history link above — the
-                 card's toggle_reviewed custom action covers it, and a nested
-                 accessible Pressable double-focuses under TalkBack. */
-              <View
-                accessible={false}
-                importantForAccessibility="no-hide-descendants"
-                accessibilityElementsHidden
-              >
-                <ReviewStatusChip
-                  status={reviewStatus}
-                  loading={reviewMutation.isPending}
-                  onPress={(event) => {
-                    event.stopPropagation();
-                    reviewMutation.mutate(reviewStatus !== 'reviewed');
-                  }}
-                />
-              </View>
-            ) : null}
             {isDraft ? <DraftLocationChip isOnDevice={hasLocalDraftAudio} /> : null}
           </View>
           <ChevronRight color={colors.contentTertiary} size={18} />
@@ -263,7 +207,6 @@ export const RecordingCard = React.memo(function RecordingCard({
   // full refetch replaces object identity.
   prev.recording.patientId === next.recording.patientId &&
   prev.recording.pimsPatientId === next.recording.pimsPatientId &&
-  getRecordingReviewStatus(prev.recording) === getRecordingReviewStatus(next.recording) &&
   prev.recording.aiExtractedMetadata?.review === next.recording.aiExtractedMetadata?.review &&
   (prev.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) ===
     (next.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) &&

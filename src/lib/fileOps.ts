@@ -1,4 +1,5 @@
 import { File, Directory } from 'expo-file-system';
+import type { StrictExistence } from './strictRead';
 
 /**
  * Delete a file if it exists. Silently succeeds if the file is missing or
@@ -33,6 +34,22 @@ export function fileExists(uri: string): boolean {
     return new File(uri).exists;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Read-only STRICT existence check. `fileExists()` deliberately answers `false`
+ * on an exception, which is right for best-effort cleanup and wrong for any
+ * decision that must fail closed ("is there un-sent audio?", "may I delete this
+ * server row?"). This distinguishes a genuinely missing file from a filesystem
+ * error (locked storage, permission loss, unmounted volume).
+ */
+export function fileExistsStrict(uri: string): StrictExistence {
+  if (typeof uri !== 'string' || uri.length === 0) return 'missing';
+  try {
+    return new File(uri).exists ? 'present' : 'missing';
+  } catch {
+    return 'unknown';
   }
 }
 

@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
-import { Search, Mic, X } from 'lucide-react-native';
+import { Search, Mic, X, AlertCircle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
 import {
@@ -26,10 +26,9 @@ import { RecordingCard } from '../../../../src/components/RecordingCard';
 import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { EmptyState } from '../../../../src/components/ui/EmptyState';
 import { Select } from '../../../../src/components/ui/Select';
-import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { displayPatientName } from '../../../../src/lib/recordingDisplay';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
-import { RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
+import { ATTENTION_FEED_COPY, RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
@@ -44,11 +43,11 @@ const STATUS_FILTER_OPTIONS = [
   { value: 'failed', label: 'Failed' },
   { value: 'completed', label: 'Completed' },
 ] as const;
-const NEEDS_REVIEW_STATUS_FILTER_OPTION = { value: 'needs_review', label: 'Needs Review' } as const;
-
-type StatusFilterValue =
-  | typeof STATUS_FILTER_OPTIONS[number]['value']
-  | typeof NEEDS_REVIEW_STATUS_FILTER_OPTION['value'];
+// NOTE: there is deliberately no "Needs Review" option. Connect has no
+// recording review column/route and ignores the mobile-only `reviewStatus`
+// query parameter, so the old chip could never return results. Discovery now
+// lives on the Needs Attention screen (header link below).
+type StatusFilterValue = typeof STATUS_FILTER_OPTIONS[number]['value'];
 
 function normalizeSubmittedIdsParam(submittedIdsParam: string | string[] | undefined): string[] {
   const raw = Array.isArray(submittedIdsParam) ? submittedIdsParam[0] : submittedIdsParam;
@@ -69,9 +68,6 @@ function normalizeSubmittedIdsParam(submittedIdsParam: string | string[] | undef
 function recordingMatchesStatusFilter(recording: Recording, selectedStatusFilter: StatusFilterValue): boolean {
   if (selectedStatusFilter === 'all') return true;
   if (selectedStatusFilter === 'draft') return recording.status === 'draft';
-  if (selectedStatusFilter === 'needs_review') {
-    return getRecordingReviewStatus(recording) === 'needs_review';
-  }
   return recording.status === selectedStatusFilter;
 }
 
@@ -101,10 +97,7 @@ export default function RecordingsListScreen() {
   const serverStatusFilter =
     selectedStatusFilter === 'failed' || selectedStatusFilter === 'completed'
       ? selectedStatusFilter
-      : selectedStatusFilter === 'needs_review'
-        ? 'completed'
-        : undefined;
-  const reviewStatusFilter = selectedStatusFilter === 'needs_review' ? 'needs_review' : undefined;
+      : undefined;
   const submittedIds = useMemo(() => normalizeSubmittedIdsParam(submittedIdsParam), [submittedIdsParam]);
   const submittedIdSet = useMemo(() => new Set(submittedIds), [submittedIds]);
 
@@ -127,7 +120,7 @@ export default function RecordingsListScreen() {
     isFetchingNextPage,
     isStale,
   } = useInfiniteQuery({
-    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', reviewStatusFilter ?? 'any', 'submittedAt-desc'],
+    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', 'submittedAt-desc'],
     // Survives into the persisted offline snapshot (WP28).
     gcTime: PERSIST_GC_TIME_MS,
     queryFn: ({ pageParam = 1 }) =>
@@ -138,7 +131,6 @@ export default function RecordingsListScreen() {
         sortBy: 'submittedAt',
         sortOrder: 'desc',
         ...(serverStatusFilter ? { status: serverStatusFilter } : {}),
-        ...(reviewStatusFilter ? { reviewStatus: reviewStatusFilter } : {}),
       }),
     initialPageParam: 1,
     enabled: shouldLoadRecordings,
@@ -204,19 +196,7 @@ export default function RecordingsListScreen() {
     }
     return map;
   }, [recordings, submittedIdSet, submittedRecordingQueries]);
-  // Always offer Needs Review: gating it on the loaded pages made the filter
-  // menu's contents shift as pagination progressed (an option a vet saw
-  // yesterday could vanish today).
-  const statusFilterOptions = useMemo(
-    () => [
-      STATUS_FILTER_OPTIONS[0],
-      STATUS_FILTER_OPTIONS[1],
-      NEEDS_REVIEW_STATUS_FILTER_OPTION,
-      STATUS_FILTER_OPTIONS[2],
-      STATUS_FILTER_OPTIONS[3],
-    ],
-    []
-  );
+  const statusFilterOptions = useMemo(() => [...STATUS_FILTER_OPTIONS], []);
   const activeStatusFilterLabel = statusFilterOptions.find(
     (option) => option.value === selectedStatusFilter
   )?.label ?? 'All';
@@ -255,11 +235,7 @@ export default function RecordingsListScreen() {
     areLocalDraftsStaleRef.current = areLocalDraftsStale;
   }, [areLocalDraftsStale]);
 
-  const recordingsRetryKey = [
-    debouncedSearch || 'none',
-    serverStatusFilter ?? 'all',
-    reviewStatusFilter ?? 'any',
-  ].join(':');
+  const recordingsRetryKey = [debouncedSearch || 'none', serverStatusFilter ?? 'all'].join(':');
   const draftsRetryKey = [debouncedSearch || 'none', 'draft'].join(':');
 
   useRetryableInitialLoadError({
@@ -316,9 +292,6 @@ export default function RecordingsListScreen() {
     };
 
     if (selectedStatusFilter === 'draft') return mergedDrafts;
-    if (selectedStatusFilter === 'needs_review') {
-      return pinSubmitted(recordings.filter((recording) => getRecordingReviewStatus(recording) === 'needs_review'));
-    }
     if (selectedStatusFilter === 'all') {
       const combined = new Map<string, (typeof recordings)[number]>();
 
@@ -417,20 +390,42 @@ export default function RecordingsListScreen() {
       : 'No recordings match your search and filter.'
     : selectedStatusFilter === 'all'
       ? 'No recordings yet.'
-      : selectedStatusFilter === 'needs_review'
-        ? 'No recordings need review.'
       : 'No recordings match this filter.';
 
   return (
     <SafeAreaView className="screen items-center">
       <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
       <View className="px-5 pt-5 pb-0">
-        <Text
-          className="text-display font-bold text-content-primary mb-4"
-          accessibilityRole="header"
-        >
-          Recordings
-        </Text>
+        <View className="flex-row items-center justify-between mb-4">
+          <Text
+            className="text-display font-bold text-content-primary flex-1"
+            accessibilityRole="header"
+          >
+            Recordings
+          </Text>
+          {/* Navigation entry, not a status filter: the feed combines status,
+              metadata, quality, and device-local signals. */}
+          <Pressable
+            onPress={() => {
+              Haptics.selectionAsync().catch(() => {});
+              router.push('/recordings/attention' as never);
+            }}
+            accessibilityRole="link"
+            accessibilityLabel={ATTENTION_FEED_COPY.openScreenAccessibilityLabel}
+            hitSlop={10}
+            className="flex-row items-center ml-3"
+            style={{ minHeight: 44 }}
+          >
+            <AlertCircle color={colors.brand500} size={iconSm} style={{ marginRight: 4, flexShrink: 0 }} />
+            {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
+            <Text
+              className="text-body-sm text-brand-500 font-medium"
+              style={{ flexShrink: 0, paddingRight: 2 }}
+            >
+              {`${ATTENTION_FEED_COPY.sectionTitle} `}
+            </Text>
+          </Pressable>
+        </View>
 
         <View className="flex-row items-center gap-2 mb-4">
           {/* Search */}

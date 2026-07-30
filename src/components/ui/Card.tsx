@@ -2,7 +2,8 @@ import React from 'react';
 import { View, type ViewProps } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
-interface CardProps extends Pick<ViewProps, 'accessibilityLabel' | 'accessibilityRole'> {
+interface CardProps
+  extends Pick<ViewProps, 'accessibilityLabel' | 'accessibilityRole' | 'onLayout'> {
   children: React.ReactNode;
   className?: string;
   animated?: boolean;

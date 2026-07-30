@@ -443,13 +443,6 @@ export const DELETE_ACCOUNT_COPY = {
   requestDeletion: 'Request Deletion',
 } as const;
 
-export const REVIEW_STATUS_COPY = {
-  reviewed: 'Reviewed',
-  needsReview: 'Needs review',
-  markedReviewed: 'Marked reviewed',
-  markReview: 'Mark reviewed',
-} as const;
-
 export const UNTITLED_VISIT_LABEL = 'Untitled visit';
 
 export const RECORD_FIRST_FORM_HINT =
@@ -470,7 +463,6 @@ export const MULTI_PATIENT_RECORD_FIRST_COPY = {
 export const METADATA_REVIEW_COPY = {
   title: 'AI filled these details',
   body: 'Review the details Captivet found in the recording.',
-  looksRight: 'Looks Right',
   editDetails: 'Edit Details',
   addTitle: 'Add patient details',
   addBody: 'This visit has no patient details yet.',
@@ -487,6 +479,40 @@ export const METADATA_REVIEW_COPY = {
   cancel: 'Cancel',
   failed: 'Could not save details. Please try again.',
   aiLabeled: 'AI-labeled',
+  // Whole-review semantics: the card lists every unresolved reason BEFORE
+  // either terminal action, so neither can silently hide untouched ones.
+  reasonsTitle: 'What Captivet flagged',
+  saveAndFinish: 'Save & finish review',
+  keepCurrent: 'Keep current details',
+  keepCurrentConfirmTitle: 'Keep current details?',
+  keepCurrentConfirmBody:
+    'Captivet will stop asking about these details for this recording. The current values are kept as-is.',
+  keepCurrentConfirm: 'Keep current',
+  missingPatientNameHint: 'Add the patient name to finish this review.',
+  dismissFailed: 'Could not update this review. Please try again.',
+} as const;
+
+export const DELETE_RECORDING_COPY = {
+  draftTitle: 'Delete Draft?',
+  draftBody: 'This will permanently remove the draft from your account. This cannot be undone.',
+  unavailableTitle: 'Delete unavailable recording?',
+  unavailableBody:
+    'This permanently deletes the server recording and any SOAP note or tasks generated from it. It cannot be undone. Deleting the row can also disrupt recovering this visit from another device.',
+  colleagueSuffix:
+    " This check only covers work saved on this tablet under your account — a colleague's own device may still hold a copy.",
+  delete: 'Delete',
+  deleteUnavailable: 'Delete unavailable recording',
+  cancel: 'Cancel',
+  checking: 'Checking this device for a saved copy…',
+  unknownLocalState:
+    'Captivet could not finish checking this device for a saved copy of this recording, so it will not offer to delete it.',
+  recheck: 'Check again',
+  resumeDraft: 'Resume saved recording',
+  openSavedSessions: 'Open saved sessions',
+  openRecovery: 'Open recovery',
+  coordinate:
+    'Ask the recording owner or an administrator to review this recording before starting a replacement visit.',
+  deleteFailed: 'Could not delete this recording. Please try again.',
 } as const;
 
 export const REGENERATE_SOAP_COPY = {
@@ -558,3 +584,116 @@ export const CONSULT_COPY = {
 // The waveform editor still works, but peak extraction on weak hardware (e.g. A7 Lite)
 // can take a long time for multi-hour recordings.
 export const LONG_RECORDING_WARNING_THRESHOLD_SEC = 2 * 60 * 60;
+
+/**
+ * Shared display labels for the five AI-fillable metadata fields. One source so
+ * the review card, the attention feed, and accessibility copy agree.
+ */
+export const METADATA_FIELD_LABELS = {
+  patientName: 'Patient',
+  clientName: 'Client',
+  species: 'Species',
+  breed: 'Breed',
+  appointmentType: 'Visit Type',
+} as const;
+
+/**
+ * Attention Feed (2026-07-29 plan). Every count is qualified: the feed reads
+ * ONE bounded page of the org's most recently updated recordings, so it is a
+ * recent snapshot and never an authoritative backlog.
+ */
+export const ATTENTION_FEED_COPY = {
+  sectionTitle: 'Needs Attention',
+  openScreenAccessibilityLabel: 'Open Needs Attention',
+  needsYouGroup: 'Needs you',
+  acrossPracticeGroup: 'Across the practice',
+  acrossPracticeSummary: (count: number): string =>
+    `${count} across the practice`,
+  acrossPracticeExpandHint: 'Read-only items for other clinicians',
+  viewRecent: 'View recent attention',
+  loading: 'Checking recent recordings…',
+
+  // ── Zero-row states. Only `clean` is a positive claim, and it is feed-scoped.
+  clean: 'No supported items need attention right now',
+  cleanTruncated: (checked: number): string =>
+    `No attention items found in the ${checked} most recently updated practice recordings checked.`,
+  truncatedSummary: (items: number, checked: number): string =>
+    `${items} attention item${items === 1 ? '' : 's'} found in the ${checked} most recently updated practice recordings checked.`,
+  // Three variants because a row can be unclassifiable for either reason, and
+  // naming the wrong one sends whoever investigates to the wrong place: a
+  // recurring metadata-contract problem must not be reported as a clock problem.
+  classificationPartial: 'Some recording timing data could not be checked',
+  classificationPartialMetadata: 'Some recording details could not be checked',
+  classificationPartialMixed: 'Some recordings could not be fully checked',
+  localUnknown: 'Could not check all saved work',
+  serverError: 'Could not check recent recordings.',
+  coverageUnknown: 'Could not confirm how much of the practice was checked.',
+  serverBlocked: 'Finish device setup to check recent practice recordings.',
+  malformedResponse: 'Could not read the recordings response.',
+  retry: 'Retry',
+
+  // ── Row CTAs (never promise an action the viewer/server would reject).
+  ctaReviewDetails: 'Review details',
+  ctaOpenRecording: 'Open recording',
+  ctaOpenDrafts: 'Open drafts',
+  ctaOpenSavedSessions: 'Open saved sessions',
+  ctaViewSavedWork: 'View saved work',
+  ctaRecoveryHelp: 'Recovery help',
+  // Rendered into ListItem's single-line `meta` slot, which ellipsizes: the
+  // longer "the recording owner or an administrator can fix this" clipped
+  // mid-word on a 1080px device. Keep any replacement under ~45 characters.
+  readOnlyNote: 'Read-only — ask the owner or an admin.',
+  moreIssues: (count: number): string => `+${count} more issue${count === 1 ? '' : 's'}`,
+  moreWarnings: (count: number): string => `+${count} more warning${count === 1 ? '' : 's'}`,
+
+  // ── Row titles.
+  localDraftsTitle: 'Drafts on this device',
+  localSavedSessionsTitle: 'Saved sessions on this device',
+
+  // ── Reason copy. Values that appear here are already trimmed, whitespace-
+  // collapsed, and bounded to the server field length by normalizeMetadataValue.
+  //
+  // There is deliberately NO multiple-patients string: discussing several
+  // patients in one visit is routine here, so the alert was noise and was
+  // removed from every surface (2026-07-29 owner decision). See the note in
+  // `collectMetadataReasons`.
+  conflictWithValues: (label: string, current: string, suggested: string): string =>
+    `Record says '${current}'; Captivet heard '${suggested}' — review the ${label.toLowerCase()}.`,
+  conflictGeneric: (label: string): string =>
+    `Captivet found a different ${label.toLowerCase()} — review it.`,
+  confirmWithCount: (count: number, patient: string): string =>
+    `Captivet filled ${count} detail${count === 1 ? '' : 's'} for ${patient} — confirm they're right.`,
+  confirmFallback: 'Captivet marked these details for review — check them.',
+  missingDetails: "Captivet couldn't read the patient details — add them.",
+  lowConfidenceWithValue: (label: string, value: string): string =>
+    `Wasn't sure about ${label} — review '${value}'.`,
+  lowConfidenceGeneric: (label: string): string =>
+    `Captivet was unsure about ${label} — review it.`,
+  notVerbatimPatientName:
+    "Heard a patient name but couldn't confirm it in the audio.",
+  notVerbatimField: (label: string): string =>
+    `Heard a ${label.toLowerCase()} but couldn't confirm it in the audio.`,
+  unclassifiedSuggestion: (label: string, value: string): string =>
+    `Captivet suggested ${label} '${value}' — review it.`,
+  recordingFailed: 'This recording could not be processed.',
+  retryScheduled: 'Processing is scheduled to retry automatically.',
+  stuckProcessing: 'Processing is taking longer than expected.',
+  localDrafts: (count: number): string =>
+    `${count} draft${count === 1 ? '' : 's'} saved on this device ${count === 1 ? 'has' : 'have'} not been sent.`,
+  localSavedSessions: (count: number): string =>
+    `${count} saved session${count === 1 ? '' : 's'} on this device ${count === 1 ? 'has' : 'have'} not been sent.`,
+  localSupportStaffNote:
+    'This account cannot submit recordings. Ask an owner, administrator, or veterinarian to recover this work on this tablet.',
+} as const;
+
+/**
+ * Home recovery-priority banner for the support-staff recovery vault. Kept OUT
+ * of the attention feed so preserved clinical work is never double-counted.
+ */
+export const SUPPORT_RECOVERY_BANNER_COPY = {
+  message: (count: number): string =>
+    `${count} preserved recording${count === 1 ? '' : 's'} from a support-staff account can be recovered on this tablet.`,
+  unknownMessage: 'Could not check preserved support-staff recordings on this tablet.',
+  cta: 'Open recovery',
+  retry: 'Retry',
+} as const;

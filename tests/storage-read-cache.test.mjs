@@ -75,6 +75,38 @@ async function loadStashStorage(state) {
   const store = makeSecureStore(state);
   const mod = await loadTsModuleWithMocks('src/lib/stashStorage.ts', {
     'expo-secure-store': store.mock,
+    './secureStorage': {
+      secureStorage: {
+        async getRawItemStrict(key) {
+          return state.has(key) ? state.get(key) : null;
+        },
+      },
+    },
+    './strictRead': {
+      StrictReadUnavailableError: class StrictReadUnavailableError extends Error {
+        constructor(source) {
+          super('A local read could not be completed');
+          this.code = 'STRICT_READ_UNAVAILABLE';
+          this.source = source;
+        }
+      },
+      parseStrictChunkCount: (raw, source) => {
+        if (typeof raw !== 'string' || !/^[0-9]{1,6}$/.test(raw)) {
+          throw new Error(`strict count: ${source}`);
+        }
+        return Number(raw);
+      },
+    },
+    // The strict stash parser validates a slot's durable/pendingConfirm claims.
+    './durableAudio/paths': {
+      isValidDurableId: (id) => typeof id === 'string' && id.length > 0 && !/[/\\.]/.test(id),
+    },
+    './pendingConfirm': {
+      clonePendingConfirm: (value) =>
+        value && typeof value === 'object' && typeof value.recordingId === 'string'
+          ? { ...value }
+          : null,
+    },
   });
   return { stashStorage: mod.stashStorage, ...store };
 }
@@ -200,9 +232,30 @@ async function loadDraftStorage(state, opts = {}) {
     },
     './fileOps': {
       fileExists: opts.fileExists ?? (() => true),
+      fileExistsStrict: (uri) => ((opts.fileExists ?? (() => true))(uri) ? 'present' : 'missing'),
       safeDeleteFile: opts.safeDeleteFile ?? (() => {}),
       safeDeleteDirectory: () => {},
       ensureDirectory: () => true,
+    },
+    './secureStorage': {
+      secureStorage: {
+        async getRawItemStrict(key) {
+          return state.has(key) ? state.get(key) : null;
+        },
+      },
+    },
+    './strictRead': {
+      StrictReadUnavailableError: class StrictReadUnavailableError extends Error {
+        constructor(source) {
+          super('A local read could not be completed');
+          this.code = 'STRICT_READ_UNAVAILABLE';
+          this.source = source;
+        }
+      },
+    },
+    './durableAudio/manifest': {
+      isConfirmedUploaded: (m) => typeof m?.confirmedUploadAt === 'string',
+      validateManifestObject: (m) => ({ ok: true, manifest: m }),
     },
     './durableAudio/paths': {
       isValidDurableId: (id) => typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id),

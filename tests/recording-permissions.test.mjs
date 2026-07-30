@@ -103,13 +103,18 @@ test('API client maps known recording API error codes to safe messages', async (
   assert.match(client, /Only the recording owner or an administrator can delete this recording\./);
 });
 
-test('draft detail screen gates delete and reports delete_draft telemetry', async () => {
+test('draft detail screen gates delete and reports delete telemetry per status', async () => {
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
 
   assert.match(detail, /useRecordingPermissions\(recording\)/);
   assert.match(detail, /recordingPermissions\.canDelete/);
   assert.match(detail, /reportClientError\(\{/);
-  assert.match(detail, /phase: 'delete_draft'/);
+  // A draft still reports `delete_draft`; the destructive non-draft path has its
+  // own phase so the two are distinguishable in telemetry (Codex round 4).
+  assert.match(
+    detail,
+    /phase: recording\?\.status === 'draft' \? 'delete_draft' : 'delete_recording',/
+  );
   assert.match(detail, /errorCode: error instanceof ApiError/);
 });
 

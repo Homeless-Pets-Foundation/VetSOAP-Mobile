@@ -1,5 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
+import { secureStorage } from './secureStorage';
+import { StrictReadUnavailableError, parseStrictChunkCount } from './strictRead';
+import { isValidDurableId } from './durableAudio/paths';
+import { clonePendingConfirm } from './pendingConfirm';
 
 export const MAX_STASHES = 5;
 type Generation = 'a' | 'b';
@@ -180,6 +184,211 @@ async function getStashedSessionsForUserId(
 }
 
 /**
+ * ── STRICT read path ───────────────────────────────────────────────────────
+ *
+ * `parseSessions` FILTERS invalid entries and `readSessionsForKeys` collapses a
+ * torn generation to `null`; both are right for the resilient double-buffer
+ * read and wrong for a caller that must not mistake an unreadable store for
+ * "no saved sessions". These variants reject present-but-unrecoverable data.
+ */
+
+/**
+ * A present `durable`/`pendingConfirm` must be USABLE. `null`/absent are
+ * legitimate ("this slot has no such claim"); a present-but-invalid value is
+ * corruption that the proof helpers would otherwise normalize to "no audio".
+ */
+function audioClaimsAreUsable(slot: Record<string, unknown>): boolean {
+  // The RECOVERY ANCHOR id must be usable too. `findStashAnchor` runs it through
+  // `normalizeId`, which turns a number/object into '' — so a malformed id reads
+  // as "no match" even while the slot's audio exists, and with the other sources
+  // known that lets findLocalRecoveryAnchor answer `none`.
+  const serverDraftId = slot.serverDraftId;
+  if (
+    serverDraftId !== undefined &&
+    serverDraftId !== null &&
+    typeof serverDraftId !== 'string'
+  ) {
+    return false;
+  }
+
+  const durable = slot.durable;
+  if (durable !== undefined && durable !== null) {
+    if (typeof durable !== 'object' || Array.isArray(durable)) return false;
+    if (!isValidDurableId((durable as { recordingId?: unknown }).recordingId)) return false;
+  }
+  const pendingConfirm = slot.pendingConfirm;
+  if (pendingConfirm !== undefined && pendingConfirm !== null) {
+    if (typeof pendingConfirm !== 'object' || Array.isArray(pendingConfirm)) return false;
+    if (!clonePendingConfirm(pendingConfirm as never)) return false;
+  }
+  return true;
+}
+
+function parseSessionsStrict(raw: string): StashedSession[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new StrictReadUnavailableError('stash:payload_parse');
+  }
+  if (!Array.isArray(parsed)) throw new StrictReadUnavailableError('stash:payload_shape');
+  for (const session of parsed) {
+    const candidate = session as Record<string, unknown> | null;
+    if (
+      !candidate ||
+      typeof candidate !== 'object' ||
+      typeof candidate.id !== 'string' ||
+      typeof candidate.stashedAt !== 'string' ||
+      !Array.isArray(candidate.slots) ||
+      !candidate.slots.every((slot: unknown) => {
+        if (slot == null || typeof slot !== 'object') return false;
+        const slotRecord = slot as Record<string, unknown>;
+        if (typeof slotRecord.id !== 'string') return false;
+        if (!Array.isArray(slotRecord.segments)) return false;
+        // Every SEGMENT must carry a usable uri. Accepting a malformed entry let
+        // `stashSlotProof` turn it into `missing` via `segment?.uri ?? ''`, so a
+        // corrupt payload could contribute a KNOWN zero and let
+        // findLocalRecoveryAnchor answer `none` — exposing deletion while the
+        // stash metadata and its audio directory may still exist.
+        if (
+          !slotRecord.segments.every((segment: unknown) => {
+            if (segment == null || typeof segment !== 'object') return false;
+            const uri = (segment as Record<string, unknown>).uri;
+            return typeof uri === 'string' && uri.length > 0;
+          })
+        ) {
+          return false;
+        }
+        // The OTHER audio-bearing claims count too. `stashSlotProof` reduces a
+        // present-but-corrupt `pendingConfirm`/`durable` to `missing`, so a slot
+        // with empty segments and a malformed claim could contribute a KNOWN zero
+        // and let findLocalRecoveryAnchor answer `none` for its serverDraftId.
+        return audioClaimsAreUsable(slotRecord);
+      })
+    ) {
+      throw new StrictReadUnavailableError('stash:session_shape');
+    }
+  }
+  return parsed as StashedSession[];
+}
+
+/**
+ * Read one generation strictly. `null` = the layout is genuinely ABSENT (no
+ * count key). A present-but-torn/corrupt generation throws so a healthy
+ * fallback generation can still prove the result without masking corruption.
+ */
+async function readSessionsForKeysStrict(
+  scopedCountKey: string,
+  scopedPrefix: string
+): Promise<StashedSession[] | null> {
+  const countStr = await secureStorage.getRawItemStrict(scopedCountKey, 'stashCountStrict');
+  if (countStr === null) return null;
+
+  const count = parseStrictChunkCount(countStr, 'stash:count');
+  if (count === 0) return [];
+
+  const chunks: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const chunk = await secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict');
+    if (chunk === null) throw new StrictReadUnavailableError('stash:torn_chunk');
+    chunks.push(chunk);
+  }
+  return parseSessionsStrict(chunks.join(''));
+}
+
+async function getStashedSessionsForUserStrictInternal(
+  userId: string
+): Promise<StashedSession[]> {
+  if (!userId) throw new StrictReadUnavailableError('stash:no_user');
+
+  const activeGeneration = await secureStorage.getRawItemStrict(
+    activeGenerationKeyForUser(userId),
+    'stashActiveGenerationStrict'
+  );
+
+  // The ACTIVE generation is the only authoritative snapshot. If a valid active
+  // pointer exists and THAT generation is present-but-unreadable, the answer is
+  // unknown — full stop. Falling through to an older generation would return a
+  // stale snapshot as authoritative: a stash written into the broken active
+  // generation would be missing from it, so a known-zero unsent count and a
+  // `none` recovery anchor would unlock deleting the server recording while its
+  // audio is still stashed on this device. An older generation may prove
+  // PRESENCE, never absence or a complete count.
+  // A PRESENT but malformed pointer is corruption, not a pre-migration absence.
+  // Letting it fall through returned the first readable legacy/inactive
+  // generation, which may predate the newest stash — the same known-zero count
+  // and `none` anchor the checks above exist to prevent.
+  if (activeGeneration !== null && activeGeneration !== 'a' && activeGeneration !== 'b') {
+    throw new StrictReadUnavailableError('stash:invalid_active_pointer');
+  }
+
+  if (activeGeneration === 'a' || activeGeneration === 'b') {
+    const activeSessions = await readSessionsForKeysStrict(
+      generationCountKeyForUser(userId, activeGeneration),
+      generationPrefixForUser(userId, activeGeneration)
+    );
+    if (activeSessions === null) {
+      // A DANGLING pointer, not a pre-migration absence: `saveSessions` writes
+      // the chunks and the count and only THEN flips this pointer, so a valid
+      // pointer asserts its generation was committed. A missing count key is
+      // therefore damage, and falling back to an older generation here could
+      // omit the newest stash — the exact false all-clear this path prevents.
+      throw new StrictReadUnavailableError('stash:dangling_active_pointer');
+    }
+    return activeSessions;
+  }
+  // Only an ABSENT/invalid pointer may fall through to the legacy and
+  // generation layouts below (the real pre-migration path).
+
+  const sources: { countKey: string; prefix: string }[] = [
+    { countKey: legacyCountKeyForUser(userId), prefix: legacyPrefixForUser(userId) },
+  ];
+  for (const generation of ['b', 'a'] as const) {
+    sources.push({
+      countKey: generationCountKeyForUser(userId, generation),
+      prefix: generationPrefixForUser(userId, generation),
+    });
+  }
+
+  // With no pointer to say which layout is authoritative, EVERY readable layout
+  // is read before answering. Returning the first readable one let a stale legacy
+  // snapshot win over a newer generation that still references the audio — a
+  // known zero, and a `none` anchor. A single readable layout still proves the
+  // result; several that disagree are ambiguous, and any non-empty one is kept as
+  // a positive match (which can only ever block a delete, never enable one).
+  let sawUnrecoverable = false;
+  const readable: StashedSession[][] = [];
+  for (const source of sources) {
+    try {
+      const sessions = await readSessionsForKeysStrict(source.countKey, source.prefix);
+      if (sessions !== null) readable.push(sessions);
+    } catch {
+      sawUnrecoverable = true;
+    }
+  }
+  // ANY present-but-unreadable layout makes the whole answer unknown, even when
+  // another layout read cleanly and non-empty. A readable layout holding an
+  // unrelated session cannot prove the DAMAGED one does not hold the target
+  // anchor — and that gap is what would let `findStashAnchor` report no match and
+  // unlock "Delete unavailable recording".
+  if (sawUnrecoverable) {
+    throw new StrictReadUnavailableError('stash:no_recoverable_generation');
+  }
+  if (readable.length > 0) {
+    const nonEmpty = readable.filter((sessions) => sessions.length > 0);
+    if (nonEmpty.length === 1) return nonEmpty[0];
+    // Every readable layout agrees the store is empty.
+    if (nonEmpty.length === 0) return [];
+    // Several layouts hold sessions and nothing says which is current.
+    throw new StrictReadUnavailableError('stash:ambiguous_generations');
+  }
+  // Every layout was absent → a known-empty store. Any present-but-unusable
+  // layout with no healthy fallback → unknown.
+  if (sawUnrecoverable) throw new StrictReadUnavailableError('stash:no_recoverable_generation');
+  return [];
+}
+
+/**
  * Encrypted stash storage using expo-secure-store with chunked writes.
  *
  * SecureStore uses EncryptedSharedPreferences on Android and Keychain on iOS,
@@ -210,6 +419,16 @@ export const stashStorage = {
   /** Read stashes for a specific user without rebinding the global stash scope. */
   async getStashedSessionsForUser(userId: string): Promise<StashedSession[]> {
     return getStashedSessionsForUserId(userId);
+  },
+
+  /**
+   * STRICT explicit-user read. Rejects with StrictReadUnavailableError when the
+   * store is present but unrecoverable (torn chunks, invalid count, malformed
+   * JSON, invalid session shape) and resolves `[]` only for a genuinely absent
+   * store. Never rebinds the global stash scope.
+   */
+  async getStashedSessionsForUserStrict(userId: string): Promise<StashedSession[]> {
+    return getStashedSessionsForUserStrictInternal(userId);
   },
 
   /**

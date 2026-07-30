@@ -9,7 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useQueries, useQuery } from '@tanstack/react-query';
-import { Mic, ChevronRight, FileText, Settings, ShieldAlert, Sparkles } from 'lucide-react-native';
+import { Mic, ChevronRight, FileText, LifeBuoy, Settings, ShieldAlert, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuthDeviceRegistration, useAuthUser } from '../../../src/hooks/useAuth';
 import { useResponsive } from '../../../src/hooks/useResponsive';
@@ -27,7 +27,7 @@ import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
 import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
-import { ERROR_COPY } from '../../../src/constants/strings';
+import { ERROR_COPY, SUPPORT_RECOVERY_BANNER_COPY } from '../../../src/constants/strings';
 import { HIT_SLOP } from '../../../src/components/ui/styles';
 import {
   canRecordAppointments,
@@ -44,6 +44,12 @@ import { ProviderIssueBannerContent, useActiveProviderIssue } from '../../../src
 import { useDurableRecoveries } from '../../../src/hooks/useDurableRecoveries';
 import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
 import { QualityAnalyticsCard } from '../../../src/components/QualityAnalyticsCard';
+import { useAttentionFeed, useAttentionImpression } from '../../../src/hooks/useAttentionFeed';
+import {
+  AttentionFeedSection,
+  homeAttentionHasContent,
+} from '../../../src/components/AttentionFeedSection';
+import { useSupportRecoveryVaultSummary } from '../../../src/hooks/useSupportRecoveryVault';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -58,16 +64,31 @@ export default function HomeScreen() {
   const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
   const durableRecoveries = useDurableRecoveries();
   const activeProviderIssue = useActiveProviderIssue();
+  const supportRecovery = useSupportRecoveryVaultSummary();
+  const attentionFeed = useAttentionFeed({ focused: isTabFocused });
+  const showAttentionSection = homeAttentionHasContent(attentionFeed);
+  // Depend on the STABLE refresh functions, never the hook result objects: an
+  // unstable useFocusEffect callback re-fires on every render (refetch storm).
+  const refreshAttention = attentionFeed.refresh;
+  const refreshSupportRecovery = supportRecovery.refresh;
+  useAttentionImpression('home', attentionFeed, isTabFocused && showAttentionSection);
   const [bannersExpanded, setBannersExpanded] = useState(false);
-  // Priority order (WP30): recovery > device limit > provider issue. The two
-  // global thin strips (device registration, offline) live in (app)/_layout.
+  // Priority order (WP30): recovery > support-staff recovery vault > device
+  // limit > provider issue. Recovery of preserved clinical work outranks data
+  // hygiene, which is why the vault banner lives HERE and never in the
+  // lower-priority attention feed (no double-counting). The two global thin
+  // strips (device registration, offline) live in (app)/_layout.
+  const showSupportRecoveryBanner =
+    supportRecovery.state === 'unknown' ||
+    (supportRecovery.state === 'known' && supportRecovery.count > 0);
   const activeBannerKeys = useMemo(() => {
-    const keys: ('recovery' | 'deviceLimit' | 'providerIssue')[] = [];
+    const keys: ('recovery' | 'supportRecovery' | 'deviceLimit' | 'providerIssue')[] = [];
     if (durableRecoveries.length > 0) keys.push('recovery');
+    if (showSupportRecoveryBanner) keys.push('supportRecovery');
     if (capacity && (capacity.isAtLimit || capacity.isNearLimit)) keys.push('deviceLimit');
     if (activeProviderIssue) keys.push('providerIssue');
     return keys;
-  }, [durableRecoveries.length, capacity, activeProviderIssue]);
+  }, [durableRecoveries.length, showSupportRecoveryBanner, capacity, activeProviderIssue]);
   const visibleBannerKeys = bannersExpanded ? activeBannerKeys : activeBannerKeys.slice(0, 1);
   const hiddenBannerCount = activeBannerKeys.length - visibleBannerKeys.length;
   const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
@@ -219,7 +240,19 @@ export default function HomeScreen() {
       refetchQuality().catch(() => {});
     }
     refreshLocalDrafts({ forceReconcile: true });
-  }, [canFetchQualityAnalytics, canLoadServerData, refetch, refetchDrafts, refetchQuality, refreshLocalDrafts]);
+    // Void wrappers — pull-to-refresh must never receive a Promise (rule 2).
+    refreshAttention();
+    refreshSupportRecovery();
+  }, [
+    canFetchQualityAnalytics,
+    canLoadServerData,
+    refetch,
+    refetchDrafts,
+    refetchQuality,
+    refreshAttention,
+    refreshLocalDrafts,
+    refreshSupportRecovery,
+  ]);
 
   const handleRecordPress = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
@@ -258,6 +291,7 @@ export default function HomeScreen() {
         refetchQuality().catch(() => {});
       }
       refreshLocalDrafts();
+      refreshSupportRecovery();
     });
   }, [
     canFetchQualityAnalytics,
@@ -269,6 +303,7 @@ export default function HomeScreen() {
     refetchDrafts,
     refetchQuality,
     refreshLocalDrafts,
+    refreshSupportRecovery,
   ]);
 
   useFocusEffect(handleFocusRefresh);
@@ -315,6 +350,37 @@ export default function HomeScreen() {
           banners used to push the hero Record CTA below the fold (WP30). */}
       {visibleBannerKeys.includes('recovery') && <DurableRecoveryBanner />}
 
+      {visibleBannerKeys.includes('supportRecovery') ? (
+        <View className="mb-4">
+          <Banner
+            variant={supportRecovery.state === 'unknown' ? 'warning' : 'info'}
+            icon={LifeBuoy}
+            message={
+              supportRecovery.state === 'unknown'
+                ? SUPPORT_RECOVERY_BANNER_COPY.unknownMessage
+                : SUPPORT_RECOVERY_BANNER_COPY.message(supportRecovery.count)
+            }
+            cta={
+              supportRecovery.state === 'unknown'
+                ? {
+                    label: SUPPORT_RECOVERY_BANNER_COPY.retry,
+                    onPress: () => {
+                      Haptics.selectionAsync().catch(() => {});
+                      supportRecovery.refresh();
+                    },
+                  }
+                : {
+                    label: SUPPORT_RECOVERY_BANNER_COPY.cta,
+                    onPress: () => {
+                      Haptics.selectionAsync().catch(() => {});
+                      router.push('/recording-recovery' as never);
+                    },
+                  }
+            }
+          />
+        </View>
+      ) : null}
+
       {visibleBannerKeys.includes('deviceLimit') && capacity ? (
         <View className="mb-4">
           <Banner
@@ -352,6 +418,14 @@ export default function HomeScreen() {
           </Text>
         </Pressable>
       )}
+
+      {/* NEEDS ATTENTION — above the Record CTA because fixing yesterday's bad
+          data should be seen before starting today's recording; below the banner
+          stack because those banners are about the app being broken (data loss,
+          device blocked), which outranks data hygiene. Never gates Home: it
+          renders its own bounded state and Home stays usable if its queries or
+          a native local read hang (rule 24). */}
+      {showAttentionSection ? <AttentionFeedSection feed={attentionFeed} /> : null}
 
       {/* Quick Action — hero CTA. Gradient + glow for premium depth; the
           gradient takes raw color values (not Tailwind classes) so stops pull

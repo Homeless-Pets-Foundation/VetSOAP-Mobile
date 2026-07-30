@@ -4,11 +4,13 @@ import { stashStorage } from './stashStorage';
 import {
   ensureDirectory,
   fileExists,
+  fileExistsStrict,
   safeCopyFile,
   safeDeleteDirectory,
   safeDeleteFile,
   writeFilePrefix,
 } from './fileOps';
+import { StrictReadUnavailableError, parseStrictChunkCount, type StrictExistence } from './strictRead';
 import { secureStorage } from './secureStorage';
 import { captureMessage } from './monitoring';
 import type { CreateRecording, User } from '../types';
@@ -500,6 +502,299 @@ async function readValidItemsAndPrune(): Promise<RecoveryItem[]> {
   return validItems;
 }
 
+/**
+ * ── STRICT read path (read-only) ───────────────────────────────────────────
+ *
+ * `readValidItemsAndPrune()` MUTATES (it deletes unrecoverable items and
+ * rewrites the store). A destructive decision — "may I delete this server row?"
+ * — and the Home recovery banner must never call it: pruning during a read is
+ * both a side effect and a lenient filter. These variants are read-only and
+ * distinguish absence from present-but-unrecoverable data.
+ */
+
+function parseItemsStrict(raw: string): RecoveryItem[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new StrictReadUnavailableError('vault:payload_parse');
+  }
+  if (!Array.isArray(parsed)) throw new StrictReadUnavailableError('vault:payload_shape');
+  for (const item of parsed) {
+    const candidate = item as Record<string, unknown> | null;
+    if (
+      !candidate ||
+      typeof candidate !== 'object' ||
+      typeof candidate.id !== 'string' ||
+      typeof candidate.recoveryKey !== 'string' ||
+      !Array.isArray(candidate.slots) ||
+      // AUTHORIZATION fields must be valid too. `itemVisibleToUser` reads
+      // `status` and `sourceOrganizationId`; a missing or malformed one made the
+      // item read as definitively INVISIBLE (filtered out with the snapshot still
+      // marked complete) rather than unreadable, so an item that still held local
+      // audio could yield a `none` anchor and expose the server delete.
+      (candidate.status !== 'available' && candidate.status !== 'restored') ||
+      (typeof candidate.sourceOrganizationId !== 'string' &&
+        candidate.sourceOrganizationId !== null)
+    ) {
+      throw new StrictReadUnavailableError('vault:item_shape');
+    }
+    // Validating only the wrapper let a slot carry a malformed segment uri
+    // through; `fileExistsStrict` then read it as `missing`, so the snapshot
+    // could be certified COMPLETE and the anchor answer `none` while the item's
+    // audio directory still existed.
+    for (const slot of candidate.slots) {
+      if (!slot || typeof slot !== 'object') throw new StrictReadUnavailableError('vault:slot_shape');
+      const slotRecord = slot as Record<string, unknown>;
+      if (!Array.isArray(slotRecord.segments)) {
+        throw new StrictReadUnavailableError('vault:slot_shape');
+      }
+      for (const segment of slotRecord.segments) {
+        if (!segment || typeof segment !== 'object') {
+          throw new StrictReadUnavailableError('vault:segment_shape');
+        }
+        const uri = (segment as Record<string, unknown>).uri;
+        if (typeof uri !== 'string' || uri.length === 0) {
+          throw new StrictReadUnavailableError('vault:segment_shape');
+        }
+      }
+      // The RECOVERY ANCHOR id must be usable: `findVaultAnchor` normalizes it,
+      // so a malformed value reads as "no match" while the slot's audio exists.
+      const sourceServerDraftId = slotRecord.sourceServerDraftId;
+      if (
+        sourceServerDraftId !== undefined &&
+        sourceServerDraftId !== null &&
+        typeof sourceServerDraftId !== 'string'
+      ) {
+        throw new StrictReadUnavailableError('vault:slot_anchor_shape');
+      }
+      // The other audio-bearing claims count too: the strict recoverability
+      // helpers normalize a present-but-corrupt `durable`/`pendingConfirm` to
+      // absent, which would filter the item while leaving the snapshot
+      // `recoverabilityComplete` — and let the anchor answer `none` for its
+      // `sourceServerDraftId`. `null`/absent stay legitimate.
+      const slotDurable = slotRecord.durable;
+      if (slotDurable !== undefined && slotDurable !== null) {
+        if (typeof slotDurable !== 'object' || Array.isArray(slotDurable)) {
+          throw new StrictReadUnavailableError('vault:slot_durable_shape');
+        }
+        const durableRecord = slotDurable as Record<string, unknown>;
+        if (!isValidDurableId(durableRecord.recordingId)) {
+          throw new StrictReadUnavailableError('vault:slot_durable_shape');
+        }
+        // A valid id is NOT enough here. Unlike a draft — which can point at the
+        // user's own native durable dir — vault durable audio IS the cross-user
+        // copy at `recoveredAudioUri`, and `vaultSlotHasDurableAudioStrict`
+        // converts a missing/unusable URI to `missing`. An otherwise empty
+        // matching slot would then be filtered while `recoverabilityComplete`
+        // stayed true, so the anchor could answer `none` even though the copied
+        // AAC may still sit in the vault directory.
+        if (
+          typeof durableRecord.recoveredAudioUri !== 'string' ||
+          durableRecord.recoveredAudioUri.length === 0
+        ) {
+          throw new StrictReadUnavailableError('vault:slot_durable_uri');
+        }
+      }
+      const slotPendingConfirm = slotRecord.pendingConfirm;
+      if (slotPendingConfirm !== undefined && slotPendingConfirm !== null) {
+        if (typeof slotPendingConfirm !== 'object' || Array.isArray(slotPendingConfirm)) {
+          throw new StrictReadUnavailableError('vault:slot_pending_confirm_shape');
+        }
+        if (!clonePendingConfirm(slotPendingConfirm as never)) {
+          throw new StrictReadUnavailableError('vault:slot_pending_confirm_shape');
+        }
+      }
+    }
+  }
+  return parsed as RecoveryItem[];
+}
+
+async function readItemsForGenerationStrict(
+  generation: Generation
+): Promise<RecoveryItem[] | null> {
+  const countRaw = await secureStorage.getRawItemStrict(
+    generationCountKey(generation),
+    'supportStaffRecovery.getGenerationCountStrict'
+  );
+  if (countRaw === null) return null;
+  const count = parseStrictChunkCount(countRaw, 'vault:count');
+  if (count === 0) return [];
+
+  const prefix = generationPrefix(generation);
+  const chunks: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const chunk = await secureStorage.getRawItemStrict(
+      `${prefix}${i}`,
+      'supportStaffRecovery.getChunkStrict'
+    );
+    if (chunk === null) throw new StrictReadUnavailableError('vault:torn_chunk');
+    chunks.push(chunk);
+  }
+  return parseItemsStrict(chunks.join(''));
+}
+
+async function readItemsStrict(): Promise<RecoveryItem[]> {
+  const active = await secureStorage.getRawItemStrict(
+    ACTIVE_KEY,
+    'supportStaffRecovery.getActiveGenerationStrict'
+  );
+  // A valid active pointer names the ONLY authoritative generation. If that
+  // generation is present-but-unreadable, the answer is unknown — the inactive
+  // generation is the previous snapshot and may omit newly preserved
+  // support-staff recordings, so certifying it as complete would let Home hide
+  // real recovery work and let the unavailable-recording guard conclude there is
+  // no vault anchor, exposing a destructive server delete. An older generation
+  // can establish a positive match, never absence or a complete count.
+  // A PRESENT but malformed pointer is corruption, not a pre-migration absence
+  // (see the matching guard in stashStorage): falling through could certify a
+  // generation that predates newly preserved recordings.
+  if (active !== null && active !== 'a' && active !== 'b') {
+    throw new StrictReadUnavailableError('vault:invalid_active_pointer');
+  }
+
+  if (active === 'a' || active === 'b') {
+    const activeItems = await readItemsForGenerationStrict(active);
+    if (activeItems === null) {
+      // Dangling pointer, not a pre-migration absence: `saveItems` writes the
+      // chunks and the count and only THEN flips this pointer, so a valid
+      // pointer asserts its generation was committed. Falling back to the
+      // inactive generation here could omit newly preserved recordings.
+      throw new StrictReadUnavailableError('vault:dangling_active_pointer');
+    }
+    return activeItems;
+  }
+
+  // Only an ABSENT/invalid pointer may consult the generations directly.
+  const order: Generation[] = ['b', 'a'];
+
+  // Same rule as the stash: with no pointer naming the authoritative generation,
+  // read BOTH before answering. Returning the first readable one let a stale
+  // generation win over a newer one that still holds preserved recordings.
+  let sawUnrecoverable = false;
+  const readable: RecoveryItem[][] = [];
+  for (const generation of order) {
+    try {
+      const items = await readItemsForGenerationStrict(generation);
+      if (items !== null) readable.push(items);
+    } catch {
+      sawUnrecoverable = true;
+    }
+  }
+  // Same rule as the stash: a readable layout cannot prove what a damaged one
+  // does not contain, so any unreadable present layout keeps the answer unknown.
+  if (sawUnrecoverable) throw new StrictReadUnavailableError('vault:no_recoverable_generation');
+  if (readable.length > 0) {
+    const nonEmpty = readable.filter((items) => items.length > 0);
+    if (nonEmpty.length === 1) return nonEmpty[0];
+    if (nonEmpty.length === 0) return [];
+    throw new StrictReadUnavailableError('vault:ambiguous_generations');
+  }
+  return [];
+}
+
+function vaultSlotHasDurableAudioStrict(
+  durable: DurableSlotRef | null | undefined
+): StrictExistence {
+  if (!buildSlotHasDurable(durable) || !durable?.recoveredAudioUri) return 'missing';
+  return fileExistsStrict(durable.recoveredAudioUri);
+}
+
+/**
+ * Whether ONE vault slot still has something recoverable.
+ *
+ * Exported because a destructive decision must be proved on the slot that
+ * actually matches the server recording: an item-level answer only says *some*
+ * slot is recoverable, so a multi-slot item could hide deletion for a target
+ * slot whose own audio is gone (Codex round 2).
+ */
+export function vaultSlotIsRecoverableStrict(
+  slot: RecoverySlot,
+  /**
+   * Pass the VIEWER to get the same answer the authorization-filtered listing
+   * would give. Omit it for the role-agnostic item-level question.
+   */
+  user?: Pick<RecoveryUser, 'role'> | null
+): StrictExistence {
+  const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
+  if (pendingConfirm) {
+    // A confirmation token alone is enough for owner/admin, but a veterinarian
+    // cannot reuse another user's upload without COMPLETE local audio — the same
+    // extra condition `itemRestorableByUserStrict` applies. Without this, a
+    // caller could certify a slot the listing then filters out, promising a
+    // recovery route that leads nowhere (Codex round 4).
+    if (!user || user.role === 'owner' || user.role === 'admin') return 'present';
+    return vaultSlotHasCompleteLocalAudioStrict(slot);
+  }
+  let sawUnknown = false;
+  const durable = vaultSlotHasDurableAudioStrict(slot.durable);
+  if (durable === 'present') return 'present';
+  if (durable === 'unknown') sawUnknown = true;
+  for (const segment of slot.segments ?? []) {
+    const existence = fileExistsStrict(segment.uri);
+    if (existence === 'present') return 'present';
+    if (existence === 'unknown') sawUnknown = true;
+  }
+  return sawUnknown ? 'unknown' : 'missing';
+}
+
+function itemIsRecoverableStrict(item: RecoveryItem): StrictExistence {
+  let sawUnknown = false;
+  for (const slot of item.slots) {
+    const slotExistence = vaultSlotIsRecoverableStrict(slot);
+    if (slotExistence === 'present') return 'present';
+    if (slotExistence === 'unknown') sawUnknown = true;
+  }
+  return sawUnknown ? 'unknown' : 'missing';
+}
+
+function vaultSlotHasCompleteLocalAudioStrict(slot: RecoverySlot): StrictExistence {
+  const durable = vaultSlotHasDurableAudioStrict(slot.durable);
+  if (durable !== 'missing') return durable;
+
+  const pendingConfirm = clonePendingConfirm(slot.pendingConfirm);
+  const requiredCount = pendingConfirm ? pendingConfirmFileCount(pendingConfirm) : null;
+  if (requiredCount !== null && slot.segments.length !== requiredCount) return 'missing';
+  if (requiredCount === null && slot.segments.length === 0) return 'missing';
+
+  let sawUnknown = false;
+  for (const segment of slot.segments) {
+    const existence = fileExistsStrict(segment.uri);
+    if (existence === 'missing') return 'missing';
+    if (existence === 'unknown') sawUnknown = true;
+  }
+  return sawUnknown ? 'unknown' : 'present';
+}
+
+function itemRestorableByUserStrict(item: RecoveryItem, user: RecoveryUser): StrictExistence {
+  if (!itemVisibleToUser(item, user)) return 'missing';
+  const recoverable = itemIsRecoverableStrict(item);
+  if (recoverable !== 'present') return recoverable;
+  if (user.role === 'owner' || user.role === 'admin') return 'present';
+
+  let sawUnknown = false;
+  for (const slot of item.slots) {
+    if (!clonePendingConfirm(slot.pendingConfirm)) continue;
+    const complete = vaultSlotHasCompleteLocalAudioStrict(slot);
+    if (complete === 'missing') return 'missing';
+    if (complete === 'unknown') sawUnknown = true;
+  }
+  return sawUnknown ? 'unknown' : 'present';
+}
+
+/**
+ * Read-only, authorization-filtered snapshot of the recovery vault.
+ * `recoverabilityComplete === false` means at least one visible item's
+ * recoverability could not be decided — the caller must render an explicit
+ * "could not check" state rather than a count, and a destructive decision must
+ * fail closed. Items whose recoverability is UNKNOWN are retained on purpose:
+ * keeping one can only block a delete, never enable it.
+ */
+export interface StrictVaultSnapshot {
+  items: RecoveryItem[];
+  recoverabilityComplete: boolean;
+}
+
 interface AddItemsResult {
   addedCount: number;
   existingCount: number;
@@ -705,6 +1000,28 @@ export const supportStaffRecoveryVault = {
 
   async countItemsForUser(user: RecoveryUser | null | undefined): Promise<number> {
     return (await this.listItemsForUser(user)).length;
+  },
+
+  /**
+   * STRICT, READ-ONLY, authorization-filtered snapshot. Throws
+   * StrictReadUnavailableError when the vault store itself is present but
+   * unrecoverable. Never prunes, never writes, never rebinds scope — unlike
+   * `listItemsForUser`, which prunes as a side effect of reading.
+   */
+  async listItemsForUserStrict(
+    user: RecoveryUser | null | undefined
+  ): Promise<StrictVaultSnapshot> {
+    if (!canUseRecovery(user)) return { items: [], recoverabilityComplete: true };
+    const all = await readItemsStrict();
+    const items: RecoveryItem[] = [];
+    let recoverabilityComplete = true;
+    for (const item of all) {
+      const restorable = itemRestorableByUserStrict(item, user);
+      if (restorable === 'missing') continue;
+      if (restorable === 'unknown') recoverabilityComplete = false;
+      items.push(item);
+    }
+    return { items, recoverabilityComplete };
   },
 
   async countScopedUserRecoverableRecordings(): Promise<number> {

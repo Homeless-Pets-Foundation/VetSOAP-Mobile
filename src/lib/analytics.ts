@@ -179,7 +179,56 @@ export type AnalyticsEvent =
         drop_reasons_count?: number;
       };
     }
-  | { name: 'ai_metadata_review_resolved'; props: { action: 'confirmed' | 'corrected' | 'dismissed'; corrected_field_count: number } }
+  | {
+      name: 'ai_metadata_review_resolved';
+      props: {
+        action: 'confirmed' | 'corrected' | 'dismissed';
+        corrected_field_count: number;
+        /** Derived ONLY from the validated route source — never a raw param. */
+        source: AiMetadataResolutionSource;
+        /**
+         * Comma-joined subset of the five `RecordingMetadataField` names that
+         * actually changed. Never a value, never the PIMS id. (PostHog drops
+         * array props, so bounded enums travel as a joined string.)
+         */
+        changed_fields: string;
+        /**
+         * Comma-joined, deduplicated PRE-mutation AI reason codes with bounded
+         * field association where applicable (e.g. `breed:low_confidence`).
+         * Never a value.
+         */
+        attention_reason_codes: string;
+      };
+    }
+  // Attention Feed — PHI-free: counts, closed reason codes, and state enums only.
+  | {
+      name: 'attention_feed_shown';
+      props: {
+        surface: AttentionSurface;
+        item_count: number;
+        server_item_count: number;
+        local_item_count: number;
+        actionable_count: number;
+        across_practice_count: number;
+        top_reason_code: string;
+        coverage: AttentionCoverageState;
+        truncated: boolean;
+        server_state: AttentionServerState;
+        classification_complete: boolean;
+        uncheckable_timing_row_count: number;
+        local_complete: boolean;
+      };
+    }
+  | {
+      name: 'attention_feed_item_opened';
+      props: {
+        surface: AttentionSurface;
+        category: AttentionCategoryCode;
+        reason_code: string;
+        field_code: string;
+        actionable: boolean;
+      };
+    }
   // Account surface
   | { name: 'profile_updated'; props: { fields: string } }
   | { name: 'subscription_viewed'; props: { status: string } }
@@ -199,6 +248,23 @@ export type AnalyticsEvent =
   | { name: 'monitoring_suppression_summary'; props: { total_suppressed: number; top_key: string | null; top_count: number; active_buckets: number } };
 
 export type NetworkState = 'wifi' | 'cellular' | 'none' | 'unknown';
+
+/** Which surface rendered the attention snapshot. */
+export type AttentionSurface = 'home' | 'attention_screen';
+
+/** Pagination coverage of the bounded attention page. */
+export type AttentionCoverageState = 'complete' | 'recent_page_only' | 'unknown';
+
+/**
+ * `partial` = the response succeeded but one or more supported time predicates
+ * lacked a valid clock input. `blocked` = a real device-registration block
+ * (transient pending stays loading and emits nothing).
+ */
+export type AttentionServerState = 'success' | 'partial' | 'stale_error' | 'error' | 'blocked';
+
+export type AttentionCategoryCode = 'processing' | 'metadata' | 'quality' | 'local';
+
+export type AiMetadataResolutionSource = 'recording_detail' | 'attention_feed';
 
 export type RefreshTrigger = 'recovery' | 'foreground' | 'on_auth_state' | 'device_registration' | 'manual';
 
@@ -238,6 +304,13 @@ export type ErrorPhase =
   | 'prepare'
   | 'probe'
   | 'delete_draft'
+  /**
+   * The DESTRUCTIVE non-draft delete behind "Delete unavailable recording",
+   * which cascades the SOAP note and tasks server-side. Deliberately separate
+   * from `delete_draft` so a regression in this new path is distinguishable
+   * from ordinary draft cleanup in the rate-limit key and the dashboards.
+   */
+  | 'delete_recording'
   | 'stash_write'
   | 'stash_read'
   | 'recorder_start'

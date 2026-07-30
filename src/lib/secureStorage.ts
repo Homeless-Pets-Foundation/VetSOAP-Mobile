@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { getSecureUuid } from './random';
+import { StrictReadUnavailableError } from './strictRead';
 
 const KEYS = {
   ACCESS_TOKEN: 'captivet_access_token',
@@ -87,6 +88,25 @@ async function deleteRawSecureItem(key: string, op: string): Promise<void> {
 export const secureStorage = {
   async getRawItem(key: string, op = 'getRawItem'): Promise<string | null> {
     return getRawSecureItem(key, op);
+  },
+
+  /**
+   * Like `getRawItem`, but a NATIVE failure rejects with a safe typed sentinel
+   * instead of returning `null`. A missing key still resolves to `null` — that
+   * is a legitimate absence, and only a strict reader can tell the two apart.
+   *
+   * This is still the sole SecureStore adapter (rule 3): the Keystore call
+   * stays wrapped, the failure is reported through the same rate-limited
+   * channel, and no raw native message escapes.
+   */
+  async getRawItemStrict(key: string, op = 'getRawItemStrict'): Promise<string | null> {
+    try {
+      return await SecureStore.getItemAsync(key);
+    } catch (error) {
+      if (__DEV__) console.error(`[SecureStorage] ${op} failed:`, error);
+      reportSecureStoreFailure(op, error);
+      throw new StrictReadUnavailableError(`secure_store:${op}`);
+    }
   },
 
   async setRawItem(key: string, value: string, op = 'setRawItem'): Promise<boolean> {

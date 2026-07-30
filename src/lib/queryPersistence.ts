@@ -70,13 +70,21 @@ function isPersistableListVariant(queryKey: readonly unknown[]): boolean {
     // ['patients', 'list', search]
     return !queryKey[2];
   }
+  if (root === 'recordings' && sub === 'attention') {
+    // The 100-row Attention Feed page is deliberately NEVER dehydrated. The
+    // existing recent/list/detail caches already provide the offline clinical
+    // snapshot; duplicating a large, time-sensitive queue would waste the
+    // user-scoped snapshot AND let a cold offline launch present hours-old
+    // "needs attention" rows as current. In-memory rows still render with the
+    // global offline state.
+    return false;
+  }
   if (root === 'recordings' && sub === 'list') {
-    // ['recordings', 'list', search, status, review, sort]
-    return (
-      !queryKey[2] &&
-      (queryKey[3] === 'all' || queryKey[3] == null) &&
-      (queryKey[4] === 'any' || queryKey[4] == null)
-    );
+    // ['recordings', 'list', search, status, sort] — the dead `review` slot was
+    // removed with the unsupported reviewStatus filter, so the sort token now
+    // sits at index 4. Do NOT re-add an index-4 check: it would inspect
+    // 'submittedAt-desc' as a review value and stop persisting the DEFAULT page.
+    return !queryKey[2] && (queryKey[3] === 'all' || queryKey[3] == null);
   }
   if (root === 'recordings' && sub === 'drafts') {
     // ['recordings', 'drafts', 'list', search, sort]

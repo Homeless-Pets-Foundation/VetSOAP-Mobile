@@ -1,11 +1,21 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, Pressable, Alert, RefreshControl, AppState } from 'react-native';
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  Alert,
+  RefreshControl,
+  AppState,
+  BackHandler,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
+import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { ChevronLeft, AlertTriangle, FileText, RotateCcw, Sparkles } from 'lucide-react-native';
+import { ChevronLeft, AlertTriangle, FileText, LifeBuoy, RotateCcw, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
@@ -29,7 +39,6 @@ import { MetadataReviewCard } from '../../../../src/components/MetadataReviewCar
 import { ProcessingStepper } from '../../../../src/components/ProcessingStepper';
 import { CelebrationBurst } from '../../../../src/components/CelebrationBurst';
 import { Toast } from '../../../../src/components/Toast';
-import { ReviewStatusChip } from '../../../../src/components/ReviewStatusChip';
 import { Button } from '../../../../src/components/ui/Button';
 import { Card } from '../../../../src/components/ui/Card';
 import { Skeleton, SkeletonText } from '../../../../src/components/ui/Skeleton';
@@ -41,20 +50,45 @@ import { fileExists, safeDeleteFile } from '../../../../src/lib/fileOps';
 import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
 import { clonePendingConfirm } from '../../../../src/lib/pendingConfirm';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
-import { ERROR_COPY, METADATA_REVIEW_COPY, RECORDING_DETAIL_COPY, REGENERATE_SOAP_COPY, TRANSCRIPT_COPY } from '../../../../src/constants/strings';
+import {
+  ATTENTION_FEED_COPY,
+  DELETE_RECORDING_COPY,
+  ERROR_COPY,
+  METADATA_REVIEW_COPY,
+  RECORDING_DETAIL_COPY,
+  REGENERATE_SOAP_COPY,
+  TRANSCRIPT_COPY,
+} from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
-import { invalidateRecordingCaches, mergeRecordingIntoCachedLists, removeRecordingFromCachedLists } from '../../../../src/lib/recordingQueryCache';
+import {
+  invalidateRecordingCaches,
+  mergeRecordingIntoCachedLists,
+  purgeDeletedRecordingCaches,
+  removeRecordingFromCachedLists,
+} from '../../../../src/lib/recordingQueryCache';
 import {
   shouldEmitExtractionObserved,
   buildExtractionObservedProps,
+  hasUnresolvedAiMetadataAttention,
+  validAppliedFields,
 } from '../../../../src/lib/recordFirstObservability';
+import {
+  getProcessingStaleness,
+  metadataAttentionReasons,
+  parseAttentionFocus,
+  parseTimestampMs,
+  type AttentionFocus,
+} from '../../../../src/lib/attentionFeed';
+import {
+  findLocalRecoveryAnchor,
+  type LocalRecoveryAnchor,
+} from '../../../../src/lib/localRecordings';
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
 import { hasVisibleReprocessModelChoice } from '../../../../src/lib/aiModels';
 import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
-import { getRecordingReviewStatus } from '../../../../src/lib/recordingReview';
 import { getRecordingRetryPresentation } from '../../../../src/lib/recordingRetryState';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
@@ -92,7 +126,11 @@ function DetailSkeleton() {
 }
 
 export default function RecordingDetailScreen() {
-  const { id, from } = useLocalSearchParams<{ id: string; from?: string }>();
+  const { id, from, focus } = useLocalSearchParams<{ id: string; from?: string; focus?: string }>();
+  // Route params are untrusted: `focus` is allowlisted, and the analytics
+  // source is derived from the validated route value — never echoed back raw.
+  const requestedFocus = parseAttentionFocus(focus);
+  const cameFromAttention = from === 'attention';
   const router = useRouter();
   const queryClient = useQueryClient();
   const { iconMd } = useResponsive();
@@ -102,6 +140,9 @@ export default function RecordingDetailScreen() {
 
   const appStateRef = useRef(AppState.currentState);
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
+  // Row-age staleness needs its own clock: polling stops after 30 minutes, and
+  // an attention tap must not have to wait another 30 minutes to reveal Retry.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const pollingStartedAtRef = useRef<number | null>(null);
   // A definitive 403 (access revoked) or 404 (deleted) means the cached
   // transcript/SOAP/audio must NOT keep showing — set once, then the query is
@@ -125,8 +166,13 @@ export default function RecordingDetailScreen() {
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
-      appStateRef.current = nextState;
-      setIsAppActive(nextState === 'active');
+      try {
+        appStateRef.current = nextState;
+        setIsAppActive(nextState === 'active');
+        if (nextState === 'active') setNowMs(Date.now());
+      } catch {
+        // A listener throw would tear down the subscription.
+      }
     });
     return () => {
       sub.remove();
@@ -276,32 +322,37 @@ export default function RecordingDetailScreen() {
     clearSubmitTimestamps(id);
   }, [id, soapNote]);
 
-  const isPollingStale =
-    !!pollingStartedAtRef.current &&
-    Date.now() - pollingStartedAtRef.current > 30 * 60 * 1000 &&
-    !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording?.status ?? '');
-  const recordingPermissions = useRecordingPermissions(recording);
-
-  const reviewMutation = useMutation({
-    mutationFn: (reviewed: boolean) => recordingsApi.updateReview(id!, { reviewed }),
-    onSuccess: (updatedRecording) => {
-      if (id && updatedRecording?.id === id) {
-        queryClient.setQueryData(['recording', id], updatedRecording);
-        mergeRecordingIntoCachedLists(queryClient, updatedRecording);
-      }
-      invalidateRecordingCaches(queryClient, 'review_update');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    },
-    onError: (error: Error) => {
-      if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
-        return;
-      }
-      Alert.alert(
-        'Review Update Failed',
-        error instanceof ApiError ? error.message : 'Could not update the review status. Please try again.'
-      );
-    },
+  // Status-aware ROW AGE, not "30 minutes since this screen began polling".
+  // The old presentation made an attention tap wait another 30 minutes before
+  // revealing the action the feed had already promised. Detail knows
+  // `audioFileUrl`, so it uses the exact audio-aware window (5 min for a
+  // committed upload) where the list-shaped feed must stay conservative.
+  const processingStaleness = getProcessingStaleness({
+    status: recording?.status ?? 'completed',
+    updatedAtMs: parseTimestampMs(recording?.updatedAt),
+    nowMs,
+    audioAvailability: recording?.audioFileUrl ? 'known_present' : 'known_absent',
   });
+  const isPollingStale = processingStaleness === 'stale';
+  const recordingPermissions = useRecordingPermissions(recording);
+  const canRetryProcessing = canRecordAppointments(user?.role);
+  const retryPresentation = recording
+    ? getRecordingRetryPresentation({
+        status: recording.status,
+        audioFileUrl: recording.audioFileUrl,
+        isPollingStale,
+        audioMissingError: retryAudioMissing,
+      })
+    : 'hidden';
+
+  // Tick while a processing row can still cross its stale threshold. Stops in
+  // the background and once the status settles.
+  useEffect(() => {
+    if (!isAppActive) return;
+    if (processingStaleness !== 'fresh') return;
+    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, [isAppActive, processingStaleness]);
 
   const retryMutation = useMutation({
     mutationFn: () => recordingsApi.retry(id!),
@@ -357,11 +408,28 @@ export default function RecordingDetailScreen() {
     },
   });
 
+  // Bounded, PHI-free encoding of the PRE-mutation AI reason set. Field
+  // association only (e.g. `breed:low_confidence`) — never a value.
+  const MAX_REPORTED_REASON_CODES = 12;
+  const preMutationReasonCodes = useCallback((): string => {
+    if (!recording) return '';
+    const codes = metadataAttentionReasons(recording, { recordFirstEnabled }).map((reason) => {
+      const code = reason.code.startsWith('metadata_')
+        ? reason.code.slice('metadata_'.length)
+        : reason.code;
+      return reason.field ? `${reason.field}:${code}` : code;
+    });
+    return Array.from(new Set(codes)).slice(0, MAX_REPORTED_REASON_CODES).join(',');
+  }, [recording, recordFirstEnabled]);
+
   const metadataMutation = useMutation({
     mutationFn: (vars: {
       payload: UpdateRecordingMetadata;
       action: 'confirmed' | 'corrected' | 'dismissed';
       correctedFieldCount: number;
+      changedFields: RecordingMetadataField[];
+      wasUnresolvedBefore: boolean;
+      reasonCodes: string;
     }) => recordingsApi.updateMetadata(id!, vars.payload),
     onSuccess: (updatedRecording, vars) => {
       if (id && updatedRecording?.id === id) {
@@ -378,20 +446,34 @@ export default function RecordingDetailScreen() {
       }
       queryClient.invalidateQueries({ queryKey: ['recording', id] }).catch(() => {});
       invalidateRecordingCaches(queryClient, 'metadata_update');
-      trackEvent({
-        name: 'ai_metadata_review_resolved',
-        props: {
-          action: vars.action,
-          corrected_field_count: vars.correctedFieldCount,
-        },
-      });
+      // ONLY a real AI-review resolution counts. Firing on every metadata save
+      // — including an ordinary edit long after the review was confirmed —
+      // polluted the correction KPI the extraction tuning depends on.
+      const stillUnresolved = updatedRecording
+        ? hasUnresolvedAiMetadataAttention(updatedRecording)
+        : true;
+      if (vars.wasUnresolvedBefore && !stillUnresolved) {
+        trackEvent({
+          name: 'ai_metadata_review_resolved',
+          props: {
+            action: vars.action,
+            corrected_field_count: vars.correctedFieldCount,
+            source: cameFromAttention ? 'attention_feed' : 'recording_detail',
+            changed_fields: vars.changedFields.join(','),
+            attention_reason_codes: vars.reasonCodes,
+          },
+        });
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     },
     onError: (error: Error) => {
       if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
         return;
       }
-      Alert.alert('Save Failed', METADATA_REVIEW_COPY.failed);
+      Alert.alert(
+        'Save Failed',
+        METADATA_REVIEW_COPY.failed
+      );
     },
   });
 
@@ -400,18 +482,39 @@ export default function RecordingDetailScreen() {
       payload: { review: 'confirmed' },
       action: 'confirmed',
       correctedFieldCount: 0,
+      changedFields: [],
+      wasUnresolvedBefore: !!recording && hasUnresolvedAiMetadataAttention(recording),
+      reasonCodes: preMutationReasonCodes(),
     });
-  }, [metadataMutation]);
+  }, [metadataMutation, preMutationReasonCodes, recording]);
+
+  const handleDismissMetadata = useCallback(() => {
+    metadataMutation.mutate({
+      payload: { review: 'dismissed' },
+      action: 'dismissed',
+      correctedFieldCount: 0,
+      changedFields: [],
+      wasUnresolvedBefore: !!recording && hasUnresolvedAiMetadataAttention(recording),
+      reasonCodes: preMutationReasonCodes(),
+    });
+  }, [metadataMutation, preMutationReasonCodes, recording]);
 
   const handleSaveMetadata = useCallback(
-    (payload: UpdateRecordingMetadata, correctedFieldCount: number) => {
+    (
+      payload: UpdateRecordingMetadata,
+      correctedFieldCount: number,
+      changedFields: RecordingMetadataField[]
+    ) => {
       metadataMutation.mutate({
         payload,
         action: 'corrected',
         correctedFieldCount,
+        changedFields,
+        wasUnresolvedBefore: !!recording && hasUnresolvedAiMetadataAttention(recording),
+        reasonCodes: preMutationReasonCodes(),
       });
     },
-    [metadataMutation]
+    [metadataMutation, preMutationReasonCodes, recording]
   );
 
   const confirmRegenerate = useCallback(() => {
@@ -438,6 +541,34 @@ export default function RecordingDetailScreen() {
   // from here is to delete it.
   const [draftLocalSlotId, setDraftLocalSlotId] = useState<string | null>(null);
   const [draftResolved, setDraftResolved] = useState(false);
+
+  // Attention-feed focus: scroll to the EXISTING source card once it lays out.
+  // The parameter only chooses a scroll target — it can never render a card the
+  // permission gates below would not have rendered anyway.
+  const scrollRef = useRef<ScrollView>(null);
+  const focusTargetsRef = useRef<Record<AttentionFocus, number | null>>({
+    metadata: null,
+    processing: null,
+    quality: null,
+  });
+  const focusAppliedRef = useRef(false);
+
+  useEffect(() => {
+    focusTargetsRef.current = { metadata: null, processing: null, quality: null };
+    focusAppliedRef.current = false;
+  }, [id]);
+
+  const registerFocusTarget = useCallback(
+    (target: AttentionFocus, y: number) => {
+      focusTargetsRef.current[target] = y;
+      if (!requestedFocus || focusAppliedRef.current) return;
+      const offset = focusTargetsRef.current[requestedFocus];
+      if (offset === null || !Number.isFinite(offset)) return;
+      focusAppliedRef.current = true;
+      scrollRef.current?.scrollTo({ y: Math.max(0, offset - 12), animated: true });
+    },
+    [requestedFocus]
+  );
 
   // SOAP Note | Transcript segmented toggle (1C). Transcript tab exists only
   // when the recording is completed AND transcriptText is non-null (old/failed
@@ -495,6 +626,67 @@ export default function RecordingDetailScreen() {
     };
   }, [recording, id]);
 
+  /**
+   * On-device recovery anchor for an audio-unavailable server row. Answers:
+   * does THIS device, for the SIGNED-IN account, still hold a recoverable copy?
+   *
+   * While it is loading — and whenever it comes back `unknown` — there is NO
+   * destructive button. `none` is the only result that unlocks deletion, and
+   * even then the confirmation says the check cannot see other devices or
+   * accounts.
+   */
+  const [localAnchor, setLocalAnchor] = useState<LocalRecoveryAnchor | null>(null);
+  const [anchorAttempt, setAnchorAttempt] = useState(0);
+  const needsAnchorCheck =
+    !!id &&
+    !!recording &&
+    recording.status !== 'draft' &&
+    retryPresentation === 'audio_unavailable';
+
+  useEffect(() => {
+    if (!needsAnchorCheck || !id || !user?.id) {
+      setLocalAnchor(null);
+      return;
+    }
+    let cancelled = false;
+    setLocalAnchor(null);
+    findLocalRecoveryAnchor(user, id)
+      .then((anchor) => {
+        if (!cancelled) setLocalAnchor(anchor);
+      })
+      .catch(() => {
+        // Fail closed: an unexpected throw is an ambiguous read, not "none".
+        if (!cancelled) setLocalAnchor({ kind: 'unknown' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsAnchorCheck, id, user, anchorAttempt]);
+
+  const recheckLocalAnchor = useCallback(() => {
+    setAnchorAttempt((attempt) => attempt + 1);
+  }, []);
+
+  const openAnchorDestination = useCallback(() => {
+    if (!localAnchor) return;
+    Haptics.selectionAsync().catch(() => {});
+    switch (localAnchor.kind) {
+      case 'draft':
+        router.navigate(`/record?draftSlotId=${localAnchor.draftSlotId}` as never);
+        return;
+      case 'saved_session':
+        router.navigate('/record' as never);
+        return;
+      case 'durable_recovery':
+        router.push('/durable-recovery' as never);
+        return;
+      case 'support_recovery':
+        router.push('/recording-recovery' as never);
+        return;
+      default:
+    }
+  }, [localAnchor, router]);
+
   // Record-first product observability. Fires once per completed record-first
   // recording, BEFORE the review-card `shouldShow` gate below — so it captures
   // the null-extraction (`had_metadata=false`) cohort that never shows a card,
@@ -512,26 +704,18 @@ export default function RecordingDetailScreen() {
     });
   }, [id, recordFirstEnabled, recording]);
 
+  // Uses the SHARED unresolved-AI predicate — not `needsMetadataReview`, whose
+  // incomplete gate hides the `review: 'none'` low-confidence cohort entirely.
   useEffect(() => {
-    if (!id || !recordFirstEnabled || recording?.status !== 'completed') return;
-    const reviewState = recording.aiExtractedMetadata?.review;
-    const shouldShow = Boolean(recording.needsMetadataReview) || reviewState === 'unconfirmed';
-    if (!shouldShow || metadataReviewShownIdsRef.current.has(id)) return;
+    if (!id || recording?.status !== 'completed') return;
+    if (!hasUnresolvedAiMetadataAttention(recording)) return;
+    if (metadataReviewShownIdsRef.current.has(id)) return;
     metadataReviewShownIdsRef.current.add(id);
-    const appliedFieldCount = Array.isArray(recording.aiExtractedMetadata?.appliedFields)
-      ? recording.aiExtractedMetadata.appliedFields.length
-      : 0;
     trackEvent({
       name: 'ai_metadata_review_shown',
-      props: { applied_field_count: appliedFieldCount },
+      props: { applied_field_count: validAppliedFields(recording).length },
     });
-  }, [
-    id,
-    recordFirstEnabled,
-    recording?.status,
-    recording?.needsMetadataReview,
-    recording?.aiExtractedMetadata,
-  ]);
+  }, [id, recording]);
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
@@ -590,44 +774,79 @@ export default function RecordingDetailScreen() {
     },
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      invalidateRecordingCaches(queryClient, recording?.status === 'draft' ? 'draft_deleted' : 'detail_deleted');
-      queryClient.removeQueries({ queryKey: ['recording', id] });
+      if (recording?.status === 'draft') {
+        invalidateRecordingCaches(queryClient, 'draft_deleted');
+        queryClient.removeQueries({ queryKey: ['recording', id] });
+      } else if (id) {
+        // A non-draft delete CASCADES the SOAP note and tasks server-side.
+        // Purge every terminal consumer (and the linked patient's cached visit
+        // pages) BEFORE navigating, or offline clinical content for a deleted
+        // recording survives in the persisted snapshot.
+        purgeDeletedRecordingCaches(queryClient, {
+          recordingId: id,
+          patientId: recording?.patientId ?? null,
+        });
+      }
       router.navigate('/recordings');
     },
     onError: (error: Error) => {
       if (id) {
         reportClientError({
-          phase: 'delete_draft',
+          // The destructive non-draft path gets its OWN phase: sharing
+          // `delete_draft` made a regression in it indistinguishable from
+          // ordinary draft cleanup in both the rate-limit key and the
+          // dashboards.
+          phase: recording?.status === 'draft' ? 'delete_draft' : 'delete_recording',
           severity: 'error',
           errorCode: error instanceof ApiError ? error.code ?? String(error.status) : 'unknown',
-          message: error instanceof Error ? error.message : 'Draft delete failed',
+          message: error instanceof Error ? error.message : 'Recording delete failed',
           recordingId: id,
         });
       }
       Alert.alert(
         'Delete Failed',
-        error instanceof ApiError ? error.message : 'Could not delete this draft. Please try again.'
+        error instanceof ApiError ? error.message : DELETE_RECORDING_COPY.deleteFailed
       );
     },
   });
 
   const confirmDeleteDraft = useCallback(() => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-    Alert.alert(
-      'Delete Draft?',
-      'This will permanently remove the draft from your account. This cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            deleteMutation.mutate();
-          },
+    Alert.alert(DELETE_RECORDING_COPY.draftTitle, DELETE_RECORDING_COPY.draftBody, [
+      { text: DELETE_RECORDING_COPY.cancel, style: 'cancel' },
+      {
+        text: DELETE_RECORDING_COPY.delete,
+        style: 'destructive',
+        onPress: () => {
+          deleteMutation.mutate();
         },
-      ]
-    );
+      },
+    ]);
   }, [deleteMutation]);
+
+  /**
+   * Delete an audio-unavailable placeholder. Reachable ONLY after a proven
+   * "no matching anchor on this device for this account" result; the copy is
+   * explicit that other devices/accounts are outside the check, and that the
+   * SOAP note and tasks go with it.
+   */
+  const confirmDeleteUnavailableRecording = useCallback(() => {
+    const isAuthor = !!user?.id && recording?.userId === user.id;
+    const body = isAuthor
+      ? DELETE_RECORDING_COPY.unavailableBody
+      : `${DELETE_RECORDING_COPY.unavailableBody}${DELETE_RECORDING_COPY.colleagueSuffix}`;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    Alert.alert(DELETE_RECORDING_COPY.unavailableTitle, body, [
+      { text: DELETE_RECORDING_COPY.cancel, style: 'cancel' },
+      {
+        text: DELETE_RECORDING_COPY.delete,
+        style: 'destructive',
+        onPress: () => {
+          deleteMutation.mutate();
+        },
+      },
+    ]);
+  }, [deleteMutation, recording?.userId, user?.id]);
 
   const handleResumeDraft = useCallback(() => {
     if (!draftLocalSlotId) return;
@@ -645,12 +864,35 @@ export default function RecordingDetailScreen() {
       router.replace('/recordings');
       return;
     }
+    // Feed entries route deterministically. `router.back()` follows the ROOT
+    // navigator history, which on a cross-tab entry undoes the TAB SWITCH
+    // instead of popping this screen — that is what stranded the Recordings tab
+    // on a detail whose list could never be reached again (verified on an
+    // Android emulator). The feed now lives at `/recordings/attention`, INSIDE
+    // this tab's stack, so naming it is both correct and stable.
+    if (cameFromAttention) {
+      router.replace('/recordings/attention' as never);
+      return;
+    }
     if (router.canGoBack()) {
       router.back();
-    } else {
-      router.replace('/recordings');
+      return;
     }
-  }, [router, from]);
+    // A deep link / cold start has no history to pop.
+    router.replace('/recordings');
+  }, [router, from, cameFromAttention]);
+
+  // Android hardware back must take the SAME route as the header control.
+  useFocusEffect(
+    useCallback(() => {
+      if (!cameFromAttention) return;
+      const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+        router.replace('/recordings/attention' as never);
+        return true;
+      });
+      return () => subscription.remove();
+    }, [cameFromAttention, router])
+  );
 
   const startNewRecording = useCallback(() => {
     router.push('/record');
@@ -711,17 +953,21 @@ export default function RecordingDetailScreen() {
   }
 
   const isProcessing = !['completed', 'failed', 'pending_metadata', 'draft'].includes(recording.status);
-  const retryPresentation = getRecordingRetryPresentation({
-    status: recording.status,
-    audioFileUrl: recording.audioFileUrl,
-    isPollingStale,
-    audioMissingError: retryAudioMissing,
-  });
+  const anchorRecoverable =
+    localAnchor?.kind === 'draft' ||
+    localAnchor?.kind === 'saved_session' ||
+    localAnchor?.kind === 'durable_recovery' ||
+    localAnchor?.kind === 'support_recovery';
+  const anchorActionLabel =
+    localAnchor?.kind === 'draft'
+      ? DELETE_RECORDING_COPY.resumeDraft
+      : localAnchor?.kind === 'saved_session'
+        ? DELETE_RECORDING_COPY.openSavedSessions
+        : DELETE_RECORDING_COPY.openRecovery;
   const hasTranscript =
     recording.status === 'completed' &&
     typeof recording.transcriptText === 'string' &&
     recording.transcriptText.trim().length > 0;
-  const reviewStatus = getRecordingReviewStatus(recording);
   const deleteDraftBlockedReason =
     recordingPermissions.deleteBlockedReason ?? 'You do not have permission to delete this draft.';
   const parsedDate = new Date(recording.createdAt);
@@ -752,11 +998,15 @@ export default function RecordingDetailScreen() {
   // which mirrors the delete/edit guard). Without this the review/add/edit cards
   // render for every viewer, so a vet opening a colleague's recording can tap
   // "Edit Details" and hit a 403 "Save Failed".
+  // Deliberately NOT gated on the current `record_first` capability: disabling
+  // future record-first capture must not orphan existing AI review work. Only
+  // the ambiguous null-extraction add/empty state below stays capability-gated.
+  // `canEdit` still gates every mutation affordance (the server enforces the
+  // same author/owner/admin rule on PATCH /:id/metadata).
   const showMetadataReview =
     recordingPermissions.canEdit &&
-    recordFirstEnabled &&
     recording.status === 'completed' &&
-    (Boolean(recording.needsMetadataReview) || metadataReviewState === 'unconfirmed');
+    hasUnresolvedAiMetadataAttention(recording);
   const showAddMetadata =
     recordingPermissions.canEdit &&
     recordFirstEnabled &&
@@ -770,6 +1020,23 @@ export default function RecordingDetailScreen() {
     !showMetadataReview &&
     !showAddMetadata &&
     Boolean((recording.patientName ?? '').trim());
+  // A practice-wide (read-only) attention row still navigates here. Without
+  // this the destination shows NO trace of what the feed flagged, so the tap
+  // reads as a dead end. Informational only — every mutation affordance stays
+  // behind `canEdit`, and the copy names who can actually fix it.
+  //
+  // Derived from the SAME reason builder the feed uses, not from
+  // `hasUnresolvedAiMetadataAttention` — that predicate returns false for the
+  // `aiExtractedMetadata === null` cohort, which the feed still surfaces as
+  // `metadata_missing` when record-first is enabled. Gating on the predicate
+  // therefore left exactly those practice-wide rows landing on a screen with no
+  // trace of what was flagged. Mirroring the builder makes the two agree by
+  // construction (it applies the same capability gate to that null cohort).
+  const readOnlyMetadataReasons =
+    !recordingPermissions.canEdit && recording.status === 'completed'
+      ? metadataAttentionReasons(recording, { recordFirstEnabled })
+      : [];
+  const showMetadataReadOnlyNotice = readOnlyMetadataReasons.length > 0;
   const renderInfoField = (
     field: RecordingMetadataField | null,
     label: string,
@@ -797,6 +1064,7 @@ export default function RecordingDetailScreen() {
   return (
     <SafeAreaView className="screen">
       <ScrollView
+        ref={scrollRef}
         className="flex-1"
         refreshControl={
           <RefreshControl
@@ -834,50 +1102,72 @@ export default function RecordingDetailScreen() {
         </View>
 
         {showMetadataReview && (
-          <MetadataReviewCard
-            recording={recording}
-            mode="review"
-            saving={metadataMutation.isPending}
-            onConfirm={handleConfirmMetadata}
-            onSave={handleSaveMetadata}
-          />
+          <View onLayout={(event) => registerFocusTarget('metadata', event.nativeEvent.layout.y)}>
+            <MetadataReviewCard
+              recording={recording}
+              mode="review"
+              recordFirstEnabled={recordFirstEnabled}
+              saving={metadataMutation.isPending}
+              onConfirm={handleConfirmMetadata}
+              onDismiss={handleDismissMetadata}
+              onSave={handleSaveMetadata}
+            />
+          </View>
         )}
 
         {showAddMetadata && (
-          <MetadataReviewCard
-            recording={recording}
-            mode="add"
-            saving={metadataMutation.isPending}
-            onConfirm={handleConfirmMetadata}
-            onSave={handleSaveMetadata}
-          />
+          <View onLayout={(event) => registerFocusTarget('metadata', event.nativeEvent.layout.y)}>
+            <MetadataReviewCard
+              recording={recording}
+              mode="add"
+              recordFirstEnabled={recordFirstEnabled}
+              saving={metadataMutation.isPending}
+              onSave={handleSaveMetadata}
+            />
+          </View>
         )}
 
         {showEditMetadata && (
           <MetadataReviewCard
             recording={recording}
             mode="edit"
+            recordFirstEnabled={recordFirstEnabled}
             saving={metadataMutation.isPending}
             onSave={handleSaveMetadata}
           />
         )}
 
+        {showMetadataReadOnlyNotice && (
+          <View onLayout={(event) => registerFocusTarget('metadata', event.nativeEvent.layout.y)}>
+            <Card className="mx-5 mb-4 border-status-warning">
+              <View className="flex-row items-start">
+                <View className="mr-2 mt-0.5" style={{ flexShrink: 0 }}>
+                  <AlertTriangle color={colors.warning600} size={18} />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-body font-semibold text-status-warning mb-1">
+                    {METADATA_REVIEW_COPY.reasonsTitle}
+                  </Text>
+                  {readOnlyMetadataReasons.map((reason) => (
+                    <Text
+                      key={`${reason.code}:${reason.field ?? 'none'}`}
+                      className="text-body-sm text-content-secondary mb-1"
+                      numberOfLines={3}
+                    >
+                      {reason.message}
+                    </Text>
+                  ))}
+                  <Text className="text-caption text-content-tertiary mt-1" numberOfLines={2}>
+                    {ATTENTION_FEED_COPY.readOnlyNote}
+                  </Text>
+                </View>
+              </View>
+            </Card>
+          </View>
+        )}
+
         {/* Patient Info */}
         <Card className="m-5 mt-4">
-          {recording.status === 'completed' && reviewStatus ? (
-            <View className="flex-row items-center justify-between mb-3 pb-3 border-b border-border-default">
-              <Text className="text-caption text-content-tertiary font-medium uppercase">
-                Review
-              </Text>
-              <ReviewStatusChip
-                status={reviewStatus}
-                loading={reviewMutation.isPending}
-                onPress={() => {
-                  reviewMutation.mutate(reviewStatus !== 'reviewed');
-                }}
-              />
-            </View>
-          ) : null}
           <View className="flex-row flex-wrap">
             {renderInfoField('patientName', 'Patient', recording.patientName)}
             {/* pimsPatientId is vet-entered, never AI-filled → no sparkle (field null). */}
@@ -900,31 +1190,91 @@ export default function RecordingDetailScreen() {
         )}
 
         {retryPresentation === 'audio_unavailable' && (
-          <Card className="mx-5 mb-4 border-status-warning">
-            <View className="flex-row items-start">
-              <View className="mr-2 mt-0.5">
-                <AlertTriangle color={colors.warning600} size={18} />
-              </View>
-              <View className="flex-1">
-                <Text className="text-body font-semibold text-status-warning mb-1">
-                  Audio unavailable
-                </Text>
-                <Text className="text-body-sm text-content-tertiary mb-3">
-                  This recording no longer has audio to process. Start a new recording to continue.
-                </Text>
-                <View className="self-start">
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onPress={startNewRecording}
-                    accessibilityLabel="Start new recording"
-                  >
-                    Start New Recording
-                  </Button>
+          <View onLayout={(event) => registerFocusTarget('processing', event.nativeEvent.layout.y)}>
+            <Card className="mx-5 mb-4 border-status-warning">
+              <View className="flex-row items-start">
+                <View className="mr-2 mt-0.5">
+                  {anchorRecoverable ? (
+                    <LifeBuoy color={colors.warning600} size={18} />
+                  ) : (
+                    <AlertTriangle color={colors.warning600} size={18} />
+                  )}
+                </View>
+                <View className="flex-1">
+                  <Text className="text-body font-semibold text-status-warning mb-1">
+                    Audio unavailable
+                  </Text>
+                  <Text className="text-body-sm text-content-tertiary mb-3">
+                    This recording no longer has audio to process. Start a new recording to continue.
+                  </Text>
+
+                  {/* A proven on-device copy always wins over deletion. */}
+                  {anchorRecoverable ? (
+                    <View className="self-start">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onPress={openAnchorDestination}
+                        accessibilityLabel={anchorActionLabel}
+                      >
+                        {anchorActionLabel}
+                      </Button>
+                    </View>
+                  ) : null}
+
+                  {/* Loading or ambiguous → guidance + recheck, never a delete. */}
+                  {!localAnchor || localAnchor.kind === 'unknown' ? (
+                    <View>
+                      <Text className="text-body-sm text-content-tertiary mb-2">
+                        {localAnchor?.kind === 'unknown'
+                          ? DELETE_RECORDING_COPY.unknownLocalState
+                          : DELETE_RECORDING_COPY.checking}
+                      </Text>
+                      {localAnchor?.kind === 'unknown' ? (
+                        <View className="self-start">
+                          <Button variant="secondary" size="sm" onPress={recheckLocalAnchor}>
+                            {DELETE_RECORDING_COPY.recheck}
+                          </Button>
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
+
+                  {localAnchor?.kind === 'none' && !recordingPermissions.canDelete ? (
+                    <Text className="text-body-sm text-content-tertiary mb-2">
+                      {DELETE_RECORDING_COPY.coordinate}
+                    </Text>
+                  ) : null}
+
+                  <View className="flex-row flex-wrap gap-2 mt-1">
+                    {/* Start-new remediation is role-gated too: the server
+                        rejects a recording attempt from support staff. */}
+                    {canRetryProcessing ? (
+                      <Button
+                        variant={anchorRecoverable ? 'secondary' : 'primary'}
+                        size="sm"
+                        onPress={startNewRecording}
+                        accessibilityLabel="Start new recording"
+                      >
+                        Start New Recording
+                      </Button>
+                    ) : null}
+                    {localAnchor?.kind === 'none' && recordingPermissions.canDelete ? (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onPress={confirmDeleteUnavailableRecording}
+                        loading={deleteMutation.isPending}
+                        accessibilityLabel={DELETE_RECORDING_COPY.deleteUnavailable}
+                      >
+                        {DELETE_RECORDING_COPY.deleteUnavailable}
+                      </Button>
+                    ) : null}
+                  </View>
                 </View>
               </View>
-            </View>
-          </Card>
+            </Card>
+          </View>
         )}
 
         {/* Reprocess — re-transcribe + regenerate SOAP with chosen models. Own card at top level so
@@ -954,7 +1304,10 @@ export default function RecordingDetailScreen() {
 
         {/* Processing Status */}
         {isProcessing && (
-          <Card className="mx-5 mb-4">
+          <Card
+            className="mx-5 mb-4"
+            onLayout={(event) => registerFocusTarget('processing', event.nativeEvent.layout.y)}
+          >
             <Text className="text-body-lg font-semibold text-content-primary mb-1">
               {RECORDING_DETAIL_COPY.processingTitle}
             </Text>
@@ -968,29 +1321,40 @@ export default function RecordingDetailScreen() {
         {recording.status === 'retry_scheduled' &&
           !isPollingStale &&
           retryPresentation === 'retry' && (
-            <Card className="mx-5 mb-4 border-status-warning">
+            <Card
+              className="mx-5 mb-4 border-status-warning"
+              onLayout={(event) => registerFocusTarget('processing', event.nativeEvent.layout.y)}
+            >
               <Text className="text-body font-semibold text-status-warning mb-1">
                 Retry scheduled
               </Text>
               <Text className="text-body-sm text-content-tertiary mb-3">
                 Processing will retry automatically. You can also retry it now.
               </Text>
-              <View className="self-start">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onPress={() => retryMutation.mutate()}
-                  loading={retryMutation.isPending}
-                >
-                  Retry Now
-                </Button>
-              </View>
+              {/* POST /:id/retry is org-scoped for owner/admin/veterinarian and
+                  does NOT require authorship — but support staff would be
+                  rejected, so never show them the control. */}
+              {canRetryProcessing ? (
+                <View className="self-start">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onPress={() => retryMutation.mutate()}
+                    loading={retryMutation.isPending}
+                  >
+                    Retry Now
+                  </Button>
+                </View>
+              ) : null}
             </Card>
           )}
 
         {/* Stale processing warning — shown after 30 min of non-terminal status */}
         {isPollingStale && retryPresentation === 'retry' && (
-          <Card className="mx-5 mb-4 border-status-warning">
+          <Card
+            className="mx-5 mb-4 border-status-warning"
+            onLayout={(event) => registerFocusTarget('processing', event.nativeEvent.layout.y)}
+          >
             <View className="flex-row items-start">
               <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>
               <View className="flex-1">
@@ -1000,16 +1364,18 @@ export default function RecordingDetailScreen() {
                 <Text className="text-body-sm text-content-tertiary mb-2">
                   This may indicate a server issue. You can wait or retry processing.
                 </Text>
-                <View className="self-start">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onPress={() => retryMutation.mutate()}
-                    loading={retryMutation.isPending}
-                  >
-                    Retry Processing
-                  </Button>
-                </View>
+                {canRetryProcessing ? (
+                  <View className="self-start">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onPress={() => retryMutation.mutate()}
+                      loading={retryMutation.isPending}
+                    >
+                      Retry Processing
+                    </Button>
+                  </View>
+                ) : null}
               </View>
             </View>
           </Card>
@@ -1114,7 +1480,10 @@ export default function RecordingDetailScreen() {
 
         {/* Failed */}
         {recording.status === 'failed' && (
-          <Animated.View entering={FadeInUp.duration(300)}>
+          <Animated.View
+            entering={FadeInUp.duration(300)}
+            onLayout={(event) => registerFocusTarget('processing', event.nativeEvent.layout.y)}
+          >
             <Card className="mx-5 mb-4 border-status-danger">
               <Text className="text-body-lg font-semibold text-status-danger mb-1">
                 {RECORDING_DETAIL_COPY.processingFailedTitle}
@@ -1123,7 +1492,7 @@ export default function RecordingDetailScreen() {
                 {ERROR_COPY.processingFailedBody}
               </Text>
               <View className="self-start flex-row gap-2">
-                {retryPresentation === 'retry' && (
+                {retryPresentation === 'retry' && canRetryProcessing && (
                   <Button
                     variant="primary"
                     size="sm"
@@ -1154,7 +1523,10 @@ export default function RecordingDetailScreen() {
 
         {/* Transcript Quality Warnings */}
         {recording.status === 'completed' && Array.isArray(recording.qualityWarnings) && recording.qualityWarnings.length > 0 && (
-          <Animated.View entering={FadeInUp.duration(300)}>
+          <Animated.View
+            entering={FadeInUp.duration(300)}
+            onLayout={(event) => registerFocusTarget('quality', event.nativeEvent.layout.y)}
+          >
             <Card className="mx-5 mb-4 border-status-warning">
               <View className="flex-row items-start">
                 <View className="mr-2 mt-0.5"><AlertTriangle color={colors.warning600} size={18} /></View>

@@ -71,7 +71,13 @@ export function ListItem({
           <View className="shrink flex-1">
             {renderText(title, cx('text-body font-semibold text-content-primary', titleClassName))}
           </View>
-          {badge ? <View className="ml-2">{badge}</View> : null}
+          {/* flexShrink:0 — the title beside it is the flexible one, so a badge
+              must never be compressed into an ellipsis by a long title. */}
+          {badge ? (
+            <View className="ml-2" style={{ flexShrink: 0 }}>
+              {badge}
+            </View>
+          ) : null}
         </View>
         {subtitle ? (
           <View className="mt-0.5">

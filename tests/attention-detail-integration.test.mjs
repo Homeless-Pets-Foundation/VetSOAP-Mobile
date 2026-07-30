@@ -416,11 +416,53 @@ test('a feed row is dated by visit date, falling back to last-updated', () => {
   assert.doesNotMatch(metaFn, /formatShortDate|submittedAtMs|updatedAtMs/);
 
   // Android under-measures short Text in a flex-row and clips the last glyph.
+  // `flexShrink: 0` alone was NOT enough: on a physical Pixel 10 Pro XL at font
+  // scale 1.15 the badge measured its own box at 114px and rendered "Jul 30" as
+  // "Jul …". The full shared-Button mitigation — trailing space + paddingRight
+  // — is what actually reserves the glyph.
   const badgeBlock = SECTION.slice(SECTION.indexOf('badge={'), SECTION.indexOf('showChevron'));
-  assert.match(badgeBlock, /flexShrink: 0/);
+  assert.match(badgeBlock, /flexShrink: 0, paddingRight: 2/);
+  assert.match(badgeBlock, /\{`\$\{dateLabel\} `\}/);
 
-  // Screen readers get the date too.
+  // Screen readers get the date too, WITHOUT the layout padding space.
   assert.match(SECTION, /\$\{item\.accessibilityLabel\}\. \$\{dateLabel\}/);
+});
+
+test('a badge is never compressed by a long title', async () => {
+  // The date lives in ListItem's `badge` slot, so the slot itself must not be
+  // shrinkable — the title beside it is the flexible one.
+  const listItem = await read('src/components/ui/ListItem.tsx');
+  const badgeSlot = listItem.slice(listItem.indexOf('{badge ?'), listItem.indexOf('{subtitle ?'));
+  assert.match(badgeSlot, /style=\{\{ flexShrink: 0 \}\}/);
+});
+
+test('the attention screen renders every loaded group, with no collapsed state', async () => {
+  // 2026-07-30 owner decision, from a physical Pixel: "Across the practice"
+  // started collapsed, so a practice whose rows are ALL read-only showed a lone
+  // "(15)" header above blank space, with no cue that the header was a button.
+  // Ordering still protects actionable work — "Needs you" is pushed first.
+  const screen = await read('app/(app)/(tabs)/recordings/attention.tsx');
+
+  // No collapse state, and no header-as-toggle.
+  assert.doesNotMatch(screen, /practiceExpanded|setPracticeExpanded/);
+  assert.doesNotMatch(screen, /collapsible/);
+  assert.doesNotMatch(screen, /ChevronDown|ChevronRight/);
+
+  // Each group hands SectionList its real rows, never a conditional empty array.
+  const sectionsBlock = screen.slice(
+    screen.indexOf('const sections = useMemo'),
+    screen.indexOf('const goBack = useCallback')
+  );
+  assert.match(sectionsBlock, /data: feed\.groups\.needsYou,/);
+  assert.match(sectionsBlock, /data: feed\.groups\.acrossPractice,/);
+
+  // The section header is a plain label, not a Pressable.
+  const headerBlock = screen.slice(
+    screen.indexOf('renderSectionHeader='),
+    screen.indexOf('ListHeaderComponent=')
+  );
+  assert.doesNotMatch(headerBlock, /Pressable/);
+  assert.match(headerBlock, /accessibilityRole="header"/);
 });
 
 test('device-local summary rows carry no timestamps, so they render no date', () => {

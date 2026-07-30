@@ -163,6 +163,28 @@ The existing `doesNotMatch` fences at `:295-296` target the old badge classNames
    - If this org has no appointment type or model clearing 5 recordings, confirm the whole section (header included) is gone rather than a bare header sitting over nothing — that is the intended behavior per Decisions, and it is the one outcome a reviewer is most likely to mistake for a bug.
 7. Confirm the breakdown filter did not leak into the Providers section. This is covered **in source** by the `quality.byProvider.slice(0, 5).map` assertion in §4, not on-device. An on-device check is not a reliable signal — the server sorts `byProvider` by `completedRecordings` desc then `fullName` asc (`docs/clinic-quality-analytics-dashboard-plan.md:88`) and the card slices to 5, so a 0-recording provider is only *visible* when the org has fewer than 5 active providers. If this test org does, also eyeball that the 0-recording provider is still listed.
 
+## Post-review amendments (2026-07-30, PR #160)
+
+Three changes landed after the plan was written. The first is an owner decision, the second and third came out of Codex review and self-review on the PR.
+
+1. **`Reprocessed` metric tile resolved** — the open item flagged under Decisions is closed. The tile now renders the raw `reprocessCount` relabeled `Reprocesses` (`QUALITY_ANALYTICS_COPY.metrics.reprocesses`) in both `SummaryBlock` and `BreakdownRow`, so tile and alert both speak counts and a `200%` tile can no longer sit above a count-based sentence. The denominator stays on screen via the `Completed` tile and the `N rec` row header. Consequence: `reprocessRate` is now displayed nowhere and only drives the alert threshold.
+
+2. **Breakdown retention widened beyond `completedRecordings` (Codex P2).** Filtering rows on the completion sample alone hid groups with real count-based problems: an appointment type with 20 failed uploads and zero completions vanished from the breakdown while the org aggregate still reported the failures. `visibleBreakdownItems` now keeps a group when `completedRecordings >= QUALITY_BREAKDOWN_MIN_RECORDINGS` **or** `hasDisplayableIssueCounts(item)`.
+
+   Codex's suggested remedy on its own would have regressed defect 3, because `BreakdownRow` had no tile for `failedUploadAttempts` or `silentAudioEvents` — a retained group would have rendered as exactly the empty `0 rec` / `n/a`-everywhere shell this plan exists to remove. So the retention half is paired with two additions:
+   - `BreakdownRow` gains `Upload issues` and `Silent audio` tiles (labels already existed in `metrics`, same order as `SummaryBlock`), giving a retained group a surface that states why it is on screen.
+   - Rate-based alerts (`missingDetails`, `soapEdited`) additionally require `completedRecordings >= QUALITY_BREAKDOWN_MIN_RECORDINGS`, so a group retained on counts alone cannot assert "100% of notes edited" off two recordings. Count-based alerts keep no such gate — "6 reprocesses" is true at any sample size. Groups that already cleared the minimum are unaffected.
+
+   `hasDisplayableIssueCounts` deliberately excludes `missingMetadataCount` and `soapEditedCount`: the row surfaces those only as rates, and those rates are now suppressed below the minimum, so retaining a group for them alone would put back the empty row.
+
+   **Residual, accepted:** the row cap is still applied by completion volume, so a zero-completion problem group can be cut when more than `QUALITY_BREAKDOWN_MAX_ROWS` groups qualify. Reserving slots for problem groups is a product decision and is deliberately not taken as a silent default — it belongs with the existing "top 5 with no signal that more exist" open item under Decisions.
+
+3. **Test gaps closed, found by mutation testing.** Two fences were verified by breaking the code and confirming the suite goes red:
+   - `formatIssueAlert`'s placeholder fills are pinned **per switch branch**. The first version searched for each placeholder anywhere in the file, and a mutant that broke `{pct}` in the `missingDetails` branch survived it — the `soapEdited` branch's own `{pct}` fill satisfied the match.
+   - `hasActivity` had **no behavioral test** despite driving the card's empty-state gate; mutating it to always-true passed the whole suite. It now has one covering each counter individually, the all-zero case, and that a stale rate with no counts behind it is not activity.
+
+   Note for anyone repeating this: the `hasActivity` and `hasDisplayableIssueCounts` bodies share a substring, so a first-occurrence source mutation aimed at one silently rewrites the other. Anchor on the function signature and diff against the pre-mutation file, not against `HEAD`.
+
 ## Follow-up (out of scope here)
 
 Two Connect-side asks, both out of scope here:

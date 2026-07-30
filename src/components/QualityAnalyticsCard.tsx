@@ -117,8 +117,15 @@ function BreakdownRow({ item, maxCompleted }: { item: QualityBreakdownSummary; m
       <View className="h-1.5 rounded-full bg-surface-sunken overflow-hidden mt-2">
         <View className="h-full rounded-full" style={{ width: barWidth, backgroundColor: colors.brand500 }} />
       </View>
+      {/* Upload issues and Silent audio are the surface that makes a retained
+          low-completion group meaningful: `visibleBreakdownItems` keeps a group
+          on those counts alone, so without a tile for each the row would render
+          as the empty "0 rec / n/a everywhere" shell. Same labels and order as
+          SummaryBlock. */}
       <View className="flex-row flex-wrap mt-3">
         <Metric label={QUALITY_ANALYTICS_COPY.metrics.averageLength} value={formatDuration(item.averageRecordingLengthSeconds)} />
+        <Metric label={QUALITY_ANALYTICS_COPY.metrics.uploadIssues} value={item.failedUploadAttempts} />
+        <Metric label={QUALITY_ANALYTICS_COPY.metrics.silentAudio} value={item.silentAudioEvents} />
         <Metric label={QUALITY_ANALYTICS_COPY.metrics.reprocesses} value={item.reprocessCount} />
         <Metric label={QUALITY_ANALYTICS_COPY.metrics.soapEditRate} value={formatRate(item.soapEditRate)} />
         <Metric

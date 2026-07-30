@@ -70,6 +70,25 @@ function breakdown(overrides = {}) {
   };
 }
 
+// A breakdown group with every count-based problem zeroed. Tests of the
+// completion-sample rule must use this: `breakdown()` inherits
+// failedUploadAttempts: 1 and reprocessCount: 2 from `summary()`, which the
+// count-based retention path would keep regardless of sample size — a
+// sample-filter test built on it passes for the wrong reason.
+function cleanBreakdown(overrides = {}) {
+  return breakdown({
+    failedUploadAttempts: 0,
+    silentAudioEvents: 0,
+    reprocessCount: 0,
+    reprocessRate: 0,
+    soapEditedCount: 0,
+    soapEditRate: 0,
+    missingMetadataCount: 0,
+    missingMetadataRate: 0,
+    ...overrides,
+  });
+}
+
 function envelope(overrides = {}) {
   return {
     periodDays: 30,
@@ -303,6 +322,46 @@ test('QualityAnalyticsCard breakdown rows do not force metric text into one clip
   assert.match(source, /<Metric label=\{QUALITY_ANALYTICS_COPY\.metrics\.averageLength\}/);
 });
 
+test('hasActivity treats every counter as activity and an all-zero summary as none', async () => {
+  const { hasActivity } = await loadQualityAnalytics();
+
+  // This drives the card's "No clinic quality data yet" gate: a false negative
+  // hides a practice's real numbers behind an empty state, a false positive
+  // renders an all-zero shell. Each counter is load-bearing on its own.
+  const quiet = summary({
+    completedRecordings: 0,
+    failedUploadAttempts: 0,
+    silentAudioEvents: 0,
+    reprocessCount: 0,
+    soapEditedCount: 0,
+    missingMetadataCount: 0,
+  });
+
+  assert.equal(hasActivity(quiet), false);
+
+  for (const field of [
+    'completedRecordings',
+    'failedUploadAttempts',
+    'silentAudioEvents',
+    'reprocessCount',
+    'soapEditedCount',
+    'missingMetadataCount',
+  ]) {
+    assert.equal(
+      hasActivity({ ...quiet, [field]: 1 }),
+      true,
+      `${field} alone must count as activity`
+    );
+  }
+
+  // Rates are not activity: a stale rate with no counts behind it must not
+  // keep the empty state from showing.
+  assert.equal(
+    hasActivity({ ...quiet, reprocessRate: 5, soapEditRate: 1, missingMetadataRate: 1 }),
+    false
+  );
+});
+
 test('visibleBreakdownItems hides groups whose sample is too small to mean anything', async () => {
   const { visibleBreakdownItems, QUALITY_BREAKDOWN_MIN_RECORDINGS } = await loadQualityAnalytics();
 
@@ -310,24 +369,18 @@ test('visibleBreakdownItems hides groups whose sample is too small to mean anyth
 
   const visible = visibleBreakdownItems([
     breakdown({ key: 'a', label: 'Solid', completedRecordings: 12 }),
-    breakdown({ key: 'b', label: 'gemini-3.5-flash', completedRecordings: 1 }),
-    breakdown({
+    cleanBreakdown({ key: 'b', label: 'gemini-3.5-flash', completedRecordings: 1 }),
+    cleanBreakdown({
       key: 'c',
       label: 'Unknown model',
-      ...summary({
-        completedRecordings: 0,
-        averageRecordingLengthSeconds: 0,
-        failedUploadAttempts: 0,
-        reprocessCount: 0,
-        reprocessRate: null,
-        soapEditedCount: 0,
-        soapEditRate: null,
-        missingMetadataCount: 0,
-        missingMetadataRate: null,
-        processingLatencyAvgSeconds: null,
-        processingLatencyP50Seconds: null,
-        processingLatencyP90Seconds: null,
-      }),
+      completedRecordings: 0,
+      averageRecordingLengthSeconds: 0,
+      reprocessRate: null,
+      soapEditRate: null,
+      missingMetadataRate: null,
+      processingLatencyAvgSeconds: null,
+      processingLatencyP50Seconds: null,
+      processingLatencyP90Seconds: null,
     }),
   ]);
 
@@ -337,12 +390,58 @@ test('visibleBreakdownItems hides groups whose sample is too small to mean anyth
   );
 });
 
+test('visibleBreakdownItems keeps a low-completion group carrying count-based problems', async () => {
+  const { visibleBreakdownItems, hasDisplayableIssueCounts } = await loadQualityAnalytics();
+
+  // The regression this guards: gating on completedRecordings alone hid an
+  // appointment type with 20 failed uploads and zero completions — the org
+  // aggregate reported the failures while the breakdown naming the culprit
+  // disappeared.
+  const visible = visibleBreakdownItems([
+    cleanBreakdown({ key: 'uploads', label: 'Wellness', completedRecordings: 0, failedUploadAttempts: 20 }),
+    cleanBreakdown({ key: 'silent', label: 'Surgery', completedRecordings: 2, silentAudioEvents: 3 }),
+    cleanBreakdown({ key: 'reproc', label: 'Dental', completedRecordings: 1, reprocessCount: 4 }),
+    cleanBreakdown({ key: 'quiet', label: 'Exam', completedRecordings: 3 }),
+  ]);
+
+  assert.deepEqual(
+    visible.map((item) => item.key).sort(),
+    ['reproc', 'silent', 'uploads'],
+    'groups with displayable count-based problems must survive the sample filter'
+  );
+
+  assert.equal(hasDisplayableIssueCounts(cleanBreakdown({ failedUploadAttempts: 1 })), true);
+  assert.equal(hasDisplayableIssueCounts(cleanBreakdown({ silentAudioEvents: 1 })), true);
+  assert.equal(hasDisplayableIssueCounts(cleanBreakdown({ reprocessCount: 1 })), true);
+  assert.equal(hasDisplayableIssueCounts(cleanBreakdown({})), false);
+});
+
+test('visibleBreakdownItems does not retain a group for rate numerators it cannot display', async () => {
+  const { visibleBreakdownItems, hasDisplayableIssueCounts } = await loadQualityAnalytics();
+
+  // The row surfaces missing details and edited notes only as rates, and rate
+  // alerts are suppressed below the sample minimum — so retaining a group for
+  // those numerators alone would re-ship the empty "0 rec / n/a" row.
+  const onlyRateNumerators = cleanBreakdown({
+    key: 'meta',
+    label: 'Recheck',
+    completedRecordings: 2,
+    missingMetadataCount: 3,
+    missingMetadataRate: 0.9,
+    soapEditedCount: 2,
+    soapEditRate: 0.9,
+  });
+
+  assert.equal(hasDisplayableIssueCounts(onlyRateNumerators), false);
+  assert.deepEqual(visibleBreakdownItems([onlyRateNumerators]), []);
+});
+
 test('visibleBreakdownItems keeps a group at exactly the minimum', async () => {
   const { visibleBreakdownItems } = await loadQualityAnalytics();
 
   const visible = visibleBreakdownItems([
-    breakdown({ key: 'at-min', completedRecordings: 5 }),
-    breakdown({ key: 'below-min', completedRecordings: 4 }),
+    cleanBreakdown({ key: 'at-min', completedRecordings: 5 }),
+    cleanBreakdown({ key: 'below-min', completedRecordings: 4 }),
   ]);
 
   assert.deepEqual(
@@ -402,8 +501,8 @@ test('visibleBreakdownItems returns an empty list when no group clears the minim
 
   assert.deepEqual(
     visibleBreakdownItems([
-      breakdown({ key: 'a', completedRecordings: 4 }),
-      breakdown({ key: 'b', completedRecordings: 1 }),
+      cleanBreakdown({ key: 'a', completedRecordings: 4 }),
+      cleanBreakdown({ key: 'b', completedRecordings: 1 }),
     ]),
     []
   );
@@ -414,7 +513,12 @@ test('breakdownIssueAlerts states the missing-details number, not a bare label',
   const { breakdownIssueAlerts } = await loadQualityAnalytics();
 
   const alerts = breakdownIssueAlerts(
-    summary({ missingMetadataRate: 0.4, missingMetadataCount: 3, reprocessRate: 0.1 })
+    summary({
+      completedRecordings: 8,
+      missingMetadataRate: 0.4,
+      missingMetadataCount: 3,
+      reprocessRate: 0.1,
+    })
   );
 
   assert.deepEqual(plain(alerts), [{ kind: 'missingDetails', pct: 40 }]);
@@ -442,7 +546,12 @@ test('breakdownIssueAlerts stays silent below every threshold', async () => {
   assert.deepEqual(
     plain(
       breakdownIssueAlerts(
-        summary({ missingMetadataRate: 0.19, reprocessRate: 0.19, soapEditRate: 0.49 })
+        summary({
+          completedRecordings: 8,
+          missingMetadataRate: 0.19,
+          reprocessRate: 0.19,
+          soapEditRate: 0.49,
+        })
       )
     ),
     []
@@ -455,7 +564,12 @@ test('breakdownIssueAlerts treats null rates as no signal', async () => {
   assert.deepEqual(
     plain(
       breakdownIssueAlerts(
-        summary({ missingMetadataRate: null, reprocessRate: null, soapEditRate: null })
+        summary({
+          completedRecordings: 8,
+          missingMetadataRate: null,
+          reprocessRate: null,
+          soapEditRate: null,
+        })
       )
     ),
     []
@@ -468,13 +582,48 @@ test('breakdownIssueAlerts caps at two alerts, keeping missing details and repro
   assert.equal(QUALITY_BREAKDOWN_MAX_ALERTS, 2);
 
   const alerts = breakdownIssueAlerts(
-    summary({ missingMetadataRate: 0.4, reprocessRate: 0.5, soapEditRate: 0.9 })
+    summary({
+      completedRecordings: 9,
+      missingMetadataRate: 0.4,
+      reprocessRate: 0.5,
+      soapEditRate: 0.9,
+    })
   );
 
   assert.deepEqual(plain(alerts), [
     { kind: 'missingDetails', pct: 40 },
-    { kind: 'reprocessed', count: 2, recordings: 4 },
+    { kind: 'reprocessed', count: 2, recordings: 9 },
   ]);
+});
+
+test('breakdownIssueAlerts suppresses rate alerts below the sample minimum but keeps counts', async () => {
+  const { breakdownIssueAlerts } = await loadQualityAnalytics();
+
+  // A group retained on count-based problems alone must not assert a percentage
+  // off one or two recordings. Counts stay — "6 reprocesses" is true at any
+  // sample size.
+  const tinySample = {
+    completedRecordings: 2,
+    missingMetadataRate: 0.9,
+    missingMetadataCount: 2,
+    soapEditRate: 0.9,
+    soapEditedCount: 2,
+    reprocessRate: 3,
+    reprocessCount: 6,
+  };
+
+  assert.deepEqual(plain(breakdownIssueAlerts(summary(tinySample))), [
+    { kind: 'reprocessed', count: 6, recordings: 2 },
+  ]);
+
+  // The same rates at an adequate sample do produce their alerts, so the gate
+  // is the sample size and nothing else.
+  assert.deepEqual(
+    plain(breakdownIssueAlerts(summary({ ...tinySample, completedRecordings: 5 }))).map(
+      (alert) => alert.kind
+    ),
+    ['missingDetails', 'reprocessed']
+  );
 });
 
 test('breakdownIssueAlerts requires a non-zero numerator for every alert', async () => {
@@ -483,7 +632,12 @@ test('breakdownIssueAlerts requires a non-zero numerator for every alert', async
   assert.deepEqual(
     plain(
       breakdownIssueAlerts(
-        summary({ missingMetadataRate: 0.4, missingMetadataCount: 0, reprocessRate: 0.1 })
+        summary({
+          completedRecordings: 8,
+          missingMetadataRate: 0.4,
+          missingMetadataCount: 0,
+          reprocessRate: 0.1,
+        })
       )
     ),
     []
@@ -492,6 +646,7 @@ test('breakdownIssueAlerts requires a non-zero numerator for every alert', async
     plain(
       breakdownIssueAlerts(
         summary({
+          completedRecordings: 8,
           soapEditRate: 0.9,
           soapEditedCount: 0,
           missingMetadataRate: 0.1,
@@ -504,7 +659,12 @@ test('breakdownIssueAlerts requires a non-zero numerator for every alert', async
   assert.deepEqual(
     plain(
       breakdownIssueAlerts(
-        summary({ reprocessRate: 0.5, reprocessCount: 0, missingMetadataRate: 0.1 })
+        summary({
+          completedRecordings: 8,
+          reprocessRate: 0.5,
+          reprocessCount: 0,
+          missingMetadataRate: 0.1,
+        })
       )
     ),
     []
@@ -594,6 +754,17 @@ test('QualityAnalyticsCard reports reprocessing as a count everywhere, never a r
   );
   assert.doesNotMatch(source, /formatRate\(summary\.reprocessRate\)/);
   assert.doesNotMatch(source, /formatRate\(item\.reprocessRate\)/);
+
+  // A group kept purely on count-based problems needs a tile for each of them,
+  // or the retained row renders as the empty "0 rec / n/a everywhere" shell.
+  assert.match(
+    source,
+    /<Metric label=\{QUALITY_ANALYTICS_COPY\.metrics\.uploadIssues\} value=\{item\.failedUploadAttempts\} \/>/
+  );
+  assert.match(
+    source,
+    /<Metric label=\{QUALITY_ANALYTICS_COPY\.metrics\.silentAudio\} value=\{item\.silentAudioEvents\} \/>/
+  );
 
   // The catalog must not carry a rate-shaped reprocess label again.
   assert.doesNotMatch(copy, /reprocessRate:/);

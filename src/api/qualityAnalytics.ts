@@ -96,16 +96,51 @@ export function hasActivity(summary: QualitySummary): boolean {
 }
 
 /**
- * Filter, sort and cap breakdown groups for display. The sort is load-bearing,
- * not cosmetic: `byModel` / `byAppointmentType` have no documented server
- * ordering, so the client cannot assume the top groups arrive first. Never
- * sorts the caller's array — `filter` already returns a copy.
+ * Count-based problems a breakdown row can actually DISPLAY, each with its own
+ * metric tile. Retention keys off this rather than `hasActivity` because a row
+ * is only worth rendering if it can say something true about the group.
+ *
+ * `missingMetadataCount` and `soapEditedCount` are deliberately excluded: the
+ * row surfaces those only as rates, and rate alerts are suppressed below the
+ * sample minimum, so retaining a group for them alone would re-ship the empty
+ * "0 rec / n/a everywhere" row this change exists to remove.
+ */
+export function hasDisplayableIssueCounts(summary: QualitySummary): boolean {
+  return (
+    summary.failedUploadAttempts > 0 ||
+    summary.silentAudioEvents > 0 ||
+    summary.reprocessCount > 0
+  );
+}
+
+/**
+ * Filter, sort and cap breakdown groups for display.
+ *
+ * A group is kept when its completion sample clears the minimum OR it carries
+ * count-based problems. Gating on `completedRecordings` alone hid real
+ * findings: an appointment type with 20 failed uploads and zero completions is
+ * exactly what an owner needs to see, and the org aggregate would report the
+ * failures while the breakdown identifying the culprit disappeared.
+ *
+ * The sort is load-bearing, not cosmetic: `byModel` / `byAppointmentType` have
+ * no documented server ordering, so the client cannot assume the top groups
+ * arrive first. Never sorts the caller's array — `filter` already returns a
+ * copy.
+ *
+ * Residual: the row cap is still applied by completion volume, so a
+ * zero-completion problem group can be cut when more than
+ * QUALITY_BREAKDOWN_MAX_ROWS groups qualify. Reserving slots for problem groups
+ * is a product decision, not a silent default.
  */
 export function visibleBreakdownItems(
   items: QualityBreakdownSummary[]
 ): QualityBreakdownSummary[] {
   return items
-    .filter((item) => item.completedRecordings >= QUALITY_BREAKDOWN_MIN_RECORDINGS)
+    .filter(
+      (item) =>
+        item.completedRecordings >= QUALITY_BREAKDOWN_MIN_RECORDINGS ||
+        hasDisplayableIssueCounts(item)
+    )
     .sort(
       (a, b) => b.completedRecordings - a.completedRecordings || a.label.localeCompare(b.label)
     )
@@ -122,8 +157,22 @@ export function visibleBreakdownItems(
 export function breakdownIssueAlerts(summary: QualitySummary): QualityIssueAlert[] {
   const alerts: QualityIssueAlert[] = [];
 
+  // Rate-based alerts additionally require a sample behind them. A group can be
+  // retained on count-based problems alone (20 failed uploads, zero
+  // completions), and stating "100% of notes edited" off one or two recordings
+  // asserts far more than the data supports. Count-based alerts need no such
+  // gate — "6 reprocesses" is true at any sample size. Groups that clear the
+  // minimum are unaffected, so this changes nothing for rows that already
+  // rendered.
+  const rateSampleIsBigEnough =
+    summary.completedRecordings >= QUALITY_BREAKDOWN_MIN_RECORDINGS;
+
   const missingRate = summary.missingMetadataRate ?? 0;
-  if (missingRate >= QUALITY_MISSING_DETAILS_ALERT_RATE && summary.missingMetadataCount > 0) {
+  if (
+    rateSampleIsBigEnough &&
+    missingRate >= QUALITY_MISSING_DETAILS_ALERT_RATE &&
+    summary.missingMetadataCount > 0
+  ) {
     alerts.push({ kind: 'missingDetails', pct: Math.round(missingRate * 100) });
   }
 
@@ -143,7 +192,11 @@ export function breakdownIssueAlerts(summary: QualitySummary): QualityIssueAlert
   }
 
   const soapEditRate = summary.soapEditRate ?? 0;
-  if (soapEditRate >= QUALITY_SOAP_EDIT_ALERT_RATE && summary.soapEditedCount > 0) {
+  if (
+    rateSampleIsBigEnough &&
+    soapEditRate >= QUALITY_SOAP_EDIT_ALERT_RATE &&
+    summary.soapEditedCount > 0
+  ) {
     alerts.push({ kind: 'soapEdited', pct: Math.round(soapEditRate * 100) });
   }
 

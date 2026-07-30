@@ -134,6 +134,62 @@ test('the attention cache stores only the narrow projection on a detail merge', 
   assert.ok(!serialized.includes('clinical text'));
 });
 
+test('a mutation row that fails the LIST contract leaves the attention cache alone', () => {
+  // Codex round 9: this path used only projectAttentionRecording, so a mutation
+  // response with e.g. `review: null` could replace an already-validated row —
+  // derivation would drop its only reason while the server phase still read as
+  // successful, and the feed could briefly claim all-clear.
+  const base = {
+    id: '11111111-1111-4111-8111-111111111111',
+    userId: '22222222-2222-4222-8222-222222222222',
+    status: 'completed',
+    patientName: 'Bella',
+    clientName: null,
+    species: null,
+    breed: null,
+    appointmentType: null,
+    qualityWarnings: [],
+    submittedAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:00:00.000Z',
+  };
+
+  for (const [label, bad] of [
+    ['null review', { ...base, aiExtractedMetadata: { review: null } }],
+    ['non-uuid id', { ...base, id: 'not-a-uuid', aiExtractedMetadata: null }],
+    ['drop reason without a reason', { ...base, aiExtractedMetadata: { dropReasons: [{ field: 'species' }] } }],
+  ]) {
+    const original = { id: base.id, status: 'uploading' };
+    const stored = { data: [original], pagination: { page: 1, limit: 100, total: 1, totalPages: 1 } };
+    const queryClient = {
+      setQueriesData: (filters, updater) => {
+        if (JSON.stringify(filters.queryKey) === JSON.stringify(ATTENTION_PREFIX)) {
+          stored.merged = updater(stored);
+        }
+      },
+      removeQueries: () => {},
+      invalidateQueries: () => Promise.resolve(),
+    };
+    CACHE.mergeRecordingIntoCachedLists(queryClient, bad);
+    // Untouched: the previously validated row survives.
+    assert.deepEqual(plain(stored.merged.data[0]), plain(original), label);
+  }
+
+  // A VALID mutation row still merges.
+  const valid = { ...base, aiExtractedMetadata: { review: 'unconfirmed' } };
+  const stored = { data: [{ id: base.id, status: 'uploading' }], pagination: {} };
+  const queryClient = {
+    setQueriesData: (filters, updater) => {
+      if (JSON.stringify(filters.queryKey) === JSON.stringify(ATTENTION_PREFIX)) {
+        stored.merged = updater(stored);
+      }
+    },
+    removeQueries: () => {},
+    invalidateQueries: () => Promise.resolve(),
+  };
+  CACHE.mergeRecordingIntoCachedLists(queryClient, valid);
+  assert.equal(plain(stored.merged.data[0]).status, 'completed');
+});
+
 test('a terminal non-draft delete purges detail, SOAP, tasks, lists, and patient visits', () => {
   const removed = [];
   const invalidated = [];

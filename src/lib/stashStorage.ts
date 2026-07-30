@@ -198,6 +198,19 @@ async function getStashedSessionsForUserId(
  * corruption that the proof helpers would otherwise normalize to "no audio".
  */
 function audioClaimsAreUsable(slot: Record<string, unknown>): boolean {
+  // The RECOVERY ANCHOR id must be usable too. `findStashAnchor` runs it through
+  // `normalizeId`, which turns a number/object into '' — so a malformed id reads
+  // as "no match" even while the slot's audio exists, and with the other sources
+  // known that lets findLocalRecoveryAnchor answer `none`.
+  const serverDraftId = slot.serverDraftId;
+  if (
+    serverDraftId !== undefined &&
+    serverDraftId !== null &&
+    typeof serverDraftId !== 'string'
+  ) {
+    return false;
+  }
+
   const durable = slot.durable;
   if (durable !== undefined && durable !== null) {
     if (typeof durable !== 'object' || Array.isArray(durable)) return false;

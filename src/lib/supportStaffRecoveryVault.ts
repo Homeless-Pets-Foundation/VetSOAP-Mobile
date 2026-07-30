@@ -558,6 +558,16 @@ function parseItemsStrict(raw: string): RecoveryItem[] {
           throw new StrictReadUnavailableError('vault:segment_shape');
         }
       }
+      // The RECOVERY ANCHOR id must be usable: `findVaultAnchor` normalizes it,
+      // so a malformed value reads as "no match" while the slot's audio exists.
+      const sourceServerDraftId = slotRecord.sourceServerDraftId;
+      if (
+        sourceServerDraftId !== undefined &&
+        sourceServerDraftId !== null &&
+        typeof sourceServerDraftId !== 'string'
+      ) {
+        throw new StrictReadUnavailableError('vault:slot_anchor_shape');
+      }
       // The other audio-bearing claims count too: the strict recoverability
       // helpers normalize a present-but-corrupt `durable`/`pendingConfirm` to
       // absent, which would filter the item while leaving the snapshot

@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import type { Recording } from '../types';
-import { projectAttentionRecording } from './attentionFeed';
+import { validateAttentionListRow } from './attentionFeed';
 
 /**
  * The bounded Attention Feed page. It lives under the `recordings` root so the
@@ -153,7 +153,13 @@ export function removeRecordingFromCachedLists(queryClient: QueryClient, id: str
  * present) leave the cache untouched.
  */
 function replaceAttentionRecordingInPayload<T>(cached: T, updated: Recording): T {
-  const projected = projectAttentionRecording(updated);
+  // The FULL list-boundary contract, not just the projection. A mutation
+  // response is the same untrusted shape as a list row, so validating less here
+  // let e.g. `review: null` replace an already-validated row — derivation could
+  // then drop its only reason while the server phase still read as successful,
+  // and the feed would briefly claim all-clear. A row that fails validation
+  // leaves the cache untouched; the invalidation refetch is the recovery path.
+  const projected = validateAttentionListRow(updated);
   if (!projected) return cached;
   if (!cached || typeof cached !== 'object') return cached;
   const objectCache = cached as Record<string, unknown>;

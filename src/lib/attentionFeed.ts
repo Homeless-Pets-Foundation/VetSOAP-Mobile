@@ -371,7 +371,12 @@ function dropReasonEntryIsUsable(field: unknown, value: unknown): boolean {
   if (typeof value === 'string') return true;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entry = value as Record<string, unknown>;
-  if (entry.reason !== undefined && typeof entry.reason !== 'string') return false;
+  // `reason` is REQUIRED on the object form — the declared contract is
+  // `{ field, reason, score? }`. Treating it as optional let `{ field: 'species' }`
+  // pass here while the canonical parser discarded it, so a row with no other
+  // signal stayed classification-complete and the feed could claim all-clear over
+  // malformed metadata.
+  if (typeof entry.reason !== 'string') return false;
   if (entry.score !== undefined && typeof entry.score !== 'number') return false;
   return true;
 }

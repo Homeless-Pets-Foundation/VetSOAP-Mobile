@@ -895,6 +895,57 @@ test('the bounded vault-summary read does not retry, and keys on the ROLE', asyn
   assert.match(hook, /supportRecoveryVaultQueryKey\(user\?\.id, user\?\.organizationId, user\?\.role\)/);
 });
 
+test('a malformed recovery-anchor id makes the strict read unknown', async () => {
+  // Codex round 9: findStashAnchor runs serverDraftId through normalizeId, which
+  // turns a number/object into '' — so a malformed id reads as "no match" while
+  // the slot's audio exists, and with the other sources known that yields `none`.
+  for (const bad of [42, {}, [], true]) {
+    const secure = makeSecureStoreMock();
+    secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+    secure.__store.set(`captivet_stash_${USER}_a_count`, '1');
+    secure.__store.set(
+      `captivet_stash_${USER}_a_chunk_0`,
+      JSON.stringify([
+        {
+          id: 's1',
+          stashedAt: '2026-07-29T00:00:00.000Z',
+          slots: [{ id: 'a', segments: [], serverDraftId: bad }],
+        },
+      ])
+    );
+    const stashStorage = await loadStashStorage(secure);
+    await assert.rejects(
+      () => stashStorage.getStashedSessionsForUserStrict(USER),
+      (error) => error.code === 'STRICT_READ_UNAVAILABLE',
+      `serverDraftId ${JSON.stringify(bad)} must be unknown`
+    );
+  }
+
+  // A string or explicit null anchor stays legitimate.
+  for (const ok of [SERVER_ID, null]) {
+    const secure = makeSecureStoreMock();
+    secure.__store.set(`captivet_stash_${USER}_active`, 'a');
+    secure.__store.set(`captivet_stash_${USER}_a_count`, '1');
+    secure.__store.set(
+      `captivet_stash_${USER}_a_chunk_0`,
+      JSON.stringify([
+        {
+          id: 's1',
+          stashedAt: '2026-07-29T00:00:00.000Z',
+          slots: [{ id: 'a', segments: [], serverDraftId: ok }],
+        },
+      ])
+    );
+    const stashStorage = await loadStashStorage(secure);
+    assert.equal((await stashStorage.getStashedSessionsForUserStrict(USER)).length, 1);
+  }
+
+  // The vault guards its own anchor field.
+  const vault = await read('src/lib/supportStaffRecoveryVault.ts');
+  assert.match(vault, /vault:slot_anchor_shape/);
+  assert.match(vault, /typeof sourceServerDraftId !== 'string'/);
+});
+
 test('a malformed stash audio claim makes the strict read unknown', async () => {
   // Codex round 8: stashSlotProof reduces a corrupt pendingConfirm/durable to
   // `missing`, so a slot with empty segments and a malformed claim could

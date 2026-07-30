@@ -537,6 +537,41 @@ test('the nested AI metadata VALUES are validated, not just their containers', (
   }
 });
 
+test('a drop-reason object without a reason is malformed, not silently dropped', () => {
+  // Codex round 9: `reason` is required on the object form. Treating it as
+  // optional let `{ field: 'species' }` pass while the canonical parser discarded
+  // it, so a row with no other signal stayed classification-complete.
+  expectMalformed(
+    envelope([row({ aiExtractedMetadata: { dropReasons: [{ field: 'species' }] } })], {
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    }),
+    'array entry without a reason'
+  );
+  expectMalformed(
+    envelope([row({ aiExtractedMetadata: { dropReasons: { species: {} } } })], {
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    }),
+    'record entry without a reason'
+  );
+
+  // `conflicts` legitimately MAY omit its reason — that contract is unchanged.
+  const ok = parse(
+    envelope([row({ aiExtractedMetadata: { conflicts: [{ field: 'species' }] } })], {
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    })
+  );
+  assert.equal(ok.data.length, 1);
+});
+
 test('an explicit null review is rejected; null collections stay legitimate', () => {
   // Codex round 8: the unconditional null bypass ran before the per-key
   // validators, so `{ review: null }` was accepted even though a null enum cannot

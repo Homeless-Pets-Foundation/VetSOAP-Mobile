@@ -536,8 +536,16 @@ test('breakdownIssueAlerts reports reprocessing as counts so >100% never renders
     })
   );
 
-  assert.deepEqual(plain(alerts), [{ kind: 'reprocessed', count: 6, recordings: 5 }]);
+  assert.deepEqual(plain(alerts), [{ kind: 'reprocessed', count: 6 }]);
   assert.equal('pct' in alerts[0], false, 'reprocessing must never be expressed as a percentage');
+  // No denominator: reprocessCount counts audit-log actions in the window, which
+  // may target recordings created before it, so relating it to completedRecordings
+  // claimed a relationship that does not hold.
+  assert.equal(
+    'recordings' in alerts[0],
+    false,
+    'reprocessing must not report completions as the reprocessed recording set'
+  );
 });
 
 test('breakdownIssueAlerts stays silent below every threshold', async () => {
@@ -592,7 +600,7 @@ test('breakdownIssueAlerts caps at two alerts, keeping missing details and repro
 
   assert.deepEqual(plain(alerts), [
     { kind: 'missingDetails', pct: 40 },
-    { kind: 'reprocessed', count: 2, recordings: 9 },
+    { kind: 'reprocessed', count: 2 },
   ]);
 });
 
@@ -613,7 +621,7 @@ test('breakdownIssueAlerts suppresses rate alerts below the sample minimum but k
   };
 
   assert.deepEqual(plain(breakdownIssueAlerts(summary(tinySample))), [
-    { kind: 'reprocessed', count: 6, recordings: 2 },
+    { kind: 'reprocessed', count: 6 },
   ]);
 
   // The same rates at an adequate sample do produce their alerts, so the gate
@@ -700,8 +708,11 @@ test('QualityAnalyticsCard renders each breakdown alert as one wrapping sentence
   // Alert copy lives in the catalog and carries the number.
   assert.match(copy, /missingDetails: '\{pct\}% missing patient details'/);
   assert.match(copy, /soapEdited: '\{pct\}% of notes edited'/);
-  assert.match(copy, /reprocessedOnce: 'Reprocessed once across \{recordings\} recordings'/);
-  assert.match(copy, /reprocessedMany: 'Reprocessed \{count\} times across \{recordings\} recordings'/);
+  assert.match(copy, /reprocessedOnce: 'Reprocessed once'/);
+  assert.match(copy, /reprocessedMany: 'Reprocessed \{count\} times'/);
+  // The denominator must not come back without a server field for distinct
+  // recordings reprocessed.
+  assert.doesNotMatch(copy, /Reprocessed[^']*\{recordings\}/);
   assert.match(copy, /unlabeledGroup: 'Not specified'/);
 });
 
@@ -720,7 +731,7 @@ test('QualityAnalyticsCard fills every placeholder the alert templates declare',
   ].sort();
 
   // A new placeholder in the catalog must come with a fill below.
-  assert.deepEqual(placeholders, ['count', 'pct', 'recordings']);
+  assert.deepEqual(placeholders, ['count', 'pct']);
 
   // Pin each switch branch whole. A per-placeholder "appears somewhere in the
   // file" search is NOT enough: breaking {pct} in the missingDetails branch
@@ -736,7 +747,7 @@ test('QualityAnalyticsCard fills every placeholder the alert templates declare',
   );
   assert.match(
     source,
-    /case 'reprocessed':\s*return \(alert\.count === 1 \? c\.reprocessedOnce : c\.reprocessedMany\)\s*\.replace\('\{count\}', String\(alert\.count\)\)\s*\.replace\('\{recordings\}', String\(alert\.recordings\)\);/
+    /case 'reprocessed':\s*return \(alert\.count === 1 \? c\.reprocessedOnce : c\.reprocessedMany\)\.replace\(\s*'\{count\}',\s*String\(alert\.count\)\s*\);/
   );
 });
 

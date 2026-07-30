@@ -82,7 +82,14 @@ export const QUALITY_SOAP_EDIT_ALERT_RATE = 0.5;
 export type QualityIssueAlert =
   | { kind: 'missingDetails'; pct: number }
   | { kind: 'soapEdited'; pct: number }
-  | { kind: 'reprocessed'; count: number; recordings: number };
+  // No denominator on purpose. `reprocessCount` counts audit-log reprocess
+  // ACTIONS in the window, which may target recordings created before it, while
+  // `completedRecordings` counts recordings created in the window
+  // (docs/clinic-quality-analytics-dashboard-plan.md:75,79). Neither is the
+  // number of distinct recordings reprocessed, so "6 times across 5 recordings"
+  // asserted a relationship that does not exist. The row header ('N rec') and
+  // the Reprocesses tile already show both numbers separately.
+  | { kind: 'reprocessed'; count: number };
 
 export function hasActivity(summary: QualitySummary): boolean {
   return (
@@ -179,16 +186,15 @@ export function breakdownIssueAlerts(summary: QualitySummary): QualityIssueAlert
   // Counts, not a percentage: reprocessRate legitimately exceeds 1 (several
   // reprocess actions for one recording), and "200% reprocessed" reads broken.
   const reprocessRate = summary.reprocessRate ?? 0;
+  // `completedRecordings > 0` stays because it is the denominator of the RATE
+  // that triggers this alert (null when zero, per the dashboard plan) — not
+  // because the copy cites it. It no longer does.
   if (
     reprocessRate >= QUALITY_REPROCESS_ALERT_RATE &&
     summary.reprocessCount > 0 &&
     summary.completedRecordings > 0
   ) {
-    alerts.push({
-      kind: 'reprocessed',
-      count: summary.reprocessCount,
-      recordings: summary.completedRecordings,
-    });
+    alerts.push({ kind: 'reprocessed', count: summary.reprocessCount });
   }
 
   const soapEditRate = summary.soapEditRate ?? 0;

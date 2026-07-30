@@ -179,7 +179,13 @@ Three changes landed after the plan was written. The first is an owner decision,
 
    **Residual, accepted:** the row cap is still applied by completion volume, so a zero-completion problem group can be cut when more than `QUALITY_BREAKDOWN_MAX_ROWS` groups qualify. Reserving slots for problem groups is a product decision and is deliberately not taken as a silent default — it belongs with the existing "top 5 with no signal that more exist" open item under Decisions.
 
-3. **Test gaps closed, found by mutation testing.** Two fences were verified by breaking the code and confirming the suite goes red:
+3. **Reprocess alert denominator removed (Codex P2, second round).** The copy read `Reprocessed 6 times across 5 recordings`, relating `reprocessCount` to `completedRecordings`. Those are not comparable: `reprocessCount` counts `audit_logs` reprocess **actions** in the window (`docs/clinic-quality-analytics-dashboard-plan.md:79`), which may target recordings created *before* the window, while `completedRecordings` counts recordings **created in** the window (`:75`). Neither is the number of distinct recordings reprocessed, so the sentence asserted a relationship that does not hold.
+
+   The templates now carry no denominator — `Reprocessed once` / `Reprocessed {count} times` — and `QualityIssueAlert`'s `reprocessed` variant drops its `recordings` field. Nothing is lost to the reader: the row header already shows `N rec` and the new `Reprocesses` tile shows the count, side by side and separately labelled. A test fences the denominator out of both the copy and the descriptor; reintroducing one needs a server field for *distinct recordings reprocessed*, which the contract does not expose (see Follow-up).
+
+   `completedRecordings > 0` stays in the alert condition, but for a different reason than before: it is the denominator of the **rate** that triggers the alert (`null` when zero, `:80`), not a number the copy cites.
+
+4. **Test gaps closed, found by mutation testing.** Two fences were verified by breaking the code and confirming the suite goes red:
    - `formatIssueAlert`'s placeholder fills are pinned **per switch branch**. The first version searched for each placeholder anywhere in the file, and a mutant that broke `{pct}` in the `missingDetails` branch survived it — the `soapEdited` branch's own `{pct}` fill satisfied the match.
    - `hasActivity` had **no behavioral test** despite driving the card's empty-state gate; mutating it to always-true passed the whole suite. It now has one covering each counter individually, the all-zero case, and that a stale rate with no counts behind it is not activity.
 
@@ -187,7 +193,8 @@ Three changes landed after the plan was written. The first is an owner decision,
 
 ## Follow-up (out of scope here)
 
-Two Connect-side asks, both out of scope here:
+Three Connect-side asks, all out of scope here:
 
 1. `docs/clinic-quality-analytics-dashboard-plan.md` never documented the `byModel` / `byAppointmentType` contract that `083a18b` shipped — neither name appears in that file at all, so there is no label contract (what to emit for a null/legacy `ai_model`), no ordering contract, and no empty-group behavior. The server's `'Unknown model'` fallback group is what surfaced defect 3, and hiding it client-side is a mitigation, not a contract fix.
 2. The response exposes rate numerators but not the denominators behind `missingMetadataRate` (`nonDraftRecordingCountInWindow`) or `soapEditRate` (`soapNoteCountInWindow`). Without them no client can suppress a small-sample "100%" for those two rates — see the accepted residual under Decisions. Emitting the two denominators (or a per-rate sample size) would let the min-5 rule apply uniformly instead of only to `reprocessRate`.
+3. There is no field for **distinct recordings reprocessed**. `reprocessCount` counts reprocess actions in the window and can include actions against recordings created before it, so no client can honestly say how many recordings were affected — which is why the reprocess alert now states a bare count (see Post-review amendment 3). A `reprocessedRecordingCount` (distinct `audit_logs.recording_id` in the window) would let the copy name a real denominator again.

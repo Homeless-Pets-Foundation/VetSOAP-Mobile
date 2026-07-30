@@ -51,9 +51,10 @@ function formatIssueAlert(alert: QualityIssueAlert): string {
     case 'soapEdited':
       return c.soapEdited.replace('{pct}', String(alert.pct));
     case 'reprocessed':
-      return (alert.count === 1 ? c.reprocessedOnce : c.reprocessedMany)
-        .replace('{count}', String(alert.count))
-        .replace('{recordings}', String(alert.recordings));
+      return (alert.count === 1 ? c.reprocessedOnce : c.reprocessedMany).replace(
+        '{count}',
+        String(alert.count)
+      );
   }
 }
 

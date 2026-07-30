@@ -357,11 +357,17 @@ export const QUALITY_ANALYTICS_COPY = {
   // Breakdown-row alerts. Each is its own wrapping line, so the reprocess
   // templates are capitalized — a line opening on a lowercase word reads as a
   // rendering fault. The other two open on a digit.
+  //
+  // The reprocess templates carry NO denominator. `reprocessCount` counts
+  // audit-log reprocess actions in the window, which may target recordings
+  // created before it, so "Reprocessed 6 times across 5 recordings" claimed a
+  // relationship to `completedRecordings` that does not hold. Do not reintroduce
+  // a denominator here without a server field for distinct recordings reprocessed.
   issues: {
     missingDetails: '{pct}% missing patient details',
     soapEdited: '{pct}% of notes edited',
-    reprocessedOnce: 'Reprocessed once across {recordings} recordings',
-    reprocessedMany: 'Reprocessed {count} times across {recordings} recordings',
+    reprocessedOnce: 'Reprocessed once',
+    reprocessedMany: 'Reprocessed {count} times',
   },
   // Server `label` is `z.string()` and accepts '', which rendered a blank row title.
   unlabeledGroup: 'Not specified',

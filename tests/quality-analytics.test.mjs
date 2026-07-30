@@ -416,24 +416,81 @@ test('visibleBreakdownItems keeps a low-completion group carrying count-based pr
   assert.equal(hasDisplayableIssueCounts(cleanBreakdown({})), false);
 });
 
-test('visibleBreakdownItems does not retain a group for rate numerators it cannot display', async () => {
+test('visibleBreakdownItems retains a low-completion group awaiting metadata', async () => {
   const { visibleBreakdownItems, hasDisplayableIssueCounts } = await loadQualityAnalytics();
 
-  // The row surfaces missing details and edited notes only as rates, and rate
-  // alerts are suppressed below the sample minimum — so retaining a group for
-  // those numerators alone would re-ship the empty "0 rec / n/a" row.
-  const onlyRateNumerators = cleanBreakdown({
+  // missingMetadataCount stands on its own: it counts non-draft recordings
+  // pending metadata and its rate divides by nonDraftRecordingCountInWindow, not
+  // completions, so four completions with many recordings awaiting details is a
+  // real finding. BreakdownRow renders it as the `Awaiting details` tile.
+  const awaitingMetadata = cleanBreakdown({
     key: 'meta',
     label: 'Recheck',
-    completedRecordings: 2,
+    completedRecordings: 4,
     missingMetadataCount: 3,
     missingMetadataRate: 0.9,
+  });
+
+  assert.equal(hasDisplayableIssueCounts(awaitingMetadata), true);
+  assert.deepEqual(
+    visibleBreakdownItems([awaitingMetadata]).map((item) => item.key),
+    ['meta']
+  );
+});
+
+test('visibleBreakdownItems does not retain a group for edited notes alone', async () => {
+  const { visibleBreakdownItems, hasDisplayableIssueCounts } = await loadQualityAnalytics();
+
+  // soapEditedCount is the one counter deliberately left out of retention: the
+  // row already carries an `Edited notes` tile for it, and an edited note is
+  // normal clinical work rather than a failure to surface.
+  const onlyEditedNotes = cleanBreakdown({
+    key: 'edits',
+    label: 'Wellness',
+    completedRecordings: 2,
     soapEditedCount: 2,
     soapEditRate: 0.9,
   });
 
-  assert.equal(hasDisplayableIssueCounts(onlyRateNumerators), false);
-  assert.deepEqual(visibleBreakdownItems([onlyRateNumerators]), []);
+  assert.equal(hasDisplayableIssueCounts(onlyEditedNotes), false);
+  assert.deepEqual(visibleBreakdownItems([onlyEditedNotes]), []);
+});
+
+test('hasDisplayableIssueCounts is exactly hasActivity minus the completion counter', async () => {
+  const { hasActivity, hasDisplayableIssueCounts } = await loadQualityAnalytics();
+
+  // Round 2 of review found the row filter and the card's empty-state gate
+  // disagreeing about what counts as a finding. This pins the relationship so
+  // they cannot drift apart again: adding a counter to hasActivity without
+  // deciding whether a breakdown row can display it fails here.
+  const quiet = summary({
+    completedRecordings: 0,
+    failedUploadAttempts: 0,
+    silentAudioEvents: 0,
+    reprocessCount: 0,
+    soapEditedCount: 0,
+    missingMetadataCount: 0,
+  });
+
+  for (const field of [
+    'completedRecordings',
+    'failedUploadAttempts',
+    'silentAudioEvents',
+    'reprocessCount',
+    'soapEditedCount',
+    'missingMetadataCount',
+  ]) {
+    const one = { ...quiet, [field]: 1 };
+    const expected =
+      field === 'completedRecordings' || field === 'soapEditedCount'
+        ? false
+        : hasActivity(one);
+    assert.equal(
+      hasDisplayableIssueCounts(one),
+      expected,
+      `${field}: retention and the empty-state gate disagree`
+    );
+  }
 });
 
 test('visibleBreakdownItems keeps a group at exactly the minimum', async () => {
@@ -775,6 +832,17 @@ test('QualityAnalyticsCard reports reprocessing as a count everywhere, never a r
   assert.match(
     source,
     /<Metric label=\{QUALITY_ANALYTICS_COPY\.metrics\.silentAudio\} value=\{item\.silentAudioEvents\} \/>/
+  );
+  assert.match(
+    source,
+    /<Metric label=\{QUALITY_ANALYTICS_COPY\.metrics\.missingDetailsCount\} value=\{item\.missingMetadataCount\} \/>/
+  );
+  // The count tile must not reuse the rate label: `missingDetails` is a
+  // percentage in SummaryBlock.
+  assert.match(copy, /missingDetailsCount: 'Awaiting details'/);
+  assert.doesNotMatch(
+    source,
+    /<Metric label=\{QUALITY_ANALYTICS_COPY\.metrics\.missingDetails\} value=\{item\./
   );
 
   // The catalog must not carry a rate-shaped reprocess label again.

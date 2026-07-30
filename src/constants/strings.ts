@@ -352,6 +352,11 @@ export const QUALITY_ANALYTICS_COPY = {
     reprocesses: 'Reprocesses',
     soapEditRate: 'Edited notes',
     missingDetails: 'Missing details',
+    // Distinct label from `missingDetails` on purpose. That one is a RATE in
+    // SummaryBlock; this is the raw count in BreakdownRow, where a group can be
+    // on screen solely because of it. One label meaning both a percentage and a
+    // count is the trap the `Reprocesses` relabel above exists to avoid.
+    missingDetailsCount: 'Awaiting details',
     p90Processing: '90% done by',
   },
   // Breakdown-row alerts. Each is its own wrapping line, so the reprocess

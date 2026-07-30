@@ -185,7 +185,13 @@ Three changes landed after the plan was written. The first is an owner decision,
 
    `completedRecordings > 0` stays in the alert condition, but for a different reason than before: it is the denominator of the **rate** that triggers the alert (`null` when zero, `:80`), not a number the copy cites.
 
-4. **Test gaps closed, found by mutation testing.** Two fences were verified by breaking the code and confirming the suite goes red:
+4. **Missing-metadata groups retained too (Codex P2, third round).** Amendment 2 preserved upload, silence and reprocess counts but excluded `missingMetadataCount`, on the reasoning that the row surfaced it only as a sample-gated rate. That left a real finding hidden: the count stands on its own (non-draft recordings pending metadata, blank patient name, or unconfirmed AI metadata — dashboard plan `:83`) and its rate divides by `nonDraftRecordingCountInWindow`, **not** completions (`:84`), so an appointment type with four completions and many recordings awaiting details vanished.
+
+   `hasDisplayableIssueCounts` now includes `missingMetadataCount > 0`, and `BreakdownRow` gains an `Awaiting details` count tile so the retained group has a surface. That tile uses a **new** catalog key (`metrics.missingDetailsCount`) rather than reusing `metrics.missingDetails`, which is a percentage in `SummaryBlock` — one label meaning both a rate and a count is exactly the trap amendment 1 removed.
+
+   `soapEditedCount` remains the one counter outside retention: the row already carries an `Edited notes` tile for it, and an edited note is normal clinical work rather than a failure. A test pins the whole relationship — `hasDisplayableIssueCounts` is `hasActivity` minus `completedRecordings` and `soapEditedCount` — so the row filter and the card's empty-state gate cannot drift apart again, which is what round 2 caught them doing.
+
+5. **Test gaps closed, found by mutation testing.** Two fences were verified by breaking the code and confirming the suite goes red:
    - `formatIssueAlert`'s placeholder fills are pinned **per switch branch**. The first version searched for each placeholder anywhere in the file, and a mutant that broke `{pct}` in the `missingDetails` branch survived it — the `soapEdited` branch's own `{pct}` fill satisfied the match.
    - `hasActivity` had **no behavioral test** despite driving the card's empty-state gate; mutating it to always-true passed the whole suite. It now has one covering each counter individually, the all-zero case, and that a stale rate with no counts behind it is not activity.
 

@@ -107,16 +107,24 @@ export function hasActivity(summary: QualitySummary): boolean {
  * metric tile. Retention keys off this rather than `hasActivity` because a row
  * is only worth rendering if it can say something true about the group.
  *
- * `missingMetadataCount` and `soapEditedCount` are deliberately excluded: the
- * row surfaces those only as rates, and rate alerts are suppressed below the
- * sample minimum, so retaining a group for them alone would re-ship the empty
- * "0 rec / n/a everywhere" row this change exists to remove.
+ * `missingMetadataCount` belongs here even though its rate is sample-gated: the
+ * count stands on its own (non-draft recordings pending metadata, blank patient
+ * name, or unconfirmed AI metadata — dashboard plan :83), its rate divides by
+ * `nonDraftRecordingCountInWindow` rather than completions (:84), and a group
+ * with four completions but many recordings awaiting details is exactly what an
+ * owner needs to see. `BreakdownRow` renders it as the `Awaiting details` tile,
+ * which is what makes retaining such a group meaningful rather than an empty row.
+ *
+ * `soapEditedCount` is still excluded, for two reasons: the row already carries
+ * an `Edited notes` tile for it, and an edited note is normal clinical work, not
+ * a failure. If a count tile ever replaces that rate tile, add it here too.
  */
 export function hasDisplayableIssueCounts(summary: QualitySummary): boolean {
   return (
     summary.failedUploadAttempts > 0 ||
     summary.silentAudioEvents > 0 ||
-    summary.reprocessCount > 0
+    summary.reprocessCount > 0 ||
+    summary.missingMetadataCount > 0
   );
 }
 

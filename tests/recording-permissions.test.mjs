@@ -39,12 +39,16 @@ test('recording permission matrix mirrors server delete authorization', async ()
   assert.equal(getRecordingPermissions({ id: 'user_owner', role: 'owner' }, recording('user_vet')).canDelete, true);
   assert.equal(getRecordingPermissions({ id: 'user_admin', role: 'admin' }, recording('user_vet')).canDelete, true);
   assert.equal(getRecordingPermissions({ id: 'user_vet', role: 'veterinarian' }, recording('user_vet')).canDelete, true);
+  assert.equal(getRecordingPermissions({ id: 'user_owner', role: 'owner' }, recording('user_vet')).canPlayAudio, true);
+  assert.equal(getRecordingPermissions({ id: 'user_admin', role: 'admin' }, recording('user_vet')).canPlayAudio, true);
+  assert.equal(getRecordingPermissions({ id: 'user_vet', role: 'veterinarian' }, recording('user_vet')).canPlayAudio, true);
 
   const nonOwnerVet = getRecordingPermissions(
     { id: 'user_vet', role: 'veterinarian' },
     recording('user_other')
   );
   assert.equal(nonOwnerVet.canDelete, false);
+  assert.equal(nonOwnerVet.canPlayAudio, false);
   assert.match(nonOwnerVet.deleteBlockedReason, /recording owner or an administrator/);
 
   const supportStaff = getRecordingPermissions(
@@ -52,6 +56,7 @@ test('recording permission matrix mirrors server delete authorization', async ()
     recording('user_staff')
   );
   assert.equal(supportStaff.canDelete, false);
+  assert.equal(supportStaff.canPlayAudio, true);
   assert.equal(supportStaff.deleteBlockedReason, 'Your role cannot delete recordings.');
 });
 
@@ -126,6 +131,13 @@ test('metadata review/add/edit cards are gated on edit permission (no 403 "Save 
   assert.match(detail, /const showMetadataReview =\s*recordingPermissions\.canEdit/);
   assert.match(detail, /const showAddMetadata =\s*recordingPermissions\.canEdit/);
   assert.match(detail, /const showEditMetadata =\s*recordingPermissions\.canEdit/);
+});
+
+test('recording detail hides audio controls unless local permissions mirror playback authorization', async () => {
+  const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
+
+  assert.match(detail, /recordingPermissions\.canPlayAudio \? \(/);
+  assert.match(detail, /AUDIO_PLAYER_COPY\.forbidden/);
 });
 
 test('ApiClient routes an unrecoverable 401 to sign-out instead of a zombie session', async () => {

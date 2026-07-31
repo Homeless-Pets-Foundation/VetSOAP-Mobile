@@ -51,6 +51,7 @@ import { isValidDurableId } from '../../../../src/lib/durableAudio/paths';
 import { clonePendingConfirm } from '../../../../src/lib/pendingConfirm';
 import * as durableRecorder from '../../../../modules/captivet-durable-recorder';
 import {
+  AUDIO_PLAYER_COPY,
   ATTENTION_FEED_COPY,
   DELETE_RECORDING_COPY,
   ERROR_COPY,
@@ -1183,10 +1184,21 @@ export default function RecordingDetailScreen() {
         {/* Audio playback — audioFileUrl exists from confirm-upload onward.
             Drafts are excluded (their audio is local; resume path owns it). */}
         {recording.audioFileUrl && recording.status !== 'draft' && id && (
-          <RecordingAudioPlayer
-            recordingId={id}
-            initialDurationSeconds={recording.audioDurationSeconds}
-          />
+          recordingPermissions.canPlayAudio ? (
+            <RecordingAudioPlayer
+              recordingId={id}
+              initialDurationSeconds={recording.audioDurationSeconds}
+            />
+          ) : (
+            <Card className="mx-5 mb-4">
+              <Text className="text-body-lg font-semibold text-content-primary mb-1">
+                {AUDIO_PLAYER_COPY.title}
+              </Text>
+              <Text className="text-body-sm text-content-tertiary">
+                {AUDIO_PLAYER_COPY.forbidden}
+              </Text>
+            </Card>
+          )
         )}
 
         {retryPresentation === 'audio_unavailable' && (

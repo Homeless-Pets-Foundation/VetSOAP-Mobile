@@ -31,3 +31,65 @@ test('withPromiseTimeout rejects a hanging native operation at its deadline', as
   );
   assert.ok(Date.now() - startedAt < 1_000, 'timeout should release the UI gate promptly');
 });
+
+test('withPromiseTimeout returns a supplied timeout error by identity', async () => {
+  const expected = Object.assign(new Error('typed timeout'), {
+    code: 'TYPED_TIMEOUT',
+  });
+  await assert.rejects(
+    withPromiseTimeout(
+      new Promise(() => {}),
+      5,
+      'fallback message',
+      expected,
+    ),
+    (error) => error === expected && error.code === 'TYPED_TIMEOUT',
+  );
+});
+
+test('withPromiseTimeout contains a throwing timeout-error factory', async () => {
+  await assert.rejects(
+    withPromiseTimeout(
+      new Promise(() => {}),
+      5,
+      'must not escape timer',
+      () => {
+        throw new Error('factory escaped');
+      },
+    ),
+    (error) =>
+      error instanceof Error &&
+      error.message === 'The operation timed out.',
+  );
+});
+
+test('late resolve cannot resettle a timed-out public Promise', async () => {
+  let resolveSource;
+  const source = new Promise((resolve) => {
+    resolveSource = resolve;
+  });
+  const publicPromise = withPromiseTimeout(source, 5, 'deadline');
+  await assert.rejects(publicPromise, /deadline/);
+  resolveSource('too late');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await assert.rejects(publicPromise, /deadline/);
+});
+
+test('late rejection stays observed after the public timeout', async () => {
+  let rejectSource;
+  const source = new Promise((_, reject) => {
+    rejectSource = reject;
+  });
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const publicPromise = withPromiseTimeout(source, 5, 'deadline');
+    await assert.rejects(publicPromise, /deadline/);
+    rejectSource(new Error('late native rejection'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});

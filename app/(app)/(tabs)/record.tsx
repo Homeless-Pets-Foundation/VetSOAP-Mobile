@@ -91,6 +91,18 @@ import { setSessionActivity } from '../../../src/lib/sessionActivity';
 import { templatePreference } from '../../../src/lib/templatePreference';
 import { invalidateRecordingCaches } from '../../../src/lib/recordingQueryCache';
 import {
+  probePendingDurableAvailability,
+  probePendingStandardAvailability,
+  readDurableUploadMetadata,
+  readUploadMetadataBatch,
+} from '../../../src/lib/uploadPreflight';
+import {
+  isNativePreflightTimeout,
+} from '../../../src/lib/nativePreflight';
+import { createDurableUploadSnapshotUri } from '../../../src/lib/durableUploadSnapshot';
+import { acquireKeepAwakeLease } from '../../../src/lib/keepAwakeLease';
+import { presentNativePreflightTimeout } from '../../../src/lib/nativePreflightReporting';
+import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
   RECORD_APPOINTMENT_PERMISSION_TITLE,
@@ -263,6 +275,7 @@ function isExpectedSubmitApiFailure(error: unknown): boolean {
 //   - aborts: request timeout / cancel (AbortError), which the transient regex
 //     does not match (Sentry REACT-NATIVE-W)
 function isRecoverableSubmitFailure(error: unknown): boolean {
+  if (isNativePreflightTimeout(error)) return true;
   if (isExpectedSubmitApiFailure(error)) return true;
   if (isTransientUploadError(error)) return true;
   if (getUploadPhase(error) === 'silent_check') return true;
@@ -388,8 +401,22 @@ async function checkSilentAudio(slot: PatientSlot): Promise<{
 
   try {
     let inconclusiveReason: 'ffmpeg_timeout' | 'ffmpeg_error' | null = null;
-    for (const segment of slot.segments) {
-      const result = await checkAudioSilenceForUpload(segment.uri);
+    // Read every silence-analysis input under one metadata-only budget before
+    // FFmpeg starts. FFmpeg execution time must not consume the next stat's
+    // deadline, while 20 sequential native stats still remain capped at 10s.
+    const silenceMetadata = await readUploadMetadataBatch(
+      slot.segments.map((segment) => segment.uri),
+      'standard',
+      'silence_metadata',
+      getInfoAsync,
+    );
+    for (let index = 0; index < slot.segments.length; index++) {
+      const segment = slot.segments[index];
+      const result = await checkAudioSilenceForUpload(
+        segment.uri,
+        {},
+        { metadata: silenceMetadata[index] },
+      );
       if (result.status === 'not_silent') {
         return { silent: false, inconclusive: false, reason: null };
       }
@@ -401,15 +428,21 @@ async function checkSilentAudio(slot: PatientSlot): Promise<{
     return inconclusiveReason
       ? { silent: false, inconclusive: true, reason: inconclusiveReason }
       : { silent: true, inconclusive: false, reason: 'ffmpeg_all_segments_silent' };
-  } catch {
+  } catch (error) {
+    if (isNativePreflightTimeout(error)) throw error;
     return { silent: false, inconclusive: true, reason: 'ffmpeg_error' };
   }
 }
 
 async function sumSegmentSizes(segments: AudioSegment[]): Promise<number> {
+  const metadata = await readUploadMetadataBatch(
+    segments.map((segment) => segment.uri),
+    'standard',
+    'split_output_metadata',
+    getInfoAsync,
+  );
   let totalBytes = 0;
-  for (const segment of segments) {
-    const info = await getInfoAsync(segment.uri);
+  for (const info of metadata) {
     if (!info.exists) {
       throw new Error('Failed to read the prepared audio file. Please try again.');
     }
@@ -2335,7 +2368,22 @@ function RecordingSession() {
       // over a shared lock; expo-keep-awake aggregates across tags. Released
       // unconditionally in the finally below.
       const keepAwakeTag = `captivet-upload-${slot.id}`;
-      activateKeepAwakeAsync(keepAwakeTag).catch(() => { /* best-effort */ });
+      const keepAwakeLease = acquireKeepAwakeLease(
+        keepAwakeTag,
+        activateKeepAwakeAsync,
+        deactivateKeepAwake,
+      );
+
+      // Attempt-owned scratch is declared before the outer try so its finally
+      // also covers a later synchronous analytics/state helper throw.
+      let segmentsForUpload = slot.segments;
+      let splitTempDir: string | null = null;
+      let splitTempUris: string[] = [];
+      let uploadSizeBytes = 0;
+      let localAudioAvailableForRestart = false;
+      let durableSnapshotUri: string | null = null;
+
+      try {
       const attemptNumber = (uploadAttemptCountsRef.current.get(slot.id) ?? 0) + 1;
       uploadAttemptCountsRef.current.set(slot.id, attemptNumber);
       const currentSlots = sessionRef.current.slots;
@@ -2381,15 +2429,6 @@ function RecordingSession() {
         confirm_used_atomic_metadata_update: willUseAtomicMetadataUpdate,
       });
 
-      // Auto-split state — populated by the preflight block below if any
-      // segment exceeds the 250 MB cap. Declared at function scope so the
-      // catch + post-success cleanup can both see them.
-      let segmentsForUpload = slot.segments;
-      let splitTempDir: string | null = null;
-      let splitTempUris: string[] = [];
-      let uploadSizeBytes = 0;
-      let localAudioAvailableForRestart = false;
-
       try {
         // Prefer the file-backed recovery engine while a complete local copy is
         // still available. It confirms first, but can perform the single allowed
@@ -2402,25 +2441,29 @@ function RecordingSession() {
             showRecordPermissionAlert();
             return null;
           }
-          const nativeManifest = durable && uid
-            ? await durableRecorder.getManifest({ userId: uid, recordingId: durable.recordingId }).catch(() => null)
-            : null;
+          let nativeManifest: Awaited<
+            ReturnType<typeof durableRecorder.getManifest>
+          > = null;
           let hasCompleteLocalAudio = false;
-          if (durable) {
-            const durableUri = nativeManifest?.audioFile.uri ?? durable.recoveredAudioUri ?? null;
-            if (durableUri) {
-              const info = await getInfoAsync(durableUri).catch(() => ({ exists: false, size: 0 }));
-              hasCompleteLocalAudio = info.exists && (info.size ?? 0) > 0;
-            }
+          if (durable && uid) {
+            const availability = await probePendingDurableAvailability({
+              getManifest: () =>
+                durableRecorder.getManifest({
+                  userId: uid,
+                  recordingId: durable.recordingId,
+                }),
+              sourceUriFromManifest: (value) =>
+                value?.audioFile.uri ?? null,
+              fallbackSourceUri: durable.recoveredAudioUri ?? null,
+              getMetadata: getInfoAsync,
+            });
+            nativeManifest = availability.manifest;
+            hasCompleteLocalAudio = availability.hasCompleteLocalAudio;
           } else if (slot.segments.length > 0) {
-            hasCompleteLocalAudio = true;
-            for (const segment of slot.segments) {
-              const info = await getInfoAsync(segment.uri).catch(() => ({ exists: false, size: 0 }));
-              if (!info.exists || !(info.size ?? 0)) {
-                hasCompleteLocalAudio = false;
-                break;
-              }
-            }
+            hasCompleteLocalAudio = await probePendingStandardAvailability(
+              slot.segments.map((segment) => segment.uri),
+              getInfoAsync,
+            );
           }
           localAudioAvailableForRestart = hasCompleteLocalAudio;
 
@@ -2525,13 +2568,24 @@ function RecordingSession() {
             showRecordPermissionAlert();
             return null;
           }
-          const manifest = await durableRecorder.getManifest({ userId: uid, recordingId: durable.recordingId });
+          const durableMetadata = await readDurableUploadMetadata({
+            getManifest: () =>
+              durableRecorder.getManifest({
+                userId: uid,
+                recordingId: durable.recordingId,
+              }),
+            sourceUriFromManifest: (value) =>
+              value?.audioFile.uri ?? null,
+            fallbackSourceUri: durable.recoveredAudioUri ?? null,
+            getMetadata: getInfoAsync,
+          });
+          const manifest = durableMetadata.manifest;
           // A support-staff cross-user vault restore has no native manifest under
           // THIS user's scope, but the vault preserved a local audio.aac copy
           // (durable.recoveredAudioUri) that we upload directly. Native-manifest
           // ops (anchor/markUploaded/purge) are skipped for that path.
           const hasNativeManifest = !!manifest;
-          const durableUri = manifest?.audioFile.uri ?? durable.recoveredAudioUri ?? null;
+          const durableUri = durableMetadata.sourceUri;
           if (!durableUri) {
             // No native manifest and no recovered copy — needs an app update.
             setUploadStatus(slot.id, 'error', {
@@ -2544,9 +2598,9 @@ function RecordingSession() {
 
           // Recovered oversized source (older build/bug): block normal submit,
           // keep local file, show contact-support message (do NOT purge).
-          const info = await getInfoAsync(durableUri);
-          const durableSizeBytes = info.exists ? info.size ?? 0 : 0;
-          if (!info.exists || durableSizeBytes === 0) {
+          const info = durableMetadata.sourceInfo;
+          const durableSizeBytes = info?.exists ? info.size ?? 0 : 0;
+          if (!info?.exists || durableSizeBytes === 0) {
             setUploadStatus(slot.id, 'error', { error: 'The recording audio was not found on this device.' });
             return null;
           }
@@ -2582,7 +2636,6 @@ function RecordingSession() {
           // refer to the same frozen file. A recovered vault copy is already a
           // static, prefix-truncated file and therefore does not need this copy.
           let durableUploadUri = durableUri;
-          let durablePrefixTempUri: string | null = null;
           const completeFrameBytes = manifest?.audioFile.completeFrameBytes ?? 0;
           if (hasNativeManifest) {
             if (completeFrameBytes <= 0 || completeFrameBytes > durableSizeBytes) {
@@ -2592,10 +2645,12 @@ function RecordingSession() {
               anchorError.uploadPhase = 'preflight';
               throw anchorError;
             }
-            const tempUri = `${Paths.cache.uri}durable-upload-${durable.recordingId}.aac`;
+            const tempUri = createDurableUploadSnapshotUri(Paths.cache.uri);
             if (writeFilePrefix(durableUri, tempUri, completeFrameBytes)) {
+              // Assign ownership immediately after creation succeeds. The
+              // upload-attempt finally owns this unique pathname from here on.
+              durableSnapshotUri = tempUri;
               durableUploadUri = tempUri;
-              durablePrefixTempUri = tempUri;
               breadcrumb('upload', 'durable_snapshot_created', {
                 file_bytes: durableSizeBytes,
                 prefix_bytes: completeFrameBytes,
@@ -2617,8 +2672,7 @@ function RecordingSession() {
           // atomically; if the server cannot apply it, uploadSlot fails closed.
           let durableUseExisting = slot.serverDraftId ?? slot.serverRecordingId ?? undefined;
           let durableResult;
-          try {
-            durableResult = await recordingsApi.createWithFile(
+          durableResult = await recordingsApi.createWithFile(
               slot.formData,
               durableUploadUri,
               'audio/aac',
@@ -2727,11 +2781,6 @@ function RecordingSession() {
                 slotIndex,
               },
             );
-          } finally {
-            // Drop the truncated-prefix temp on both success and failure; the
-            // original audio.aac (and its manifest) stay untouched for retry.
-            if (durablePrefixTempUri) safeDeleteFile(durablePrefixTempUri);
-          }
 
           completedUploadSlotIdsRef.current.add(slot.id);
           setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: durableResult.id });
@@ -2810,8 +2859,13 @@ function RecordingSession() {
         let totalBytes = 0;
         let anyOversized = false;
         try {
-          for (const seg of slot.segments) {
-            const info = await getInfoAsync(seg.uri);
+          const metadata = await readUploadMetadataBatch(
+            slot.segments.map((segment) => segment.uri),
+            'standard',
+            'segment_metadata',
+            getInfoAsync,
+          );
+          for (const info of metadata) {
             const size = info.exists ? (info.size ?? 0) : 0;
             if (!info.exists) {
               throw new Error('Failed to read the recorded audio file. Please try recording again.');
@@ -3104,6 +3158,20 @@ function RecordingSession() {
         uploadAttemptCountsRef.current.delete(slot.id);
         return result.id;
       } catch (error) {
+        const nativePreflightTimeout = presentNativePreflightTimeout(
+          error,
+          captureMessage,
+        );
+        if (nativePreflightTimeout) {
+          setUploadStatus(slot.id, 'error', {
+            progress: 0,
+            error: nativePreflightTimeout.copy,
+          });
+          // Dedicated privacy-minimal reporting only. Do not flow into the
+          // submit_failed analytics/server/crash payloads or auto-stash logic.
+          return null;
+        }
+
         // User explicitly cancelled the oversize confirm dialog: do not log,
         // do not capture, leave the slot in 'pending'. They can retry later.
         if (error instanceof UploadCancelledByUser) {
@@ -3275,9 +3343,13 @@ function RecordingSession() {
           }
         }
         return null;
+      }
       } finally {
         uploadingSlotIdsRef.current.delete(slot.id);
-        deactivateKeepAwake(keepAwakeTag).catch(() => { /* best-effort */ });
+        keepAwakeLease.release();
+        if (durableSnapshotUri) safeDeleteFile(durableSnapshotUri);
+        for (const tempUri of splitTempUris) safeDeleteFile(tempUri);
+        if (splitTempDir) safeDeleteDirectory(splitTempDir);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- netInfo read via networkStateForTelemetry closure; derivation is pure

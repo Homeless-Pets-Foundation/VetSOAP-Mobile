@@ -49,6 +49,13 @@ import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { useThemePreference } from '../../src/hooks/useThemePreference';
 import type { ThemePreference } from '../../src/lib/themePreference';
 import Constants from 'expo-constants';
+import {
+  NATIVE_PREFLIGHT_OPERATIONS,
+  armNativePreflightHang,
+  clearNativePreflightHang,
+  getArmedNativePreflightHang,
+  type NativePreflightOperation,
+} from '../../src/lib/nativePreflight';
 
 function SectionHeading({ children, className = '' }: { children: string; className?: string }) {
   return (
@@ -80,6 +87,10 @@ export default function SettingsScreen() {
   const [biometricType, setBiometricType] = useState('Biometric');
   const [recoveryCount, setRecoveryCount] = useState(0);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [armedPreflightHang, setArmedPreflightHang] =
+    useState<NativePreflightOperation | null>(() =>
+      getArmedNativePreflightHang(),
+    );
   const canViewBilling = user?.role === 'owner' || user?.role === 'admin';
 
   const openLink = useCallback((url: string, link: 'help_center' | 'contact' | 'terms' | 'privacy') => {
@@ -447,6 +458,48 @@ export default function SettingsScreen() {
                 }
                 leading={<FileClock color={colors.brand500} size={iconSm} />}
                 trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+                className="mb-5"
+              />
+            </>
+          ) : null}
+
+          {__DEV__ ? (
+            <>
+              <SectionHeading>DEVELOPMENT DIAGNOSTICS</SectionHeading>
+              <ListItem
+                onPress={() => {
+                  const currentIndex = armedPreflightHang
+                    ? NATIVE_PREFLIGHT_OPERATIONS.indexOf(
+                        armedPreflightHang,
+                      )
+                    : -1;
+                  const operation =
+                    NATIVE_PREFLIGHT_OPERATIONS[
+                      (currentIndex + 1) %
+                        NATIVE_PREFLIGHT_OPERATIONS.length
+                    ];
+                  if (armNativePreflightHang(operation)) {
+                    setArmedPreflightHang(operation);
+                  }
+                }}
+                accessibilityLabel="Arm the next native upload preflight hang"
+                title="Arm Upload Preflight Hang"
+                subtitle={
+                  armedPreflightHang
+                    ? `Armed once: ${armedPreflightHang}`
+                    : 'Tap to arm the next read operation once'
+                }
+                leading={<Monitor color={colors.brand500} size={iconSm} />}
+              />
+              <ListItem
+                onPress={() => {
+                  clearNativePreflightHang();
+                  setArmedPreflightHang(null);
+                }}
+                accessibilityLabel="Clear the native upload preflight hang"
+                title="Clear Upload Preflight Hang"
+                subtitle="Disable the one-shot diagnostic"
+                leading={<Monitor color={colors.brand500} size={iconSm} />}
                 className="mb-5"
               />
             </>

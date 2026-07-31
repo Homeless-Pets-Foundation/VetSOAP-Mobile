@@ -46,6 +46,11 @@ async function loadHarness({
   const pending = await loadPure('src/lib/pendingConfirm.ts');
   const retry = await loadPure('src/api/uploadRetry.ts');
   const pimsPatientIdIntent = await loadPure('src/lib/pimsPatientIdIntent.ts');
+  const nativePreflight = await loadTsModule(
+    'src/lib/nativePreflight.ts',
+    {},
+    { setTimeout: setTimeoutImpl },
+  );
   const apiClient = {
     post: async (...args) => {
       events.push(['post', args[0], args[1], args[2]]);
@@ -97,6 +102,7 @@ async function loadHarness({
         draftPresenceRequestSchema: { parse: (value) => value },
         parseDraftPresenceResponse: (_requestedIds, value) => value,
       },
+      '../lib/nativePreflight': nativePreflight,
     };
     if (!(specifier in modules)) throw new Error(`unexpected module ${specifier}`);
     return modules[specifier];
@@ -157,6 +163,159 @@ test('missing local audio fails preflight before preparation, create, presign, o
     /Failed to read audio segment/,
   );
   assert.deepEqual(harness.events, []);
+});
+
+test('hanging API metadata preflight times out before any recording request', async () => {
+  let resolveMetadata;
+  const harness = await loadHarness({
+    getInfoAsync: () =>
+      new Promise((resolve) => {
+        resolveMetadata = resolve;
+      }),
+    post: async () => {
+      throw new Error('recording request must not run');
+    },
+    setTimeoutImpl: (callback) => setTimeout(callback, 0),
+  });
+
+  const attempt = harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///durable.aac',
+    'audio/aac',
+    {
+      idempotencyKey: 'durable-timeout-intent',
+      mode: 'durable',
+    },
+  );
+  await assert.rejects(
+    attempt,
+    (error) =>
+      error?.code === 'NATIVE_PREFLIGHT_TIMEOUT' &&
+      error.uploadPhase === 'preflight' &&
+      error.operation === 'api_metadata' &&
+      error.mode === 'durable' &&
+      error.fileCount === 1,
+  );
+  assert.deepEqual(harness.events, []);
+
+  resolveMetadata({ exists: true, size: 128 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(
+    harness.events,
+    [],
+    'late metadata settlement must not start preparation',
+  );
+});
+
+test('descriptor timeout after a prepare conflict starts no subsequent recovery request', async () => {
+  let metadataReads = 0;
+  const harness = await loadHarness({
+    getInfoAsync: async () => {
+      metadataReads += 1;
+      if (metadataReads === 1) return { exists: true, size: 128 };
+      return new Promise(() => {});
+    },
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        throw new ApiError(
+          'conflict',
+          409,
+          false,
+          undefined,
+          'UPLOAD_INTENT_CONFLICT',
+          {
+            uploadConflict: {
+              stage: 'prepare',
+              reason: 'prepared_manifest_mismatch',
+              recoveryAction: 'inspect',
+            },
+          },
+        );
+      }
+      throw new Error(`subsequent request must not run: ${path}`);
+    },
+    setTimeoutImpl: (callback) => setTimeout(callback, 0),
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(
+      metadata,
+      'file:///recording.m4a',
+      'audio/x-m4a',
+      { idempotencyKey: 'descriptor-timeout-intent' },
+    ),
+    (error) =>
+      error?.code === 'NATIVE_PREFLIGHT_TIMEOUT' &&
+      error.operation === 'api_metadata',
+  );
+  assert.equal(metadataReads, 2);
+  assert.deepEqual(
+    harness.events.map((event) => [event[0], event[1]]),
+    [['post', '/api/recordings/prepare-upload']],
+  );
+});
+
+test('empty, invalid-path, invalid-type, and oversized preflight behavior is unchanged', async () => {
+  const cases = [
+    {
+      name: 'invalid path',
+      uri: 'https://example.test/audio.m4a',
+      contentType: 'audio/x-m4a',
+      info: { exists: true, size: 128 },
+      message: /invalid local path/,
+      expectedReads: 0,
+    },
+    {
+      name: 'invalid type',
+      uri: 'file:///audio.exe',
+      contentType: 'application/octet-stream',
+      info: { exists: true, size: 128 },
+      message: /unsupported format/,
+      expectedReads: 0,
+    },
+    {
+      name: 'empty file',
+      uri: 'file:///empty.m4a',
+      contentType: 'audio/x-m4a',
+      info: { exists: true, size: 0 },
+      message: /is empty/,
+      expectedReads: 1,
+    },
+    {
+      name: 'oversized file',
+      uri: 'file:///oversized.m4a',
+      contentType: 'audio/x-m4a',
+      info: { exists: true, size: 250 * 1024 * 1024 + 1 },
+      message: /too large.*250MB/,
+      expectedReads: 1,
+    },
+  ];
+
+  for (const fixture of cases) {
+    let reads = 0;
+    const harness = await loadHarness({
+      getInfoAsync: async () => {
+        reads += 1;
+        return fixture.info;
+      },
+      post: async () => {
+        throw new Error(`network must not run for ${fixture.name}`);
+      },
+    });
+    await assert.rejects(
+      harness.recordingsApi.createWithFile(
+        metadata,
+        fixture.uri,
+        fixture.contentType,
+        { idempotencyKey: `validation-${fixture.name.replace(/\s+/g, '-')}` },
+      ),
+      (error) =>
+        error?.uploadPhase === 'preflight' &&
+        fixture.message.test(error.message),
+    );
+    assert.equal(reads, fixture.expectedReads, fixture.name);
+    assert.deepEqual(harness.events, [], fixture.name);
+  }
 });
 
 test('ordinary create and omitted-field draft payloads leave an unselected template out', async () => {

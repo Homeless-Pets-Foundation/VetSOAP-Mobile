@@ -3,6 +3,7 @@ import { getInfoAsync } from 'expo-file-system/legacy';
 import { splitAudioBySize } from './ffmpeg';
 import { safeDeleteDirectory, ensureDirectory } from './fileOps';
 import type { AudioSegment } from '../types/multiPatient';
+import { createNativePreflightBatch } from './nativePreflight';
 
 /**
  * Hard cap matching the server's `segmentKeys.max(20)` validation in
@@ -75,8 +76,20 @@ export async function maybeSplitForUpload(
   // Sum input sizes
   let totalInputBytes = 0;
   const segmentSizes: number[] = [];
+  const inputMetadataBatch = createNativePreflightBatch(
+    'standard',
+    segments.length,
+  );
   for (const seg of segments) {
-    const info = await getInfoAsync(seg.uri);
+    let info: Awaited<ReturnType<typeof getInfoAsync>>;
+    try {
+      info = await inputMetadataBatch.read(
+        'split_input_metadata',
+        () => getInfoAsync(seg.uri),
+      );
+    } catch (error) {
+      tagPreflightError(error, 'INPUT_METADATA');
+    }
     if (!info.exists) {
       tagPreflightError(new Error('Input segment missing — cannot evaluate for split'), 'INPUT_MISSING');
     }

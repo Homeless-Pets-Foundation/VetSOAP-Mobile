@@ -49,6 +49,10 @@ import { identifyUser, resetAnalytics, flushAnalytics, trackEvent } from '../lib
 import { saveProfileCache, getCachedProfile } from '../lib/userProfileCache';
 import type { User } from '../types';
 import { MFA_REQUEST_TIMEOUT_MS, mfaErrorMessage } from './mfaPolicy';
+import {
+  cleanupAudioCacheEntries,
+  scheduleAudioCacheCleanup,
+} from '../lib/audioCacheCleanup';
 
 /**
  * Collapse Supabase AuthError into a small, PHI-safe enum suitable for an
@@ -374,11 +378,14 @@ function cleanupAudioCache(): void {
   try {
     const cacheDir = new Directory(Paths.cache);
     if (!cacheDir.exists) return;
-    for (const item of cacheDir.list()) {
-      if (item instanceof ExpoFile && item.name.endsWith('.m4a')) {
-        safeDeleteFile(item.uri);
-      }
-    }
+    cleanupAudioCacheEntries(
+      cacheDir.list().map((item) => ({
+        name: item.name,
+        uri: item.uri,
+        isFile: item instanceof ExpoFile,
+      })),
+      safeDeleteFile,
+    );
   } catch {
     // Cache cleanup is best-effort
   }
@@ -1554,6 +1561,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [handleMfaRequiredResponse, handleSignOut, registerDevice]);
 
   useEffect(() => {
+    // Cache scratch has no user scope. Schedule this independently of auth
+    // restoration so a never-settling getSession() cannot prevent stale
+    // durable-upload snapshots from being swept. The synchronous callback
+    // intentionally does not pass an async function to setTimeout.
+    const cacheCleanupTimer =
+      scheduleAudioCacheCleanup(cleanupAudioCache);
+
     // Hydrate the persisted min-version floor before any record-start gate check,
     // so a KNOWN-below-floor build blocks new recordings even on an OFFLINE cold
     // start (before the first API response re-learns the floor). Best-effort.
@@ -1608,12 +1622,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setSession(existingSession);
         }
       }
-      // Clean up orphaned audio recordings from prior crashes (deferred).
-      // Cache cleanup is safe without user ID. Stash cleanup requires user ID
-      // to be set (by fetchUser) so it only runs after authentication completes.
-      setTimeout(() => {
-        cleanupAudioCache();
-      }, 5000);
     }).catch((error) => {
       if (__DEV__) console.error('[Auth] Failed to restore session:', error);
     }).finally(() => {
@@ -1745,6 +1753,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => {
+      clearTimeout(cacheCleanupTimer);
+      clearTimeout(initWatchdog);
       subscription.unsubscribe();
     };
   }, [fetchUser, registerDevice, setRecoveryDraftSlotId]);

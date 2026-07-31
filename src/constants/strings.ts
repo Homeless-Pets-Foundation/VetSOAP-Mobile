@@ -45,6 +45,13 @@ export const UPLOAD_RECOVERY_COPY = {
     'One recording needs a confirmed safe restart. Open that patient and submit it individually before using Submit All.',
 } as const;
 
+export const UPLOAD_PREFLIGHT_TIMEOUT_COPY = {
+  durable:
+    "Captivet couldn't read the saved recording in time. Your audio is still saved. Fully close and reopen Captivet, then try again.",
+  standard:
+    "Captivet couldn't read the recording in time. Keep Captivet open and try the upload again.",
+} as const;
+
 export const STALE_RECORDING_UPLOAD_COPY =
   "We couldn't finish the upload. The recording is still saved on this device. Check your connection and try again.";
 

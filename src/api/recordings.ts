@@ -54,6 +54,11 @@ import {
   parseDraftPresenceResponse,
   type DraftPresenceResponse,
 } from './draftPresenceContract';
+import {
+  createNativePreflightBatch,
+  isNativePreflightTimeout,
+  type NativePreflightMode,
+} from '../lib/nativePreflight';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
@@ -569,8 +574,12 @@ function validatePreparationResponse(
   return value;
 }
 
-async function preflightLocalFiles(files: LocalUploadFile[]): Promise<LocalUploadFile[]> {
+async function preflightLocalFiles(
+  files: LocalUploadFile[],
+  mode: NativePreflightMode,
+): Promise<LocalUploadFile[]> {
   if (files.length < 1 || files.length > 20) phaseError('preflight', 'A recording must contain between 1 and 20 audio files.');
+  const batch = createNativePreflightBatch(mode, files.length);
   const checked: LocalUploadFile[] = [];
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -582,7 +591,7 @@ async function preflightLocalFiles(files: LocalUploadFile[]): Promise<LocalUploa
     }
     let info: Awaited<ReturnType<typeof getInfoAsync>>;
     try {
-      info = await getInfoAsync(file.uri);
+      info = await batch.read('api_metadata', () => getInfoAsync(file.uri));
     } catch (error) {
       tagPhase(error, 'preflight');
     }
@@ -1164,7 +1173,7 @@ async function executeResilientUpload(
   };
 
   const prepareAndUpload = async (existingRecordingId: string | undefined): Promise<Recording> => {
-    const files = await preflightLocalFiles(inputFiles);
+    const files = await preflightLocalFiles(inputFiles, mode);
     if (!qualityReported) {
       qualityReported = true;
       const duration = options.audioDurationSeconds ?? files.reduce((sum, file) => sum + file.duration, 0);
@@ -1414,8 +1423,11 @@ async function executeResilientUpload(
     if (!descriptors) {
       if (inputFiles.length > 0) {
         try {
-          descriptors = preparationFiles(await preflightLocalFiles(inputFiles));
-        } catch {
+          descriptors = preparationFiles(await preflightLocalFiles(inputFiles, mode));
+        } catch (preflightError) {
+          // A typed native deadline is authoritative: do not continue into an
+          // upload-intent inspection request after the attempt has timed out.
+          if (isNativePreflightTimeout(preflightError)) throw preflightError;
           throw error;
         }
       } else if (recoveryHint) {

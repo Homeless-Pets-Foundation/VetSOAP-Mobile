@@ -109,10 +109,13 @@ test('uploadSlot durable: freeze the complete-ADTS-frame prefix before upload', 
   assert.match(src, /if \(hasNativeManifest\) \{/);
   assert.match(src, /completeFrameBytes <= 0 \|\| completeFrameBytes > durableSizeBytes/);
   assert.match(src, /writeFilePrefix\(durableUri, tempUri, completeFrameBytes\)/);
+  assert.match(src, /createDurableUploadSnapshotUri\(Paths\.cache\.uri\)/);
+  assert.match(src, /durableSnapshotUri = tempUri;\s*durableUploadUri = tempUri;/);
   assert.match(src, /breadcrumb\('upload', 'durable_snapshot_created'/);
   assert.doesNotMatch(src, /completeFrameBytes > 0 && completeFrameBytes < durableSizeBytes/);
-  // The temp prefix is cleaned up on both success and failure.
-  assert.match(src, /if \(durablePrefixTempUri\) safeDeleteFile\(durablePrefixTempUri\)/);
+  // The attempt-specific temp prefix is cleaned by the outer ownership finally
+  // on success, timeout, and any later synchronous throw.
+  assert.match(src, /if \(durableSnapshotUri\) safeDeleteFile\(durableSnapshotUri\)/);
   // fileOps exposes the streaming prefix copy.
   const fileOps = await read('src/lib/fileOps.ts');
   assert.match(fileOps, /export function writeFilePrefix\(sourceUri: string, destUri: string, byteCount: number\): boolean/);

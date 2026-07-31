@@ -8,6 +8,11 @@ import { File as ExpoFile, Directory } from 'expo-file-system';
 import { audioTempFiles } from './audioTempFiles';
 import { getCachedPeaks, cachePeaks } from './waveformCache';
 import { breadcrumb } from './monitoring';
+import {
+  createNativePreflightBatch,
+  isNativePreflightTimeout,
+  type NativePreflightBatch,
+} from './nativePreflight';
 
 type FfmpegOpKind = 'waveform' | 'silence_check' | 'split';
 
@@ -422,7 +427,11 @@ function parseVolumedetectSilence(
 
 export async function checkAudioSilenceForUpload(
   uri: string,
-  thresholds: { maxVolumeDb?: number; meanVolumeDb?: number; timeoutMs?: number } = {}
+  thresholds: { maxVolumeDb?: number; meanVolumeDb?: number; timeoutMs?: number } = {},
+  preflight?: {
+    batch?: NativePreflightBatch;
+    metadata?: { exists: boolean };
+  },
 ): Promise<SilenceCheckResult> {
   const maxVolumeThresholdDb = thresholds.maxVolumeDb ?? -20;
   const meanVolumeThresholdDb = thresholds.meanVolumeDb ?? -60;
@@ -439,7 +448,13 @@ export async function checkAudioSilenceForUpload(
   try {
     validateFileUri(uri, 'Upload silence check');
 
-    const info = await getInfoAsync(uri);
+    const metadataBatch =
+      preflight?.batch ?? createNativePreflightBatch('standard', 1);
+    const info =
+      preflight?.metadata ??
+      (await metadataBatch.read('silence_metadata', () =>
+        getInfoAsync(uri),
+      ));
     if (!info.exists) {
       return finish({ status: 'inconclusive', reason: 'ffmpeg_error' });
     }
@@ -463,6 +478,9 @@ export async function checkAudioSilenceForUpload(
 
     return finish(isSilent ? { status: 'silent' } : { status: 'not_silent' });
   } catch (error) {
+    // A native metadata deadline is an upload-preflight failure, not an
+    // inconclusive FFmpeg analysis. Let the upload owner release its UI gate.
+    if (isNativePreflightTimeout(error)) throw error;
     return finish({
       status: 'inconclusive',
       reason: error instanceof FFmpegSilenceCheckTimeoutError ? 'ffmpeg_timeout' : 'ffmpeg_error',
@@ -903,7 +921,11 @@ export async function splitAudioBySize(
     throw new Error('splitAudioBySize: outputDir must end with /');
   }
 
-  const inputInfo = await getInfoAsync(inputUri);
+  const inputMetadataBatch = createNativePreflightBatch('standard', 1);
+  const inputInfo = await inputMetadataBatch.read(
+    'split_input_metadata',
+    () => getInfoAsync(inputUri),
+  );
   if (!inputInfo.exists) {
     throw new Error('splitAudioBySize: input file does not exist');
   }
@@ -980,8 +1002,15 @@ export async function splitAudioBySize(
   // against the input. This is approximate but only used for UI / quality
   // telemetry; the server re-derives exact duration from the concatenated file.
   const result: { uri: string; duration: number }[] = [];
+  const outputMetadataBatch = createNativePreflightBatch(
+    'standard',
+    partFiles.length,
+  );
   for (const partFile of partFiles) {
-    const partInfo = await getInfoAsync(partFile.uri);
+    const partInfo = await outputMetadataBatch.read(
+      'split_output_metadata',
+      () => getInfoAsync(partFile.uri),
+    );
     if (!partInfo.exists || (partInfo.size ?? 0) === 0) {
       throw new Error(`FFmpeg split produced empty part: ${partFile.name}`);
     }

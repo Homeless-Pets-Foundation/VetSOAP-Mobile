@@ -9,6 +9,7 @@ export const RECORD_APPOINTMENT_PERMISSION_MESSAGE =
 export interface RecordingPermissions {
   canEdit: boolean;
   canDelete: boolean;
+  canPlayAudio: boolean;
   canExport: boolean;
   canCopy: boolean;
   canRetry: boolean;
@@ -18,6 +19,7 @@ export interface RecordingPermissions {
 const NO_PERMISSIONS: RecordingPermissions = {
   canEdit: false,
   canDelete: false,
+  canPlayAudio: false,
   canExport: false,
   canCopy: false,
   canRetry: false,
@@ -63,6 +65,7 @@ export function getRecordingPermissions(
   return {
     canEdit: canModify,
     canDelete: canModify,
+    canPlayAudio: isAuthor || isPrivileged,
     canRetry: canModify,
     canExport: true,
     canCopy: true,

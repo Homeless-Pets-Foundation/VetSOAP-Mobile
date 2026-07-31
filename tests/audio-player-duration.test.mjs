@@ -59,6 +59,17 @@ test('audio hook returns native-duration-clamped seek position and rejects failu
   assert.match(seek[0], /throw error/);
 });
 
+test('Android playback enables seeking in durable ADTS AAC recordings', async () => {
+  const patch = await read('patches/expo-audio+55.0.16.patch');
+  const packageJson = JSON.parse(await read('package.json'));
+
+  assert.deepEqual(packageJson.expo.autolinking.android.buildFromSource, ['expo-audio']);
+  assert.match(patch, /DefaultExtractorsFactory/);
+  assert.match(patch, /setConstantBitrateSeekingEnabled\(true\)/);
+  assert.match(patch, /setConstantBitrateSeekingAlwaysEnabled\(true\)/);
+  assert.match(patch, /ProgressiveMediaSource\.Factory/);
+});
+
 test('idle seek fetches once, survives loading, and clears on every failure path', async () => {
   const player = await read('src/components/RecordingAudioPlayer.tsx');
 

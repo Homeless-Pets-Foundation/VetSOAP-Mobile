@@ -8,11 +8,12 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const read = (file) => readFile(path.join(root, file), 'utf8');
 
 test('legacy recorder times latency phases and ships concurrent service binding', async () => {
-  const [record, recorder, audioRecorder, audioModule] = await Promise.all([
+  const [record, recorder, audioRecorder, audioModule, serviceConnection] = await Promise.all([
     read('app/(app)/(tabs)/record.tsx'),
     read('src/hooks/useAudioRecorder.ts'),
     read('node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt'),
     read('node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt'),
+    read('node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt'),
   ]);
 
   assert.match(record, /measurePhase\('record_floor_hydration', undefined, async \(\) => \{\s*await ensureFloorHydrated\(\);\s*\}, \{ warningThresholdMs: null \}/);
@@ -30,4 +31,8 @@ test('legacy recorder times latency phases and ships concurrent service binding'
   assert.match(audioRecorder, /isPrepared = true\s+\} catch \(e: Exception\) \{\s+mediaRecorder\.release\(\)/);
   assert.match(audioModule, /AsyncFunction\("prepareToRecordAsync"\) Coroutine \{[\s\S]*recorder\.prepareRecording\(options\)/);
   assert.doesNotMatch(audioModule.slice(audioModule.indexOf('AsyncFunction("prepareToRecordAsync")'), audioModule.indexOf('Function("record")')), /runOnQueue\(Queues\.MAIN\)/);
+  const binder = serviceConnection.indexOf('recordingServiceBinder = serviceBinder');
+  const appContext = serviceConnection.indexOf('serviceBinder.service.appContext = appContext');
+  const resume = serviceConnection.indexOf('bindingContinuation?.resume(Unit)');
+  assert.ok(binder >= 0 && binder < appContext && appContext < resume);
 });

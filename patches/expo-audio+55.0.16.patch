@@ -55,3 +55,13 @@ index 7752963..1b1636c 100644
        isPrepared = true
      } catch (e: Exception) {
        mediaRecorder.release()
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
+index 5d0ae41..d6e1f8b 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
+@@ -107,3 +107,3 @@ class AudioRecordingServiceConnection(
+-    bindingContinuation?.resume(Unit)
+     recordingServiceBinder = serviceBinder
+     serviceBinder.service.appContext = appContext
++    bindingContinuation?.resume(Unit)
+   }

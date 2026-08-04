@@ -24,3 +24,34 @@ index 72a6e9e..f98b5b1 100644
        else -> throw IllegalStateException("Unsupported type: $type")
      }.createMediaSource(mediaItem)
    }
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt
+index 7752963..1b1636c 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt
+@@ -19,6 +19,9 @@ import expo.modules.kotlin.exception.CodedException
+ import expo.modules.kotlin.exception.Exceptions
+ import expo.modules.kotlin.sharedobjects.SharedObject
++import kotlinx.coroutines.CoroutineStart
+ import kotlinx.coroutines.Job
++import kotlinx.coroutines.async
++import kotlinx.coroutines.coroutineScope
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.launch
+ import java.io.File
+@@ -98,8 +100,13 @@ class AudioRecorder(
+     try {
+-      if (useForegroundService) {
+-        serviceConnection.bindWithService()
++      coroutineScope {
++        val serviceBinding = if (useForegroundService) {
++          async(start = CoroutineStart.UNDISPATCHED) { serviceConnection.bindWithService() }
++        } else {
++          null
++        }
++        mediaRecorder.prepare()
++        serviceBinding?.await()
+       }
+-      mediaRecorder.prepare()
+       isPrepared = true
+     } catch (e: Exception) {
+       mediaRecorder.release()

@@ -1743,7 +1743,9 @@ function RecordingSession() {
           // cold start can't race past a persisted-but-not-yet-loaded floor.
           // Already-captured audio stays uploadable; unknown floor / unknown current
           // version fails open (allow) — fail-closed only on a KNOWN-below-floor build.
-          await ensureFloorHydrated();
+          await measurePhase('record_floor_hydration', undefined, async () => {
+            await ensureFloorHydrated();
+          }, { warningThresholdMs: null });
           if (getRecordStartGate() === 'block') {
             breadcrumb('record', 'record_start_blocked_min_version', {});
             Alert.alert(

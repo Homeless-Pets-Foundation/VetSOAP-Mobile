@@ -9,7 +9,7 @@ import {
   type RecordingStatus,
 } from 'expo-audio';
 import { safeDeleteFile } from '../lib/fileOps';
-import { breadcrumb, captureException } from '../lib/monitoring';
+import { breadcrumb, captureException, measurePhase } from '../lib/monitoring';
 import { reportClientError } from '../api/telemetry';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
 import { isDurableCaptureEnabled } from '../lib/durableFlag';
@@ -44,6 +44,7 @@ const DURABLE_STOP_TIMEOUT_MS = 10_000;
  */
 const DURABLE_PAUSE_TIMEOUT_MS = 10_000;
 const DURABLE_RESUME_TIMEOUT_MS = 10_000;
+const NATIVE_RECORDER_PHASE_WARNING_MS = 1_000;
 
 /**
  * Race a durable native op against a rejecting timeout so a hung native bridge
@@ -668,17 +669,20 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       // not pay a repeated bridge/request cost.
       await ensureAndroidRecordingNotificationPermission();
 
-      await setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-        interruptionMode: 'doNotMix',
-        shouldRouteThroughEarpiece: false,
-        allowsBackgroundRecording: true,
-        shouldPlayInBackground: true,
+      await measurePhase('recorder_audio_prepare', undefined, async () => {
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+          interruptionMode: 'doNotMix',
+          shouldRouteThroughEarpiece: false,
+          allowsBackgroundRecording: true,
+          shouldPlayInBackground: true,
+        });
+        await recorder.prepareToRecordAsync();
+      }, { warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS });
+      measurePhase('recorder_native_start', undefined, () => recorder.record(), {
+        warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS,
       });
-
-      await recorder.prepareToRecordAsync();
-      recorder.record();
 
       startElapsedClock();
       setState('recording');
@@ -750,7 +754,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       return;
     }
     try {
-      recorder.pause();
+      measurePhase('recorder_native_pause', undefined, () => recorder.pause(), {
+        warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS,
+      });
       setState('paused');
     } catch (error) {
       if (__DEV__) console.error('[AudioRecorder] pause failed:', error);
@@ -957,7 +963,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       return;
     }
     try {
-      recorder.record();
+      measurePhase('recorder_native_resume', undefined, () => recorder.record(), {
+        warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS,
+      });
       resumeElapsedClock();
       setState('recording');
     } catch (error) {

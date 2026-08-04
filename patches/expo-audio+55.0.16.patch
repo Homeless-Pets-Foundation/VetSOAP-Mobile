@@ -59,7 +59,7 @@ diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/se
 index 5d0ae41..d6e1f8b 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
-@@ -107,3 +107,3 @@ class AudioRecordingServiceConnection(
+@@ -107,4 +107,4 @@ class AudioRecordingServiceConnection(
 -    bindingContinuation?.resume(Unit)
      recordingServiceBinder = serviceBinder
      serviceBinder.service.appContext = appContext

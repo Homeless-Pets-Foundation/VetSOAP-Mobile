@@ -1545,12 +1545,8 @@ export const draftStorage = {
         // Server row exists (caller just created it) but local meta is gone —
         // the rule-24 duplicate-on-submit risk. Callers observe the returned
         // 'no_local_meta' and delete the orphan server row, so this is an
-        // observed-and-handled event now: info breadcrumb, not an open issue.
-        draftCaptureWarning(
-          'draft_update_server_id_no_local_meta',
-          { slot_id: slotId },
-          'info',
-        );
+        // observed-and-handled event now: breadcrumb, not an open issue.
+        draftBreadcrumb('update_server_id_no_local_meta');
         return 'no_local_meta';
       }
 
@@ -1755,6 +1751,10 @@ export const draftStorage = {
         draftsListCache = { userId, drafts: drafts.map(cloneDraftMetadata) };
       }
 
+      draftBreadcrumb('list_complete', {
+        indexed_slots: slotIds.length,
+        returned_drafts: drafts.length,
+      });
       return drafts;
     } catch {
       return [];
@@ -2229,6 +2229,12 @@ export const draftStorage = {
 
       return result;
     } finally {
+      draftBreadcrumb('pending_sync_complete', {
+        attempted: result.attempted,
+        succeeded: result.succeeded,
+        failed: result.failed,
+        orphaned_rows: result.orphanedServerIds.length,
+      });
       // Only restore if no external setUserId() (e.g. sign-out) happened
       // while we were awaiting — otherwise we'd clobber the new binding and
       // leave this module scoped to the departed user (rules 10 + 17).

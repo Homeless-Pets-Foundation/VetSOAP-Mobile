@@ -182,7 +182,8 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
             refetchType: 'active',
           });
           reconcileInBackground(forceReconcile);
-        }
+        },
+        { warningThresholdMs: null },
       ).catch(() => {});
     },
     [queryClient, reconcileInBackground, userId]

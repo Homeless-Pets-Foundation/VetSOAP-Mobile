@@ -195,6 +195,7 @@ async function loadTsModuleWithMocks(path, mocks) {
 async function loadDraftStorage(state) {
   const store = makeSecureStore(state);
   const captured = [];
+  const breadcrumbs = [];
   const mod = await loadTsModuleWithMocks('src/lib/draftStorage.ts', {
     'expo-secure-store': store.mock,
     'expo-file-system': {
@@ -271,13 +272,15 @@ async function loadDraftStorage(state) {
       captureMessage: (message, level, context) => {
         captured.push({ message, level, context });
       },
-      breadcrumb: () => {},
+      breadcrumb: (category, message, data) => {
+        breadcrumbs.push({ category, message, data });
+      },
     },
     './analytics': {
       trackEvent: () => {},
     },
   });
-  return { draftStorage: mod.draftStorage, captured, ...store };
+  return { draftStorage: mod.draftStorage, captured, breadcrumbs, ...store };
 }
 
 function makeSlot(id) {
@@ -297,15 +300,16 @@ test('updateServerDraftId returns updated on success and no_user without a bound
   assert.equal(await draftStorage.updateServerDraftId('slot1', 'server-1'), 'updated');
 });
 
-test('updateServerDraftId returns no_local_meta at info level when the draft vanished', async () => {
-  const { draftStorage, captured } = await loadDraftStorage();
+test('updateServerDraftId returns no_local_meta with a breadcrumb, not a Sentry message', async () => {
+  const { draftStorage, captured, breadcrumbs } = await loadDraftStorage();
   draftStorage.setUserId('userA');
 
   const result = await draftStorage.updateServerDraftId('gone-slot', 'server-9');
   assert.equal(result, 'no_local_meta');
-  const event = captured.find((c) => c.message === 'draft_update_server_id_no_local_meta');
-  assert.ok(event, 'telemetry event must survive the level change');
-  assert.equal(event.level, 'info', 'handled event must not reopen a warning-level issue');
+  assert.equal(captured.length, 0, 'handled absence must not create a Sentry message');
+  const crumb = breadcrumbs.find((c) => c.message === 'update_server_id_no_local_meta');
+  assert.ok(crumb, 'handled absence must retain a breadcrumb');
+  assert.equal(crumb.data, undefined, 'breadcrumb must not include slot identifiers');
 });
 
 test('updateServerDraftId refuses no_local_meta when storage is unreadable', async () => {
@@ -395,6 +399,47 @@ test('syncPending reports no orphans when the anchor persists', async () => {
   assert.equal(result.orphanedServerIds.length, 0);
 });
 
+test('draft list and pending sync breadcrumbs contain only numeric counts', async () => {
+  const { draftStorage, breadcrumbs } = await loadDraftStorage();
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+  await draftStorage.saveDraft(makeSlot('slot2'));
+
+  const drafts = await draftStorage.listDrafts();
+  assert.equal(drafts.length, 2);
+  const listCrumb = breadcrumbs.find((c) => c.message === 'list_complete');
+  assert.ok(listCrumb);
+  assert.deepEqual(Object.keys(listCrumb.data).sort(), ['indexed_slots', 'returned_drafts']);
+  assert.equal(listCrumb.data.indexed_slots, 2);
+  assert.equal(listCrumb.data.returned_drafts, 2);
+  assert.ok(Object.values(listCrumb.data).every((value) => Number.isInteger(value) && value >= 0));
+
+  const result = await draftStorage.syncPending('userA', async (draft) => {
+    if (draft.slotId === 'slot1') {
+      await draftStorage.deleteDraft(draft.slotId);
+      return { id: 'server-orphan-1' };
+    }
+    throw new Error('offline');
+  });
+  assert.equal(result.attempted, 2);
+  assert.equal(result.succeeded, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.orphanedServerIds.length, 1);
+  const syncCrumb = breadcrumbs.find((c) => c.message === 'pending_sync_complete');
+  assert.ok(syncCrumb);
+  assert.deepEqual(Object.keys(syncCrumb.data).sort(), [
+    'attempted',
+    'failed',
+    'orphaned_rows',
+    'succeeded',
+  ]);
+  assert.deepEqual(
+    { ...syncCrumb.data },
+    { attempted: 2, succeeded: 1, failed: 1, orphaned_rows: 1 },
+  );
+  assert.ok(Object.values(syncCrumb.data).every((value) => Number.isInteger(value) && value >= 0));
+});
+
 // ─── source contracts: callers act on the surfaced results ───────────
 
 test('usePendingDraftSync deletes surfaced orphans best-effort with orphan_draft_cleanup', async () => {
@@ -481,4 +526,11 @@ test('AuthProvider raises fetchUser and registerDevice thresholds to 10s', async
   assert.match(registerBlock.slice(0, 5000), /\{ warningThresholdMs: 10_000 \}/);
   const fetchBlock = src.slice(src.indexOf("measurePhase('fetchUser'"));
   assert.match(fetchBlock.slice(0, 8000), /\{ warningThresholdMs: 10_000 \}/);
+});
+
+test('local draft refresh keeps phase completion but disables its duplicate slow warning', async () => {
+  const src = await read('src/hooks/useLocalDraftRecordings.ts');
+  const refresh = src.slice(src.indexOf("measurePhase(\n        'local_draft_refresh'"));
+  assert.match(refresh.slice(0, 1000), /\{ warningThresholdMs: null \}/);
+  assert.match(await read('src/lib/monitoring.ts'), /breadcrumb\('performance', 'phase_complete'/);
 });

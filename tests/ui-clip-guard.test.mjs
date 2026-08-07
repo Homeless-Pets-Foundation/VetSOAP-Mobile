@@ -1,8 +1,17 @@
-// WP10 — the Android single-word clipping mitigation (CLAUDE.md UI Gotchas)
+// WP10 — the Android bold-text clipping mitigation (CLAUDE.md UI Gotchas)
 // must live INSIDE the shared Button and Banner primitives. Screens used to
 // bypass Button with raw Pressables (or ship trailing-space strings in the
 // copy catalog) specifically to apply it; centralizing it removes that
 // incentive. This fence keeps the mitigation in place and the catalog clean.
+//
+// Root cause (proven on device, PR #171 / 8388c69): the OS "Bold text" setting
+// sets Configuration.fontWeightAdjustment=300. Yoga measures the <Text> with
+// the UNADJUSTED font and fixes its box from that; Android then paints every
+// glyph wider and the overrun falls outside the box — with ≥2 tokens the run
+// wraps and the trailing word is laid out out of view (no ellipsis), with one
+// token it clips at the edge. The trailing space + flexShrink:0 + paddingRight
+// buy measured-width headroom. NOT a flex-shrink bug — a flex-1/flexShrink fix
+// was built, installed, and had no effect before the real cause was found.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';

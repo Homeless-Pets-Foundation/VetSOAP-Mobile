@@ -126,9 +126,11 @@ export function Banner({
           className="ml-2 justify-center min-h-[44px]"
           style={ctaAnimStyle}
         >
-          {/* Trailing space + flexShrink:0 — Android under-measures single-word
-              Text ("Manage", "Retry") in flex-rows and clips the last glyph;
-              fixing it here covers every Banner call site. Do NOT remove. */}
+          {/* Trailing space + flexShrink:0 — Android "Bold text"
+              (fontWeightAdjustment=300) paints glyphs wider than Yoga measured
+              them, clipping a shrink-wrapped label ("Manage", "Retry"). These
+              buy measured-width headroom; fixing it here covers every Banner
+              call site. CLAUDE.md > UI Gotchas. Do NOT remove. */}
           <Text
             className={`text-body-sm font-semibold ${v.ctaText}`}
             style={{ flexShrink: 0, paddingRight: 2 }}

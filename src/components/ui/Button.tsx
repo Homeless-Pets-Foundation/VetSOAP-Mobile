@@ -127,10 +127,12 @@ export function Button({
       ) : (
         <>
           {icon && <View className="mr-2" style={{ flexShrink: 0 }}>{icon}</View>}
-          {/* Trailing space + flexShrink:0 + paddingRight — Android TextView
-              under-measures single-word Text in flex-row parents and clips the
-              last glyph ("Cop" for "Copy"); baking the documented mitigation
-              here covers every Button call site. Do NOT remove the space. */}
+          {/* Trailing space + flexShrink:0 + paddingRight — Android "Bold text"
+              (fontWeightAdjustment=300) paints glyphs wider than Yoga measured
+              them, so a shrink-wrapped label overruns its already-fixed box
+              ("Cop" for "Copy"). These buy measured-width headroom. Baking it
+              here covers every Button call site. CLAUDE.md > UI Gotchas.
+              Do NOT remove the space. */}
           <Text
             className={`${v.text} ${s.text}`}
             style={{ flexShrink: 0, paddingRight: 2 }}

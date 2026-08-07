@@ -14,7 +14,7 @@
  * not in the delete allowlist) and is pruned only once BOTH the linked draft and
  * the manifest for that recordingId are confirmed absent, or FIFO-capped.
  */
-import { writeChunkedValue, readChunkedValue, deleteChunkedValue } from './chunkedStore';
+import { writeChunkedValue, readChunkedValueStrict, deleteChunkedValue } from './chunkedStore';
 import { isValidDurableId } from './paths';
 
 const KEY_PREFIX = 'captivet_durable_tombstone';
@@ -48,44 +48,66 @@ function prefixFor(userId: string): string {
   return `${KEY_PREFIX}_${userId}`;
 }
 
-async function readList(userId: string): Promise<string[]> {
-  // Copy on the way out: `add()` mutates the array it receives.
-  if (cachedList && cachedListUserId === userId) return cachedList.slice();
+type TombstoneLoad =
+  /** The list is known: either decoded from storage or proven not to exist. */
+  | { known: true; list: string[] }
+  /**
+   * Present but unrecoverable — torn chunks, a Keystore failure, a corrupt
+   * payload. NOT the same as empty, and callers that write MUST NOT treat it
+   * as such.
+   */
+  | { known: false };
 
-  const raw = await readChunkedValue(prefixFor(userId));
-  if (raw === null) {
-    // `readChunkedValue` collapses THREE different situations to null: the key
-    // is genuinely absent, a chunk was torn by a concurrent write, or the
-    // Keystore read failed. Caching `[]` here would be a data-loss bug, not a
-    // slow path: `has()` would keep answering "not uploaded" without ever
-    // retrying storage, and the next `add()` would start from that empty array
-    // and overwrite the real persisted tombstones with a single ID. That is the
-    // guard which stops `cleanupOrphaned` from deleting a just-uploaded server
-    // row. So: return empty, cache NOTHING, and let the next call retry.
-    //
-    // The cost of not caching is one read of the count key — not the whole
-    // chunk set — and only for users who have no tombstones at all. Sweeps over
-    // users who DO have tombstones (the case this cache exists for) still get
-    // the full benefit.
-    return [];
+/**
+ * Load the list, keeping "proven absent" separate from "could not be read".
+ *
+ * This distinction is the whole safety property of the module. The tombstone is
+ * what stops `cleanupOrphaned` deleting a confirmed-uploaded recording, and a
+ * writer that started from an unproven empty list would persist it — erasing up
+ * to MAX_TOMBSTONES real entries because of one transient Keystore fault.
+ */
+async function loadList(userId: string): Promise<TombstoneLoad> {
+  // Copy on the way out: `add()` mutates the array it receives.
+  if (cachedList && cachedListUserId === userId) {
+    return { known: true, list: cachedList.slice() };
+  }
+
+  const read = await readChunkedValueStrict(prefixFor(userId));
+  if (read.status === 'unavailable') return { known: false };
+
+  if (read.status === 'absent') {
+    // No count pointer at all: proven empty, so this IS safe to cache and safe
+    // to build a write on top of.
+    cachedListUserId = userId;
+    cachedList = [];
+    return { known: true, list: [] };
   }
 
   let list: string[];
   try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      // Present but not the shape we wrote — corrupt, not proven-empty.
-      return [];
-    }
+    const parsed = JSON.parse(read.value);
+    // Present but not the shape we wrote — corrupt, not proven-empty.
+    if (!Array.isArray(parsed)) return { known: false };
     list = parsed.filter((x): x is string => typeof x === 'string');
   } catch {
-    // Unparseable payload — same reasoning as above, never cache it.
-    return [];
+    return { known: false };
   }
 
   cachedListUserId = userId;
   cachedList = list.slice();
-  return list;
+  return { known: true, list };
+}
+
+/**
+ * Lenient read for the QUERY paths (`has`, `list`). An unreadable list degrades
+ * to empty, which is the safe direction for every caller: all three
+ * `durableTombstone.has()` call sites in `draftStorage` treat `false` as
+ * "keep the draft, do not delete". Nothing is cached in that case, so the next
+ * call retries storage.
+ */
+async function readList(userId: string): Promise<string[]> {
+  const loaded = await loadList(userId);
+  return loaded.known ? loaded.list : [];
 }
 
 async function writeList(userId: string, list: string[]): Promise<void> {
@@ -107,15 +129,28 @@ export const durableTombstone = {
     return currentUserId;
   },
 
-  /** Record a purged-uploaded recordingId. Dedupes + FIFO-caps. */
-  async add(recordingId: string): Promise<void> {
+  /**
+   * Record a purged-uploaded recordingId. Dedupes + FIFO-caps.
+   *
+   * Returns false when the existing list could not be read. Every write here is
+   * a whole-list rewrite, so building one on an unproven-empty read would erase
+   * up to MAX_TOMBSTONES real entries because of a single transient Keystore
+   * fault — and each erased entry is a confirmed-uploaded recording that
+   * `cleanupOrphaned` could then destroy locally. Skipping ONE tombstone is
+   * strictly less harmful than erasing every other one, so mutations fail
+   * closed and the caller retries on the next pass.
+   */
+  async add(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
-    if (!userId || !isValidDurableId(recordingId)) return;
-    const list = await readList(userId);
-    if (list.includes(recordingId)) return;
+    if (!userId || !isValidDurableId(recordingId)) return false;
+    const loaded = await loadList(userId);
+    if (!loaded.known) return false;
+    const list = loaded.list;
+    if (list.includes(recordingId)) return true;
     list.push(recordingId);
     while (list.length > MAX_TOMBSTONES) list.shift(); // drop oldest
     await writeList(userId, list);
+    return true;
   },
 
   async has(recordingId: string): Promise<boolean> {
@@ -125,13 +160,17 @@ export const durableTombstone = {
     return list.includes(recordingId);
   },
 
-  /** Remove one entry (call once draft + manifest are both confirmed gone). */
+  /**
+   * Remove one entry (call once draft + manifest are both confirmed gone).
+   * Fails closed on an unreadable list for the same reason as `add`.
+   */
   async remove(recordingId: string): Promise<void> {
     const userId = currentUserId;
     if (!userId) return;
-    const list = await readList(userId);
-    const next = list.filter((id) => id !== recordingId);
-    if (next.length !== list.length) await writeList(userId, next);
+    const loaded = await loadList(userId);
+    if (!loaded.known) return;
+    const next = loaded.list.filter((id) => id !== recordingId);
+    if (next.length !== loaded.list.length) await writeList(userId, next);
   },
 
   async list(): Promise<string[]> {
@@ -140,16 +179,21 @@ export const durableTombstone = {
     return readList(userId);
   },
 
-  /** Prune entries for which `stillReferenced` resolves false (draft+manifest gone). */
+  /**
+   * Prune entries for which `stillReferenced` resolves false (draft+manifest
+   * gone). Fails closed on an unreadable list — pruning against an empty view
+   * would drop every entry.
+   */
   async prune(stillReferenced: (recordingId: string) => Promise<boolean>): Promise<void> {
     const userId = currentUserId;
     if (!userId) return;
-    const list = await readList(userId);
+    const loaded = await loadList(userId);
+    if (!loaded.known) return;
     const keep: string[] = [];
-    for (const id of list) {
+    for (const id of loaded.list) {
       if (await stillReferenced(id)) keep.push(id);
     }
-    if (keep.length !== list.length) await writeList(userId, keep);
+    if (keep.length !== loaded.list.length) await writeList(userId, keep);
   },
 
   async clearForUser(userId: string): Promise<void> {

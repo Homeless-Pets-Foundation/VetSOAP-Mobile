@@ -448,3 +448,85 @@ test('a corrupt tombstone payload is never cached as empty', async () => {
   secureMock.__store.set(chunkKey, good);
   assert.equal(await durableTombstone.has('rec1'), true, 'must retry after the payload is readable');
 });
+
+test('tombstone mutations fail closed when the existing list is unreadable', async () => {
+  // Every write is a whole-list rewrite. Building one on an unproven-empty read
+  // would erase up to MAX_TOMBSTONES confirmed-uploaded recordings because of a
+  // single transient Keystore fault — and each erased entry is a recording
+  // `cleanupOrphaned` could then destroy locally. Skipping ONE tombstone is
+  // strictly less harmful than erasing every other one.
+  const { durableTombstone, secureMock } = await loadTombstone();
+  durableTombstone.setUserId('user1');
+  assert.equal(await durableTombstone.add('rec1'), true);
+  assert.equal(await durableTombstone.add('rec2'), true);
+
+  // Make the chunk reads throw the way a Keystore failure does, and drop the
+  // mirror so the next load must hit storage.
+  const baseGet = secureMock.getItemAsync.bind(secureMock);
+  secureMock.getItemAsync = async (key) => {
+    if (key.includes('_chunk_')) throw new Error('keystore exploded');
+    return baseGet(key);
+  };
+  durableTombstone.setUserId(null);
+  durableTombstone.setUserId('user1');
+
+  assert.equal(await durableTombstone.add('rec3'), false, 'add must refuse to write');
+  await durableTombstone.remove('rec1');
+  await durableTombstone.prune(async () => false);
+
+  // Storage recovers: the original entries must still be there, and rec3 must
+  // NOT have replaced them.
+  secureMock.getItemAsync = baseGet;
+  durableTombstone.setUserId(null);
+  durableTombstone.setUserId('user1');
+  const survived = [...(await durableTombstone.list())];
+  assert.deepEqual(survived, ['rec1', 'rec2'], 'no mutation may land on an unreadable list');
+  assert.equal(await durableTombstone.has('rec1'), true);
+  assert.equal(await durableTombstone.has('rec3'), false);
+});
+
+test('a proven-absent tombstone list is still writable and cacheable', async () => {
+  // Absence must stay distinguishable from unavailability in the OTHER
+  // direction too: a first-ever tombstone must not be blocked by the guard.
+  const { durableTombstone, secureMock } = await loadTombstone();
+  durableTombstone.setUserId('fresh-user');
+
+  assert.equal(await durableTombstone.has('rec1'), false);
+  assert.equal(await durableTombstone.add('rec1'), true, 'first write must succeed');
+  assert.equal(await durableTombstone.has('rec1'), true);
+
+  // And the proven-absent read is cached, so an empty list costs nothing extra.
+  durableTombstone.setUserId('another-fresh-user');
+  const before = secureMock.__stats.reads;
+  for (let i = 0; i < 5; i++) assert.equal(await durableTombstone.has('nope'), false);
+  assert.ok(
+    secureMock.__stats.reads - before <= 1,
+    'proven absence must be cached, not re-read per probe'
+  );
+});
+
+test('readChunkedValueStrict separates absence from unavailability', async () => {
+  const secureMock = makeInstrumentedSecureStore();
+  const mod = await loadTsModule('src/lib/durableAudio/chunkedStore.ts', {
+    'expo-secure-store': secureMock,
+  });
+
+  assert.deepEqual(
+    { ...(await mod.readChunkedValueStrict('captivet_durable_missing')) },
+    { status: 'absent' },
+    'no count pointer is the one situation that proves absence'
+  );
+
+  await mod.writeChunkedValue('captivet_durable_v', 'x'.repeat(5000));
+  const ok = await mod.readChunkedValueStrict('captivet_durable_v');
+  assert.equal(ok.status, 'value');
+  assert.equal(ok.value, 'x'.repeat(5000));
+
+  // Torn set: a chunk key existed, we just cannot read the whole value.
+  secureMock.__store.delete('captivet_durable_v_chunk_1');
+  assert.equal((await mod.readChunkedValueStrict('captivet_durable_v')).status, 'unavailable');
+
+  // Corrupt count pointer.
+  secureMock.__store.set('captivet_durable_bad_count', 'not-a-number');
+  assert.equal((await mod.readChunkedValueStrict('captivet_durable_bad')).status, 'unavailable');
+});

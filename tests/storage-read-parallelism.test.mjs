@@ -262,28 +262,104 @@ test('the pending-draft scan is not re-scheduled on every reducer action', async
     record,
     /const draftLinkageFingerprint = useMemo\(\s*\n\s*\(\) =>\s*session\.slots\.map\(\(slot\) => `\$\{slot\.draftSlotId \?\? ''\}:\$\{slot\.uploadStatus\}`\)\.join\('\|'\),/
   );
-  assert.match(record, /\}, \[draftLinkageFingerprint, user\?\.id\]\);/);
+  assert.match(record, /\}, \[draftLinkageFingerprint, draftStoreRevision, user\?\.id\]\);/);
   assert.doesNotMatch(record, /scheduleNonUrgentWork\('record_pending_draft_scan'[\s\S]{0,600}\}, \[session, user\?\.id\]\);/);
+
+  // ...but a storage write this screen never dispatched MUST still re-run it.
+  // `usePendingDraftSync` clears `pendingSync` from the app layout without
+  // touching any slot, so without this subscription the "syncing to server…"
+  // banner would stay on screen after the sync had already succeeded.
+  assert.match(record, /draftStorage\.subscribeDraftChanges\(\(\) => \{\s*setDraftStoreRevision\(\(n\) => n \+ 1\);/);
+
+  const storage = await readFile(new URL('../src/lib/draftStorage.ts', import.meta.url), 'utf8');
+  assert.match(storage, /subscribeDraftChanges\(listener: \(\) => void\): \(\) => void \{/);
+  // Fired from the single choke point every write already goes through.
+  assert.match(
+    storage,
+    /function invalidateDraftsCache\(\): void \{[\s\S]*?for \(const listener of draftChangeListeners\) \{/
+  );
+  // A listener must never break a storage write.
+  assert.match(storage, /listener\(\);\s*\} catch \{/);
 });
 
-test('parallel chunk reads observe every rejection (rule 4)', async () => {
+test('chunk fan-out is centralised, windowed and rejection-observing (rule 4)', async () => {
   // `Promise.all` rejects on the first failure and silently abandons the rest;
   // an abandoned rejection is an unhandled rejection, which crashes Hermes in a
-  // release build. Every parallel chunk read must therefore use `allSettled`
-  // and rethrow deterministically.
+  // release build. And an unbounded `Array.from({ length: count })` would let a
+  // corrupt persisted count dispatch an arbitrary number of native calls before
+  // discovering the first gap. Both concerns live in one place now.
+  const reader = await readFile(new URL('../src/lib/chunkedRead.ts', import.meta.url), 'utf8');
+  assert.match(reader, /export const MAX_CHUNKS_PER_VALUE = 512;/);
+  assert.match(reader, /export const CHUNK_READ_WINDOW = 8;/);
+  assert.match(reader, /Promise\.allSettled\(/);
+  assert.match(reader, /if \(outcome\.status === 'rejected'\) throw outcome\.reason;/);
+  assert.match(reader, /if \(outcome\.value === null\) return \{ ok: false, reason: 'torn' \};/);
+  assert.match(reader, /count > maxChunks/);
+
+  // No storage module may hand-roll its own unbounded fan-out again.
   for (const file of [
     'src/lib/draftStorage.ts',
     'src/lib/stashStorage.ts',
+    'src/lib/durableAudio/chunkedStore.ts',
   ]) {
     const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
-    const chunkReads = source.match(/Promise\.(all|allSettled)\(\s*\n?\s*Array\.from\(\{ length:/g) ?? [];
-    assert.ok(chunkReads.length > 0, `${file} should fan out chunk reads`);
-    assert.ok(
-      chunkReads.every((match) => match.includes('allSettled')),
-      `${file} must use Promise.allSettled for chunk reads, saw: ${chunkReads.join(', ')}`
+    assert.match(source, /readChunksBounded\(/, `${file} must delegate chunk reads`);
+    assert.doesNotMatch(
+      source,
+      /Promise\.(all|allSettled)\(\s*\n?\s*Array\.from\(\{ length: count/,
+      `${file} must not fan out chunk reads directly`
     );
-    assert.match(source, /if \(outcome\.status === 'rejected'\) throw outcome\.reason;/);
   }
+});
+
+test('readChunksBounded stops at the first gap and rejects an implausible count', async () => {
+  const mod = await loadTsModule('src/lib/chunkedRead.ts', {});
+  const { readChunksBounded, MAX_CHUNKS_PER_VALUE } = mod;
+
+  // Happy path: parts come back in index order.
+  const ok = await readChunksBounded(5, async (i) => `p${i}`);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.parts.join(''), 'p0p1p2p3p4');
+
+  // A corrupt count must be rejected WITHOUT dispatching a single read — this is
+  // the OOM guard. `parseStrictChunkCount` alone allows up to 999,999.
+  let reads = 0;
+  const tooLarge = await readChunksBounded(999_999, async (i) => {
+    reads += 1;
+    return `p${i}`;
+  });
+  assert.equal(tooLarge.ok, false);
+  assert.equal(tooLarge.reason, 'count_too_large');
+  assert.equal(reads, 0, 'an implausible count must not dispatch any read');
+  assert.equal((await readChunksBounded(MAX_CHUNKS_PER_VALUE + 1, async () => 'x')).ok, false);
+
+  // Early exit: a gap at index 3 must stop the walk, not read all 400 chunks.
+  reads = 0;
+  const torn = await readChunksBounded(400, async (i) => {
+    reads += 1;
+    return i === 3 ? null : `p${i}`;
+  });
+  assert.equal(torn.ok, false);
+  assert.equal(torn.reason, 'torn');
+  assert.ok(reads <= 8, `must stop within one window, dispatched ${reads}`);
+
+  // Concurrency stays bounded, and every rejection in a window is observed.
+  let inFlight = 0;
+  let peak = 0;
+  const settledOk = await readChunksBounded(64, async (i) => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await Promise.resolve();
+    inFlight -= 1;
+    return `p${i}`;
+  });
+  assert.equal(settledOk.ok, true);
+  assert.ok(peak > 1 && peak <= 8, `window must bound concurrency, peak ${peak}`);
+
+  await assert.rejects(
+    () => readChunksBounded(4, async () => { throw new Error('keystore exploded'); }),
+    /keystore exploded/
+  );
 });
 
 test('a Keystore failure on one chunk never reads as an absent draft', async () => {
@@ -326,4 +402,49 @@ test('a Keystore failure on one chunk never reads as an absent draft', async () 
   // it must do so without an unobserved rejection escaping.
   const drafts = await mod.draftStorage.listDraftsForUser(userId);
   assert.equal(drafts.length, 0);
+});
+
+test('an unreadable tombstone list is never cached as empty', async () => {
+  // The tombstone is the guard that stops `cleanupOrphaned` deleting a
+  // just-uploaded server row. Caching an unproven `[]` would make `has()` answer
+  // "not uploaded" forever and let the next `add()` overwrite the real list.
+  const { durableTombstone, secureMock } = await loadTombstone();
+  durableTombstone.setUserId('user1');
+  await durableTombstone.add('rec1');
+  await durableTombstone.add('rec2');
+  assert.equal(await durableTombstone.has('rec1'), true);
+
+  // Simulate a Keystore failure on the chunk reads: the count key still reads,
+  // the chunks do not, so `readChunkedValue` returns null (torn).
+  const baseGet = secureMock.getItemAsync.bind(secureMock);
+  secureMock.getItemAsync = async (key) => (key.includes('_chunk_') ? null : baseGet(key));
+
+  // Drop the mirror the way a user switch would, so the next read must hit
+  // storage and observe the torn state.
+  durableTombstone.setUserId(null);
+  durableTombstone.setUserId('user1');
+  assert.equal(await durableTombstone.has('rec1'), false, 'torn read degrades to empty');
+
+  // ...but it must NOT have been cached. Once storage recovers the real list
+  // comes back rather than a stuck empty answer.
+  secureMock.getItemAsync = baseGet;
+  assert.equal(await durableTombstone.has('rec1'), true, 'must retry storage after recovery');
+  assert.equal(await durableTombstone.has('rec2'), true);
+});
+
+test('a corrupt tombstone payload is never cached as empty', async () => {
+  const { durableTombstone, secureMock } = await loadTombstone();
+  durableTombstone.setUserId('user1');
+  await durableTombstone.add('rec1');
+
+  // Corrupt the stored payload, then force a cold read.
+  const chunkKey = [...secureMock.__store.keys()].find((k) => k.includes('_chunk_0'));
+  const good = secureMock.__store.get(chunkKey);
+  secureMock.__store.set(chunkKey, '{not json');
+  durableTombstone.setUserId(null);
+  durableTombstone.setUserId('user1');
+  assert.equal(await durableTombstone.has('rec1'), false);
+
+  secureMock.__store.set(chunkKey, good);
+  assert.equal(await durableTombstone.has('rec1'), true, 'must retry after the payload is readable');
 });

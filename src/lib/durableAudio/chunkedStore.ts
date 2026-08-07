@@ -10,6 +10,7 @@
  * RECOVERY_INTENT and DEVICE_ID (plan: must survive clearAll()).
  */
 import { secureStorage } from '../secureStorage';
+import { readChunksBounded } from '../chunkedRead';
 
 const CHUNK_SIZE = 1900;
 const MAX_STALE_SWEEP = 16;
@@ -39,17 +40,16 @@ export async function readChunkedValue(prefix: string): Promise<string | null> {
   if (!countStr) return null;
   const count = parseInt(countStr, 10);
   if (!Number.isFinite(count) || count < 0) return null;
-  // Key names are known once the count is read. `durableTombstone.has()` calls
-  // this per draft during the orphan/eviction sweeps and the list can reach
-  // ~7 chunks at MAX_TOMBSTONES, so the serial version cost ~8 Keystore round
-  // trips per probe. Index order is preserved; a torn set is still "absent".
-  const chunks = await Promise.all(
-    Array.from({ length: count }, (_, i) =>
-      secureStorage.getRawItem(`${prefix}_chunk_${i}`, 'durableChunkRead'),
-    ),
+  // `durableTombstone.has()` calls this per draft during the orphan/eviction
+  // sweeps and the list can reach ~7 chunks at MAX_TOMBSTONES, so the serial
+  // version cost ~8 Keystore round trips per probe. Windowed rather than fully
+  // eager because the count is persisted data and can be corrupt; a torn or
+  // implausible set is still "absent".
+  const result = await readChunksBounded(count, (i) =>
+    secureStorage.getRawItem(`${prefix}_chunk_${i}`, 'durableChunkRead'),
   );
-  if (chunks.some((chunk) => chunk === null)) return null; // torn read -> treat as absent
-  return chunks.join('');
+  if (!result.ok) return null; // torn / not-credible read -> treat as absent
+  return result.parts.join('');
 }
 
 export async function deleteChunkedValue(prefix: string): Promise<void> {

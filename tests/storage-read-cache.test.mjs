@@ -17,6 +17,31 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
+// The REAL bounded chunk reader, not a stub — the storage modules delegate their
+// chunk fan-out to it, so stubbing it here would hide the very behaviour these
+// tests cover (windowed reads, stop-at-first-gap, corrupt-count rejection).
+// `chunkedRead.ts` imports nothing, so loading it needs no mocks of its own.
+const chunkedReadModule = await (async () => {
+  const source = await read('src/lib/chunkedRead.ts');
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: module.exports,
+    module,
+    require: () => {
+      throw new Error('chunkedRead must have no imports');
+    },
+    Promise,
+    Array,
+    Math,
+    Number,
+    Object,
+  });
+  return module.exports;
+})();
+
 /** Shared in-memory SecureStore double with read/write counters. */
 function makeSecureStore(state = new Map()) {
   const counters = { reads: 0, writes: 0, deletes: 0 };
@@ -75,6 +100,7 @@ async function loadStashStorage(state) {
   const store = makeSecureStore(state);
   const mod = await loadTsModuleWithMocks('src/lib/stashStorage.ts', {
     'expo-secure-store': store.mock,
+    './chunkedRead': chunkedReadModule,
     './secureStorage': {
       secureStorage: {
         async getRawItemStrict(key) {
@@ -225,6 +251,7 @@ async function loadDraftStorage(state, opts = {}) {
   };
   const mod = await loadTsModuleWithMocks('src/lib/draftStorage.ts', {
     'expo-secure-store': store.mock,
+    './chunkedRead': chunkedReadModule,
     'expo-file-system': fileSystemMock,
     'expo-file-system/legacy': {
       async copyAsync() {},

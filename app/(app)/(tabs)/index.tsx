@@ -172,6 +172,7 @@ export default function HomeScreen() {
   const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
   const processingRecordingIdsRef = useRef<Set<string>>(new Set());
   const lastQualityRefetchAtRef = useRef(0);
+  const trailingQualityRefetchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleRecordingIds = useMemo(
     () => new Set(recordings.map((r) => r.id)),
     [recordings]
@@ -192,22 +193,44 @@ export default function HomeScreen() {
     const finishedProcessing = [...processingRecordingIdsRef.current].some(
       (id) => visibleRecordingIds.has(id) && !processingRecordingIds.has(id)
     );
-    const now = Date.now();
-    if (
-      canFetchQualityAnalytics &&
-      finishedProcessing &&
-      now - lastQualityRefetchAtRef.current >= QUALITY_REFETCH_MIN_INTERVAL_MS
-    ) {
-      lastQualityRefetchAtRef.current = now;
-      refetchQuality().catch(() => {});
-    }
     processingRecordingIdsRef.current = processingRecordingIds;
+    if (!canFetchQualityAnalytics || !finishedProcessing) return;
+
+    const sinceLast = Date.now() - lastQualityRefetchAtRef.current;
+    if (sinceLast >= QUALITY_REFETCH_MIN_INTERVAL_MS) {
+      lastQualityRefetchAtRef.current = Date.now();
+      refetchQuality().catch(() => {});
+      return;
+    }
+
+    // Inside the throttle window. The completion must be DEFERRED, not dropped:
+    // the id has already been removed from `processingRecordingIdsRef` above, so
+    // nothing would ever retry it and the quality summary would keep showing
+    // pre-completion numbers until something else happened to refresh it.
+    // One trailing timer covers every completion that lands in the window.
+    if (trailingQualityRefetchRef.current) return;
+    trailingQualityRefetchRef.current = setTimeout(() => {
+      trailingQualityRefetchRef.current = null;
+      lastQualityRefetchAtRef.current = Date.now();
+      refetchQuality().catch(() => {});
+    }, QUALITY_REFETCH_MIN_INTERVAL_MS - sinceLast);
   }, [
     canFetchQualityAnalytics,
     processingRecordingIds,
     visibleRecordingIds,
     refetchQuality,
   ]);
+
+  // Never leave a trailing refetch armed past unmount.
+  useEffect(
+    () => () => {
+      if (trailingQualityRefetchRef.current) {
+        clearTimeout(trailingQualityRefetchRef.current);
+        trailingQualityRefetchRef.current = null;
+      }
+    },
+    []
+  );
 
   useRetryableInitialLoadError({
     screen: 'home',

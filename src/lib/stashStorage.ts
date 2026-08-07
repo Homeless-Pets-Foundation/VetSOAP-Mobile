@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
 import { secureStorage } from './secureStorage';
 import { StrictReadUnavailableError, parseStrictChunkCount } from './strictRead';
+import { readChunksBounded } from './chunkedRead';
 import { isValidDurableId } from './durableAudio/paths';
 import { clonePendingConfirm } from './pendingConfirm';
 
@@ -104,19 +105,15 @@ async function readSessionsForKeys(
   // chunked blob, so this loop was the single longest serial Keystore chain in
   // the app (5 sessions x several slots x segments comfortably exceeds 20
   // chunks). Index order is preserved; a torn set still fails the read.
-  // `allSettled`, not `all`: with `all` a second concurrent rejection would go
-  // unobserved, and an unobserved rejection is a Hermes release-build crash
-  // (rule 4). The first failure by index is rethrown, matching what the serial
-  // loop propagated.
-  const settled = await Promise.allSettled(
-    Array.from({ length: count }, (_, i) => SecureStore.getItemAsync(`${scopedPrefix}${i}`)),
+  // Windowed rather than serial (the whole stash list is one chunked blob, so
+  // this was the longest serial Keystore chain in the app) and windowed rather
+  // than fully eager (the count is persisted data and can be corrupt).
+  // `readChunksBounded` preserves the serial loop's stop-at-first-gap.
+  const result = await readChunksBounded(count, (i) =>
+    SecureStore.getItemAsync(`${scopedPrefix}${i}`),
   );
-  const chunks: string[] = [];
-  for (const outcome of settled) {
-    if (outcome.status === 'rejected') throw outcome.reason;
-    if (outcome.value === null) return null;
-    chunks.push(outcome.value);
-  }
+  if (!result.ok) return null;
+  const chunks = result.parts;
 
   try {
     const raw = chunks.join('');
@@ -298,21 +295,19 @@ async function readSessionsForKeysStrict(
   const count = parseStrictChunkCount(countStr, 'stash:count');
   if (count === 0) return [];
 
-  // `allSettled` so a second concurrent rejection is still observed (rule 4);
-  // the first failure by index is rethrown so the surfaced error is
-  // deterministic and matches the previous serial behaviour.
-  const settled = await Promise.allSettled(
-    Array.from({ length: count }, (_, i) =>
-      secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict'),
-    ),
+  // Windowed for the same reasons as the lenient reader. `parseStrictChunkCount`
+  // allows counts up to 999,999 because it was written for a serial loop that
+  // exits early; a fan-out must additionally reject a count no real value could
+  // have, and for a STRICT read that is "unavailable", never "absent".
+  const result = await readChunksBounded(count, (i) =>
+    secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict'),
   );
-  const chunks: string[] = [];
-  for (const outcome of settled) {
-    if (outcome.status === 'rejected') throw outcome.reason;
-    if (outcome.value === null) throw new StrictReadUnavailableError('stash:torn_chunk');
-    chunks.push(outcome.value);
+  if (!result.ok) {
+    throw new StrictReadUnavailableError(
+      result.reason === 'count_too_large' ? 'stash:count' : 'stash:torn_chunk',
+    );
   }
-  return parseSessionsStrict(chunks.join(''));
+  return parseSessionsStrict(result.parts.join(''));
 }
 
 async function getStashedSessionsForUserStrictInternal(

@@ -163,6 +163,30 @@ function makeSecureStore(state = new Map()) {
   return { state, counters, mock };
 }
 
+// The REAL bounded chunk reader — stubbing it would hide the windowed-read,
+// stop-at-first-gap and corrupt-count behaviour draftStorage delegates to it.
+// `chunkedRead.ts` imports nothing, so it needs no mocks of its own.
+const chunkedReadModule = await (async () => {
+  const source = await read('src/lib/chunkedRead.ts');
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: module.exports,
+    module,
+    require: () => {
+      throw new Error('chunkedRead must have no imports');
+    },
+    Promise,
+    Array,
+    Math,
+    Number,
+    Object,
+  });
+  return module.exports;
+})();
+
 async function loadTsModuleWithMocks(path, mocks) {
   const source = await read(path);
   const compiled = ts.transpileModule(source, {
@@ -198,6 +222,7 @@ async function loadDraftStorage(state) {
   const breadcrumbs = [];
   const mod = await loadTsModuleWithMocks('src/lib/draftStorage.ts', {
     'expo-secure-store': store.mock,
+    './chunkedRead': chunkedReadModule,
     'expo-file-system': {
       File: class {
         constructor(uri) {

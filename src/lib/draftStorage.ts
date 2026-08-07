@@ -10,6 +10,7 @@ import {
 } from './fileOps';
 import { secureStorage } from './secureStorage';
 import { StrictReadUnavailableError, type StrictExistence } from './strictRead';
+import { readChunksBounded } from './chunkedRead';
 import { isConfirmedUploaded, validateManifestObject, type DurableRecordingManifest } from './durableAudio/manifest';
 import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '../types/multiPatient';
 import type { CreateRecording } from '../types/index';
@@ -145,9 +146,23 @@ const pendingDraftSyncSlotIds = new Set<string>();
 let draftsListCache: { userId: string; drafts: DraftMetadata[] } | null = null;
 let draftsCacheVersion = 0;
 
+// Bumped on every write, so a mounted screen can re-read after a change it did
+// not itself dispatch. `usePendingDraftSync` runs outside the record screen's
+// reducer and flips `pendingSync` in storage without touching any slot, so
+// without this signal the Record tab's "syncing to server…" banner would stay
+// on screen indefinitely after the sync had already succeeded.
+const draftChangeListeners = new Set<() => void>();
+
 function invalidateDraftsCache(): void {
   draftsListCache = null;
   draftsCacheVersion++;
+  for (const listener of draftChangeListeners) {
+    try {
+      listener();
+    } catch {
+      // A listener must never break a storage write.
+    }
+  }
 }
 
 // Clone on cache read/write so callers can never mutate cached entries.
@@ -523,25 +538,17 @@ async function readDraftChunks(
       const count = meta.chunks;
       if (!Number.isInteger(count) || !count || count <= 0) return null;
       const prefix = draftChunkPrefixForUser(userId, slotId);
-      // Every key name is known once `count` is read, so there is no reason to
-      // walk them one bridge round trip at a time. Each AndroidKeyStore read is
-      // a JNI hop plus an AES-GCM decrypt; serially they dominated
-      // `local_draft_list` (production Sentry: 11.7s). Order is preserved by
-      // index, and a single missing chunk still fails the whole read.
-      // `allSettled`, not `all`: with `all` a second concurrent rejection would
-      // go unobserved, and an unobserved rejection is a Hermes release-build
-      // crash (rule 4). Rethrowing the first failure by index keeps the outer
-      // catch behaving exactly as the serial loop did.
-      const settled = await Promise.allSettled(
-        Array.from({ length: count }, (_, i) => SecureStore.getItemAsync(`${prefix}${i}`)),
+      // Windowed rather than serial: each AndroidKeyStore read is a JNI hop plus
+      // an AES-GCM decrypt, and serially they dominated `local_draft_list`
+      // (production Sentry: 11.7s). Windowed rather than fully eager: `count` is
+      // itself persisted data and can be corrupt, so dispatching every read up
+      // front would let one bad pointer enqueue an unbounded number of native
+      // calls. `readChunksBounded` keeps the serial loop's early exit.
+      const result = await readChunksBounded(count, (i) =>
+        SecureStore.getItemAsync(`${prefix}${i}`),
       );
-      const parts: string[] = [];
-      for (const outcome of settled) {
-        if (outcome.status === 'rejected') throw outcome.reason;
-        if (outcome.value === null) return null;
-        parts.push(outcome.value);
-      }
-      return normalizeDraftMetadata(JSON.parse(parts.join('')));
+      if (!result.ok) return null;
+      return normalizeDraftMetadata(JSON.parse(result.parts.join('')));
     }
   } catch {
     return null;
@@ -771,22 +778,21 @@ async function readDraftChunksStrict(
       throw new StrictReadUnavailableError('draft_meta:chunk_count');
     }
     const prefix = draftChunkPrefixForUser(userId, slotId);
-    // Parallel for the same reason as the lenient reader. `allSettled` rather
-    // than `all` so a second concurrent rejection is still observed — an
-    // unobserved rejection is a Hermes release-build crash (rule 4). The first
-    // failure by index is rethrown, so the error surfaced is deterministic and
-    // matches what the old serial loop would have produced.
-    const settled = await Promise.allSettled(
-      Array.from({ length: count as number }, (_, i) =>
-        secureStorage.getRawItemStrict(`${prefix}${i}`, 'draftChunkStrict'),
-      ),
+    // Windowed for the same reasons as the lenient reader. A count above the
+    // per-value ceiling is not a credible pointer — for a STRICT read that is
+    // "unavailable", never "absent", because callers delete server rows on
+    // proven absence.
+    const result = await readChunksBounded(count as number, (i) =>
+      secureStorage.getRawItemStrict(`${prefix}${i}`, 'draftChunkStrict'),
     );
-    const parts: string[] = [];
-    for (const outcome of settled) {
-      if (outcome.status === 'rejected') throw outcome.reason;
-      if (outcome.value === null) throw new StrictReadUnavailableError('draft_meta:torn_chunk');
-      parts.push(outcome.value);
+    if (!result.ok) {
+      throw new StrictReadUnavailableError(
+        result.reason === 'count_too_large'
+          ? 'draft_meta:chunk_count'
+          : 'draft_meta:torn_chunk',
+      );
     }
+    const parts = result.parts;
     let parsed: unknown;
     try {
       parsed = JSON.parse(parts.join(''));
@@ -1005,6 +1011,21 @@ export const draftStorage = {
   subscribeUserIdChanges(listener: (userId: string | null) => void): () => void {
     userIdListeners.add(listener);
     return () => userIdListeners.delete(listener);
+  },
+
+  /**
+   * Fires after any write that invalidates the draft list — save, delete,
+   * server-id update, eviction, `syncPending`, user rebind.
+   *
+   * A screen that renders derived draft state (e.g. the Record tab's
+   * "syncing to server…" banner) cannot rely on its own reducer for this:
+   * `usePendingDraftSync` runs from the app layout and flips `pendingSync`
+   * without dispatching anything into the record session. Listeners must be
+   * cheap and must not throw.
+   */
+  subscribeDraftChanges(listener: () => void): () => void {
+    draftChangeListeners.add(listener);
+    return () => draftChangeListeners.delete(listener);
   },
 
   /**

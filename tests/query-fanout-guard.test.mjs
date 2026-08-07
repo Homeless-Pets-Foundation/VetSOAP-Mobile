@@ -142,6 +142,10 @@ test('the quality dashboard refetch requires a real completion and is throttled'
   // Still visible AND no longer processing == genuinely terminal. Merely
   // absent means it fell out of the top-5 window.
   assert.match(home, /visibleRecordingIds\.has\(id\) && !processingRecordingIds\.has\(id\)/);
-  assert.match(home, /now - lastQualityRefetchAtRef\.current >= QUALITY_REFETCH_MIN_INTERVAL_MS/);
+  assert.match(home, /sinceLast >= QUALITY_REFETCH_MIN_INTERVAL_MS/);
   assert.doesNotMatch(home, /const completedProcessing = /);
+  // Throttled, not dropped — a completion inside the window arms one trailing
+  // refetch rather than being forgotten.
+  assert.match(home, /trailingQualityRefetchRef\.current = setTimeout\(/);
+  assert.match(home, /clearTimeout\(trailingQualityRefetchRef\.current\)/);
 });

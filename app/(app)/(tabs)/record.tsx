@@ -5021,6 +5021,18 @@ function RecordingSession() {
     () => session.slots.map((slot) => `${slot.draftSlotId ?? ''}:${slot.uploadStatus}`).join('|'),
     [session.slots]
   );
+  // Storage-side writes this screen never dispatched. `usePendingDraftSync` is
+  // mounted in the app layout and clears `pendingSync` in SecureStore without
+  // touching any slot, so neither the fingerprint above nor the old whole-session
+  // dependency would re-run the scan when a background sync settles — leaving
+  // "syncing to server…" on screen after it had already succeeded.
+  const [draftStoreRevision, setDraftStoreRevision] = useState(0);
+  useEffect(() => {
+    return draftStorage.subscribeDraftChanges(() => {
+      setDraftStoreRevision((n) => n + 1);
+    });
+  }, []);
+
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
@@ -5034,7 +5046,7 @@ function RecordingSession() {
       cancelled = true;
       cancelWork();
     };
-  }, [draftLinkageFingerprint, user?.id]);
+  }, [draftLinkageFingerprint, draftStoreRevision, user?.id]);
 
   // Effect: on mount (once per user), sweep local drafts whose audio files
   // are missing on disk. Those are "zombie" drafts — they'll render as "Not

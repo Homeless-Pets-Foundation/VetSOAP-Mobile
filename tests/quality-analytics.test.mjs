@@ -292,11 +292,17 @@ test('Home refreshes clinic quality when recent processing recordings leave proc
   assert.match(source, /const visibleRecordingIds = useMemo\(/);
   // Batches finishing together must not stack dashboard requests.
   assert.match(source, /const QUALITY_REFETCH_MIN_INTERVAL_MS = 30_000/);
-  assert.match(
-    source,
-    /now - lastQualityRefetchAtRef\.current >= QUALITY_REFETCH_MIN_INTERVAL_MS/
-  );
-  assert.match(source, /lastQualityRefetchAtRef\.current = now;\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);/);
+  assert.match(source, /sinceLast >= QUALITY_REFETCH_MIN_INTERVAL_MS/);
+  assert.match(source, /lastQualityRefetchAtRef\.current = Date\.now\(\);\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);/);
+  // A completion landing inside the throttle window must be DEFERRED, not
+  // dropped: its id has already left processingRecordingIdsRef, so nothing else
+  // would ever retry it and the summary would keep pre-completion numbers.
+  assert.match(source, /const trailingQualityRefetchRef = useRef<ReturnType<typeof setTimeout> \| null>\(null\)/);
+  assert.match(source, /if \(trailingQualityRefetchRef\.current\) return;/);
+  assert.match(source, /trailingQualityRefetchRef\.current = setTimeout\(/);
+  assert.match(source, /QUALITY_REFETCH_MIN_INTERVAL_MS - sinceLast/);
+  // ...and must never stay armed past unmount.
+  assert.match(source, /clearTimeout\(trailingQualityRefetchRef\.current\)/);
 });
 
 test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing quality', async () => {

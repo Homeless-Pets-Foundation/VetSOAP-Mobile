@@ -51,16 +51,38 @@ function prefixFor(userId: string): string {
 async function readList(userId: string): Promise<string[]> {
   // Copy on the way out: `add()` mutates the array it receives.
   if (cachedList && cachedListUserId === userId) return cachedList.slice();
+
   const raw = await readChunkedValue(prefixFor(userId));
-  let list: string[] = [];
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw);
-      list = Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
-    } catch {
-      list = [];
-    }
+  if (raw === null) {
+    // `readChunkedValue` collapses THREE different situations to null: the key
+    // is genuinely absent, a chunk was torn by a concurrent write, or the
+    // Keystore read failed. Caching `[]` here would be a data-loss bug, not a
+    // slow path: `has()` would keep answering "not uploaded" without ever
+    // retrying storage, and the next `add()` would start from that empty array
+    // and overwrite the real persisted tombstones with a single ID. That is the
+    // guard which stops `cleanupOrphaned` from deleting a just-uploaded server
+    // row. So: return empty, cache NOTHING, and let the next call retry.
+    //
+    // The cost of not caching is one read of the count key — not the whole
+    // chunk set — and only for users who have no tombstones at all. Sweeps over
+    // users who DO have tombstones (the case this cache exists for) still get
+    // the full benefit.
+    return [];
   }
+
+  let list: string[];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      // Present but not the shape we wrote — corrupt, not proven-empty.
+      return [];
+    }
+    list = parsed.filter((x): x is string => typeof x === 'string');
+  } catch {
+    // Unparseable payload — same reasoning as above, never cache it.
+    return [];
+  }
+
   cachedListUserId = userId;
   cachedList = list.slice();
   return list;

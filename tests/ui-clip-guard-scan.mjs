@@ -49,6 +49,19 @@ const TIGHT_PARENT = /\b(flex-row|items-center|rounded-(?:full|badge|pill))\b/;
  * damage. `numberOfLines` counts as handled: on a multi-token label it converts
  * a silent vanish into a visible ellipsis, and on a single-token label the
  * failure was only ever an edge glyph-clip.
+ *
+ * KNOWN BLIND SPOT, measured on device 2026-08-07: `CLIP_SAFE` counts as handled
+ * here, but it only ever fixes a SINGLE-token edge glyph-clip. Padding sits inside
+ * the box while the text lays out — and wraps — within the content area, so on a
+ * MULTI-token label it cannot prevent the wrap-and-vanish at all.
+ * `PatientSlotCard`'s "Delete & Start Over" carried CLIP_SAFE, scanned clean, and
+ * still dropped "Over" on a Pixel 10 Pro XL; raising paddingRight to 12 changed
+ * nothing, and numberOfLines={2} changed nothing (a maximum is not a reservation).
+ * Only real content width fixed it.
+ * The scanner cannot close this gap — it does not know the rendered string, and
+ * token count is only knowable for static labels — so it stays a per-site
+ * judgement. This is exactly why the ratchet is the weaker of the two layers and
+ * must never be the only one.
  */
 const MITIGATED =
   /\b(flex-1|w-full|self-stretch|CLIP_SAFE|numberOfLines|flexShrink:\s*0|width:\s*'100%')\b/;

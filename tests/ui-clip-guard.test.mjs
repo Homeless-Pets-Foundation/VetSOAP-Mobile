@@ -196,6 +196,12 @@ const SWEPT = [
     why: 'position within a multi-patient session' },
   { file: 'src/components/PatientSlotCard.tsx', anchor: "clipSafe('Record')", mitigation: 'headroom', multiToken: false },
   { file: 'src/components/PatientSlotCard.tsx', anchor: 'Saving recording...', mitigation: 'width', multiToken: false },
+  // Device-found regression (Pixel 10 Pro XL, 2026-08-07): rendered "Delete & Start"
+  // with CLIP_SAFE already applied. Headroom lost to a 19-char bold overrun; the fix
+  // is room to grow, so the required backstop here is numberOfLines={2} — {1} would
+  // ellipsize instead of showing the whole label. All four branches share the defect.
+  { file: 'src/components/PatientSlotCard.tsx', anchor: "clipSafe('Delete & Start Over')", mitigation: 'width', multiToken: false,
+    why: 'lost "Over" on device; destructive action, and "Delete & Start" reads like a different one' },
   { file: 'src/components/SoapNoteView.tsx', anchor: 'Edited ${editedLabel}', mitigation: 'headroom', multiToken: true },
   { file: 'src/components/AttentionFeedSection.tsx', anchor: 'ATTENTION_FEED_COPY.sectionTitle', mitigation: 'width', multiToken: true },
   { file: 'src/components/AttentionFeedSection.tsx', anchor: 'ATTENTION_FEED_COPY.acrossPracticeSummary(acrossPracticeCount)', mitigation: 'width', multiToken: false,

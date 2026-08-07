@@ -208,21 +208,45 @@ export default function DevicesScreen() {
 
           {capacity ? (
             <Card className="mb-4">
+              {/* Android "Bold text" (Settings > Accessibility, Configuration
+                  fontWeightAdjustment=300) paints glyphs wider than Yoga
+                  measured them. Yoga sizes these labels for ONE line, Android
+                  then overruns, wraps at a space, and line 2 is clipped by the
+                  already-fixed one-line height — the whole trailing word just
+                  disappears with no ellipsis ("7 remaining" rendered as "7").
+                  Verified on a physical Pixel 10 Pro XL: identical build renders
+                  correctly at fontWeightAdjustment=0 and clips at 300.
+                  The trailing space buys measured-width headroom so the bold
+                  overrun cannot reach a wrap point; numberOfLines={1} makes any
+                  residual overrun ellipsize visibly instead of vanishing.
+                  flexShrink:0 keeps the row from squeezing them further. */}
               <View className="flex-row items-baseline justify-between mb-2">
-                <Text className="text-body font-semibold text-content-primary">
+                <Text className="text-body font-semibold text-content-primary flex-1">
                   {capacity.count} of {capacity.limit} devices in use
                 </Text>
                 {capacity.isAtLimit ? (
-                  <Text className="text-caption font-semibold text-status-danger">
-                    Limit reached
+                  <Text
+                    className="text-caption font-semibold text-status-danger"
+                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    numberOfLines={1}
+                  >
+                    {'Limit reached '}
                   </Text>
                 ) : capacity.isNearLimit ? (
-                  <Text className="text-caption font-semibold text-status-warning">
-                    Approaching limit
+                  <Text
+                    className="text-caption font-semibold text-status-warning"
+                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    numberOfLines={1}
+                  >
+                    {'Approaching limit '}
                   </Text>
                 ) : (
-                  <Text className="text-caption text-content-tertiary">
-                    {capacity.remaining} remaining
+                  <Text
+                    className="text-caption text-content-tertiary"
+                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    numberOfLines={1}
+                  >
+                    {`${capacity.remaining} remaining `}
                   </Text>
                 )}
               </View>

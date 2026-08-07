@@ -218,7 +218,11 @@ export default function LoginScreen() {
             accessibilityLabel="Captivet"
           />
           <Text
-            className="text-body text-content-tertiary mt-3"
+            // w-full is load-bearing: inside an items-center parent the Text
+            // shrink-wraps, and Android under-measures the last word off the
+            // end with no ellipsis ("Sign in to your"). Claiming the full row
+            // width makes it measure against the container instead.
+            className="text-body text-content-tertiary mt-3 w-full"
             style={{ textAlign: 'center' }}
             numberOfLines={2}
           >

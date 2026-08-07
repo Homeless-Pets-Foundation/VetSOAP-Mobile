@@ -42,3 +42,54 @@ test('no single-word strings.ts value carries a trailing clip-hack space', async
     .filter((word) => !word.endsWith(':'));
   assert.deepEqual(offenders, [], `single-word trailing-space values found: ${JSON.stringify(offenders)}`);
 });
+
+// Both fences below cover clipping verified on a physical Pixel 10 Pro XL
+// (2026-08-07, build 1.13.19). Neither reproduces on the emulator or iOS, so a
+// source fence is the only thing that keeps them from silently coming back.
+
+test('login subtitle claims full row width so Android cannot clip its last word', async () => {
+  const src = await read('app/(auth)/login.tsx');
+  const subtitle = src.match(/<Text[^>]*?>\s*Sign in to your account\s*<\/Text>/s);
+  assert.ok(subtitle, 'login subtitle Text not found');
+  // Inside an items-center parent the Text shrink-wraps and Android drops
+  // "account" with no ellipsis. w-full makes it measure against the container.
+  assert.match(
+    subtitle[0],
+    /className="[^"]*\bw-full\b[^"]*"/,
+    'login subtitle must carry w-full (rendered as "Sign in to your" without it)',
+  );
+});
+
+test('device capacity status labels carry bold-text overrun headroom', async () => {
+  const src = await read('app/(app)/devices.tsx');
+  const row = src.match(/<View className="flex-row items-baseline justify-between mb-2">.*?<\/View>/s);
+  assert.ok(row, 'device capacity header row not found');
+
+  // Left label absorbs the shortfall so the status label keeps its width.
+  const leftLabel = row[0].match(/<Text className="([^"]*)"[^>]*>\s*\{capacity\.count\}/);
+  assert.ok(leftLabel, 'capacity count Text not found');
+  assert.match(leftLabel[1], /\bflex-1\b/, 'capacity count label must be flex-1');
+
+  // All three status branches share the slot and the same failure mode, so all
+  // three need the mitigation — not just the branch that happened to render.
+  const branches = [
+    "{'Limit reached '}",
+    "{'Approaching limit '}",
+    '{`${capacity.remaining} remaining `}',
+  ];
+  for (const label of branches) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const branch = row[0].match(new RegExp(`<Text[^>]*?>\\s*${escaped}\\s*<\\/Text>`, 's'));
+    assert.ok(branch, `status branch not found (trailing space is load-bearing): ${label}`);
+    assert.match(
+      branch[0],
+      /style=\{\{ flexShrink: 0, paddingRight: 2 \}\}/,
+      `status branch ${label} must set flexShrink: 0 + paddingRight: 2`,
+    );
+    assert.match(
+      branch[0],
+      /numberOfLines=\{1\}/,
+      `status branch ${label} must set numberOfLines={1} so overrun ellipsizes instead of vanishing`,
+    );
+  }
+});

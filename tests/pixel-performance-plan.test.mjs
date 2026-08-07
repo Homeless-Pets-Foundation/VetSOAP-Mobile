@@ -259,7 +259,7 @@ test('Pixel performance plan keeps startup, device-capacity, orientation, audio,
   );
   assert.match(deviceCapacity, /refetchOnWindowFocus: canQueryDeviceSessions && mode === 'manage'/);
   assert.match(deviceCapacity, /const callerEnabled = options\.enabled \?\? true/);
-  assert.match(deviceCapacity, /callerEnabled && !!user && !deviceRegistrationBlock/);
+  assert.match(deviceCapacity, /callerEnabled &&\s*!!user &&\s*\(allowWhileBlocked \|\| !deviceRegistrationBlock\)/);
 
   assert.match(appConfig, /orientation: 'portrait'/);
 

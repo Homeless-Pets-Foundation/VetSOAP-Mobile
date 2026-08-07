@@ -118,7 +118,13 @@ test('device-sessions is not polled on behalf of a hidden modal', async () => {
 
   assert.match(hook, /enabled\?: boolean;/);
   assert.match(hook, /const callerEnabled = options\.enabled \?\? true;/);
-  assert.match(hook, /callerEnabled && !!user && !deviceRegistrationBlock && !deviceRegistrationPending/);
+  // `allowWhileBlocked` is opt-in: the default keeps every other caller off the
+  // endpoint until this device has a session row.
+  assert.match(hook, /const allowWhileBlocked = options\.allowWhileBlocked \?\? false;/);
+  assert.match(
+    hook,
+    /callerEnabled &&\s*!!user &&\s*\(allowWhileBlocked \|\| !deviceRegistrationBlock\) &&\s*!deviceRegistrationPending/
+  );
   // The poll and the focus refetch must be gated by the same flag as `enabled`;
   // otherwise a disabled query still schedules work.
   assert.match(
@@ -127,11 +133,30 @@ test('device-sessions is not polled on behalf of a hidden modal', async () => {
   );
   assert.match(hook, /refetchOnWindowFocus: canQueryDeviceSessions && mode === 'manage'/);
 
-  // The modal is mounted at the app root for the whole session lifetime.
+  // The modal is mounted at the app root for the whole session lifetime, so the
+  // poll must follow visibility — but it also has to be able to REFRESH while
+  // blocked, which is the only state it renders in. Both halves are required:
+  // `enabled` alone would silence a surface that must stay live, and
+  // `allowWhileBlocked` alone would restore the session-long poll.
   assert.match(
     modal,
-    /useDeviceCapacity\(\{\s*mode: 'manage',\s*enabled: !!deviceRegistrationBlock,\s*\}\)/
+    /useDeviceCapacity\(\{\s*mode: 'manage',\s*enabled: !!deviceRegistrationBlock,\s*allowWhileBlocked: true,\s*\}\)/
   );
+});
+
+test('the device-limit modal can refresh the list it is asking the user to prune', async () => {
+  const hook = await read('src/hooks/useDeviceCapacity.ts');
+  const modal = await read('src/components/DeviceLimitModal.tsx');
+
+  // `enabled: !!deviceRegistrationBlock` and a gate requiring
+  // `!deviceRegistrationBlock` are mutually exclusive, so without the
+  // blocked-state mode this query could never run: the three
+  // `['device-sessions']` invalidations below would be inert and the modal
+  // would keep offering devices revoked since the original 403.
+  assert.match(hook, /allowWhileBlocked\?: boolean;/);
+  assert.match(modal, /allowWhileBlocked: true/);
+  const invalidations = modal.match(/invalidateQueries\(\{ queryKey: \['device-sessions'\] \}\)/g) ?? [];
+  assert.ok(invalidations.length >= 2, 'revoke and re-register both invalidate the list');
 });
 
 test('the quality dashboard refetch requires a real completion and is throttled', async () => {

@@ -161,7 +161,10 @@ test('the device id is memoized so a cold start reads the Keystore once', async 
   const storage = await read('src/lib/secureStorage.ts');
 
   assert.match(storage, /let cachedDeviceId: string \| null = null;/);
-  assert.match(storage, /async getDeviceId\(\): Promise<string \| null> \{\s*if \(cachedDeviceId\) return cachedDeviceId;/);
+  assert.match(
+    storage,
+    /async getDeviceIdWithProvenance\(\): Promise<\{ id: string \| null; persisted: boolean \}> \{\s*if \(cachedDeviceId\) return \{ id: cachedDeviceId, persisted: true \};/
+  );
   // Only an ID storage is KNOWN to hold is memoized. The unconditional
   // `if (id) cachedDeviceId = id` promoted a value whose two write attempts had
   // both failed, so the process never retried persistence and the next launch
@@ -171,6 +174,19 @@ test('the device id is memoized so a cold start reads the Keystore once', async 
   // DEVICE_ID is device-scoped and deliberately survives clearAll(), so the
   // memo can never go stale within a process.
   assert.doesNotMatch(storage, /deleteItemAsync\(KEYS\.DEVICE_ID\)/);
+});
+
+test('the api client never pins a device id that storage has not accepted', async () => {
+  const client = await read('src/api/client.ts');
+
+  // ApiClient keeps its OWN device-id cache. Caching an unpersisted id there
+  // stops every later request from re-entering getDeviceId, so secureStorage's
+  // retry never runs and the next launch registers a second identity.
+  assert.match(client, /const \{ id, persisted \} = await secureStorage\.getDeviceIdWithProvenance\(\);/);
+  assert.match(client, /if \(id && persisted\) this\.cachedDeviceId = id;/);
+  // The header is still sent from the unpersisted value (rule 21).
+  assert.match(client, /deviceId = id;/);
+  assert.doesNotMatch(client, /const id = await secureStorage\.getDeviceId\(\);\s*\n\s*if \(id\) this\.cachedDeviceId = id;/);
 });
 
 test('the fetchUser single-flight handle is dropped on every sign-out path', async () => {

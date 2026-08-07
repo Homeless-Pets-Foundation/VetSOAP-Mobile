@@ -434,9 +434,16 @@ test('draft list and pending sync breadcrumbs contain only numeric counts', asyn
   assert.equal(drafts.length, 2);
   const listCrumb = breadcrumbs.find((c) => c.message === 'list_complete');
   assert.ok(listCrumb);
-  assert.deepEqual(Object.keys(listCrumb.data).sort(), ['indexed_slots', 'returned_drafts']);
+  assert.deepEqual(Object.keys(listCrumb.data).sort(), [
+    'indexed_slots',
+    'returned_drafts',
+    'unreadable_reads',
+  ]);
   assert.equal(listCrumb.data.indexed_slots, 2);
   assert.equal(listCrumb.data.returned_drafts, 2);
+  // A healthy read reports zero present-but-unreadable records, which is what
+  // makes the snapshot cacheable.
+  assert.equal(listCrumb.data.unreadable_reads, 0);
   assert.ok(Object.values(listCrumb.data).every((value) => Number.isInteger(value) && value >= 0));
 
   const result = await draftStorage.syncPending('userA', async (draft) => {

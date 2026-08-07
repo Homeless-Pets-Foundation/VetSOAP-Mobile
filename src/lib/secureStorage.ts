@@ -200,15 +200,28 @@ export const secureStorage = {
    * Get or generate a persistent device ID (survives sign-out, tied to this
    * device).
    *
-   * Only an ID that storage is known to hold — one that was read back out, or
-   * one whose write was verified by reading it back — is promoted to
-   * `cachedDeviceId`. An unverified ID stays in `pendingDeviceId` so this call
-   * still returns something usable (rule 21) while later calls keep retrying
-   * persistence instead of permanently short-circuiting on a value that only
-   * ever existed in memory.
+   * Prefer `getDeviceIdWithProvenance()` anywhere the result is memoized —
+   * `persisted: false` means the ID exists only in this process's memory and
+   * MUST keep flowing back through here so the write is retried.
    */
   async getDeviceId(): Promise<string | null> {
-    if (cachedDeviceId) return cachedDeviceId;
+    return (await this.getDeviceIdWithProvenance()).id;
+  },
+
+  /**
+   * Like `getDeviceId()`, but reports whether storage is known to hold the ID.
+   *
+   * Only an ID that was read back out — either read from storage, or written
+   * and then verified by reading it back — is promoted to `cachedDeviceId`. An
+   * unverified ID stays in `pendingDeviceId` so the call still returns
+   * something usable (rule 21) while later calls keep retrying persistence
+   * instead of permanently short-circuiting on a value that only ever existed
+   * in memory. Callers that keep their OWN cache (`ApiClient.doFetch`) must
+   * cache only a persisted ID, otherwise that second cache pins the pending
+   * value and the retry never happens.
+   */
+  async getDeviceIdWithProvenance(): Promise<{ id: string | null; persisted: boolean }> {
+    if (cachedDeviceId) return { id: cachedDeviceId, persisted: true };
     try {
       let id: string | null = null;
       try {
@@ -221,7 +234,7 @@ export const secureStorage = {
         // Proven present in storage.
         cachedDeviceId = id;
         pendingDeviceId = null;
-        return id;
+        return { id, persisted: true };
       }
 
       // Reuse the pending ID rather than minting a new one per call — the whole
@@ -232,7 +245,7 @@ export const secureStorage = {
           id = getSecureUuid();
         } catch (error) {
           if (__DEV__) console.error('[SecureStorage] getDeviceId: no random source', error);
-          return null;
+          return { id: null, persisted: false };
         }
       }
       pendingDeviceId = id;
@@ -269,7 +282,7 @@ export const secureStorage = {
         if (readBack === id) {
           cachedDeviceId = id;
           pendingDeviceId = null;
-          return id;
+          return { id, persisted: true };
         }
         if (readBack) {
           // Another writer won, or an older ID was there all along. Storage is
@@ -277,7 +290,7 @@ export const secureStorage = {
           // identity rather than registering a second one.
           cachedDeviceId = readBack;
           pendingDeviceId = null;
-          return readBack;
+          return { id: readBack, persisted: true };
         }
         reportSecureStoreFailure(
           'setDeviceIdUnverified',
@@ -286,11 +299,11 @@ export const secureStorage = {
       }
 
       // Unpersisted: usable now, retried on the next call.
-      return id;
+      return { id, persisted: false };
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] getDeviceId failed:', error);
       reportSecureStoreFailure('getDeviceId', error);
-      return null;
+      return { id: null, persisted: false };
     }
   },
 

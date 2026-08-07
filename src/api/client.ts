@@ -234,12 +234,19 @@ export class ApiClient {
     throwIfRequestAborted(signal);
     // Cache device ID after first successful read to avoid hitting SecureStore on every request.
     // Don't cache null — Keystore may be transiently unavailable (e.g. Android direct boot).
+    let deviceId = this.cachedDeviceId ?? null;
     if (this.cachedDeviceId === undefined) {
-      const id = await secureStorage.getDeviceId();
-      if (id) this.cachedDeviceId = id;
+      const { id, persisted } = await secureStorage.getDeviceIdWithProvenance();
+      deviceId = id;
+      // Send an unpersisted ID (rule 21 — omitting the header means a 401
+      // DEVICE_ID_REQUIRED and a forced sign-out loop) but do NOT cache it.
+      // This cache is independent of secureStorage's, so pinning a memory-only
+      // ID here would stop every later request from re-entering getDeviceId and
+      // retrying the write — and the next launch would then generate and
+      // register a SECOND identity against the organization's device limit.
+      if (id && persisted) this.cachedDeviceId = id;
     }
     throwIfRequestAborted(signal);
-    const deviceId = this.cachedDeviceId ?? null;
     const controller = new AbortController();
     const abortFromExternalSignal = () => controller.abort();
     signal?.addEventListener('abort', abortFromExternalSignal, { once: true });

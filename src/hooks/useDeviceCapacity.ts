@@ -21,6 +21,20 @@ export interface UseDeviceCapacityOptions {
    * Defaults to true so existing callers are unaffected.
    */
   enabled?: boolean;
+  /**
+   * Query even while `deviceRegistrationBlock` is set.
+   *
+   * The normal readiness gate keeps callers off `/api/device-sessions` until
+   * this device has a session row. The device-limit modal is the one surface
+   * that must read the list precisely BECAUSE it is blocked — it is where the
+   * user picks a device to revoke — and it invalidates `['device-sessions']`
+   * after every revoke and re-registration attempt. Without this, `enabled` and
+   * `!deviceRegistrationBlock` are mutually exclusive for that caller: the query
+   * can never run, those invalidations do nothing, and the modal is pinned to
+   * the snapshot the original 403 carried, still offering devices that were
+   * revoked since (locally or from another device).
+   */
+  allowWhileBlocked?: boolean;
 }
 
 /**
@@ -37,11 +51,15 @@ export interface UseDeviceCapacityOptions {
 export function useDeviceCapacity(options: UseDeviceCapacityOptions = {}): UseDeviceCapacityResult {
   const mode = options.mode ?? 'home';
   const callerEnabled = options.enabled ?? true;
+  const allowWhileBlocked = options.allowWhileBlocked ?? false;
   const user = useAuthUser();
   const { deviceRegistrationBlock, deviceRegistrationPending } = useAuthDeviceRegistration();
   const isTabFocused = useIsFocused();
   const canQueryDeviceSessions =
-    callerEnabled && !!user && !deviceRegistrationBlock && !deviceRegistrationPending;
+    callerEnabled &&
+    !!user &&
+    (allowWhileBlocked || !deviceRegistrationBlock) &&
+    !deviceRegistrationPending;
   const staleTime = mode === 'manage' ? 30_000 : 5 * 60_000;
 
   const query = useQuery({

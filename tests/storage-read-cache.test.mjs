@@ -928,3 +928,59 @@ test('draftStorage: cached reads hand out defensive clones', async () => {
   // durable dest path, not the recorder-temp source.
   assert.equal(second[0].segments[0].uri, 'file:///doc/drafts/userA/slot1/seg_0.m4a');
 });
+
+test('draftStorage: a transient Keystore failure is never cached as an empty draft list', async () => {
+  // The lenient readers collapse a Keystore fault into the same `[]` a genuine
+  // absence produces. Returning that is tolerable; MEMOIZING it hid recoverable
+  // drafts from Home and Records for the rest of the user scope, long after the
+  // Keystore recovered.
+  const state = new Map();
+  const { draftStorage, mock } = await loadDraftStorage(state);
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+
+  const realGet = mock.getItemAsync;
+  mock.getItemAsync = async () => {
+    throw new Error('keystore unavailable');
+  };
+  const during = await draftStorage.listDrafts();
+  assert.deepEqual([...during], [], 'the lenient result is unchanged');
+
+  mock.getItemAsync = realGet;
+  const after = await draftStorage.listDrafts();
+  assert.equal(after.length, 1, 'the unreadable snapshot must not have been cached');
+  assert.equal(after[0].slotId, 'slot1');
+});
+
+test('draftStorage: one unreadable draft blocks the memo without dropping the others', async () => {
+  const state = new Map();
+  const { draftStorage, mock } = await loadDraftStorage(state);
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+  await draftStorage.saveDraft(makeSlot('slot2'));
+
+  const realGet = mock.getItemAsync;
+  mock.getItemAsync = async function (key) {
+    if (key.includes('slot2')) throw new Error('keystore unavailable');
+    return realGet.call(this, key);
+  };
+  const partial = await draftStorage.listDrafts();
+  assert.equal(partial.length, 1, 'readable drafts are still returned');
+  assert.equal(partial[0].slotId, 'slot1');
+
+  mock.getItemAsync = realGet;
+  const recovered = await draftStorage.listDrafts();
+  assert.equal(recovered.length, 2, 'the partial snapshot must not have been cached');
+});
+
+test('draftStorage: a healthy read is still memoized after the availability check', async () => {
+  const state = new Map();
+  const { draftStorage, counters } = await loadDraftStorage(state);
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+
+  assert.equal((await draftStorage.listDrafts()).length, 1);
+  const readsAfterFirst = counters.reads;
+  assert.equal((await draftStorage.listDrafts()).length, 1);
+  assert.equal(counters.reads, readsAfterFirst, 'a proven read is cacheable');
+});

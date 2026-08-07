@@ -527,9 +527,16 @@ async function mapDraftReadsBounded<T>(
  * Returns null if either the meta key is missing a referenced chunk (torn
  * write) or the parsed JSON is not a valid DraftMetadata shape.
  */
+/**
+ * `onUnavailable` fires when a Keystore read threw or a chunk set came back
+ * torn — i.e. the metadata may well be there and we simply could not get it.
+ * A proven-absent draft and a deterministically corrupt one do NOT fire it:
+ * retrying those returns the same answer, so memoizing them is safe.
+ */
 async function readDraftChunks(
   userId: string,
   slotId: string,
+  onUnavailable?: () => void,
 ): Promise<DraftMetadata | null> {
   try {
     const metaRaw = await SecureStore.getItemAsync(draftMetaKeyForUser(userId, slotId));
@@ -547,10 +554,14 @@ async function readDraftChunks(
       const result = await readChunksBounded(count, (i) =>
         SecureStore.getItemAsync(`${prefix}${i}`),
       );
-      if (!result.ok) return null;
+      if (!result.ok) {
+        onUnavailable?.();
+        return null;
+      }
       return normalizeDraftMetadata(JSON.parse(result.parts.join('')));
     }
   } catch {
+    onUnavailable?.();
     return null;
   }
 
@@ -561,6 +572,7 @@ async function readDraftChunks(
     if (!legacyRaw) return null;
     return normalizeDraftMetadata(JSON.parse(legacyRaw));
   } catch {
+    onUnavailable?.();
     return null;
   }
 }
@@ -935,13 +947,24 @@ async function deleteDraftChunks(userId: string, slotId: string): Promise<void> 
 }
 
 /** Read the draft index for a specific user without mutating module scope. */
-async function readDraftIndexForUser(userId: string): Promise<string[]> {
+/**
+ * `onUnavailable` fires only when the Keystore call itself failed — a
+ * PRESENT-but-unreadable index, as opposed to a legitimately absent or
+ * deterministically corrupt one. Callers that memoize the result use it to
+ * decide whether the snapshot is safe to cache; the returned value is
+ * unchanged, so every existing caller keeps its lenient behaviour.
+ */
+async function readDraftIndexForUser(
+  userId: string,
+  onUnavailable?: () => void,
+): Promise<string[]> {
   try {
     const raw = await SecureStore.getItemAsync(draftIndexKeyForUser(userId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
+    onUnavailable?.();
     return [];
   }
 }
@@ -1830,27 +1853,39 @@ export const draftStorage = {
 
     try {
       const versionAtReadStart = draftsCacheVersion;
-      const slotIds = await readDraftIndexForUser(userId);
+      // The lenient readers collapse a transient Keystore fault into the same
+      // `[]`/`null` a genuine absence produces. Returning that is fine — every
+      // caller already treats this list leniently — but CACHING it pinned an
+      // empty or partial snapshot for the rest of the user scope, so Home and
+      // Records kept hiding recoverable drafts long after the Keystore
+      // recovered. Track present-but-unreadable separately and skip the memo;
+      // the returned value is unchanged.
+      let unreadable = false;
+      const markUnreadable = () => {
+        unreadable = true;
+      };
+      const slotIds = await readDraftIndexForUser(userId, markUnreadable);
       // Per-draft reads are independent. Serially this was the dominant cost of
       // `local_draft_list` / `record_pending_draft_scan` (production Sentry:
       // 11.7s and 11.6s), since every draft costs 1 + chunk-count Keystore
       // round trips. Index order is preserved by `mapDraftReadsBounded`.
       const read = await mapDraftReadsBounded(slotIds.length, (i) =>
-        readDraftChunks(userId, slotIds[i]),
+        readDraftChunks(userId, slotIds[i], markUnreadable),
       );
       const drafts: DraftMetadata[] = read.filter(
         (draft): draft is DraftMetadata => draft !== null,
       );
 
-      // Only populate if no write invalidated mid-read — a slow sweep must
-      // not resurrect pre-write data as the cache.
-      if (draftsCacheVersion === versionAtReadStart) {
+      // Only populate if nothing was unreadable AND no write invalidated
+      // mid-read — a slow sweep must not resurrect pre-write data as the cache.
+      if (!unreadable && draftsCacheVersion === versionAtReadStart) {
         draftsListCache = { userId, drafts: drafts.map(cloneDraftMetadata) };
       }
 
       draftBreadcrumb('list_complete', {
         indexed_slots: slotIds.length,
         returned_drafts: drafts.length,
+        unreadable_reads: unreadable ? 1 : 0,
       });
       return drafts;
     } catch {

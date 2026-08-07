@@ -79,9 +79,16 @@ export function DeviceLimitModal() {
   // signed-in user, forever — the endpoint the server logged ~4.9k times in 90
   // days and a clinic tablet once measured at 32s. `visible` is derived below
   // from the same `deviceRegistrationBlock` this hook already reads.
+  //
+  // `allowWhileBlocked` is required, not incidental: the hook's normal
+  // readiness gate excludes a blocked device, which for THIS caller is the only
+  // state it ever renders in. Without it the query could never run, so the
+  // `['device-sessions']` invalidations below would be inert and the list would
+  // stay pinned to whatever the original 403 carried.
   const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity({
     mode: 'manage',
     enabled: !!deviceRegistrationBlock,
+    allowWhileBlocked: true,
   });
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);

@@ -4,6 +4,23 @@ Date: 2026-07-29
 
 ## Context
 
+> **Correction (2026-08-07) — the cause cited in item 1 below is wrong, and so is the
+> CLAUDE.md sentence it quotes. Every fix in this plan still stands.**
+>
+> The trigger is the OS **Bold text** accessibility setting
+> (`Configuration.fontWeightAdjustment=300`), not "Android's TextView under-measures an
+> unconstrained `Text` in a wrapping row". Yoga measures with the unadjusted font and fixes
+> the box from that; Android then paints every glyph wider and the overrun falls outside it.
+>
+> The in-file A/B evidence is **still valid** — a `flex-1` group label rendering complete
+> while the tight badge beneath it clipped, same file, same row, same font. Under the real
+> mechanism `flex-1` supplies width slack and the badge is shrink-wrapped, so the observation
+> holds and the fix was right; only the inference was wrong. Item 1's own words — that
+> `'Missing details'` was *"measured at first-word width and loses ` details`"* — describe the
+> bold-text mechanism precisely, a month before it was named.
+>
+> Canonical rule: CLAUDE.md → **UI Gotchas**. Root cause and proof: PR #171 / `8388c69`.
+
 On the Home tab, the **Clinic Quality** card (`src/components/QualityAnalyticsCard.tsx`) renders three visible defects, reported from a physical Android phone:
 
 1. **Orange text reads `Reprocesse` and `Missing`.** These are not typos. The source strings are the full words `'Reprocessed'` and `'Missing details'` (`src/constants/strings.ts:347,349`). `issueLabels()` (`src/components/QualityAnalyticsCard.tsx:60-66`) pushes the **bare metric name** as an "alert badge", and each badge renders as a standalone `<Text>` inside a `flex-row flex-wrap` parent with no width constraint (`:137-145`, the `<Text>` itself at `:140-142`). Android's TextView under-measures an unconstrained `Text` in a wrapping row and clips the overflow with no ellipsis — the documented failure class in CLAUDE.md → *UI Gotchas* ("flex-row labels without `flex-1` truncate silently"). `'Reprocessed'` loses its last glyph; `'Missing details'` is measured at first-word width and loses ` details`.

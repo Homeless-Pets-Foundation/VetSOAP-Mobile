@@ -206,7 +206,7 @@ test('the fetchUser single-flight handle is dropped on every sign-out path', asy
   );
   assert.match(
     provider,
-    /clearTelemetryIdentity\(\);[\s\S]{0,400}?fetchUserInFlightRef\.current = null;\s*\n\s*setUser\(null\);\s*\n\s*setSession\(null\);\s*\n\s*setProfileSource\('live'\);/
+    /clearTelemetryIdentity\(\);[\s\S]{0,400}?fetchUserInFlightRef\.current = null;\s*\n\s*registerDeviceInFlightRef\.current = null;\s*\n\s*authGenerationRef\.current \+= 1;\s*\n\s*setUser\(null\);\s*\n\s*setSession\(null\);\s*\n\s*setProfileSource\('live'\);/
   );
 });
 
@@ -283,4 +283,60 @@ test('a device id already in storage is read once and then memoized', async () =
   assert.equal(await secureStorage.getDeviceId(), 'stored-device-id');
   assert.equal(mock.__counts.reads, 1, 'the memo serves repeat calls');
   assert.equal(mock.__counts.writes, 0, 'an existing id is never rewritten');
+});
+
+// --- account-scoped registration flight (Codex round 6) ----------------------
+
+test('the registerDevice flight is scoped to the signed-in account', async () => {
+  const provider = await read('src/auth/AuthProvider.tsx');
+
+  // `POST /api/device-sessions/register` is authenticated and creates a session
+  // row for the ACCOUNT, so the single-flight promise is user-scoped even though
+  // the device id is not. Handing A's flight to B left B with no session row
+  // (every request 428s) and could paint the device-limit modal with A's device
+  // names on a shared clinic tablet.
+  assert.match(provider, /const authGenerationRef = useRef\(0\);/);
+  assert.match(provider, /const generation = authGenerationRef\.current;/);
+  assert.match(
+    provider,
+    /const isCurrentAccount = \(\) => authGenerationRef\.current === generation;/
+  );
+  // The old comment claimed the handle deliberately survives sign-out.
+  assert.doesNotMatch(provider, /registerDevice's handle is deliberately NOT cleared/);
+
+  // Both sign-out paths drop the handle AND bump the generation, so an
+  // already-running flight cannot apply its result to the next session.
+  assert.equal(
+    (provider.match(/registerDeviceInFlightRef\.current = null;/g) ?? []).length,
+    3,
+    'expected the release helper plus both sign-out paths'
+  );
+  assert.equal((provider.match(/authGenerationRef\.current \+= 1;/g) ?? []).length, 2);
+
+  // Every state write in the flight is behind the guard: success, the no-device-id
+  // early return, and the whole error branch (which owns the limit-block state).
+  assert.match(provider, /if \(!isCurrentAccount\(\)\) return false;\s*\n\s*if \(!deviceId\) \{/);
+  assert.match(
+    provider,
+    /if \(!isCurrentAccount\(\)\) return false;[\s\S]{0,300}?setDeviceRegistrationBlock\(null\);/
+  );
+  assert.match(
+    provider,
+    /\} catch \(error\) \{\s*\n\s*if \(!isCurrentAccount\(\)\) return false;/
+  );
+});
+
+test('the device-limit modal accepts an empty live device list', async () => {
+  const hook = await read('src/hooks/useDeviceCapacity.ts');
+  const modal = await read('src/components/DeviceLimitModal.tsx');
+
+  // `devices` flattens "not loaded yet" and "loaded, genuinely none" into `[]`.
+  // Now that the query actually runs while blocked, rejecting the empty answer
+  // restored the stale 403 snapshot: the modal hid its empty-state Retry
+  // Registration action and kept offering IDs whose revokes now fail.
+  assert.match(hook, /hasData: boolean;/);
+  assert.match(hook, /hasData: query\.data !== undefined,/);
+  assert.match(modal, /hasData: hasLiveDevices,/);
+  assert.match(modal, /if \(hasLiveDevices\) return liveDevices;/);
+  assert.doesNotMatch(modal, /if \(liveDevices && liveDevices\.length > 0\) return liveDevices;/);
 });

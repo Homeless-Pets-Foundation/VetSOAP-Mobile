@@ -85,7 +85,11 @@ export function DeviceLimitModal() {
   // state it ever renders in. Without it the query could never run, so the
   // `['device-sessions']` invalidations below would be inert and the list would
   // stay pinned to whatever the original 403 carried.
-  const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity({
+  const {
+    devices: liveDevices,
+    capacity: liveCapacity,
+    hasData: hasLiveDevices,
+  } = useDeviceCapacity({
     mode: 'manage',
     enabled: !!deviceRegistrationBlock,
     allowWhileBlocked: true,
@@ -107,13 +111,19 @@ export function DeviceLimitModal() {
     }
   }, [visible]);
 
-  // Prefer the live device-sessions query when it has data so revokes from
-  // elsewhere reflect immediately. Fall back to the 403-body snapshot for
-  // the first paint so the modal is usable before the query resolves.
+  // Prefer the live device-sessions query once it has ANSWERED so revokes from
+  // elsewhere reflect immediately. Fall back to the 403-body snapshot only
+  // until then, so the modal is usable on first paint.
+  //
+  // Keyed on `hasData`, not on the list being non-empty: when every other
+  // session has been revoked remotely, the live answer IS `[]`. Treating that
+  // as "no data" restored the stale snapshot, so the modal hid its empty-state
+  // Retry Registration action and kept offering device IDs whose revoke calls
+  // now fail — leaving sign-out as the only working button.
   const existingDevices = useMemo<DeviceSession[]>(() => {
-    if (liveDevices && liveDevices.length > 0) return liveDevices;
+    if (hasLiveDevices) return liveDevices;
     return deviceRegistrationBlock?.existingDevices ?? [];
-  }, [liveDevices, deviceRegistrationBlock]);
+  }, [hasLiveDevices, liveDevices, deviceRegistrationBlock]);
 
   const capacity = liveCapacity ?? deviceRegistrationBlock?.capacity ?? null;
   // signingOut is part of the shared busy guard: during support_staff recovery

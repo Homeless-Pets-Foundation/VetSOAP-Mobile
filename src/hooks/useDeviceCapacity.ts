@@ -8,6 +8,14 @@ export interface UseDeviceCapacityResult {
   capacity: DeviceCapacity | undefined;
   isLoading: boolean;
   isError: boolean;
+  /**
+   * True once the query has produced a payload. `devices` flattens "not loaded
+   * yet" and "loaded, and there genuinely are none" into the same `[]`, and a
+   * caller that falls back to a stale snapshot on empty would never accept the
+   * second one — so the device-limit modal would keep offering sessions that
+   * have since been revoked, and hide its empty-state action.
+   */
+  hasData: boolean;
   refetch: () => Promise<unknown>;
 }
 
@@ -79,6 +87,7 @@ export function useDeviceCapacity(options: UseDeviceCapacityOptions = {}): UseDe
     capacity: query.data?.capacity,
     isLoading: query.isLoading,
     isError: query.isError,
+    hasData: query.data !== undefined,
     refetch: () => query.refetch(),
   };
 }

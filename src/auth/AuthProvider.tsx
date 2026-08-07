@@ -642,6 +642,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // sign-in/session-restore registration path, while API 428 handlers and the
   // device-limit modal can still retry manually.
   const registerDeviceInFlightRef = useRef<Promise<boolean> | null>(null);
+  /**
+   * Bumped on every auth transition, so work started under a previous account
+   * can be recognised as stale.
+   *
+   * The device ID is device-scoped, but `POST /api/device-sessions/register` is
+   * AUTHENTICATED and creates a session row for the signed-in account — so a
+   * registration in flight belongs to a user, not just to the device. On a
+   * shared clinic tablet, A signing out mid-register while B signs in meant B
+   * was handed A's promise: B never got a session row (every request then 428s),
+   * and an A-side DEVICE_LIMIT_REACHED would populate the modal with A's device
+   * names for B to look at.
+   */
+  const authGenerationRef = useRef(0);
   // Single-flight guard for fetchUser — see the comment at its definition.
   const fetchUserInFlightRef = useRef<Promise<boolean> | null>(null);
   // Distinguishes user-initiated sign-out from session expiry in onAuthStateChange.
@@ -860,9 +873,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (registerDeviceInFlightRef.current) {
       return registerDeviceInFlightRef.current;
     }
+    // Everything below belongs to the account signed in RIGHT NOW. If the
+    // account changes while the POST is on the wire, this flight's result must
+    // not be applied to the new session's UI.
+    const generation = authGenerationRef.current;
+    const isCurrentAccount = () => authGenerationRef.current === generation;
     const promise = measurePhase('registerDevice', { platform: Platform.OS }, async (): Promise<boolean> => {
       try {
         const deviceId = await secureStorage.getDeviceId();
+        if (!isCurrentAccount()) return false;
         if (!deviceId) {
           setDeviceRegistrationPending(true);
           return false;
@@ -902,12 +921,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           ...(deviceName ? { deviceName } : {}),
           appVersion: require('../../package.json').version,
         });
+        // A success that landed for the PREVIOUS account proves nothing about
+        // this one: report failure so the current session registers itself
+        // rather than believing it already has a session row.
+        if (!isCurrentAccount()) return false;
         // Successful register clears any prior limit-block state — a revoke
         // from another device may have freed a slot since the last attempt.
         setDeviceRegistrationBlock(null);
         setDeviceRegistrationPending(false);
         return true;
       } catch (error) {
+        if (!isCurrentAccount()) return false;
         if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
           handleMfaRequiredResponse(error.data as MfaStatusResponse | undefined);
           setDeviceRegistrationPending(false);
@@ -1509,12 +1533,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Flush is best-effort and bounded by internal PostHog timeouts.
     clearTelemetryIdentity();
     trackEvent({ name: 'session_signed_out', props: { trigger: 'user' } });
-    // Drop the fetchUser single-flight handle. It is keyed to the departing
-    // session, so on a shared clinic tablet the next user's sign-in must start
-    // its own `/auth/me` rather than be handed the previous user's in-flight
-    // promise. (registerDevice's handle is deliberately NOT cleared here — the
-    // device id is device-scoped, not user-scoped.)
+    // Both single-flight handles are keyed to the departing session: the next
+    // user must start their own `/auth/me` and their own device registration,
+    // never inherit these. The generation bump makes an already-running flight's
+    // state updates no-ops (see `authGenerationRef`).
     fetchUserInFlightRef.current = null;
+    registerDeviceInFlightRef.current = null;
+    authGenerationRef.current += 1;
     setUser(null);
     setSession(null);
     setUserFetchState('idle');
@@ -1796,10 +1821,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // error captured during the final teardown doesn't attribute to
             // the expired user. Mirrors the handleSignOut ordering.
             clearTelemetryIdentity();
-            // Same reasoning as handleSignOut: the fetchUser single-flight
-            // handle belongs to the departing session and must not be handed
-            // to whoever signs in next.
+            // Same reasoning as handleSignOut: the fetchUser and registerDevice
+            // single-flight handles belong to the departing session and must not
+            // be handed to whoever signs in next.
             fetchUserInFlightRef.current = null;
+            registerDeviceInFlightRef.current = null;
+            authGenerationRef.current += 1;
             setUser(null);
             setSession(null);
             setProfileSource('live');

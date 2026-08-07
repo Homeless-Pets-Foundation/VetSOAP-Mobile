@@ -45,6 +45,30 @@ async function serverStatusIsUploaded(serverRecordingId: string): Promise<boolea
   }
 }
 
+/**
+ * Tombstone a recordingId, retrying once, and report a miss rather than
+ * swallowing it.
+ *
+ * `durableTombstone.add()` fails closed — it returns false when the existing
+ * list could not be read or the rewrite was rejected — so ignoring the result
+ * would silently drop the guard that stops `cleanupOrphaned` deleting an
+ * already-uploaded server row. The post-purge call site is the one that cannot
+ * self-heal on the next launch (its manifest is already gone), so the failure
+ * has to be visible in Sentry. No id in the payload: the rate-limit channel key
+ * must stay coarse, and the stage alone identifies the path.
+ */
+async function tombstoneOrReport(recordingId: string, stage: 'draft_unverified' | 'post_purge') {
+  let ok = await durableTombstone.add(recordingId).catch(() => false);
+  if (!ok) ok = await durableTombstone.add(recordingId).catch(() => false);
+  if (!ok) {
+    breadcrumb('record', 'durable_tombstone_write_failed', { stage });
+    captureMessage('durable_tombstone_write_failed', 'warning', {
+      tags: { phase: 'record', stage },
+    });
+  }
+  return ok;
+}
+
 /** Delete a confirmed-uploaded manifest's local footprint in the load-bearing order. */
 async function selfHeal(userId: string, manifest: DurableRecordingManifest): Promise<void> {
   const recordingId = manifest.recordingId;
@@ -82,7 +106,7 @@ async function selfHeal(userId: string, manifest: DurableRecordingManifest): Pro
     // retry (purge is idempotent) but STILL tombstone so an offline
     // cleanupOrphaned never deletes the just-uploaded server row (loadDraft's
     // tombstone guard also blocks a resume-then-resubmit until the sweep runs).
-    await durableTombstone.add(recordingId).catch(() => {});
+    await tombstoneOrReport(recordingId, 'draft_unverified');
     return;
   }
   // 2. Purge the manifest/audio only after the draft delete is VERIFIED gone.
@@ -92,7 +116,7 @@ async function selfHeal(userId: string, manifest: DurableRecordingManifest): Pro
     /* idempotent — next launch retries */
   }
   // 3. Tombstone so cleanupOrphaned skips deleting the uploaded server row.
-  await durableTombstone.add(recordingId).catch(() => {});
+  await tombstoneOrReport(recordingId, 'post_purge');
   await durableActiveStore.clearActive(recordingId).catch(() => {});
 }
 

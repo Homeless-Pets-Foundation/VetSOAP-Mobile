@@ -24,6 +24,21 @@ const KEYS = {
 let cachedDeviceId: string | null = null;
 
 /**
+ * A generated device ID whose persistence has NOT been confirmed.
+ *
+ * Kept separate from `cachedDeviceId` on purpose. If the Keystore is
+ * transiently down, the read fails AND both write attempts fail, yet the
+ * request in flight still needs an `X-Device-Id` (rule 21: omitting it means a
+ * 401 `DEVICE_ID_REQUIRED` and a forced sign-out loop). Caching such an ID as if
+ * it were persisted would stop this process from ever writing it, so the next
+ * launch would mint a SECOND identity and register it — stranding a device
+ * session against the organization's device limit. Holding it here instead
+ * keeps the ID stable for the whole process while every subsequent
+ * `getDeviceId()` retries the read and then the write until one sticks.
+ */
+let pendingDeviceId: string | null = null;
+
+/**
  * Report a SecureStore failure without creating an import cycle. Loaded
  * lazily so module-load in monitoring.ts staying zero-cost (rule 1). Rate
  * limiting happens inside `captureMessage` so a recurring Keystore fault
@@ -181,7 +196,17 @@ export const secureStorage = {
     }
   },
 
-  /** Get or generate a persistent device ID (survives sign-out, tied to this device). */
+  /**
+   * Get or generate a persistent device ID (survives sign-out, tied to this
+   * device).
+   *
+   * Only an ID that storage is known to hold — one that was read back out, or
+   * one whose write was verified by reading it back — is promoted to
+   * `cachedDeviceId`. An unverified ID stays in `pendingDeviceId` so this call
+   * still returns something usable (rule 21) while later calls keep retrying
+   * persistence instead of permanently short-circuiting on a value that only
+   * ever existed in memory.
+   */
   async getDeviceId(): Promise<string | null> {
     if (cachedDeviceId) return cachedDeviceId;
     try {
@@ -192,6 +217,16 @@ export const secureStorage = {
         if (__DEV__) console.error('[SecureStorage] getDeviceId read failed:', error);
       }
 
+      if (id) {
+        // Proven present in storage.
+        cachedDeviceId = id;
+        pendingDeviceId = null;
+        return id;
+      }
+
+      // Reuse the pending ID rather than minting a new one per call — the whole
+      // process must present one identity even while the Keystore is failing.
+      id = pendingDeviceId;
       if (!id) {
         try {
           id = getSecureUuid();
@@ -199,23 +234,58 @@ export const secureStorage = {
           if (__DEV__) console.error('[SecureStorage] getDeviceId: no random source', error);
           return null;
         }
+      }
+      pendingDeviceId = id;
 
+      let persisted = false;
+      try {
+        await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+        });
+        persisted = true;
+      } catch (error) {
+        if (__DEV__) console.error('[SecureStorage] getDeviceId set failed:', error);
+        // iOS Simulator Keychain sometimes rejects
+        // kSecAttrAccessibleAfterFirstUnlock; retry without it.
         try {
-          await SecureStore.setItemAsync(KEYS.DEVICE_ID, id, {
-            keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-          });
-        } catch (error) {
-          if (__DEV__) console.error('[SecureStorage] getDeviceId set failed:', error);
-          // iOS Simulator Keychain sometimes rejects
-          // kSecAttrAccessibleAfterFirstUnlock; retry without it. The in-memory
-          // id is still returned even if persistence ultimately fails, so the
-          // current request proceeds (next launch will regenerate).
-          try { await SecureStore.setItemAsync(KEYS.DEVICE_ID, id); } catch (retryError) {
+          await SecureStore.setItemAsync(KEYS.DEVICE_ID, id);
+          persisted = true;
+        } catch (retryError) {
           reportSecureStoreFailure('setDeviceIdRetryFallback', retryError);
         }
-        }
       }
-      if (id) cachedDeviceId = id;
+
+      if (persisted) {
+        // A resolved write is not proof: SecureStore can fail silently (the same
+        // hazard rule 17 covers for the session record). Read back before
+        // treating the ID as durable, and keep it pending if the value that
+        // comes back is not the one we wrote.
+        let readBack: string | null = null;
+        try {
+          readBack = await SecureStore.getItemAsync(KEYS.DEVICE_ID);
+        } catch (error) {
+          if (__DEV__) console.error('[SecureStorage] getDeviceId verify failed:', error);
+        }
+        if (readBack === id) {
+          cachedDeviceId = id;
+          pendingDeviceId = null;
+          return id;
+        }
+        if (readBack) {
+          // Another writer won, or an older ID was there all along. Storage is
+          // the authority — adopt it and drop ours, so this device keeps ONE
+          // identity rather than registering a second one.
+          cachedDeviceId = readBack;
+          pendingDeviceId = null;
+          return readBack;
+        }
+        reportSecureStoreFailure(
+          'setDeviceIdUnverified',
+          new Error('device id write reported success but read back empty'),
+        );
+      }
+
+      // Unpersisted: usable now, retried on the next call.
       return id;
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] getDeviceId failed:', error);

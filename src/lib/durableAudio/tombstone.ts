@@ -110,13 +110,27 @@ async function readList(userId: string): Promise<string[]> {
   return loaded.known ? loaded.list : [];
 }
 
-async function writeList(userId: string, list: string[]): Promise<void> {
+/**
+ * Persist the list, and mirror it in memory ONLY once storage accepted it.
+ *
+ * `writeChunkedValue` reports a rejected chunk/count write by resolving `false`
+ * rather than throwing, so an ignored result would leave the cache holding a
+ * list that storage never took: `add()` would claim success, later `has()` calls
+ * would answer from the phantom entry instead of retrying storage, and the
+ * tombstone would simply be gone after the next launch — letting a
+ * confirmed-uploaded recording resurface with stale local metadata. On failure
+ * the cache stays invalidated (storage still holds the previous value, which is
+ * what the next read must see) and the caller is told the mutation did not land.
+ */
+async function writeList(userId: string, list: string[]): Promise<boolean> {
   // Drop the mirror first: if the write fails, the next read must go to storage
   // rather than serve a value that was never persisted.
   invalidateCache();
-  await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
+  const persisted = await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
+  if (!persisted) return false;
   cachedListUserId = userId;
   cachedList = list.slice();
+  return true;
 }
 
 export const durableTombstone = {
@@ -132,13 +146,14 @@ export const durableTombstone = {
   /**
    * Record a purged-uploaded recordingId. Dedupes + FIFO-caps.
    *
-   * Returns false when the existing list could not be read. Every write here is
-   * a whole-list rewrite, so building one on an unproven-empty read would erase
-   * up to MAX_TOMBSTONES real entries because of a single transient Keystore
-   * fault — and each erased entry is a confirmed-uploaded recording that
-   * `cleanupOrphaned` could then destroy locally. Skipping ONE tombstone is
-   * strictly less harmful than erasing every other one, so mutations fail
-   * closed and the caller retries on the next pass.
+   * Returns false when the existing list could not be read OR the new list could
+   * not be persisted — never claim a tombstone that storage did not take. Every
+   * write here is a whole-list rewrite, so building one on an unproven-empty
+   * read would erase up to MAX_TOMBSTONES real entries because of a single
+   * transient Keystore fault — and each erased entry is a confirmed-uploaded
+   * recording that `cleanupOrphaned` could then destroy locally. Skipping ONE
+   * tombstone is strictly less harmful than erasing every other one, so
+   * mutations fail closed and the caller retries on the next pass.
    */
   async add(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
@@ -149,8 +164,7 @@ export const durableTombstone = {
     if (list.includes(recordingId)) return true;
     list.push(recordingId);
     while (list.length > MAX_TOMBSTONES) list.shift(); // drop oldest
-    await writeList(userId, list);
-    return true;
+    return writeList(userId, list);
   },
 
   async has(recordingId: string): Promise<boolean> {
@@ -162,15 +176,17 @@ export const durableTombstone = {
 
   /**
    * Remove one entry (call once draft + manifest are both confirmed gone).
-   * Fails closed on an unreadable list for the same reason as `add`.
+   * Fails closed on an unreadable list for the same reason as `add`, and
+   * reports false when the rewrite itself was rejected.
    */
-  async remove(recordingId: string): Promise<void> {
+  async remove(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
-    if (!userId) return;
+    if (!userId) return false;
     const loaded = await loadList(userId);
-    if (!loaded.known) return;
+    if (!loaded.known) return false;
     const next = loaded.list.filter((id) => id !== recordingId);
-    if (next.length !== loaded.list.length) await writeList(userId, next);
+    if (next.length === loaded.list.length) return true; // nothing to remove
+    return writeList(userId, next);
   },
 
   async list(): Promise<string[]> {
@@ -182,18 +198,19 @@ export const durableTombstone = {
   /**
    * Prune entries for which `stillReferenced` resolves false (draft+manifest
    * gone). Fails closed on an unreadable list — pruning against an empty view
-   * would drop every entry.
+   * would drop every entry — and reports false when the rewrite was rejected.
    */
-  async prune(stillReferenced: (recordingId: string) => Promise<boolean>): Promise<void> {
+  async prune(stillReferenced: (recordingId: string) => Promise<boolean>): Promise<boolean> {
     const userId = currentUserId;
-    if (!userId) return;
+    if (!userId) return false;
     const loaded = await loadList(userId);
-    if (!loaded.known) return;
+    if (!loaded.known) return false;
     const keep: string[] = [];
     for (const id of loaded.list) {
       if (await stillReferenced(id)) keep.push(id);
     }
-    if (keep.length !== loaded.list.length) await writeList(userId, keep);
+    if (keep.length === loaded.list.length) return true; // nothing to prune
+    return writeList(userId, keep);
   },
 
   async clearForUser(userId: string): Promise<void> {

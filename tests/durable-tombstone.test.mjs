@@ -115,3 +115,122 @@ test('chunked storage round-trips a value larger than 2KB', async () => {
   assert.equal((await durableTombstone.list()).length, 100);
   assert.equal(await durableTombstone.has('recording-50'), true);
 });
+
+// --- write-failure semantics (Codex round 4) ---------------------------------
+// `writeChunkedValue` reports a rejected write by resolving false rather than
+// throwing. Ignoring that result cached a list storage never took: `add()`
+// claimed success, `has()` answered from the phantom entry instead of retrying
+// storage, and after the next launch the tombstone was simply gone — letting
+// `cleanupOrphaned` delete an already-uploaded server row.
+
+/** SecureStore double whose writes can be switched to failing mid-test. */
+function makeFaultyStore() {
+  const store = new Map();
+  const state = { failWrites: false };
+  return {
+    mock: {
+      AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+      async getItemAsync(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async setItemAsync(key, value) {
+        if (state.failWrites) throw new Error('keystore write unavailable');
+        store.set(key, value);
+      },
+      async deleteItemAsync(key) {
+        store.delete(key);
+      },
+    },
+    state,
+    store,
+  };
+}
+
+async function loadFaultyTombstone() {
+  const { mock, state, store } = makeFaultyStore();
+  const mod = await loadTsModule('src/lib/durableAudio/tombstone.ts', {
+    'expo-secure-store': mock,
+  });
+  return { durableTombstone: mod.durableTombstone, state, store };
+}
+
+test('add reports failure and caches nothing when the write is rejected', async () => {
+  const { durableTombstone, state } = await loadFaultyTombstone();
+  durableTombstone.setUserId('user1');
+  assert.equal(await durableTombstone.add('kept-recording'), true);
+
+  state.failWrites = true;
+  assert.equal(
+    await durableTombstone.add('rejected-recording'),
+    false,
+    'a mutation storage refused must not report success'
+  );
+
+  // The phantom entry must not be served from memory, and the entry that DID
+  // persist must survive the failed rewrite.
+  assert.equal(await durableTombstone.has('rejected-recording'), false);
+  assert.equal(await durableTombstone.has('kept-recording'), true);
+  assert.deepEqual([...(await durableTombstone.list())], ['kept-recording']);
+
+  // Once storage recovers the retry lands, proving the cache was not poisoned.
+  state.failWrites = false;
+  assert.equal(await durableTombstone.add('rejected-recording'), true);
+  assert.equal(await durableTombstone.has('rejected-recording'), true);
+});
+
+test('a rejected write leaves the previously persisted list intact on disk', async () => {
+  const { durableTombstone, state, store } = await loadFaultyTombstone();
+  durableTombstone.setUserId('user1');
+  await durableTombstone.add('rec-a');
+  await durableTombstone.add('rec-b');
+  const before = new Map(store);
+
+  state.failWrites = true;
+  await durableTombstone.add('rec-c');
+  assert.deepEqual([...store.entries()], [...before.entries()], 'storage is untouched');
+});
+
+test('remove and prune report failure when the rewrite is rejected', async () => {
+  const { durableTombstone, state } = await loadFaultyTombstone();
+  durableTombstone.setUserId('user1');
+  await durableTombstone.add('rec-a');
+  await durableTombstone.add('rec-b');
+
+  state.failWrites = true;
+  assert.equal(await durableTombstone.remove('rec-a'), false);
+  assert.equal(await durableTombstone.prune(async () => false), false);
+
+  // Nothing was dropped from the durable list by either refused rewrite.
+  state.failWrites = false;
+  assert.deepEqual([...(await durableTombstone.list())], ['rec-a', 'rec-b']);
+});
+
+test('remove and prune report success when there is nothing to change', async () => {
+  const { durableTombstone } = await loadFaultyTombstone();
+  durableTombstone.setUserId('user1');
+  await durableTombstone.add('rec-a');
+  assert.equal(await durableTombstone.remove('not-present'), true);
+  assert.equal(await durableTombstone.prune(async () => true), true);
+  assert.deepEqual([...(await durableTombstone.list())], ['rec-a']);
+});
+
+test('the self-heal call sites surface a refused tombstone instead of swallowing it', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { fileURLToPath } = await import('node:url');
+  const src = await readFile(
+    fileURLToPath(new URL('../src/lib/durableAudio/durableRecovery.ts', import.meta.url)),
+    'utf8'
+  );
+
+  // `add()` fails closed, so a discarded result silently drops the guard that
+  // stops cleanupOrphaned deleting an already-uploaded server row.
+  assert.doesNotMatch(src, /durableTombstone\.add\([^)]*\)\.catch\(\(\) => \{\}\)/);
+  assert.match(src, /await tombstoneOrReport\(recordingId, 'draft_unverified'\)/);
+  assert.match(src, /await tombstoneOrReport\(recordingId, 'post_purge'\)/);
+  // Retried once, then reported — the post-purge site cannot self-heal on the
+  // next launch because its manifest is already gone.
+  assert.match(src, /if \(!ok\) ok = await durableTombstone\.add\(recordingId\)\.catch\(\(\) => false\)/);
+  assert.match(src, /captureMessage\('durable_tombstone_write_failed', 'warning'/);
+  // The rate-limit channel key must stay coarse (no per-recording dimension).
+  assert.doesNotMatch(src, /durable_tombstone_write_failed[\s\S]{0,200}recording_id/);
+});

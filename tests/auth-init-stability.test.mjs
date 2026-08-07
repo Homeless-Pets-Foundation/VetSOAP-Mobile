@@ -20,9 +20,62 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { loadTsModule } from './helpers/loadTs.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const read = (file) => readFile(path.join(root, file), 'utf8');
+
+/**
+ * SecureStore double with independently controllable read/write faults, so the
+ * device-ID path can be exercised against the three Keystore behaviours that
+ * actually occur on device: a hard throw, a silent write that never lands, and
+ * recovery partway through a process.
+ */
+function makeDeviceStore({ failReads = false, failWrites = false, silentWrites = false } = {}) {
+  const store = new Map();
+  const counts = { reads: 0, writes: 0 };
+  return {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(key) {
+      counts.reads += 1;
+      if (store.__failReads ?? failReads) throw new Error('keystore read unavailable');
+      return store.has(key) ? store.get(key) : null;
+    },
+    async setItemAsync(key, value) {
+      counts.writes += 1;
+      if (store.__failWrites ?? failWrites) throw new Error('keystore write unavailable');
+      // A silent write resolves but never persists — the rule-17 hazard.
+      if (store.__silentWrites ?? silentWrites) return;
+      store.set(key, value);
+    },
+    async deleteItemAsync(key) {
+      store.delete(key);
+    },
+    __store: store,
+    __counts: counts,
+    recover() {
+      store.__failReads = false;
+      store.__failWrites = false;
+      store.__silentWrites = false;
+    },
+  };
+}
+
+async function loadSecureStorage(mock) {
+  // Every generation must yield a DIFFERENT uuid, otherwise "the pending id was
+  // reused" and "a second identity was minted" would be indistinguishable.
+  let seed = 0;
+  const mod = await loadTsModule('src/lib/secureStorage.ts', {
+    'expo-secure-store': mock,
+    'expo-crypto': {
+      getRandomBytes: (n) => {
+        seed += 1;
+        return Uint8Array.from({ length: n }, (_, i) => (i * 37 + seed * 101) % 256);
+      },
+    },
+  });
+  return mod.secureStorage;
+}
 
 test('pathname is read through a ref and is not an auth-callback dependency', async () => {
   const provider = await read('src/auth/AuthProvider.tsx');
@@ -109,8 +162,12 @@ test('the device id is memoized so a cold start reads the Keystore once', async 
 
   assert.match(storage, /let cachedDeviceId: string \| null = null;/);
   assert.match(storage, /async getDeviceId\(\): Promise<string \| null> \{\s*if \(cachedDeviceId\) return cachedDeviceId;/);
-  // Only successful reads are cached, so a transient Keystore failure retries.
-  assert.match(storage, /if \(id\) cachedDeviceId = id;\s*\n\s*return id;/);
+  // Only an ID storage is KNOWN to hold is memoized. The unconditional
+  // `if (id) cachedDeviceId = id` promoted a value whose two write attempts had
+  // both failed, so the process never retried persistence and the next launch
+  // minted a second device identity.
+  assert.doesNotMatch(storage, /if \(id\) cachedDeviceId = id;/);
+  assert.match(storage, /let pendingDeviceId: string \| null = null;/);
   // DEVICE_ID is device-scoped and deliberately survives clearAll(), so the
   // memo can never go stale within a process.
   assert.doesNotMatch(storage, /deleteItemAsync\(KEYS\.DEVICE_ID\)/);
@@ -135,4 +192,79 @@ test('the fetchUser single-flight handle is dropped on every sign-out path', asy
     provider,
     /clearTelemetryIdentity\(\);[\s\S]{0,400}?fetchUserInFlightRef\.current = null;\s*\n\s*setUser\(null\);\s*\n\s*setSession\(null\);\s*\n\s*setProfileSource\('live'\);/
   );
+});
+
+// --- device ID persistence (Codex round 4) -----------------------------------
+// An ID that only ever existed in memory used to be memoized as if it were
+// durable, so the process stopped retrying the write and the NEXT launch
+// generated and registered a second identity — stranding a device session
+// against the organization's device limit.
+
+test('a device id whose writes both failed is not memoized as persisted', async () => {
+  const mock = makeDeviceStore({ failWrites: true });
+  const secureStorage = await loadSecureStorage(mock);
+
+  const first = await secureStorage.getDeviceId();
+  assert.ok(first, 'the in-flight request still needs an X-Device-Id (rule 21)');
+  assert.equal(mock.__store.size, 0, 'nothing reached storage');
+
+  const writesAfterFirst = mock.__counts.writes;
+  const second = await secureStorage.getDeviceId();
+  assert.equal(second, first, 'the process must present ONE identity while broken');
+  assert.ok(mock.__counts.writes > writesAfterFirst, 'persistence is retried, not short-circuited');
+
+  // Keystore recovers mid-process: the SAME id must be the one that lands.
+  mock.recover();
+  const third = await secureStorage.getDeviceId();
+  assert.equal(third, first);
+  assert.equal(mock.__store.get('captivet_device_id'), first);
+
+  // Now it is proven durable, so it is memoized and storage is left alone.
+  const writesAfterRecovery = mock.__counts.writes;
+  const readsAfterRecovery = mock.__counts.reads;
+  assert.equal(await secureStorage.getDeviceId(), first);
+  assert.equal(mock.__counts.writes, writesAfterRecovery);
+  assert.equal(mock.__counts.reads, readsAfterRecovery);
+});
+
+test('a silently-dropped device id write is not treated as persisted', async () => {
+  // setItemAsync resolving is not proof the value landed (rule 17); only the
+  // read-back is.
+  const mock = makeDeviceStore({ silentWrites: true });
+  const secureStorage = await loadSecureStorage(mock);
+
+  const first = await secureStorage.getDeviceId();
+  assert.ok(first);
+  assert.equal(mock.__store.size, 0);
+
+  mock.recover();
+  assert.equal(await secureStorage.getDeviceId(), first, 'no second identity minted');
+  assert.equal(mock.__store.get('captivet_device_id'), first);
+});
+
+test('an existing stored device id wins over one generated during an outage', async () => {
+  const mock = makeDeviceStore({ failReads: true });
+  const secureStorage = await loadSecureStorage(mock);
+
+  const generated = await secureStorage.getDeviceId();
+  assert.ok(generated);
+
+  // The Keystore recovers and turns out to have held an ID all along. Storage
+  // is the authority: adopt it rather than registering the generated one.
+  mock.__store.set('captivet_device_id', 'pre-existing-device-id');
+  mock.recover();
+  assert.equal(await secureStorage.getDeviceId(), 'pre-existing-device-id');
+  assert.equal(await secureStorage.getDeviceId(), 'pre-existing-device-id');
+});
+
+test('a device id already in storage is read once and then memoized', async () => {
+  const mock = makeDeviceStore();
+  mock.__store.set('captivet_device_id', 'stored-device-id');
+  const secureStorage = await loadSecureStorage(mock);
+
+  assert.equal(await secureStorage.getDeviceId(), 'stored-device-id');
+  assert.equal(mock.__counts.reads, 1);
+  assert.equal(await secureStorage.getDeviceId(), 'stored-device-id');
+  assert.equal(mock.__counts.reads, 1, 'the memo serves repeat calls');
+  assert.equal(mock.__counts.writes, 0, 'an existing id is never rewritten');
 });

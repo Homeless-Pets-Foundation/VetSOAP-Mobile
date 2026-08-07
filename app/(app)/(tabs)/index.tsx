@@ -182,6 +182,20 @@ export default function HomeScreen() {
     areLocalDraftsStaleRef.current = areLocalDraftsStale;
   }, [areLocalDraftsStale]);
 
+  // SOLE entry point for refreshing the quality dashboard. Every path — the
+  // completion watcher below, focus refresh, pull-to-refresh, and the card's own
+  // retry button — must go through here, because a trailing timer armed by one
+  // path would otherwise fire moments after another path had already refetched,
+  // recreating the duplicate dashboard request this throttle exists to prevent.
+  const runQualityRefetch = useCallback(() => {
+    if (trailingQualityRefetchRef.current) {
+      clearTimeout(trailingQualityRefetchRef.current);
+      trailingQualityRefetchRef.current = null;
+    }
+    lastQualityRefetchAtRef.current = Date.now();
+    return refetchQuality();
+  }, [refetchQuality]);
+
   useEffect(() => {
     // A row that was processing counts as finished only if it is STILL in the
     // list and has left the processing set — i.e. it genuinely reached a
@@ -198,8 +212,7 @@ export default function HomeScreen() {
 
     const sinceLast = Date.now() - lastQualityRefetchAtRef.current;
     if (sinceLast >= QUALITY_REFETCH_MIN_INTERVAL_MS) {
-      lastQualityRefetchAtRef.current = Date.now();
-      refetchQuality().catch(() => {});
+      runQualityRefetch().catch(() => {});
       return;
     }
 
@@ -207,18 +220,18 @@ export default function HomeScreen() {
     // the id has already been removed from `processingRecordingIdsRef` above, so
     // nothing would ever retry it and the quality summary would keep showing
     // pre-completion numbers until something else happened to refresh it.
-    // One trailing timer covers every completion that lands in the window.
+    // One trailing timer covers every completion that lands in the window, and
+    // any other refresh path cancels it via `runQualityRefetch`.
     if (trailingQualityRefetchRef.current) return;
     trailingQualityRefetchRef.current = setTimeout(() => {
       trailingQualityRefetchRef.current = null;
-      lastQualityRefetchAtRef.current = Date.now();
-      refetchQuality().catch(() => {});
+      runQualityRefetch().catch(() => {});
     }, QUALITY_REFETCH_MIN_INTERVAL_MS - sinceLast);
   }, [
     canFetchQualityAnalytics,
     processingRecordingIds,
     visibleRecordingIds,
-    refetchQuality,
+    runQualityRefetch,
   ]);
 
   // Never leave a trailing refetch armed past unmount.
@@ -293,7 +306,7 @@ export default function HomeScreen() {
       refetchDrafts().catch(() => {});
     }
     if (canFetchQualityAnalytics) {
-      refetchQuality().catch(() => {});
+      runQualityRefetch().catch(() => {});
     }
     refreshLocalDrafts({ forceReconcile: true });
     // Void wrappers — pull-to-refresh must never receive a Promise (rule 2).
@@ -304,7 +317,7 @@ export default function HomeScreen() {
     canLoadServerData,
     refetch,
     refetchDrafts,
-    refetchQuality,
+    runQualityRefetch,
     refreshAttention,
     refreshLocalDrafts,
     refreshSupportRecovery,
@@ -344,7 +357,7 @@ export default function HomeScreen() {
         refetchDrafts().catch(() => {});
       }
       if (qualityStale) {
-        refetchQuality().catch(() => {});
+        runQualityRefetch().catch(() => {});
       }
       refreshLocalDrafts();
       refreshSupportRecovery();
@@ -357,7 +370,7 @@ export default function HomeScreen() {
     recordingsQuery.isStale,
     refetch,
     refetchDrafts,
-    refetchQuality,
+    runQualityRefetch,
     refreshLocalDrafts,
     refreshSupportRecovery,
   ]);
@@ -697,7 +710,7 @@ export default function HomeScreen() {
             data={qualityData}
             isLoading={isQualityLoading}
             isError={isQualityError}
-            refetch={refetchQuality}
+            refetch={runQualityRefetch}
           />
         </View>
       ) : null}

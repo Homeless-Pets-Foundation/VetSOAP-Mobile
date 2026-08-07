@@ -255,7 +255,11 @@ test('Home renders clinic quality after Recent Recordings and refreshes it safel
     source,
     /queryFn:\s*\(\{ signal \}\) => qualityAnalyticsApi\.getDashboardQuality\(\{ signal \}\)/
   );
-  assert.match(source, /refetchQuality\(\)\.catch\(\(\) => \{\}\)/);
+  // Every refresh path routes through the one scheduler, so a trailing timer
+  // armed by a completion cannot fire on top of a manual refresh.
+  assert.match(source, /runQualityRefetch\(\)\.catch\(\(\) => \{\}\)/);
+  assert.match(source, /const runQualityRefetch = useCallback\(\(\) => \{/);
+  assert.match(source, /refetch=\{runQualityRefetch\}/);
   assert(
     source.indexOf('Recent Recordings') < source.indexOf('<QualityAnalyticsCard'),
     'quality card should render after Recent Recordings'
@@ -275,7 +279,7 @@ test('Home gates all-role clinic quality only by auth and device readiness', asy
   );
   assert.doesNotMatch(source, /canFetchQualityAnalytics\s*=.*canRecordAppointments/);
   assert.match(source, /enabled:\s*canFetchQualityAnalytics/);
-  assert.match(source, /if \(canFetchQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(source, /if \(canFetchQualityAnalytics\) \{\s*runQualityRefetch\(\)\.catch\(\(\) => \{\}\);\s*\}/);
   assert.match(source, /\{canFetchQualityAnalytics \? \(\s*<View className="mb-8">\s*<QualityAnalyticsCard/);
 });
 
@@ -293,7 +297,11 @@ test('Home refreshes clinic quality when recent processing recordings leave proc
   // Batches finishing together must not stack dashboard requests.
   assert.match(source, /const QUALITY_REFETCH_MIN_INTERVAL_MS = 30_000/);
   assert.match(source, /sinceLast >= QUALITY_REFETCH_MIN_INTERVAL_MS/);
-  assert.match(source, /lastQualityRefetchAtRef\.current = Date\.now\(\);\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);/);
+  // The scheduler stamps the throttle clock and cancels any pending trailing
+  // timer before delegating to the query's own refetch.
+  assert.match(source, /clearTimeout\(trailingQualityRefetchRef\.current\);\s*trailingQualityRefetchRef\.current = null;\s*\}\s*lastQualityRefetchAtRef\.current = Date\.now\(\);\s*return refetchQuality\(\);/);
+  // Only the scheduler may call the raw query refetch.
+  assert.equal((source.match(/refetchQuality\(\)/g) ?? []).length, 1);
   // A completion landing inside the throttle window must be DEFERRED, not
   // dropped: its id has already left processingRecordingIdsRef, so nothing else
   // would ever retry it and the summary would keep pre-completion numbers.

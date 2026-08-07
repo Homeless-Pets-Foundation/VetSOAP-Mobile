@@ -82,7 +82,7 @@ Launch the app:
 | UI dump | `"$ADB" shell uiautomator dump /sdcard/ui.xml && "$ADB" shell cat /sdcard/ui.xml` |
 | Force-stop | `"$ADB" shell am force-stop com.captivet.mobile` |
 
-**Avoid** `KEYCODE_ESCAPE` (111) + `KEYCODE_MENU` (82) — they open the Expo element inspector and steal taps.
+**Avoid** `KEYCODE_ESCAPE` (111) + `KEYCODE_MENU` (82) — they open the Expo element inspector and steal taps. On a dev-client build, turn the dev-menu **Tools button** off at session start; it sits over the top-right, where several status labels render.
 
 ### 2.4 Watch logs (PHI-safe)
 `console.error` is `__DEV__`-gated, but breadcrumbs are observable:
@@ -181,6 +181,7 @@ If the adb write doesn't take, toggle **Settings → Accessibility → Display s
 
 ### A10. Draft resume
 - [ ] Tap "Not Submitted" card → reopens Record with form + audio preloaded → Submit promotes in place.
+- [ ] After that Submit succeeds, the local draft (audio + metadata) is gone — no zombie amber card left behind.
 
 ### A11. Offline / reconnect
 - [ ] Finish a draft offline → stays `pendingSync` → reconnect → server draft created (`syncPending`).

@@ -56,7 +56,13 @@ export function SubmitPanel({
       accessibilityLiveRegion="polite"
     >
       <View className="flex-row items-center justify-between mb-3">
-        <Text className="text-body-sm text-content-secondary">
+        {/* flex-1 — sole child of a justify-between row, so it shrink-wraps and Android
+            "Bold text" drops the tail: "3 of 5 patients recorded (2 already uploaded)"
+            renders as "3 of 5 patients", which reads as a selection rather than a
+            completion count and gates a batch submit (CLAUDE.md > UI Gotchas).
+            numberOfLines is deliberately unset — this line is allowed to grow in
+            height, and truncating a count is worse than wrapping it. */}
+        <Text className="text-body-sm text-content-secondary flex-1">
           {recorded} of {slots.length} patients recorded
           {uploaded > 0 ? ` (${uploaded} already uploaded)` : ''}
         </Text>

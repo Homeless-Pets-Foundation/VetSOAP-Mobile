@@ -17,6 +17,7 @@ import { trackEvent } from '../lib/analytics';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { AUDIO_PLAYER_COPY } from '../constants/strings';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 const LOAD_WATCHDOG_MS = 15_000;
 const SEEK_WATCHDOG_MS = 8_000;
@@ -253,16 +254,16 @@ function SeekBar({
         {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
         <Text
           className="text-caption text-content-tertiary"
-          style={{ flexShrink: 0, paddingRight: 2 }}
+          style={CLIP_SAFE}
         >
-          {`${formatTime(leftLabel)} `}
+          {clipSafe(formatTime(leftLabel))}
         </Text>
         {/* Trailing space + flexShrink:0 — Android under-measures short time labels and clips the last glyph; do NOT remove. */}
         <Text
           className="text-caption text-content-tertiary"
-          style={{ flexShrink: 0, paddingRight: 2 }}
+          style={CLIP_SAFE}
         >
-          {`${duration > 0 ? formatTime(duration) : '--:--'} `}
+          {clipSafe(duration > 0 ? formatTime(duration) : '--:--')}
         </Text>
       </View>
     </View>
@@ -735,9 +736,9 @@ function ActiveAudioPlayer({
               {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
               <Text
                 className="text-caption text-content-secondary"
-                style={{ flexShrink: 0, paddingRight: 2 }}
+                style={CLIP_SAFE}
               >
-                {`${AUDIO_PLAYER_COPY.retry} `}
+                {clipSafe(AUDIO_PLAYER_COPY.retry)}
               </Text>
             </Pressable>
           )}

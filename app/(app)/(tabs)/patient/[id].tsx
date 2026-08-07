@@ -21,6 +21,8 @@ import { Button } from '../../../../src/components/ui/Button';
 import { friendlyErrorMessage } from '../../../../src/lib/errorCopy';
 import { TextInputField } from '../../../../src/components/ui/TextInputField';
 import { Card } from '../../../../src/components/ui/Card';
+import { StatusBadge } from '../../../../src/components/StatusBadge';
+import { CLIP_SAFE, clipSafe } from '../../../../src/components/ui/styles';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import type { UpdatePatient } from '../../../../src/types';
@@ -64,9 +66,9 @@ function AiSummaryText({ summary }: { summary: string }) {
           {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
           <Text
             className="text-body-sm font-medium text-brand-600"
-            style={{ flexShrink: 0, paddingRight: 2 }}
+            style={CLIP_SAFE}
           >
-            {`${expanded ? 'Show less' : 'Read more'} `}
+            {clipSafe(expanded ? 'Show less' : 'Read more')}
           </Text>
         </Pressable>
       )}
@@ -385,13 +387,23 @@ export default function PatientDetailScreen() {
               {/* AI History Summary */}
               <Card className="mb-4">
                 <View className="flex-row items-center justify-between mb-3">
-                  <View className="flex-row items-center">
-                    <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-2" />
-                    <Text className="text-body-sm font-semibold text-content-body">AI Patient Summary</Text>
+                  <View className="flex-row items-center flex-1 mr-2">
+                    <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-2" style={{ flexShrink: 0 }} />
+                    {/* flex-1 + numberOfLines — the row has spare width, so claiming it
+                        removes the Bold-text overrun outright; the backstop makes any
+                        residual ellipsize instead of dropping "Summary" out of view
+                        (CLAUDE.md > UI Gotchas). */}
+                    <Text className="text-body-sm font-semibold text-content-body flex-1" numberOfLines={1}>
+                      AI Patient Summary
+                    </Text>
                   </View>
                   {patient.aiHistoryUpdatedAt && (() => { const d = new Date(patient.aiHistoryUpdatedAt); return !isNaN(d.getTime()) && Date.now() - d.getTime() > 30 * 24 * 60 * 60 * 1000; })() && (
-                    <View className="bg-status-warning rounded px-2 py-0.5">
-                      <Text className="text-caption font-medium text-status-warning">Outdated</Text>
+                    <View className="bg-status-warning rounded px-2 py-0.5" style={{ flexShrink: 0 }}>
+                      {/* Single token, so it can only glyph-clip at the pill edge, never
+                          vanish — headroom, no numberOfLines (CLAUDE.md > UI Gotchas). */}
+                      <Text className="text-caption font-medium text-status-warning" style={CLIP_SAFE}>
+                        {clipSafe('Outdated')}
+                      </Text>
                     </View>
                   )}
                 </View>
@@ -497,10 +509,17 @@ export default function PatientDetailScreen() {
                               </Text>
                             )}
                           </View>
-                          <View className="px-2 py-0.5 rounded-full bg-surface-sunken">
-                            <Text className="text-caption text-content-secondary capitalize">
-                              {recording.status}
-                            </Text>
+                          {/* Was a hand-rolled neutral pill rendering the raw
+                              `recording.status`. Two bugs in one: it printed the wire
+                              value (`pending_metadata`) instead of the copy, and it
+                              shrink-wrapped, so Android "Bold text" clipped that to
+                              "pending" — a note blocked on the vet's own input read as
+                              queued (CLAUDE.md > UI Gotchas). StatusBadge already owns
+                              the correct copy ("Awaiting Details", "Retry Scheduled")
+                              and the mitigation, so the fix is to stop hand-rolling it.
+                              Intentional visual change: neutral pill -> variant badge. */}
+                          <View style={{ flexShrink: 0 }}>
+                            <StatusBadge status={recording.status} />
                           </View>
                         </View>
                       </Card>
@@ -512,7 +531,10 @@ export default function PatientDetailScreen() {
                   (WP31) — surface the total and let the user load the rest. */}
               {(recordingsData?.pagination?.total ?? 0) > (recordingsData?.data.length ?? 0) && (
                 <View className="items-center mb-3">
-                  <Text className="text-caption text-content-tertiary mb-2">
+                  {/* w-full — items-center shrink-wraps this to its measured width, so
+                      Android "Bold text" drops the trailing "visits" and the count
+                      reads as a total rather than a page (CLAUDE.md > UI Gotchas). */}
+                  <Text className="text-caption text-content-tertiary mb-2 text-center w-full">
                     Showing {recordingsData?.data.length} of {recordingsData?.pagination?.total} visits
                   </Text>
                   <Button
@@ -534,7 +556,11 @@ export default function PatientDetailScreen() {
               {!editMode ? (
                 <Card className="mb-4">
                   <View className="flex-row justify-between items-center mb-4">
-                    <Text className="text-body-sm font-semibold text-content-body">Patient Details</Text>
+                    {/* flex-1 — row child with spare width; without it the header
+                        shrink-wraps and Bold text drops "Details". */}
+                    <Text className="text-body-sm font-semibold text-content-body flex-1 mr-2" numberOfLines={1}>
+                      Patient Details
+                    </Text>
                     <Pressable
                       onPress={startEdit}
                       hitSlop={8}
@@ -546,9 +572,9 @@ export default function PatientDetailScreen() {
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-body-sm text-brand-600 ml-1"
-                        style={{ flexShrink: 0, paddingRight: 2 }}
+                        style={CLIP_SAFE}
                       >
-                        {'Edit '}
+                        {clipSafe('Edit')}
                       </Text>
                     </Pressable>
                   </View>
@@ -574,7 +600,10 @@ export default function PatientDetailScreen() {
               ) : (
                 <Card className="mb-4">
                   <View className="flex-row justify-between items-center mb-4">
-                    <Text className="text-body-sm font-semibold text-content-body">Edit Profile</Text>
+                    {/* flex-1 — see "Patient Details" above; same row shape. */}
+                    <Text className="text-body-sm font-semibold text-content-body flex-1 mr-2" numberOfLines={1}>
+                      Edit Profile
+                    </Text>
                     <Pressable
                       onPress={() => { setEditMode(false); setDobError(null); }}
                       hitSlop={8}
@@ -584,9 +613,9 @@ export default function PatientDetailScreen() {
                       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
                       <Text
                         className="text-body-sm text-content-tertiary"
-                        style={{ flexShrink: 0, paddingRight: 2 }}
+                        style={CLIP_SAFE}
                       >
-                        {'Cancel '}
+                        {clipSafe('Cancel')}
                       </Text>
                     </Pressable>
                   </View>

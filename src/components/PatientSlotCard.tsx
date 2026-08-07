@@ -33,6 +33,7 @@ import {
   LONG_RECORDING_WARNING_THRESHOLD_SEC,
   MULTI_PATIENT_RECORD_FIRST_COPY,
 } from '../constants/strings';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -355,9 +356,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
             <Text
               className="text-body-sm text-status-danger ml-1"
-              style={{ flexShrink: 0, paddingRight: 2 }}
+              style={CLIP_SAFE}
             >
-              {'Remove '}
+              {clipSafe('Remove')}
             </Text>
           </Pressable>
         )}
@@ -369,7 +370,12 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       {/* Recording Controls */}
       <Animated.View style={recordCardAnimStyle}>
       <Card className={`mb-4 items-center ${activeEmphasisClass}`}>
-        <Text className="text-body-lg font-semibold text-content-primary mb-3">Record</Text>
+        {/* The Card is items-center, so this shrink-wraps. Single token, so it can only
+            glyph-clip ("Recor") rather than vanish — headroom, no numberOfLines.
+            This is the literal example in CLAUDE.md > UI Gotchas. */}
+        <Text className="text-body-lg font-semibold text-content-primary mb-3" style={CLIP_SAFE}>
+          {clipSafe('Record')}
+        </Text>
 
         {/* Status badge */}
         <View className="mb-4" accessibilityLiveRegion="polite">
@@ -497,16 +503,30 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   onPress={handleRecordAgain}
                   accessibilityRole="button"
                   accessibilityLabel="Delete recording and start over"
-                  className="min-h-[44px] justify-center items-center"
+                  className="min-h-[44px] justify-center items-center w-full"
                 >
-                  <View className="flex-row items-center gap-1.5">
+                  <View className="flex-row items-center justify-center gap-1.5 w-full">
                     <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
-                    {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
+                    {/* w-full up the whole chain + flex-1 here, verified on a Pixel 10 Pro XL
+                        (2026-08-07). With Bold text on this rendered "Delete & Start" — "Over"
+                        silently gone on a destructive action. Card -> Pressable -> row -> Text all
+                        shrink-wrapped, so Yoga sized the box from the UNADJUSTED font and fixed its
+                        height at one line; the bold run overran, wrapped before the last word, and
+                        line 2 fell outside that height.
+                        Three cheaper fixes were tried on device and all FAILED, so do not
+                        reintroduce them: paddingRight (any size) sits inside the box while the text
+                        wraps within the content area; numberOfLines={2} is a maximum, not a
+                        reservation, so the box never grew; numberOfLines={1} only bought a visible
+                        "Delete & Start Ov…". Only real width worked, and it needs w-full on EVERY
+                        ancestor — w-full inside a shrink-wrapped parent is 100% of nothing.
+                        Trade-off: the row now spans the card, so the trash icon sits at its leading
+                        edge instead of hugging the label. Deliberate — a detached icon beats a
+                        destructive label that reads "Delete & Start". CLAUDE.md > UI Gotchas. */}
                     <Text
-                      className="text-body-sm text-content-tertiary"
-                      style={{ flexShrink: 0, paddingRight: 2 }}
+                      className="text-body-sm text-content-tertiary flex-1 text-center"
+                      style={{ flexShrink: 1 }}
                     >
-                      {'Delete & Start Over '}
+                      {clipSafe('Delete & Start Over')}
                     </Text>
                   </View>
                 </Pressable>
@@ -516,7 +536,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
           {/* Stopped with captured audio (segments OR durable): continue, edit, discard */}
           {isStopped && hasCapturedAudio && isFinishSaving && (
-            <Text className="text-body-sm text-content-tertiary text-center" accessibilityLiveRegion="polite">
+            // w-full — the controls column centres its children, so this shrink-wraps
+            // and Bold text could drop "recording..." right when the user is waiting
+            // to learn whether their audio was kept (CLAUDE.md > UI Gotchas).
+            <Text className="text-body-sm text-content-tertiary text-center w-full" accessibilityLiveRegion="polite">
               Saving recording...
             </Text>
           )}
@@ -534,16 +557,30 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 disabled={isUploading}
                 accessibilityRole="button"
                 accessibilityLabel="Delete recording and start over"
-                className="min-h-[44px] justify-center items-center"
+                className="min-h-[44px] justify-center items-center w-full"
               >
-                <View className="flex-row items-center gap-1.5">
+                <View className="flex-row items-center justify-center gap-1.5 w-full">
                   <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
-                  {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
+                  {/* w-full up the whole chain + flex-1 here, verified on a Pixel 10 Pro XL
+                      (2026-08-07). With Bold text on this rendered "Delete & Start" — "Over"
+                      silently gone on a destructive action. Card -> Pressable -> row -> Text all
+                      shrink-wrapped, so Yoga sized the box from the UNADJUSTED font and fixed its
+                      height at one line; the bold run overran, wrapped before the last word, and
+                      line 2 fell outside that height.
+                      Three cheaper fixes were tried on device and all FAILED, so do not
+                      reintroduce them: paddingRight (any size) sits inside the box while the text
+                      wraps within the content area; numberOfLines={2} is a maximum, not a
+                      reservation, so the box never grew; numberOfLines={1} only bought a visible
+                      "Delete & Start Ov…". Only real width worked, and it needs w-full on EVERY
+                      ancestor — w-full inside a shrink-wrapped parent is 100% of nothing.
+                      Trade-off: the row now spans the card, so the trash icon sits at its leading
+                      edge instead of hugging the label. Deliberate — a detached icon beats a
+                      destructive label that reads "Delete & Start". CLAUDE.md > UI Gotchas. */}
                   <Text
-                    className="text-body-sm text-content-tertiary"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    className="text-body-sm text-content-tertiary flex-1 text-center"
+                    style={{ flexShrink: 1 }}
                   >
-                    {'Delete & Start Over '}
+                    {clipSafe('Delete & Start Over')}
                   </Text>
                 </View>
               </Pressable>
@@ -564,16 +601,30 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 disabled={isUploading}
                 accessibilityRole="button"
                 accessibilityLabel="Delete recording and start over"
-                className="min-h-[44px] justify-center items-center"
+                className="min-h-[44px] justify-center items-center w-full"
               >
-                <View className="flex-row items-center gap-1.5">
+                <View className="flex-row items-center justify-center gap-1.5 w-full">
                   <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
-                  {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
+                  {/* w-full up the whole chain + flex-1 here, verified on a Pixel 10 Pro XL
+                      (2026-08-07). With Bold text on this rendered "Delete & Start" — "Over"
+                      silently gone on a destructive action. Card -> Pressable -> row -> Text all
+                      shrink-wrapped, so Yoga sized the box from the UNADJUSTED font and fixed its
+                      height at one line; the bold run overran, wrapped before the last word, and
+                      line 2 fell outside that height.
+                      Three cheaper fixes were tried on device and all FAILED, so do not
+                      reintroduce them: paddingRight (any size) sits inside the box while the text
+                      wraps within the content area; numberOfLines={2} is a maximum, not a
+                      reservation, so the box never grew; numberOfLines={1} only bought a visible
+                      "Delete & Start Ov…". Only real width worked, and it needs w-full on EVERY
+                      ancestor — w-full inside a shrink-wrapped parent is 100% of nothing.
+                      Trade-off: the row now spans the card, so the trash icon sits at its leading
+                      edge instead of hugging the label. Deliberate — a detached icon beats a
+                      destructive label that reads "Delete & Start". CLAUDE.md > UI Gotchas. */}
                   <Text
-                    className="text-body-sm text-content-tertiary"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    className="text-body-sm text-content-tertiary flex-1 text-center"
+                    style={{ flexShrink: 1 }}
                   >
-                    {'Delete & Start Over '}
+                    {clipSafe('Delete & Start Over')}
                   </Text>
                 </View>
               </Pressable>
@@ -590,15 +641,30 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 disabled={isUploading}
                 accessibilityRole="button"
                 accessibilityLabel="Delete recording and start over"
-                className="min-h-[44px] justify-center items-center"
+                className="min-h-[44px] justify-center items-center w-full"
               >
-                <View className="flex-row items-center gap-1.5">
+                <View className="flex-row items-center justify-center gap-1.5 w-full">
                   <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
+                  {/* w-full up the whole chain + flex-1 here, verified on a Pixel 10 Pro XL
+                      (2026-08-07). With Bold text on this rendered "Delete & Start" — "Over"
+                      silently gone on a destructive action. Card -> Pressable -> row -> Text all
+                      shrink-wrapped, so Yoga sized the box from the UNADJUSTED font and fixed its
+                      height at one line; the bold run overran, wrapped before the last word, and
+                      line 2 fell outside that height.
+                      Three cheaper fixes were tried on device and all FAILED, so do not
+                      reintroduce them: paddingRight (any size) sits inside the box while the text
+                      wraps within the content area; numberOfLines={2} is a maximum, not a
+                      reservation, so the box never grew; numberOfLines={1} only bought a visible
+                      "Delete & Start Ov…". Only real width worked, and it needs w-full on EVERY
+                      ancestor — w-full inside a shrink-wrapped parent is 100% of nothing.
+                      Trade-off: the row now spans the card, so the trash icon sits at its leading
+                      edge instead of hugging the label. Deliberate — a detached icon beats a
+                      destructive label that reads "Delete & Start". CLAUDE.md > UI Gotchas. */}
                   <Text
-                    className="text-body-sm text-content-tertiary"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    className="text-body-sm text-content-tertiary flex-1 text-center"
+                    style={{ flexShrink: 1 }}
                   >
-                    {'Delete & Start Over '}
+                    {clipSafe('Delete & Start Over')}
                   </Text>
                 </View>
               </Pressable>
@@ -666,11 +732,16 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 accessibilityValue={{ min: 0, max: 100, now: slot.uploadProgress }}
                 accessibilityLiveRegion="polite"
               >
-                <View className="flex-row justify-between mb-1.5">
-                  <Text className="text-caption font-medium text-content-body">
-                    {slot.uploadProgress < 10 ? 'Preparing...' : slot.uploadProgress >= 95 ? 'Processing...' : 'Uploading...'}
+                {/* Both are single tokens, so glyph-clip only ("Uploadin"), never a
+                    vanish — headroom on each, no numberOfLines
+                    (CLAUDE.md > UI Gotchas). */}
+                <View className="flex-row justify-between items-center mb-1.5">
+                  <Text className="text-caption font-medium text-content-body" style={CLIP_SAFE}>
+                    {clipSafe(slot.uploadProgress < 10 ? 'Preparing...' : slot.uploadProgress >= 95 ? 'Processing...' : 'Uploading...')}
                   </Text>
-                  <Text className="text-caption text-content-tertiary">{slot.uploadProgress}%</Text>
+                  <Text className="text-caption text-content-tertiary" style={CLIP_SAFE}>
+                    {clipSafe(`${slot.uploadProgress}%`)}
+                  </Text>
                 </View>
                 <View className="h-2.5 rounded-full bg-surface-sunken overflow-hidden">
                   <View

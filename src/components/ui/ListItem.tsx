@@ -23,6 +23,12 @@ interface ListItemProps extends Omit<PressableProps, 'children' | 'style' | 'onP
   onPress?: (event: GestureResponderEvent) => void | Promise<void>;
 }
 
+// Only a string/number title gets numberOfLines here; a ReactNode title passes through
+// untouched. Today that is safe because every slot below sits in a box with real width
+// (`shrink flex-1`, or a full-width column), which is what keeps the Android "Bold text"
+// overrun from having anywhere to wrap (CLAUDE.md > UI Gotchas). The invariant is
+// implicit, so: do not add `items-center` to those wrappers, and if a ReactNode title
+// ever needs to shrink-wrap, give it CLIP_SAFE at its own site.
 function renderText(value: React.ReactNode, className: string, numberOfLines = 1) {
   if (typeof value === 'string' || typeof value === 'number') {
     return (
@@ -90,7 +96,10 @@ export function ListItem({
           </View>
         ) : null}
       </View>
-      {trailing ? <View>{trailing}</View> : null}
+      {/* flexShrink:0 — mirrors the badge slot above. Every consumer passes an icon or
+          a Toggle today, so nothing is exposed yet; the moment one passes a Text, the
+          content column beside it is flex-1 and would squeeze this to nothing. */}
+      {trailing ? <View style={{ flexShrink: 0 }}>{trailing}</View> : null}
       {showChevron ? <ChevronRight color={colors.contentTertiary} size={18} /> : null}
     </View>
   );

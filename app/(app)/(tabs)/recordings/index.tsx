@@ -32,6 +32,7 @@ import { ATTENTION_FEED_COPY, RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY } from
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
+import { CLIP_SAFE, clipSafe } from '../../../../src/components/ui/styles';
 
 const PAGE_SIZE = 20;
 const MAX_SUBMITTED_IDS = 10;
@@ -422,9 +423,9 @@ export default function RecordingsListScreen() {
             {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
             <Text
               className="text-body-sm text-brand-500 font-medium"
-              style={{ flexShrink: 0, paddingRight: 2 }}
+              style={CLIP_SAFE}
             >
-              {`${ATTENTION_FEED_COPY.sectionTitle} `}
+              {clipSafe(ATTENTION_FEED_COPY.sectionTitle)}
             </Text>
           </Pressable>
         </View>

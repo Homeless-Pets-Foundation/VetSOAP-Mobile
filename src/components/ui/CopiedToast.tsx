@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { AccessibilityInfo, Platform, Text } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { SOAP_SECTION_ACTIONS } from '../../constants/strings';
-import { cx } from './styles';
+import { CLIP_SAFE, clipSafe, cx } from './styles';
 
 interface CopiedToastProps {
   visible: boolean;
@@ -38,7 +38,13 @@ export function CopiedToast({ visible, label = SOAP_SECTION_ACTIONS.copied, clas
       accessibilityRole="alert"
       accessibilityLiveRegion="polite"
     >
-      <Text className="text-caption text-toast-fg font-medium">{label}</Text>
+      {/* clipSafe + CLIP_SAFE — an absolutely-positioned toast shrink-wraps to its
+          label, so Android "Bold text" has nowhere to put the overrun
+          (CLAUDE.md > UI Gotchas). No numberOfLines: callers pass single-token labels
+          ("Copied!"), which cannot wrap, so the prop could only add an ellipsis. */}
+      <Text className="text-caption text-toast-fg font-medium" style={CLIP_SAFE}>
+        {clipSafe(label)}
+      </Text>
     </Animated.View>
   );
 }

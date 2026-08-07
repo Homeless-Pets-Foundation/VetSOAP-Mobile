@@ -16,6 +16,7 @@ import type { PatientSlot } from '../types/multiPatient';
 import { UPLOAD_OVERLAY_COPY } from '../constants/strings';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { Toast } from './Toast';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 interface UploadOverlayProps {
   visible: boolean;
@@ -214,18 +215,26 @@ export function UploadOverlay({
           </Animated.View>
         </View>
 
-        {/* Title */}
-        <Text className="text-heading font-bold text-content-primary mb-1 text-center">
+        {/* Title — w-full because the card is items-center and this shrink-wraps.
+            "Uploading Recordings" losing its second word collapses to "Uploading",
+            which is exactly the single-recording title: the batch and single cases
+            become indistinguishable (CLAUDE.md > UI Gotchas). */}
+        <Text className="text-heading font-bold text-content-primary mb-1 text-center w-full">
           {isMulti && totalSlotsToUpload > 1
             ? UPLOAD_OVERLAY_COPY.titleMulti
             : UPLOAD_OVERLAY_COPY.title}
         </Text>
 
-        {/* Phase + percentage row */}
-        <View className="flex-row justify-between w-full mb-2 mt-3">
-          <Text className="text-body-sm text-content-secondary">{phaseText}</Text>
-          <Text className="text-body-sm font-semibold text-brand-500">
-            {overallProgress}%
+        {/* Phase + percentage row — the row is w-full but the children were not, so
+            each got only its measured width. flex-1 on the phase (it is the long,
+            multi-token side); headroom on the percentage, which is a single token and
+            can only glyph-clip. */}
+        <View className="flex-row justify-between items-center w-full mb-2 mt-3">
+          <Text className="text-body-sm text-content-secondary flex-1 mr-2" numberOfLines={1}>
+            {phaseText}
+          </Text>
+          <Text className="text-body-sm font-semibold text-brand-500" style={CLIP_SAFE}>
+            {clipSafe(`${overallProgress}%`)}
           </Text>
         </View>
 
@@ -243,15 +252,19 @@ export function UploadOverlay({
 
         {/* Multi-patient counter */}
         {isMulti && totalSlotsToUpload > 1 && (
-          <Text className="text-caption text-content-tertiary">
+          // w-full — losing the tail of "Recording 2 of 5" hides how much of the batch
+          // is left, on the one screen the user watches while waiting.
+          <Text className="text-caption text-content-tertiary text-center w-full">
             Recording {Math.min(currentUploadIndex, totalSlotsToUpload)} of{' '}
             {totalSlotsToUpload}
           </Text>
         )}
 
-        {/* Reassurance text — no horizontal padding: centered captions in this
-            narrow card clipped on Android with the old longer copy. */}
-        <Text className="text-caption text-content-tertiary mt-3 text-center">
+        {/* Reassurance text — w-full rather than the old "keep the copy short and hope
+            it fits". The earlier note here blamed padding; the real cause is the
+            Bold-text overrun against an items-center shrink-wrap
+            (CLAUDE.md > UI Gotchas). */}
+        <Text className="text-caption text-content-tertiary mt-3 text-center w-full">
           {UPLOAD_OVERLAY_COPY.reassurance}
         </Text>
 
@@ -270,9 +283,9 @@ export function UploadOverlay({
             {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
             <Text
               className="text-body-sm font-semibold text-brand-500"
-              style={{ flexShrink: 0, paddingRight: 2 }}
+              style={CLIP_SAFE}
             >
-              {`${UPLOAD_OVERLAY_COPY.hide} `}
+              {clipSafe(UPLOAD_OVERLAY_COPY.hide)}
             </Text>
           </Pressable>
         )}

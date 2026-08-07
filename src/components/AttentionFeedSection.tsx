@@ -11,7 +11,7 @@ import type { UseAttentionFeedResult } from '../hooks/useAttentionFeed';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { ListItem } from './ui/ListItem';
-import { HIT_SLOP } from './ui/styles';
+import { CLIP_SAFE, clipSafe, HIT_SLOP } from './ui/styles';
 
 /** How many actionable rows Home shows before deferring to the full screen. */
 export const HOME_ATTENTION_ROW_LIMIT = 3;
@@ -81,18 +81,19 @@ export function AttentionItemRow({ item, surface }: AttentionItemRowProps) {
       metaClassName={item.actionable ? 'text-brand-500 font-medium' : undefined}
       badge={
         dateLabel ? (
-          /* Trailing space + flexShrink:0 + paddingRight — the shared Button's
-             mitigation, needed here for the same reason: Android under-measures
-             short Text in a flex-row, so `Jul 30` rendered as `Jul …` inside its
-             own 114px box on a Pixel 10 Pro XL at font scale 1.15 (well inside
-             the app's 1.3 cap). The space is measured but not drawn; the
-             accessibility label below uses the UNPADDED `dateLabel`. */
+          /* clipSafe + CLIP_SAFE — the Android "Bold text" overrun
+             (CLAUDE.md > UI Gotchas). This badge shrink-wraps, so on a physical
+             Pixel 10 Pro XL at font scale 1.15 it measured its own box at 114px
+             and rendered `Jul 30` as `Jul …`. flexShrink:0 alone was NOT enough;
+             the trailing space is what buys the measured width back. It is
+             measured but not drawn, and the accessibility label below uses the
+             UNPADDED `dateLabel`. */
           <Text
             className="text-caption text-content-tertiary"
-            style={{ flexShrink: 0, paddingRight: 2 }}
+            style={CLIP_SAFE}
             numberOfLines={1}
           >
-            {`${dateLabel} `}
+            {clipSafe(dateLabel)}
           </Text>
         ) : undefined
       }
@@ -261,7 +262,9 @@ export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
   return (
     <View className="mb-6">
       <View className="flex-row justify-between items-center mb-3">
-        <Text className="section-title" accessibilityRole="header">
+        {/* flex-1 — row child with a "View all"-style sibling; without it the header
+            shrink-wraps and Bold text drops "Attention" (CLAUDE.md > UI Gotchas). */}
+        <Text className="section-title flex-1 mr-2" accessibilityRole="header" numberOfLines={1}>
           {ATTENTION_FEED_COPY.sectionTitle}
         </Text>
         {showViewLink ? (
@@ -275,9 +278,9 @@ export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
             {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
             <Text
               className="text-body-sm text-brand-500 font-medium"
-              style={{ flexShrink: 0, paddingRight: 2 }}
+              style={CLIP_SAFE}
             >
-              {`${ATTENTION_FEED_COPY.viewRecent} `}
+              {clipSafe(ATTENTION_FEED_COPY.viewRecent)}
             </Text>
           </Pressable>
         ) : null}
@@ -310,7 +313,11 @@ export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
           className="rounded-xl border border-border-default bg-surface-raised px-4 py-2.5 items-center mb-2"
           hitSlop={HIT_SLOP}
         >
-          <Text className="text-body-sm font-medium text-content-secondary">
+          {/* w-full — items-center Pressable, so the label shrink-wraps and Bold text
+              drops the trailing word of "7 across the practice", turning a
+              practice-wide count into a bare number (CLAUDE.md > UI Gotchas).
+              accessibilityLabel above stays unpadded. */}
+          <Text className="text-body-sm font-medium text-content-secondary text-center w-full">
             {ATTENTION_FEED_COPY.acrossPracticeSummary(acrossPracticeCount)}
           </Text>
         </Pressable>

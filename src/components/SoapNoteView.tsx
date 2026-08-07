@@ -18,6 +18,7 @@ import { soapNotesApi, type SoapNoteSection } from '../api/soapNotes';
 import { Button } from './ui/Button';
 import { CopiedToast } from './ui/CopiedToast';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 type SoapAccent = 'subjective' | 'objective' | 'assessment' | 'plan';
 
@@ -163,11 +164,21 @@ function AccordionSection({
         className={`flex-row justify-between items-center p-3 ${ACCENT_TINT[accent]}`}
       >
         <View className="flex-row items-center flex-1 pr-2">
-          <Icon color={accentColor} size={16} style={{ marginRight: 8 }} />
-          <Text className="text-body font-semibold text-content-primary">{label}</Text>
+          <Icon color={accentColor} size={16} style={{ marginRight: 8, flexShrink: 0 }} />
+          {/* The ROW is flex-1, but these children were not, so each got only its
+              measured width and Android "Bold text" painted past it
+              (CLAUDE.md > UI Gotchas). The section label is one token
+              ("Subjective") — headroom, no numberOfLines. */}
+          <Text className="text-body font-semibold text-content-primary" style={CLIP_SAFE}>
+            {clipSafe(label)}
+          </Text>
           {isEdited && editedLabel && (
-            <View className="ml-2 rounded-full bg-surface-sunken px-2 py-0.5">
-              <Text className="text-caption text-content-tertiary">Edited {editedLabel}</Text>
+            <View className="ml-2 rounded-full bg-surface-sunken px-2 py-0.5" style={{ flexShrink: 0 }}>
+              {/* "Edited 3h ago" is multi-token in a shrink-wrapped pill: losing the
+                  tail would leave a bare "Edited" with no recency. */}
+              <Text className="text-caption text-content-tertiary" style={CLIP_SAFE} numberOfLines={1}>
+                {clipSafe(`Edited ${editedLabel}`)}
+              </Text>
             </View>
           )}
         </View>
@@ -292,9 +303,12 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNot
   return (
     <View>
       <View className="flex-row justify-between items-center mb-3 relative">
+        {/* flex-1 — row child with a Copy button sibling; without it the header
+            shrink-wraps and Bold text drops "Note" (CLAUDE.md > UI Gotchas). */}
         <Text
-          className="text-heading font-bold text-content-primary"
+          className="text-heading font-bold text-content-primary flex-1 mr-2"
           accessibilityRole="header"
+          numberOfLines={1}
         >
           SOAP Note
         </Text>

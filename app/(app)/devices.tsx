@@ -21,6 +21,7 @@ import { ListItem } from '../../src/components/ui/ListItem';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { Toast } from '../../src/components/Toast';
 import { friendlyErrorMessage } from '../../src/lib/errorCopy';
+import { CLIP_SAFE, clipSafe } from '../../src/components/ui/styles';
 
 function formatRelativeTime(isoDate: string): string {
   const date = new Date(isoDate);
@@ -198,9 +199,13 @@ export default function DevicesScreen() {
               onPress={() => router.back()}
               className="mr-3"
             />
+            {/* flex-1 — #171 fixed the capacity row below but not this header, which
+                has the same shrink-wrapped shape and would drop "Devices"
+                (CLAUDE.md > UI Gotchas). */}
             <Text
-              className="text-display font-bold text-content-primary"
+              className="text-display font-bold text-content-primary flex-1"
               accessibilityRole="header"
+              numberOfLines={1}
             >
               Manage Devices
             </Text>
@@ -227,26 +232,26 @@ export default function DevicesScreen() {
                 {capacity.isAtLimit ? (
                   <Text
                     className="text-caption font-semibold text-status-danger"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    style={CLIP_SAFE}
                     numberOfLines={1}
                   >
-                    {'Limit reached '}
+                    {clipSafe('Limit reached')}
                   </Text>
                 ) : capacity.isNearLimit ? (
                   <Text
                     className="text-caption font-semibold text-status-warning"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    style={CLIP_SAFE}
                     numberOfLines={1}
                   >
-                    {'Approaching limit '}
+                    {clipSafe('Approaching limit')}
                   </Text>
                 ) : (
                   <Text
                     className="text-caption text-content-tertiary"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    style={CLIP_SAFE}
                     numberOfLines={1}
                   >
-                    {`${capacity.remaining} remaining `}
+                    {clipSafe(`${capacity.remaining} remaining`)}
                   </Text>
                 )}
               </View>

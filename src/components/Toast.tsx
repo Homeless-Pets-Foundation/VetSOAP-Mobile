@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { AccessibilityInfo, Platform, Text } from 'react-native';
 import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 interface ToastProps {
   message: string;
@@ -79,8 +80,13 @@ export function Toast({ message, visible, onHide, durationMs, placement = 'viewp
       accessibilityRole="alert"
       accessibilityLiveRegion="polite"
     >
-      <Text className="text-body-sm font-semibold text-toast-fg text-center">
-        {message}
+      {/* clipSafe + CLIP_SAFE — the container is alignSelf:'center' + maxWidth:'85%',
+          which shrink-wraps to the message rather than claiming a width, so w-full is
+          a no-op here and headroom is the only lever (CLAUDE.md > UI Gotchas).
+          No numberOfLines: a toast is free to grow in height, and letting it wrap is
+          strictly safer than ellipsizing a message the user only sees once. */}
+      <Text className="text-body-sm font-semibold text-toast-fg text-center" style={CLIP_SAFE}>
+        {clipSafe(message)}
       </Text>
     </Animated.View>
   );

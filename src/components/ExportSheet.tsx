@@ -14,6 +14,7 @@ import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { Toast } from './Toast';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 const PIMS_TARGETS: { label: string; value: ExportTarget }[] = [
   { label: 'ezyVet', value: 'ezyvet' },
@@ -98,16 +99,21 @@ export function ExportSheet({
   return (
     <Card className="mb-4">
       <View className="flex-row items-center justify-between mb-3">
-        <Text className="text-body-lg font-semibold text-content-primary">{EXPORT_COPY.title}</Text>
+        {/* Single token ("Export"), so it can only glyph-clip at the box edge, never
+            vanish — headroom, no numberOfLines (CLAUDE.md > UI Gotchas). */}
+        <Text className="text-body-lg font-semibold text-content-primary" style={CLIP_SAFE}>
+          {clipSafe(EXPORT_COPY.title)}
+        </Text>
         {soapNote.isExported && (
           <View className="flex-row items-center rounded-full bg-brand-50 dark:bg-surface-sunken px-2 py-1">
             <CheckCircle color={colors.brand500} size={13} />
             <Text
               className="text-caption text-brand-700 dark:text-brand-500 ml-1"
-              // flexShrink:0 + paddingRight stops Android clipping the last glyph of the single-word "Exported" badge label
-              style={{ flexShrink: 0, paddingRight: 2 }}
+              // Headroom for the Android "Bold text" overrun in a shrink-wrapped pill.
+              // Single token, so no numberOfLines (CLAUDE.md > UI Gotchas).
+              style={CLIP_SAFE}
             >
-              Exported
+              {clipSafe('Exported')}
             </Text>
           </View>
         )}

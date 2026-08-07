@@ -642,6 +642,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // sign-in/session-restore registration path, while API 428 handlers and the
   // device-limit modal can still retry manually.
   const registerDeviceInFlightRef = useRef<Promise<boolean> | null>(null);
+  /**
+   * Bumped on every auth transition, so work started under a previous account
+   * can be recognised as stale.
+   *
+   * The device ID is device-scoped, but `POST /api/device-sessions/register` is
+   * AUTHENTICATED and creates a session row for the signed-in account — so a
+   * registration in flight belongs to a user, not just to the device. On a
+   * shared clinic tablet, A signing out mid-register while B signs in meant B
+   * was handed A's promise: B never got a session row (every request then 428s),
+   * and an A-side DEVICE_LIMIT_REACHED would populate the modal with A's device
+   * names for B to look at.
+   */
+  const authGenerationRef = useRef(0);
+  // Single-flight guard for fetchUser — see the comment at its definition.
+  const fetchUserInFlightRef = useRef<Promise<boolean> | null>(null);
   // Distinguishes user-initiated sign-out from session expiry in onAuthStateChange.
   // When Supabase emits SIGNED_OUT due to a failed refresh, this flag is false —
   // allowing one recovery refresh attempt before clearing auth state.
@@ -653,6 +668,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // (the "dashboard reloads") and unmounting an active recording. Reset on
   // user clear so a fresh sign-in re-scans.
   const recoveryScannedUserIdRef = useRef<string | null>(null);
+
+  // `pathname` is read (not depended on) by handleMfaRequiredResponse. Keeping it
+  // in that callback's dep array made the entire auth chain re-identify on every
+  // navigation — handleMfaRequiredResponse -> registerDevice -> fetchUser -> the
+  // init useEffect — so each tab switch tore down and re-ran the whole startup
+  // effect: a fresh 15s watchdog, a fresh getSession(), a fresh onAuthStateChange
+  // subscription, and another unawaited fetchUser() (i.e. another `/auth/me` +
+  // device-register round trip) whose predecessor was never cancelled. Production
+  // Sentry showed three concurrent `fetchUser` phases in a single event. A ref
+  // keeps the value current without poisoning any identity downstream.
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
 
   const setRecoveryDraftSlotId = useCallback((slotId: string | null) => {
     pendingRecoveryDraftSlotIdRef.current = slotId;
@@ -817,7 +844,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setActiveMfaChallenge(null);
       setUser(null);
       setDeviceRegistrationPending(false);
-      const currentPath = pathname || '/';
+      const currentPath = pathnameRef.current || '/';
       if (!currentPath.includes('/mfa')) {
         setMfaReturnPath(currentPath);
         router.push('/(auth)/mfa' as never);
@@ -831,7 +858,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         },
       });
     },
-    [pathname, router]
+    // `pathname` is deliberately NOT a dependency — it is read through
+    // `pathnameRef` above. See the ref declaration for why.
+    [router]
   );
 
   const clearMfaChallenge = useCallback(() => {
@@ -844,9 +873,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (registerDeviceInFlightRef.current) {
       return registerDeviceInFlightRef.current;
     }
+    // Everything below belongs to the account signed in RIGHT NOW. If the
+    // account changes while the POST is on the wire, this flight's result must
+    // not be applied to the new session's UI.
+    const generation = authGenerationRef.current;
+    const isCurrentAccount = () => authGenerationRef.current === generation;
     const promise = measurePhase('registerDevice', { platform: Platform.OS }, async (): Promise<boolean> => {
       try {
         const deviceId = await secureStorage.getDeviceId();
+        if (!isCurrentAccount()) return false;
         if (!deviceId) {
           setDeviceRegistrationPending(true);
           return false;
@@ -886,12 +921,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           ...(deviceName ? { deviceName } : {}),
           appVersion: require('../../package.json').version,
         });
+        // A success that landed for the PREVIOUS account proves nothing about
+        // this one: report failure so the current session registers itself
+        // rather than believing it already has a session row.
+        if (!isCurrentAccount()) return false;
         // Successful register clears any prior limit-block state — a revoke
         // from another device may have freed a slot since the last attempt.
         setDeviceRegistrationBlock(null);
         setDeviceRegistrationPending(false);
         return true;
       } catch (error) {
+        if (!isCurrentAccount()) return false;
         if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
           handleMfaRequiredResponse(error.data as MfaStatusResponse | undefined);
           setDeviceRegistrationPending(false);
@@ -925,13 +965,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setDeviceRegistrationPending(true);
         }
         return false;
-      } finally {
-        registerDeviceInFlightRef.current = null;
       }
     // Cold-start network round trip; the 5s default is wrong for low-end
     // clinic tablets (Sentry REACT-NATIVE-1A).
     }, { warningThresholdMs: 10_000 });
     registerDeviceInFlightRef.current = promise;
+    // Release the single-flight slot only if we are still the promise holding
+    // it. An unconditional clear (the previous `finally` inside the measured
+    // body) could drop a *newer* registration's handle, letting a third caller
+    // start a duplicate POST while that one was still on the wire.
+    const releaseSlot = () => {
+      if (registerDeviceInFlightRef.current === promise) {
+        registerDeviceInFlightRef.current = null;
+      }
+    };
+    promise.then(releaseSlot, releaseSlot);
     return promise;
   }, [handleMfaRequiredResponse]);
 
@@ -940,10 +988,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [registerDevice]
   );
 
-  const fetchUser = useCallback(async (): Promise<boolean> => measurePhase('fetchUser', undefined, async () => {
+  const fetchUser = useCallback(async (): Promise<boolean> => {
+    // Single-flight, same contract as registerDevice. fetchUser is reachable
+    // from five places (session restore, onAuthStateChange, MFA completion,
+    // recovery refresh, the cached-profile retry loop) and each entry costs a
+    // `/auth/me` plus a device-register round trip. Without this guard those
+    // overlap on a slow link; production Sentry captured three concurrent
+    // `fetchUser` phases (22.1s / 11.9s / 11.7s) inside one event.
+    if (fetchUserInFlightRef.current) {
+      return fetchUserInFlightRef.current;
+    }
+    // `measurePhase` reads this object when the phase finishes, not when it
+    // starts, so the body can fill in measurements as it goes.
+    const phaseTags: Record<string, string | number | boolean | null | undefined> = {};
+    const promise = measurePhase('fetchUser', phaseTags, async () => {
     const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
     setUserFetchState('loading');
     setUserFetchError(null);
+
+    // `registerDevice` is measured as its own phase but runs *inside* this one,
+    // so `slow_phase_fetchUser` and `slow_phase_registerDevice` are not
+    // independent latencies. Record the nested total as a tag so triage can
+    // subtract it instead of double-counting.
+    let registerMsTotal = 0;
+    const registerDeviceTimed = async (): Promise<boolean> => {
+      const startedAt = Date.now();
+      try {
+        return await registerDevice();
+      } finally {
+        registerMsTotal += Math.max(0, Date.now() - startedAt);
+        phaseTags.register_ms = registerMsTotal;
+      }
+    };
 
     // One attempt: returns true on success. Throws on failure.
     // The 404 bootstrap path is self-contained: it either succeeds and returns
@@ -959,7 +1035,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // limit, offline, transient server error), still apply the profile so
         // the device-registration recovery UI can render instead of leaving the
         // app in a half-authenticated retry loop.
-        await registerDevice();
+        await registerDeviceTimed();
         applyFetchedUser(body.user ?? null);
         return 'loaded';
       } catch (error) {
@@ -977,7 +1053,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const retryBody = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
-            await registerDevice();
+            await registerDeviceTimed();
             applyFetchedUser(retryBody.user ?? null);
             return 'loaded';
           } catch (retryError) {
@@ -989,7 +1065,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await apiClient.post('/auth/register', {});
             const body = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
-            await registerDevice();
+            await registerDeviceTimed();
             applyFetchedUser(body.user ?? null);
             return 'loaded';
           } catch (bootstrapError) {
@@ -1097,9 +1173,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
     return false;
-  // Cold-start network round trip; the 5s default is wrong for low-end
-  // clinic tablets (Sentry REACT-NATIVE-1B).
-  }, { warningThresholdMs: 10_000 }), [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
+    // Cold-start network round trip; the 5s default is wrong for low-end
+    // clinic tablets (Sentry REACT-NATIVE-1B).
+    }, { warningThresholdMs: 10_000 });
+    fetchUserInFlightRef.current = promise;
+    // Release the slot only if we still own it, so a later call's handle can
+    // never be dropped by an earlier one settling.
+    const releaseSlot = () => {
+      if (fetchUserInFlightRef.current === promise) {
+        fetchUserInFlightRef.current = null;
+      }
+    };
+    promise.then(releaseSlot, releaseSlot);
+    return promise;
+  }, [applyFetchedUser, handleMfaRequiredResponse, registerDevice]);
 
   const applyBearerMfaTokens = useCallback(async (tokens?: MfaApiResponse['tokens']) => {
     if (!tokens) return;
@@ -1446,6 +1533,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Flush is best-effort and bounded by internal PostHog timeouts.
     clearTelemetryIdentity();
     trackEvent({ name: 'session_signed_out', props: { trigger: 'user' } });
+    // Both single-flight handles are keyed to the departing session: the next
+    // user must start their own `/auth/me` and their own device registration,
+    // never inherit these. The generation bump makes an already-running flight's
+    // state updates no-ops (see `authGenerationRef`).
+    fetchUserInFlightRef.current = null;
+    registerDeviceInFlightRef.current = null;
+    authGenerationRef.current += 1;
     setUser(null);
     setSession(null);
     setUserFetchState('idle');
@@ -1727,6 +1821,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // error captured during the final teardown doesn't attribute to
             // the expired user. Mirrors the handleSignOut ordering.
             clearTelemetryIdentity();
+            // Same reasoning as handleSignOut: the fetchUser and registerDevice
+            // single-flight handles belong to the departing session and must not
+            // be handed to whoever signs in next.
+            fetchUserInFlightRef.current = null;
+            registerDeviceInFlightRef.current = null;
+            authGenerationRef.current += 1;
             setUser(null);
             setSession(null);
             setProfileSource('live');

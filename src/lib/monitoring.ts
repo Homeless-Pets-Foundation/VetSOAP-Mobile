@@ -50,6 +50,92 @@ function scrub<T extends object>(obj: T): T {
 }
 
 /**
+ * Window within which two byte-identical breadcrumbs are treated as the same
+ * event recorded twice rather than as a genuine repeat. Seconds, because
+ * Sentry breadcrumb timestamps are Unix seconds.
+ *
+ * Observed native/JS copy deltas in production events were 0–54 ms, so 250 ms
+ * covers the merge skew with room to spare while staying far too short to
+ * collapse an actual repeated action.
+ */
+const BREADCRUMB_DEDUPE_WINDOW_S = 0.25;
+
+type MinimalBreadcrumb = {
+  timestamp?: number;
+  category?: string;
+  type?: string;
+  level?: string;
+  message?: string;
+  data?: Record<string, unknown>;
+};
+
+function breadcrumbIdentity(breadcrumb: MinimalBreadcrumb): string {
+  // Key order is not stable across the native round trip, so sort it. Values
+  // are stringified because the bridge coerces numeric types (an int can come
+  // back as a double).
+  let dataKey = '';
+  if (breadcrumb.data) {
+    const entries = Object.entries(breadcrumb.data)
+      .map(([key, value]) => `${key}=${String(value)}`)
+      .sort();
+    dataKey = entries.join('&');
+  }
+  // JSON rather than a delimiter join, so a value containing the delimiter
+  // cannot make two different breadcrumbs hash to the same identity.
+  return JSON.stringify([
+    breadcrumb.category ?? '',
+    breadcrumb.type ?? '',
+    breadcrumb.level ?? '',
+    breadcrumb.message ?? '',
+    dataKey,
+  ]);
+}
+
+/**
+ * Collapse the native/JS duplicate of every breadcrumb.
+ *
+ * WHY: `@sentry/react-native`'s scope sync mirrors every JS breadcrumb into the
+ * native scope (`scopeSync.ts` -> `NATIVE.addBreadcrumb`), and the
+ * `DeviceContext` integration then concatenates the native scope's breadcrumbs
+ * onto the outgoing JS event. Both platforms are supposed to strip the mirrored
+ * copies first — iOS filters the serialized dict on `origin == "react-native"`
+ * and does; Android filters `InternalSentrySdk.getCurrentScope()` while
+ * `addBreadcrumb` writes through `Sentry.configureScope`, so on Android the
+ * copies survive and every breadcrumb lands twice.
+ *
+ * Measured on production events: ~24 of ~26 unique breadcrumbs doubled on every
+ * Android release sampled (1.13.11 through 1.13.18), including network
+ * breadcrumbs carrying an identical `request_id` and `latency_ms`; the one iOS
+ * build sampled showed 6 of 27. With `maxBreadcrumbs: 50` that halves the
+ * usable trail to ~25 real entries — exactly the history needed to diagnose a
+ * slow startup.
+ *
+ * Exported for tests. Pure: no Sentry calls, no clock reads.
+ */
+export function dedupeMergedBreadcrumbs<T extends MinimalBreadcrumb>(
+  breadcrumbs: T[] | undefined,
+): T[] | undefined {
+  if (!Array.isArray(breadcrumbs) || breadcrumbs.length < 2) return breadcrumbs;
+  const lastSeenAt = new Map<string, number>();
+  const kept: T[] = [];
+  for (const breadcrumb of breadcrumbs) {
+    const identity = breadcrumbIdentity(breadcrumb);
+    const timestamp = typeof breadcrumb.timestamp === 'number' ? breadcrumb.timestamp : null;
+    const previous = lastSeenAt.get(identity);
+    if (
+      previous !== undefined &&
+      timestamp !== null &&
+      Math.abs(timestamp - previous) <= BREADCRUMB_DEDUPE_WINDOW_S
+    ) {
+      continue;
+    }
+    if (timestamp !== null) lastSeenAt.set(identity, timestamp);
+    kept.push(breadcrumb);
+  }
+  return kept;
+}
+
+/**
  * Initialize Sentry. Safe to call multiple times — idempotent.
  * No-op if DSN is not configured.
  */
@@ -158,6 +244,10 @@ export function initMonitoring(): void {
           delete event.request.data;
           delete event.request.cookies;
         }
+        // Runs last, after the DeviceContext event processor has concatenated
+        // the native scope's breadcrumbs onto this event. See
+        // `dedupeMergedBreadcrumbs` for why that produces duplicates on Android.
+        event.breadcrumbs = dedupeMergedBreadcrumbs(event.breadcrumbs);
         return event;
       },
     });

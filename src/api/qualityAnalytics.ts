@@ -234,8 +234,14 @@ export function parseDashboardQualityEnvelope(value: unknown): DashboardQualityE
 }
 
 export const qualityAnalyticsApi = {
-  async getDashboardQuality(): Promise<DashboardQualityEnvelope> {
-    const response = await apiClient.get<unknown>('/api/organization/dashboard');
+  // `signal` comes from the React Query context so a `refetch()` that supersedes
+  // an in-flight request actually aborts it instead of racing it on the wire.
+  async getDashboardQuality(options: { signal?: AbortSignal } = {}): Promise<DashboardQualityEnvelope> {
+    const response = await apiClient.get<unknown>(
+      '/api/organization/dashboard',
+      undefined,
+      { signal: options.signal },
+    );
     return parseDashboardQualityEnvelope(response);
   },
 };

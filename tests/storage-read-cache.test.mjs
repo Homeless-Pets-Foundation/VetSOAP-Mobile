@@ -17,6 +17,31 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
+// The REAL bounded chunk reader, not a stub — the storage modules delegate their
+// chunk fan-out to it, so stubbing it here would hide the very behaviour these
+// tests cover (windowed reads, stop-at-first-gap, corrupt-count rejection).
+// `chunkedRead.ts` imports nothing, so loading it needs no mocks of its own.
+const chunkedReadModule = await (async () => {
+  const source = await read('src/lib/chunkedRead.ts');
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: module.exports,
+    module,
+    require: () => {
+      throw new Error('chunkedRead must have no imports');
+    },
+    Promise,
+    Array,
+    Math,
+    Number,
+    Object,
+  });
+  return module.exports;
+})();
+
 /** Shared in-memory SecureStore double with read/write counters. */
 function makeSecureStore(state = new Map()) {
   const counters = { reads: 0, writes: 0, deletes: 0 };
@@ -75,6 +100,7 @@ async function loadStashStorage(state) {
   const store = makeSecureStore(state);
   const mod = await loadTsModuleWithMocks('src/lib/stashStorage.ts', {
     'expo-secure-store': store.mock,
+    './chunkedRead': chunkedReadModule,
     './secureStorage': {
       secureStorage: {
         async getRawItemStrict(key) {
@@ -225,6 +251,7 @@ async function loadDraftStorage(state, opts = {}) {
   };
   const mod = await loadTsModuleWithMocks('src/lib/draftStorage.ts', {
     'expo-secure-store': store.mock,
+    './chunkedRead': chunkedReadModule,
     'expo-file-system': fileSystemMock,
     'expo-file-system/legacy': {
       async copyAsync() {},
@@ -900,4 +927,60 @@ test('draftStorage: cached reads hand out defensive clones', async () => {
   // saveDraft copies segments into the draft dir, so the stored URI is the
   // durable dest path, not the recorder-temp source.
   assert.equal(second[0].segments[0].uri, 'file:///doc/drafts/userA/slot1/seg_0.m4a');
+});
+
+test('draftStorage: a transient Keystore failure is never cached as an empty draft list', async () => {
+  // The lenient readers collapse a Keystore fault into the same `[]` a genuine
+  // absence produces. Returning that is tolerable; MEMOIZING it hid recoverable
+  // drafts from Home and Records for the rest of the user scope, long after the
+  // Keystore recovered.
+  const state = new Map();
+  const { draftStorage, mock } = await loadDraftStorage(state);
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+
+  const realGet = mock.getItemAsync;
+  mock.getItemAsync = async () => {
+    throw new Error('keystore unavailable');
+  };
+  const during = await draftStorage.listDrafts();
+  assert.deepEqual([...during], [], 'the lenient result is unchanged');
+
+  mock.getItemAsync = realGet;
+  const after = await draftStorage.listDrafts();
+  assert.equal(after.length, 1, 'the unreadable snapshot must not have been cached');
+  assert.equal(after[0].slotId, 'slot1');
+});
+
+test('draftStorage: one unreadable draft blocks the memo without dropping the others', async () => {
+  const state = new Map();
+  const { draftStorage, mock } = await loadDraftStorage(state);
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+  await draftStorage.saveDraft(makeSlot('slot2'));
+
+  const realGet = mock.getItemAsync;
+  mock.getItemAsync = async function (key) {
+    if (key.includes('slot2')) throw new Error('keystore unavailable');
+    return realGet.call(this, key);
+  };
+  const partial = await draftStorage.listDrafts();
+  assert.equal(partial.length, 1, 'readable drafts are still returned');
+  assert.equal(partial[0].slotId, 'slot1');
+
+  mock.getItemAsync = realGet;
+  const recovered = await draftStorage.listDrafts();
+  assert.equal(recovered.length, 2, 'the partial snapshot must not have been cached');
+});
+
+test('draftStorage: a healthy read is still memoized after the availability check', async () => {
+  const state = new Map();
+  const { draftStorage, counters } = await loadDraftStorage(state);
+  draftStorage.setUserId('userA');
+  await draftStorage.saveDraft(makeSlot('slot1'));
+
+  assert.equal((await draftStorage.listDrafts()).length, 1);
+  const readsAfterFirst = counters.reads;
+  assert.equal((await draftStorage.listDrafts()).length, 1);
+  assert.equal(counters.reads, readsAfterFirst, 'a proven read is cacheable');
 });

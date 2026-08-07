@@ -112,10 +112,17 @@ test('mobile auth provider applies profile when device registration needs recove
   const mfaScreen = await read('app/(auth)/mfa.tsx');
   const deviceCapacity = await read('src/hooks/useDeviceCapacity.ts');
 
+  // Inside fetchUser the call goes through `registerDeviceTimed`, a thin timing
+  // wrapper over `registerDevice` that records the nested duration as a phase
+  // tag. The ordering guarantee under test is unchanged: register completes
+  // BEFORE the profile is applied, so `enabled: !!user`-gated queries cannot
+  // fire before the device has a session row.
   assert.match(
     provider,
-    /await registerDevice\(\);\s*applyFetchedUser\(body\.user \?\? null\);\s*return 'loaded';/
+    /await registerDeviceTimed\(\);\s*applyFetchedUser\(body\.user \?\? null\);\s*return 'loaded';/
   );
+  assert.match(provider, /const registerDeviceTimed = async \(\): Promise<boolean> => \{/);
+  assert.match(provider, /return await registerDevice\(\);/);
   assert.match(
     provider,
     /await registerDevice\(\);\s*applyFetchedUser\(data\.user\);\s*setUserFetchState\('success'\);/

@@ -123,8 +123,9 @@ export default function RecordingsListScreen() {
     queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', 'submittedAt-desc'],
     // Survives into the persisted offline snapshot (WP28).
     gcTime: PERSIST_GC_TIME_MS,
-    queryFn: ({ pageParam = 1 }) =>
+    queryFn: ({ pageParam = 1, signal }) =>
       recordingsApi.list({
+        signal,
         search: debouncedSearch || undefined,
         page: pageParam,
         limit: PAGE_SIZE,
@@ -211,8 +212,9 @@ export default function RecordingsListScreen() {
     isStale: isDraftStale,
   } = useQuery({
     queryKey: ['recordings', 'drafts', 'list', debouncedSearch, 'desc'],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       recordingsApi.list({
+        signal,
         search: debouncedSearch || undefined,
         status: 'draft',
         page: 1,

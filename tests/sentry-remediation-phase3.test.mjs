@@ -163,6 +163,30 @@ function makeSecureStore(state = new Map()) {
   return { state, counters, mock };
 }
 
+// The REAL bounded chunk reader — stubbing it would hide the windowed-read,
+// stop-at-first-gap and corrupt-count behaviour draftStorage delegates to it.
+// `chunkedRead.ts` imports nothing, so it needs no mocks of its own.
+const chunkedReadModule = await (async () => {
+  const source = await read('src/lib/chunkedRead.ts');
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: module.exports,
+    module,
+    require: () => {
+      throw new Error('chunkedRead must have no imports');
+    },
+    Promise,
+    Array,
+    Math,
+    Number,
+    Object,
+  });
+  return module.exports;
+})();
+
 async function loadTsModuleWithMocks(path, mocks) {
   const source = await read(path);
   const compiled = ts.transpileModule(source, {
@@ -198,6 +222,7 @@ async function loadDraftStorage(state) {
   const breadcrumbs = [];
   const mod = await loadTsModuleWithMocks('src/lib/draftStorage.ts', {
     'expo-secure-store': store.mock,
+    './chunkedRead': chunkedReadModule,
     'expo-file-system': {
       File: class {
         constructor(uri) {
@@ -409,9 +434,16 @@ test('draft list and pending sync breadcrumbs contain only numeric counts', asyn
   assert.equal(drafts.length, 2);
   const listCrumb = breadcrumbs.find((c) => c.message === 'list_complete');
   assert.ok(listCrumb);
-  assert.deepEqual(Object.keys(listCrumb.data).sort(), ['indexed_slots', 'returned_drafts']);
+  assert.deepEqual(Object.keys(listCrumb.data).sort(), [
+    'indexed_slots',
+    'returned_drafts',
+    'unreadable_reads',
+  ]);
   assert.equal(listCrumb.data.indexed_slots, 2);
   assert.equal(listCrumb.data.returned_drafts, 2);
+  // A healthy read reports zero present-but-unreadable records, which is what
+  // makes the snapshot cacheable.
+  assert.equal(listCrumb.data.unreadable_reads, 0);
   assert.ok(Object.values(listCrumb.data).every((value) => Number.isInteger(value) && value >= 0));
 
   const result = await draftStorage.syncPending('userA', async (draft) => {

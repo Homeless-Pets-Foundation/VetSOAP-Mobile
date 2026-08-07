@@ -88,8 +88,9 @@ export interface UseAttentionFeedResult {
   fingerprint: string;
 }
 
-async function fetchAttentionPage(): Promise<AttentionEnvelope> {
+async function fetchAttentionPage(signal?: AbortSignal): Promise<AttentionEnvelope> {
   const response = await recordingsApi.list({
+    signal,
     page: ATTENTION_PAGE_NUMBER,
     limit: ATTENTION_PAGE_LIMIT,
     // Attention is about recently CHANGED source state. `submittedAt` would
@@ -122,11 +123,17 @@ export function useAttentionFeed(options: { focused: boolean }): UseAttentionFee
 
   const serverQuery = useQuery({
     queryKey: [...ATTENTION_QUERY_KEY],
-    queryFn: fetchAttentionPage,
+    queryFn: ({ signal }) => fetchAttentionPage(signal),
     enabled: canLoadServerData,
     // Deliberately NOT PERSIST_GC_TIME_MS: this page is excluded from disk
     // dehydration, so a long gcTime would only pin a stale in-memory queue.
-    refetchOnMount: 'always',
+    //
+    // `refetchOnMount` is deliberately left at the default (refetch only when
+    // stale) rather than 'always'. This is a 100-row page — the single largest
+    // response the app requests — and 'always' re-downloaded it on every mount
+    // of either surface regardless of cache age. Freshness after a real change
+    // comes from `invalidateRecordingCaches`, which includes ATTENTION_KEY for
+    // every recording mutation, plus the focus/foreground refetches below.
     refetchInterval: (query) => {
       if (!focused || !isAppActive) return false;
       const rows = query.state.data?.data;
@@ -146,6 +153,11 @@ export function useAttentionFeed(options: { focused: boolean }): UseAttentionFee
   // callback depends on the whole (per-render) query object.
   const serverRefetch = serverQuery.refetch;
   const localRefetch = localQuery.refetch;
+  // Read staleness inside the AppState handler without making it a dependency —
+  // it flips on a timer, and re-subscribing an AppState listener on every flip
+  // is pure churn.
+  const serverIsStaleRef = useRef(serverQuery.isStale);
+  serverIsStaleRef.current = serverQuery.isStale;
 
   // Foreground resume: update the clock immediately and refresh both sources.
   // Synchronous handler with an outer try/catch; every Promise is observed.
@@ -157,7 +169,14 @@ export function useAttentionFeed(options: { focused: boolean }): UseAttentionFee
         if (!active) return;
         setNowMs(Date.now());
         if (!focused) return;
-        if (canLoadServerData) serverRefetch().catch(() => {});
+        // Stale-gated, matching the focus effect below. Unconditional here meant
+        // every single foreground resume re-downloaded the full 100-row page
+        // even when it had been fetched seconds earlier — the dominant share of
+        // recordings bytes on a resume, and a direct contributor to the
+        // concurrent-request pile-up on slow clinic Wi-Fi.
+        if (canLoadServerData && serverIsStaleRef.current) serverRefetch().catch(() => {});
+        // The local source has no invalidation channel (stash/draft writes never
+        // touch React Query), so it stays unconditional — it costs no network.
         if (user?.id) localRefetch().catch(() => {});
       } catch {
         // A listener throw would take down the AppState subscription.

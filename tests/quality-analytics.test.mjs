@@ -249,8 +249,17 @@ test('Home renders clinic quality after Recent Recordings and refreshes it safel
     source,
     /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId, user\?\.id, user\?\.role\]/
   );
-  assert.match(source, /queryFn:\s*\(\) => qualityAnalyticsApi\.getDashboardQuality\(\)/);
-  assert.match(source, /refetchQuality\(\)\.catch\(\(\) => \{\}\)/);
+  // Forwards React Query's AbortSignal so a superseding refetch cancels the
+  // in-flight request instead of racing it.
+  assert.match(
+    source,
+    /queryFn:\s*\(\{ signal \}\) => qualityAnalyticsApi\.getDashboardQuality\(\{ signal \}\)/
+  );
+  // Every refresh path routes through the one scheduler, so a trailing timer
+  // armed by a completion cannot fire on top of a manual refresh.
+  assert.match(source, /runQualityRefetch\(\)\.catch\(\(\) => \{\}\)/);
+  assert.match(source, /const runQualityRefetch = useCallback\(\(\) => \{/);
+  assert.match(source, /refetch=\{runQualityRefetch\}/);
   assert(
     source.indexOf('Recent Recordings') < source.indexOf('<QualityAnalyticsCard'),
     'quality card should render after Recent Recordings'
@@ -270,7 +279,7 @@ test('Home gates all-role clinic quality only by auth and device readiness', asy
   );
   assert.doesNotMatch(source, /canFetchQualityAnalytics\s*=.*canRecordAppointments/);
   assert.match(source, /enabled:\s*canFetchQualityAnalytics/);
-  assert.match(source, /if \(canFetchQualityAnalytics\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(source, /if \(canFetchQualityAnalytics\) \{\s*runQualityRefetch\(\)\.catch\(\(\) => \{\}\);\s*\}/);
   assert.match(source, /\{canFetchQualityAnalytics \? \(\s*<View className="mb-8">\s*<QualityAnalyticsCard/);
 });
 
@@ -279,8 +288,29 @@ test('Home refreshes clinic quality when recent processing recordings leave proc
 
   assert.match(source, /const processingRecordingIds = useMemo\(\(\) =>/);
   assert.match(source, /const processingRecordingIdsRef = useRef<Set<string>>\(new Set\(\)\)/);
-  assert.match(source, /const completedProcessing = \[\.\.\.processingRecordingIdsRef\.current\]\.some/);
-  assert.match(source, /if \(canFetchQualityAnalytics && completedProcessing\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(source, /const finishedProcessing = \[\.\.\.processingRecordingIdsRef\.current\]\.some/);
+  // A row that simply left the top-5 window is NOT a completion. Requiring the
+  // id to still be visible is what stops ordinary list churn from firing a
+  // redundant /api/organization/dashboard request.
+  assert.match(source, /visibleRecordingIds\.has\(id\) && !processingRecordingIds\.has\(id\)/);
+  assert.match(source, /const visibleRecordingIds = useMemo\(/);
+  // Batches finishing together must not stack dashboard requests.
+  assert.match(source, /const QUALITY_REFETCH_MIN_INTERVAL_MS = 30_000/);
+  assert.match(source, /sinceLast >= QUALITY_REFETCH_MIN_INTERVAL_MS/);
+  // The scheduler stamps the throttle clock and cancels any pending trailing
+  // timer before delegating to the query's own refetch.
+  assert.match(source, /clearTimeout\(trailingQualityRefetchRef\.current\);\s*trailingQualityRefetchRef\.current = null;\s*\}\s*lastQualityRefetchAtRef\.current = Date\.now\(\);\s*return refetchQuality\(\);/);
+  // Only the scheduler may call the raw query refetch.
+  assert.equal((source.match(/refetchQuality\(\)/g) ?? []).length, 1);
+  // A completion landing inside the throttle window must be DEFERRED, not
+  // dropped: its id has already left processingRecordingIdsRef, so nothing else
+  // would ever retry it and the summary would keep pre-completion numbers.
+  assert.match(source, /const trailingQualityRefetchRef = useRef<ReturnType<typeof setTimeout> \| null>\(null\)/);
+  assert.match(source, /if \(trailingQualityRefetchRef\.current\) return;/);
+  assert.match(source, /trailingQualityRefetchRef\.current = setTimeout\(/);
+  assert.match(source, /QUALITY_REFETCH_MIN_INTERVAL_MS - sinceLast/);
+  // ...and must never stay armed past unmount.
+  assert.match(source, /clearTimeout\(trailingQualityRefetchRef\.current\)/);
 });
 
 test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing quality', async () => {

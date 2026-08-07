@@ -53,6 +53,14 @@ import { useSupportRecoveryVaultSummary } from '../../../src/hooks/useSupportRec
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
+/**
+ * Floor between processing-completion-driven quality dashboard refetches. The
+ * recent-recordings list polls every 10s while anything is processing, so a
+ * batch finishing together would otherwise fire several dashboard requests in
+ * quick succession on top of Home's existing fan-out.
+ */
+const QUALITY_REFETCH_MIN_INTERVAL_MS = 30_000;
+
 export default function HomeScreen() {
   const router = useRouter();
   const user = useAuthUser();
@@ -105,7 +113,8 @@ export default function HomeScreen() {
     queries: [
       {
         queryKey: ['recordings', 'recent'],
-        queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'submittedAt', sortOrder: 'desc' }),
+        queryFn: ({ signal }: { signal: AbortSignal }) =>
+          recordingsApi.list({ limit: 5, sortBy: 'submittedAt', sortOrder: 'desc', signal }),
         enabled: canLoadServerData,
         refetchInterval: (query: { state: { data?: Awaited<ReturnType<typeof recordingsApi.list>> } }) => {
           if (!isTabFocused) return false;
@@ -118,7 +127,8 @@ export default function HomeScreen() {
       },
       {
         queryKey: ['recordings', 'drafts', 'recent'],
-        queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc', status: 'draft' as const }),
+        queryFn: ({ signal }: { signal: AbortSignal }) =>
+          recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc', status: 'draft' as const, signal }),
         enabled: canLoadServerData,
       },
     ],
@@ -133,7 +143,7 @@ export default function HomeScreen() {
   } = draftsQuery;
   const qualityQuery = useQuery({
     queryKey: ['dashboard', 'quality', user?.organizationId, user?.id, user?.role],
-    queryFn: () => qualityAnalyticsApi.getDashboardQuality(),
+    queryFn: ({ signal }) => qualityAnalyticsApi.getDashboardQuality({ signal }),
     enabled: canFetchQualityAnalytics,
   });
   const {
@@ -161,20 +171,79 @@ export default function HomeScreen() {
   } = useLocalDraftRecordings();
   const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
   const processingRecordingIdsRef = useRef<Set<string>>(new Set());
+  const lastQualityRefetchAtRef = useRef(0);
+  const trailingQualityRefetchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visibleRecordingIds = useMemo(
+    () => new Set(recordings.map((r) => r.id)),
+    [recordings]
+  );
 
   useEffect(() => {
     areLocalDraftsStaleRef.current = areLocalDraftsStale;
   }, [areLocalDraftsStale]);
 
-  useEffect(() => {
-    const completedProcessing = [...processingRecordingIdsRef.current].some(
-      (id) => !processingRecordingIds.has(id)
-    );
-    if (canFetchQualityAnalytics && completedProcessing) {
-      refetchQuality().catch(() => {});
+  // SOLE entry point for refreshing the quality dashboard. Every path — the
+  // completion watcher below, focus refresh, pull-to-refresh, and the card's own
+  // retry button — must go through here, because a trailing timer armed by one
+  // path would otherwise fire moments after another path had already refetched,
+  // recreating the duplicate dashboard request this throttle exists to prevent.
+  const runQualityRefetch = useCallback(() => {
+    if (trailingQualityRefetchRef.current) {
+      clearTimeout(trailingQualityRefetchRef.current);
+      trailingQualityRefetchRef.current = null;
     }
+    lastQualityRefetchAtRef.current = Date.now();
+    return refetchQuality();
+  }, [refetchQuality]);
+
+  useEffect(() => {
+    // A row that was processing counts as finished only if it is STILL in the
+    // list and has left the processing set — i.e. it genuinely reached a
+    // terminal status. An id that merely vanished proves nothing: this list is
+    // the top 5, so ordinary churn pushes rows out of the window, and the old
+    // "absent means completed" test fired a redundant dashboard fetch every
+    // time that happened. Production Sentry showed two /api/organization/dashboard
+    // requests ~8s apart in a single window from exactly this.
+    const finishedProcessing = [...processingRecordingIdsRef.current].some(
+      (id) => visibleRecordingIds.has(id) && !processingRecordingIds.has(id)
+    );
     processingRecordingIdsRef.current = processingRecordingIds;
-  }, [canFetchQualityAnalytics, processingRecordingIds, refetchQuality]);
+    if (!canFetchQualityAnalytics || !finishedProcessing) return;
+
+    const sinceLast = Date.now() - lastQualityRefetchAtRef.current;
+    if (sinceLast >= QUALITY_REFETCH_MIN_INTERVAL_MS) {
+      runQualityRefetch().catch(() => {});
+      return;
+    }
+
+    // Inside the throttle window. The completion must be DEFERRED, not dropped:
+    // the id has already been removed from `processingRecordingIdsRef` above, so
+    // nothing would ever retry it and the quality summary would keep showing
+    // pre-completion numbers until something else happened to refresh it.
+    // One trailing timer covers every completion that lands in the window, and
+    // any other refresh path cancels it via `runQualityRefetch`.
+    if (trailingQualityRefetchRef.current) return;
+    trailingQualityRefetchRef.current = setTimeout(() => {
+      trailingQualityRefetchRef.current = null;
+      runQualityRefetch().catch(() => {});
+    }, QUALITY_REFETCH_MIN_INTERVAL_MS - sinceLast);
+  }, [
+    canFetchQualityAnalytics,
+    processingRecordingIds,
+    visibleRecordingIds,
+    runQualityRefetch,
+  ]);
+
+  // Never leave a trailing refetch armed past unmount.
+  useEffect(
+    () => () => {
+      if (trailingQualityRefetchRef.current) {
+        clearTimeout(trailingQualityRefetchRef.current);
+        trailingQualityRefetchRef.current = null;
+      }
+    },
+    []
+  );
 
   useRetryableInitialLoadError({
     screen: 'home',
@@ -237,7 +306,7 @@ export default function HomeScreen() {
       refetchDrafts().catch(() => {});
     }
     if (canFetchQualityAnalytics) {
-      refetchQuality().catch(() => {});
+      runQualityRefetch().catch(() => {});
     }
     refreshLocalDrafts({ forceReconcile: true });
     // Void wrappers — pull-to-refresh must never receive a Promise (rule 2).
@@ -248,7 +317,7 @@ export default function HomeScreen() {
     canLoadServerData,
     refetch,
     refetchDrafts,
-    refetchQuality,
+    runQualityRefetch,
     refreshAttention,
     refreshLocalDrafts,
     refreshSupportRecovery,
@@ -288,7 +357,7 @@ export default function HomeScreen() {
         refetchDrafts().catch(() => {});
       }
       if (qualityStale) {
-        refetchQuality().catch(() => {});
+        runQualityRefetch().catch(() => {});
       }
       refreshLocalDrafts();
       refreshSupportRecovery();
@@ -301,7 +370,7 @@ export default function HomeScreen() {
     recordingsQuery.isStale,
     refetch,
     refetchDrafts,
-    refetchQuality,
+    runQualityRefetch,
     refreshLocalDrafts,
     refreshSupportRecovery,
   ]);
@@ -641,7 +710,7 @@ export default function HomeScreen() {
             data={qualityData}
             isLoading={isQualityLoading}
             isError={isQualityError}
-            refetch={refetchQuality}
+            refetch={runQualityRefetch}
           />
         </View>
       ) : null}

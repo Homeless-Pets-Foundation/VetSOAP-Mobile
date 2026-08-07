@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { AppState, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -56,23 +56,31 @@ export function useActiveProviderIssue(): ProviderIssue | null {
   const user = useAuthUser();
   const canView = user?.role === 'owner' || user?.role === 'admin';
 
-  const { data, refetch } = useQuery({
+  const { data, refetch, isStale } = useQuery({
     queryKey: PROVIDER_ISSUES_QUERY_KEY,
     queryFn: () => providerIssuesApi.list({ status: 'active', days: 1 }),
     enabled: canView,
     staleTime: 60_000,
   });
 
+  // Both refreshes below were unconditional, which made the 60s `staleTime`
+  // meaningless: a foreground-resume-into-focus fired two immediate refetches
+  // of the same endpoint on top of Home's own fan-out. Gate them on staleness
+  // so the cache window is honoured. Read through a ref in the AppState
+  // listener so a staleness flip doesn't re-subscribe the listener.
+  const isStaleRef = useRef(isStale);
+  isStaleRef.current = isStale;
+
   useFocusEffect(
     useCallback(() => {
-      if (canView) refetch().catch(() => {});
+      if (canView && isStaleRef.current) refetch().catch(() => {});
     }, [canView, refetch])
   );
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       try {
-        if (nextState === 'active' && canView) {
+        if (nextState === 'active' && canView && isStaleRef.current) {
           refetch().catch(() => {});
         }
       } catch (error) {

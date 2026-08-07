@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import type { StashedSession } from '../types/stash';
 import { secureStorage } from './secureStorage';
 import { StrictReadUnavailableError, parseStrictChunkCount } from './strictRead';
+import { readChunksBounded } from './chunkedRead';
 import { isValidDurableId } from './durableAudio/paths';
 import { clonePendingConfirm } from './pendingConfirm';
 
@@ -100,12 +101,19 @@ async function readSessionsForKeys(
   if (isNaN(count) || count < 0) return null;
   if (count === 0) return { raw: '[]', sessions: [] };
 
-  const chunks: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const chunk = await SecureStore.getItemAsync(`${scopedPrefix}${i}`);
-    if (chunk === null) return null;
-    chunks.push(chunk);
-  }
+  // All key names are known once `count` is read. The whole stash list is one
+  // chunked blob, so this loop was the single longest serial Keystore chain in
+  // the app (5 sessions x several slots x segments comfortably exceeds 20
+  // chunks). Index order is preserved; a torn set still fails the read.
+  // Windowed rather than serial (the whole stash list is one chunked blob, so
+  // this was the longest serial Keystore chain in the app) and windowed rather
+  // than fully eager (the count is persisted data and can be corrupt).
+  // `readChunksBounded` preserves the serial loop's stop-at-first-gap.
+  const result = await readChunksBounded(count, (i) =>
+    SecureStore.getItemAsync(`${scopedPrefix}${i}`),
+  );
+  if (!result.ok) return null;
+  const chunks = result.parts;
 
   try {
     const raw = chunks.join('');
@@ -287,13 +295,19 @@ async function readSessionsForKeysStrict(
   const count = parseStrictChunkCount(countStr, 'stash:count');
   if (count === 0) return [];
 
-  const chunks: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const chunk = await secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict');
-    if (chunk === null) throw new StrictReadUnavailableError('stash:torn_chunk');
-    chunks.push(chunk);
+  // Windowed for the same reasons as the lenient reader. `parseStrictChunkCount`
+  // allows counts up to 999,999 because it was written for a serial loop that
+  // exits early; a fan-out must additionally reject a count no real value could
+  // have, and for a STRICT read that is "unavailable", never "absent".
+  const result = await readChunksBounded(count, (i) =>
+    secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict'),
+  );
+  if (!result.ok) {
+    throw new StrictReadUnavailableError(
+      result.reason === 'count_too_large' ? 'stash:count' : 'stash:torn_chunk',
+    );
   }
-  return parseSessionsStrict(chunks.join(''));
+  return parseSessionsStrict(result.parts.join(''));
 }
 
 async function getStashedSessionsForUserStrictInternal(

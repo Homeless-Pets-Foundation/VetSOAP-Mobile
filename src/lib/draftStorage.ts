@@ -10,6 +10,7 @@ import {
 } from './fileOps';
 import { secureStorage } from './secureStorage';
 import { StrictReadUnavailableError, type StrictExistence } from './strictRead';
+import { readChunksBounded } from './chunkedRead';
 import { isConfirmedUploaded, validateManifestObject, type DurableRecordingManifest } from './durableAudio/manifest';
 import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '../types/multiPatient';
 import type { CreateRecording } from '../types/index';
@@ -145,9 +146,23 @@ const pendingDraftSyncSlotIds = new Set<string>();
 let draftsListCache: { userId: string; drafts: DraftMetadata[] } | null = null;
 let draftsCacheVersion = 0;
 
+// Bumped on every write, so a mounted screen can re-read after a change it did
+// not itself dispatch. `usePendingDraftSync` runs outside the record screen's
+// reducer and flips `pendingSync` in storage without touching any slot, so
+// without this signal the Record tab's "syncing to server…" banner would stay
+// on screen indefinitely after the sync had already succeeded.
+const draftChangeListeners = new Set<() => void>();
+
 function invalidateDraftsCache(): void {
   draftsListCache = null;
   draftsCacheVersion++;
+  for (const listener of draftChangeListeners) {
+    try {
+      listener();
+    } catch {
+      // A listener must never break a storage write.
+    }
+  }
 }
 
 // Clone on cache read/write so callers can never mutate cached entries.
@@ -455,14 +470,73 @@ async function writeDraftChunks(
 }
 
 /**
+ * How many drafts to read concurrently when listing. Each read is itself a
+ * small parallel fan of chunk reads, so this bounds the total number of
+ * in-flight AndroidKeyStore operations rather than letting a large draft index
+ * flood the native queue.
+ */
+const DRAFT_READ_CONCURRENCY = 6;
+
+/**
+ * Bounded-parallel indexed map. Results land in input order. Every task settles
+ * — there is no abort-on-first-failure — so no rejection is left unobserved
+ * (rule 4: an unobserved rejection is a Hermes release-build crash). The
+ * lowest-index rejection is rethrown so the surfaced error is deterministic and
+ * matches what the previous serial loop would have produced.
+ *
+ * Deliberately local to this module: `draftStorage` must not import from
+ * `src/api`, even a pure helper, so the storage layer keeps no API dependency.
+ */
+async function mapDraftReadsBounded<T>(
+  total: number,
+  task: (index: number) => Promise<T>,
+): Promise<T[]> {
+  const results = new Array<T>(total);
+  const errors: { index: number; error: unknown }[] = [];
+  let next = 0;
+
+  // Workers never reject: every task error is captured, so `Promise.all` below
+  // cannot produce an unhandled rejection.
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next++;
+      if (index >= total) return;
+      try {
+        results[index] = await task(index);
+      } catch (error) {
+        errors.push({ index, error });
+      }
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(DRAFT_READ_CONCURRENCY, total));
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < workerCount; w++) workers.push(worker());
+  await Promise.all(workers);
+
+  if (errors.length > 0) {
+    errors.sort((a, b) => a.index - b.index);
+    throw errors[0].error;
+  }
+  return results;
+}
+
+/**
  * Read draft metadata, trying the chunked layout first and falling back to
  * the legacy single-key layout for drafts written before chunking existed.
  * Returns null if either the meta key is missing a referenced chunk (torn
  * write) or the parsed JSON is not a valid DraftMetadata shape.
  */
+/**
+ * `onUnavailable` fires when a Keystore read threw or a chunk set came back
+ * torn — i.e. the metadata may well be there and we simply could not get it.
+ * A proven-absent draft and a deterministically corrupt one do NOT fire it:
+ * retrying those returns the same answer, so memoizing them is safe.
+ */
 async function readDraftChunks(
   userId: string,
   slotId: string,
+  onUnavailable?: () => void,
 ): Promise<DraftMetadata | null> {
   try {
     const metaRaw = await SecureStore.getItemAsync(draftMetaKeyForUser(userId, slotId));
@@ -471,15 +545,23 @@ async function readDraftChunks(
       const count = meta.chunks;
       if (!Number.isInteger(count) || !count || count <= 0) return null;
       const prefix = draftChunkPrefixForUser(userId, slotId);
-      const parts: string[] = [];
-      for (let i = 0; i < count; i++) {
-        const chunk = await SecureStore.getItemAsync(`${prefix}${i}`);
-        if (chunk === null) return null;
-        parts.push(chunk);
+      // Windowed rather than serial: each AndroidKeyStore read is a JNI hop plus
+      // an AES-GCM decrypt, and serially they dominated `local_draft_list`
+      // (production Sentry: 11.7s). Windowed rather than fully eager: `count` is
+      // itself persisted data and can be corrupt, so dispatching every read up
+      // front would let one bad pointer enqueue an unbounded number of native
+      // calls. `readChunksBounded` keeps the serial loop's early exit.
+      const result = await readChunksBounded(count, (i) =>
+        SecureStore.getItemAsync(`${prefix}${i}`),
+      );
+      if (!result.ok) {
+        onUnavailable?.();
+        return null;
       }
-      return normalizeDraftMetadata(JSON.parse(parts.join('')));
+      return normalizeDraftMetadata(JSON.parse(result.parts.join('')));
     }
   } catch {
+    onUnavailable?.();
     return null;
   }
 
@@ -490,6 +572,7 @@ async function readDraftChunks(
     if (!legacyRaw) return null;
     return normalizeDraftMetadata(JSON.parse(legacyRaw));
   } catch {
+    onUnavailable?.();
     return null;
   }
 }
@@ -707,12 +790,21 @@ async function readDraftChunksStrict(
       throw new StrictReadUnavailableError('draft_meta:chunk_count');
     }
     const prefix = draftChunkPrefixForUser(userId, slotId);
-    const parts: string[] = [];
-    for (let i = 0; i < (count as number); i++) {
-      const chunk = await secureStorage.getRawItemStrict(`${prefix}${i}`, 'draftChunkStrict');
-      if (chunk === null) throw new StrictReadUnavailableError('draft_meta:torn_chunk');
-      parts.push(chunk);
+    // Windowed for the same reasons as the lenient reader. A count above the
+    // per-value ceiling is not a credible pointer — for a STRICT read that is
+    // "unavailable", never "absent", because callers delete server rows on
+    // proven absence.
+    const result = await readChunksBounded(count as number, (i) =>
+      secureStorage.getRawItemStrict(`${prefix}${i}`, 'draftChunkStrict'),
+    );
+    if (!result.ok) {
+      throw new StrictReadUnavailableError(
+        result.reason === 'count_too_large'
+          ? 'draft_meta:chunk_count'
+          : 'draft_meta:torn_chunk',
+      );
     }
+    const parts = result.parts;
     let parsed: unknown;
     try {
       parsed = JSON.parse(parts.join(''));
@@ -855,13 +947,24 @@ async function deleteDraftChunks(userId: string, slotId: string): Promise<void> 
 }
 
 /** Read the draft index for a specific user without mutating module scope. */
-async function readDraftIndexForUser(userId: string): Promise<string[]> {
+/**
+ * `onUnavailable` fires only when the Keystore call itself failed — a
+ * PRESENT-but-unreadable index, as opposed to a legitimately absent or
+ * deterministically corrupt one. Callers that memoize the result use it to
+ * decide whether the snapshot is safe to cache; the returned value is
+ * unchanged, so every existing caller keeps its lenient behaviour.
+ */
+async function readDraftIndexForUser(
+  userId: string,
+  onUnavailable?: () => void,
+): Promise<string[]> {
   try {
     const raw = await SecureStore.getItemAsync(draftIndexKeyForUser(userId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
+    onUnavailable?.();
     return [];
   }
 }
@@ -931,6 +1034,21 @@ export const draftStorage = {
   subscribeUserIdChanges(listener: (userId: string | null) => void): () => void {
     userIdListeners.add(listener);
     return () => userIdListeners.delete(listener);
+  },
+
+  /**
+   * Fires after any write that invalidates the draft list — save, delete,
+   * server-id update, eviction, `syncPending`, user rebind.
+   *
+   * A screen that renders derived draft state (e.g. the Record tab's
+   * "syncing to server…" banner) cannot rely on its own reducer for this:
+   * `usePendingDraftSync` runs from the app layout and flips `pendingSync`
+   * without dispatching anything into the record session. Listeners must be
+   * cheap and must not throw.
+   */
+  subscribeDraftChanges(listener: () => void): () => void {
+    draftChangeListeners.add(listener);
+    return () => draftChangeListeners.delete(listener);
   },
 
   /**
@@ -1735,25 +1853,39 @@ export const draftStorage = {
 
     try {
       const versionAtReadStart = draftsCacheVersion;
-      const slotIds = await readDraftIndexForUser(userId);
-      const drafts: DraftMetadata[] = [];
+      // The lenient readers collapse a transient Keystore fault into the same
+      // `[]`/`null` a genuine absence produces. Returning that is fine — every
+      // caller already treats this list leniently — but CACHING it pinned an
+      // empty or partial snapshot for the rest of the user scope, so Home and
+      // Records kept hiding recoverable drafts long after the Keystore
+      // recovered. Track present-but-unreadable separately and skip the memo;
+      // the returned value is unchanged.
+      let unreadable = false;
+      const markUnreadable = () => {
+        unreadable = true;
+      };
+      const slotIds = await readDraftIndexForUser(userId, markUnreadable);
+      // Per-draft reads are independent. Serially this was the dominant cost of
+      // `local_draft_list` / `record_pending_draft_scan` (production Sentry:
+      // 11.7s and 11.6s), since every draft costs 1 + chunk-count Keystore
+      // round trips. Index order is preserved by `mapDraftReadsBounded`.
+      const read = await mapDraftReadsBounded(slotIds.length, (i) =>
+        readDraftChunks(userId, slotIds[i], markUnreadable),
+      );
+      const drafts: DraftMetadata[] = read.filter(
+        (draft): draft is DraftMetadata => draft !== null,
+      );
 
-      for (const slotId of slotIds) {
-        const draft = await readDraftChunks(userId, slotId);
-        if (draft) {
-          drafts.push(draft);
-        }
-      }
-
-      // Only populate if no write invalidated mid-read — a slow sweep must
-      // not resurrect pre-write data as the cache.
-      if (draftsCacheVersion === versionAtReadStart) {
+      // Only populate if nothing was unreadable AND no write invalidated
+      // mid-read — a slow sweep must not resurrect pre-write data as the cache.
+      if (!unreadable && draftsCacheVersion === versionAtReadStart) {
         draftsListCache = { userId, drafts: drafts.map(cloneDraftMetadata) };
       }
 
       draftBreadcrumb('list_complete', {
         indexed_slots: slotIds.length,
         returned_drafts: drafts.length,
+        unreadable_reads: unreadable ? 1 : 0,
       });
       return drafts;
     } catch {
@@ -1848,12 +1980,14 @@ export const draftStorage = {
   async listDraftsForUserStrict(userId: string): Promise<DraftMetadata[]> {
     if (!userId) throw new StrictReadUnavailableError('draft_list:no_user');
     const slotIds = await readDraftIndexForUserStrict(userId);
-    const drafts: DraftMetadata[] = [];
-    for (const slotId of slotIds) {
-      const draft = await readDraftChunksStrict(userId, slotId);
-      if (draft) drafts.push(draft);
-    }
-    return drafts;
+    // Same bounded parallelism as the lenient list. `mapDraftReadsBounded`
+    // rethrows the lowest-index failure, so a StrictReadUnavailableError still
+    // fails the whole read exactly as the serial loop did — an unreadable
+    // draft must never be reported as absent.
+    const read = await mapDraftReadsBounded(slotIds.length, (i) =>
+      readDraftChunksStrict(userId, slotIds[i]),
+    );
+    return read.filter((draft): draft is DraftMetadata => draft !== null);
   },
 
   /** STRICT recoverable-audio proof. See draftHasLocalAudioStrictInternal. */

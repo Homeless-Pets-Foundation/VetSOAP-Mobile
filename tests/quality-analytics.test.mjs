@@ -249,7 +249,12 @@ test('Home renders clinic quality after Recent Recordings and refreshes it safel
     source,
     /queryKey:\s*\['dashboard', 'quality', user\?\.organizationId, user\?\.id, user\?\.role\]/
   );
-  assert.match(source, /queryFn:\s*\(\) => qualityAnalyticsApi\.getDashboardQuality\(\)/);
+  // Forwards React Query's AbortSignal so a superseding refetch cancels the
+  // in-flight request instead of racing it.
+  assert.match(
+    source,
+    /queryFn:\s*\(\{ signal \}\) => qualityAnalyticsApi\.getDashboardQuality\(\{ signal \}\)/
+  );
   assert.match(source, /refetchQuality\(\)\.catch\(\(\) => \{\}\)/);
   assert(
     source.indexOf('Recent Recordings') < source.indexOf('<QualityAnalyticsCard'),
@@ -279,8 +284,19 @@ test('Home refreshes clinic quality when recent processing recordings leave proc
 
   assert.match(source, /const processingRecordingIds = useMemo\(\(\) =>/);
   assert.match(source, /const processingRecordingIdsRef = useRef<Set<string>>\(new Set\(\)\)/);
-  assert.match(source, /const completedProcessing = \[\.\.\.processingRecordingIdsRef\.current\]\.some/);
-  assert.match(source, /if \(canFetchQualityAnalytics && completedProcessing\) \{\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(source, /const finishedProcessing = \[\.\.\.processingRecordingIdsRef\.current\]\.some/);
+  // A row that simply left the top-5 window is NOT a completion. Requiring the
+  // id to still be visible is what stops ordinary list churn from firing a
+  // redundant /api/organization/dashboard request.
+  assert.match(source, /visibleRecordingIds\.has\(id\) && !processingRecordingIds\.has\(id\)/);
+  assert.match(source, /const visibleRecordingIds = useMemo\(/);
+  // Batches finishing together must not stack dashboard requests.
+  assert.match(source, /const QUALITY_REFETCH_MIN_INTERVAL_MS = 30_000/);
+  assert.match(
+    source,
+    /now - lastQualityRefetchAtRef\.current >= QUALITY_REFETCH_MIN_INTERVAL_MS/
+  );
+  assert.match(source, /lastQualityRefetchAtRef\.current = now;\s*refetchQuality\(\)\.catch\(\(\) => \{\}\);/);
 });
 
 test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing quality', async () => {

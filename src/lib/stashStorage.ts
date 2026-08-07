@@ -100,11 +100,22 @@ async function readSessionsForKeys(
   if (isNaN(count) || count < 0) return null;
   if (count === 0) return { raw: '[]', sessions: [] };
 
+  // All key names are known once `count` is read. The whole stash list is one
+  // chunked blob, so this loop was the single longest serial Keystore chain in
+  // the app (5 sessions x several slots x segments comfortably exceeds 20
+  // chunks). Index order is preserved; a torn set still fails the read.
+  // `allSettled`, not `all`: with `all` a second concurrent rejection would go
+  // unobserved, and an unobserved rejection is a Hermes release-build crash
+  // (rule 4). The first failure by index is rethrown, matching what the serial
+  // loop propagated.
+  const settled = await Promise.allSettled(
+    Array.from({ length: count }, (_, i) => SecureStore.getItemAsync(`${scopedPrefix}${i}`)),
+  );
   const chunks: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const chunk = await SecureStore.getItemAsync(`${scopedPrefix}${i}`);
-    if (chunk === null) return null;
-    chunks.push(chunk);
+  for (const outcome of settled) {
+    if (outcome.status === 'rejected') throw outcome.reason;
+    if (outcome.value === null) return null;
+    chunks.push(outcome.value);
   }
 
   try {
@@ -287,11 +298,19 @@ async function readSessionsForKeysStrict(
   const count = parseStrictChunkCount(countStr, 'stash:count');
   if (count === 0) return [];
 
+  // `allSettled` so a second concurrent rejection is still observed (rule 4);
+  // the first failure by index is rethrown so the surfaced error is
+  // deterministic and matches the previous serial behaviour.
+  const settled = await Promise.allSettled(
+    Array.from({ length: count }, (_, i) =>
+      secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict'),
+    ),
+  );
   const chunks: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const chunk = await secureStorage.getRawItemStrict(`${scopedPrefix}${i}`, 'stashChunkStrict');
-    if (chunk === null) throw new StrictReadUnavailableError('stash:torn_chunk');
-    chunks.push(chunk);
+  for (const outcome of settled) {
+    if (outcome.status === 'rejected') throw outcome.reason;
+    if (outcome.value === null) throw new StrictReadUnavailableError('stash:torn_chunk');
+    chunks.push(outcome.value);
   }
   return parseSessionsStrict(chunks.join(''));
 }

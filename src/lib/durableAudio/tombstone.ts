@@ -23,27 +23,61 @@ export const MAX_TOMBSTONES = 300;
 
 let currentUserId: string | null = null;
 
+/**
+ * In-memory mirror of the persisted list. This module is the only writer, and
+ * there is exactly one JS context, so the mirror cannot diverge.
+ *
+ * Why it exists: `has()` is called once per draft inside `cleanupOrphaned` and
+ * `evictExpired`, and each call re-read the whole chunked value from
+ * SecureStore — ~8 AndroidKeyStore round trips per probe at MAX_TOMBSTONES.
+ * A sweep over N drafts therefore paid ~8N Keystore reads to answer N
+ * membership questions about one list.
+ *
+ * Always user-keyed, and dropped whenever the user changes, so a shared clinic
+ * tablet can never answer one user's membership question from another's list.
+ */
+let cachedListUserId: string | null = null;
+let cachedList: string[] | null = null;
+
+function invalidateCache(): void {
+  cachedListUserId = null;
+  cachedList = null;
+}
+
 function prefixFor(userId: string): string {
   return `${KEY_PREFIX}_${userId}`;
 }
 
 async function readList(userId: string): Promise<string[]> {
+  // Copy on the way out: `add()` mutates the array it receives.
+  if (cachedList && cachedListUserId === userId) return cachedList.slice();
   const raw = await readChunkedValue(prefixFor(userId));
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
-  } catch {
-    return [];
+  let list: string[] = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      list = Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      list = [];
+    }
   }
+  cachedListUserId = userId;
+  cachedList = list.slice();
+  return list;
 }
 
 async function writeList(userId: string, list: string[]): Promise<void> {
+  // Drop the mirror first: if the write fails, the next read must go to storage
+  // rather than serve a value that was never persisted.
+  invalidateCache();
   await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
+  cachedListUserId = userId;
+  cachedList = list.slice();
 }
 
 export const durableTombstone = {
   setUserId(userId: string | null): void {
+    if (userId !== currentUserId) invalidateCache();
     currentUserId = userId;
   },
 
@@ -97,6 +131,8 @@ export const durableTombstone = {
   },
 
   async clearForUser(userId: string): Promise<void> {
+    if (cachedListUserId === userId) invalidateCache();
     await deleteChunkedValue(prefixFor(userId));
+    if (cachedListUserId === userId) invalidateCache();
   },
 };

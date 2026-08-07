@@ -455,6 +455,58 @@ async function writeDraftChunks(
 }
 
 /**
+ * How many drafts to read concurrently when listing. Each read is itself a
+ * small parallel fan of chunk reads, so this bounds the total number of
+ * in-flight AndroidKeyStore operations rather than letting a large draft index
+ * flood the native queue.
+ */
+const DRAFT_READ_CONCURRENCY = 6;
+
+/**
+ * Bounded-parallel indexed map. Results land in input order. Every task settles
+ * — there is no abort-on-first-failure — so no rejection is left unobserved
+ * (rule 4: an unobserved rejection is a Hermes release-build crash). The
+ * lowest-index rejection is rethrown so the surfaced error is deterministic and
+ * matches what the previous serial loop would have produced.
+ *
+ * Deliberately local to this module: `draftStorage` must not import from
+ * `src/api`, even a pure helper, so the storage layer keeps no API dependency.
+ */
+async function mapDraftReadsBounded<T>(
+  total: number,
+  task: (index: number) => Promise<T>,
+): Promise<T[]> {
+  const results = new Array<T>(total);
+  const errors: { index: number; error: unknown }[] = [];
+  let next = 0;
+
+  // Workers never reject: every task error is captured, so `Promise.all` below
+  // cannot produce an unhandled rejection.
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next++;
+      if (index >= total) return;
+      try {
+        results[index] = await task(index);
+      } catch (error) {
+        errors.push({ index, error });
+      }
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(DRAFT_READ_CONCURRENCY, total));
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < workerCount; w++) workers.push(worker());
+  await Promise.all(workers);
+
+  if (errors.length > 0) {
+    errors.sort((a, b) => a.index - b.index);
+    throw errors[0].error;
+  }
+  return results;
+}
+
+/**
  * Read draft metadata, trying the chunked layout first and falling back to
  * the legacy single-key layout for drafts written before chunking existed.
  * Returns null if either the meta key is missing a referenced chunk (torn
@@ -471,11 +523,23 @@ async function readDraftChunks(
       const count = meta.chunks;
       if (!Number.isInteger(count) || !count || count <= 0) return null;
       const prefix = draftChunkPrefixForUser(userId, slotId);
+      // Every key name is known once `count` is read, so there is no reason to
+      // walk them one bridge round trip at a time. Each AndroidKeyStore read is
+      // a JNI hop plus an AES-GCM decrypt; serially they dominated
+      // `local_draft_list` (production Sentry: 11.7s). Order is preserved by
+      // index, and a single missing chunk still fails the whole read.
+      // `allSettled`, not `all`: with `all` a second concurrent rejection would
+      // go unobserved, and an unobserved rejection is a Hermes release-build
+      // crash (rule 4). Rethrowing the first failure by index keeps the outer
+      // catch behaving exactly as the serial loop did.
+      const settled = await Promise.allSettled(
+        Array.from({ length: count }, (_, i) => SecureStore.getItemAsync(`${prefix}${i}`)),
+      );
       const parts: string[] = [];
-      for (let i = 0; i < count; i++) {
-        const chunk = await SecureStore.getItemAsync(`${prefix}${i}`);
-        if (chunk === null) return null;
-        parts.push(chunk);
+      for (const outcome of settled) {
+        if (outcome.status === 'rejected') throw outcome.reason;
+        if (outcome.value === null) return null;
+        parts.push(outcome.value);
       }
       return normalizeDraftMetadata(JSON.parse(parts.join('')));
     }
@@ -707,11 +771,21 @@ async function readDraftChunksStrict(
       throw new StrictReadUnavailableError('draft_meta:chunk_count');
     }
     const prefix = draftChunkPrefixForUser(userId, slotId);
+    // Parallel for the same reason as the lenient reader. `allSettled` rather
+    // than `all` so a second concurrent rejection is still observed — an
+    // unobserved rejection is a Hermes release-build crash (rule 4). The first
+    // failure by index is rethrown, so the error surfaced is deterministic and
+    // matches what the old serial loop would have produced.
+    const settled = await Promise.allSettled(
+      Array.from({ length: count as number }, (_, i) =>
+        secureStorage.getRawItemStrict(`${prefix}${i}`, 'draftChunkStrict'),
+      ),
+    );
     const parts: string[] = [];
-    for (let i = 0; i < (count as number); i++) {
-      const chunk = await secureStorage.getRawItemStrict(`${prefix}${i}`, 'draftChunkStrict');
-      if (chunk === null) throw new StrictReadUnavailableError('draft_meta:torn_chunk');
-      parts.push(chunk);
+    for (const outcome of settled) {
+      if (outcome.status === 'rejected') throw outcome.reason;
+      if (outcome.value === null) throw new StrictReadUnavailableError('draft_meta:torn_chunk');
+      parts.push(outcome.value);
     }
     let parsed: unknown;
     try {
@@ -1736,14 +1810,16 @@ export const draftStorage = {
     try {
       const versionAtReadStart = draftsCacheVersion;
       const slotIds = await readDraftIndexForUser(userId);
-      const drafts: DraftMetadata[] = [];
-
-      for (const slotId of slotIds) {
-        const draft = await readDraftChunks(userId, slotId);
-        if (draft) {
-          drafts.push(draft);
-        }
-      }
+      // Per-draft reads are independent. Serially this was the dominant cost of
+      // `local_draft_list` / `record_pending_draft_scan` (production Sentry:
+      // 11.7s and 11.6s), since every draft costs 1 + chunk-count Keystore
+      // round trips. Index order is preserved by `mapDraftReadsBounded`.
+      const read = await mapDraftReadsBounded(slotIds.length, (i) =>
+        readDraftChunks(userId, slotIds[i]),
+      );
+      const drafts: DraftMetadata[] = read.filter(
+        (draft): draft is DraftMetadata => draft !== null,
+      );
 
       // Only populate if no write invalidated mid-read — a slow sweep must
       // not resurrect pre-write data as the cache.
@@ -1848,12 +1924,14 @@ export const draftStorage = {
   async listDraftsForUserStrict(userId: string): Promise<DraftMetadata[]> {
     if (!userId) throw new StrictReadUnavailableError('draft_list:no_user');
     const slotIds = await readDraftIndexForUserStrict(userId);
-    const drafts: DraftMetadata[] = [];
-    for (const slotId of slotIds) {
-      const draft = await readDraftChunksStrict(userId, slotId);
-      if (draft) drafts.push(draft);
-    }
-    return drafts;
+    // Same bounded parallelism as the lenient list. `mapDraftReadsBounded`
+    // rethrows the lowest-index failure, so a StrictReadUnavailableError still
+    // fails the whole read exactly as the serial loop did — an unreadable
+    // draft must never be reported as absent.
+    const read = await mapDraftReadsBounded(slotIds.length, (i) =>
+      readDraftChunksStrict(userId, slotIds[i]),
+    );
+    return read.filter((draft): draft is DraftMetadata => draft !== null);
   },
 
   /** STRICT recoverable-audio proof. See draftHasLocalAudioStrictInternal. */

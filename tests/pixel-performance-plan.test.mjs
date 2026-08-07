@@ -249,8 +249,17 @@ test('Pixel performance plan keeps startup, device-capacity, orientation, audio,
 
   assert.match(deviceCapacity, /mode\?: 'home' \| 'manage'/);
   assert.match(deviceCapacity, /const staleTime = mode === 'manage' \? 30_000 : 5 \* 60_000/);
-  assert.match(deviceCapacity, /refetchInterval: mode === 'manage' && isTabFocused \? 60_000 : false/);
-  assert.match(deviceCapacity, /refetchOnWindowFocus: mode === 'manage'/);
+  // The 60s poll and the focus refetch are both ANDed with the readiness gate,
+  // which now includes a caller-supplied `enabled`. DeviceLimitModal is mounted
+  // at the root for the whole app lifetime, so an ungated `manage` mode polled
+  // /api/device-sessions every 60s for every signed-in user.
+  assert.match(
+    deviceCapacity,
+    /refetchInterval: canQueryDeviceSessions && mode === 'manage' && isTabFocused \? 60_000 : false/
+  );
+  assert.match(deviceCapacity, /refetchOnWindowFocus: canQueryDeviceSessions && mode === 'manage'/);
+  assert.match(deviceCapacity, /const callerEnabled = options\.enabled \?\? true/);
+  assert.match(deviceCapacity, /callerEnabled && !!user && !deviceRegistrationBlock/);
 
   assert.match(appConfig, /orientation: 'portrait'/);
 

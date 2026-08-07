@@ -288,7 +288,12 @@ test('the attention key cannot collide with Home\'s five-row recent query', asyn
 
 test('the stored attention data is the ENVELOPE; derived and local items stay outside it', async () => {
   const hook = await read('src/hooks/useAttentionFeed.ts');
-  assert.match(hook, /queryFn: fetchAttentionPage/);
+  // The queryFn must forward React Query's AbortSignal. Without it,
+  // `cancelRefetch: true` (the default for refetch/invalidate) detaches the
+  // observer but leaves the previous 100-row request running on the wire, so
+  // every refetch ADDS a request instead of replacing one.
+  assert.match(hook, /queryFn: \(\{ signal \}\) => fetchAttentionPage\(signal\)/);
+  assert.match(hook, /async function fetchAttentionPage\(signal\?: AbortSignal\)/);
   assert.match(hook, /Promise<AttentionEnvelope>/);
   // Derivation is a memoized pure call over the stored rows, not cached data.
   assert.match(hook, /useMemo\(\s*\n\s*\(\) => deriveRecordingAttention\(rows, user/);

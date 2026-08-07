@@ -556,8 +556,12 @@ export class ApiClient {
     });
   }
 
-  get<T>(path: string, params?: Record<string, string | number | undefined>) {
-    return this.request<T>(path, { params });
+  get<T>(
+    path: string,
+    params?: Record<string, string | number | undefined>,
+    options?: { signal?: AbortSignal },
+  ) {
+    return this.request<T>(path, { params, signal: options?.signal });
   }
 
   post<T>(path: string, body?: unknown, idempotencyKey?: string) {

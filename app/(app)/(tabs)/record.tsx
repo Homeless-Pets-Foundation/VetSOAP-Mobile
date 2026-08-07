@@ -5004,7 +5004,23 @@ function RecordingSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally omit unsavedCount, discardCurrentSession, loadDraft, setActiveIndex, router; effect should only fire when route param changes, not on every state change
   }, [draftSlotId]);
 
-  // Effect: check for pending drafts and update banner state
+  // Effect: check for pending drafts and update banner state.
+  //
+  // Depending on the whole `session` object was a real defect: the reducer
+  // returns a new state object for EVERY action, including `UPDATE_FORM`, so
+  // typing a patient name tore down and re-scheduled this effect once per
+  // keystroke — each one a full `listDrafts()` sweep of SecureStore. And
+  // `cancelWork()` cannot abort a sweep that already started, so the sweeps
+  // piled up against the same serialized AndroidKeyStore. Production Sentry
+  // measured `record_pending_draft_scan` at 11.6s.
+  //
+  // Only draft linkage and upload status can change whether a draft is pending
+  // sync, so key the effect on a stable fingerprint of exactly those fields.
+  // The array identity still changes every action; the STRING does not.
+  const draftLinkageFingerprint = useMemo(
+    () => session.slots.map((slot) => `${slot.draftSlotId ?? ''}:${slot.uploadStatus}`).join('|'),
+    [session.slots]
+  );
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
@@ -5018,7 +5034,7 @@ function RecordingSession() {
       cancelled = true;
       cancelWork();
     };
-  }, [session, user?.id]);
+  }, [draftLinkageFingerprint, user?.id]);
 
   // Effect: on mount (once per user), sweep local drafts whose audio files
   // are missing on disk. Those are "zombie" drafts — they'll render as "Not

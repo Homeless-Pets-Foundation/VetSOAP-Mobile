@@ -73,7 +73,16 @@ export function DeviceLimitModal() {
   const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
   const queryClient = useQueryClient();
-  const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity({ mode: 'manage' });
+  // This component is mounted at the root for the whole app lifetime but only
+  // renders when `deviceRegistrationBlock` is set. Without the `enabled` gate,
+  // its `manage` mode polled GET /api/device-sessions every 60s for every
+  // signed-in user, forever — the endpoint the server logged ~4.9k times in 90
+  // days and a clinic tablet once measured at 32s. `visible` is derived below
+  // from the same `deviceRegistrationBlock` this hook already reads.
+  const { devices: liveDevices, capacity: liveCapacity } = useDeviceCapacity({
+    mode: 'manage',
+    enabled: !!deviceRegistrationBlock,
+  });
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryFailed, setRetryFailed] = useState(false);

@@ -53,6 +53,14 @@ import { useSupportRecoveryVaultSummary } from '../../../src/hooks/useSupportRec
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
+/**
+ * Floor between processing-completion-driven quality dashboard refetches. The
+ * recent-recordings list polls every 10s while anything is processing, so a
+ * batch finishing together would otherwise fire several dashboard requests in
+ * quick succession on top of Home's existing fan-out.
+ */
+const QUALITY_REFETCH_MIN_INTERVAL_MS = 30_000;
+
 export default function HomeScreen() {
   const router = useRouter();
   const user = useAuthUser();
@@ -105,7 +113,8 @@ export default function HomeScreen() {
     queries: [
       {
         queryKey: ['recordings', 'recent'],
-        queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'submittedAt', sortOrder: 'desc' }),
+        queryFn: ({ signal }: { signal: AbortSignal }) =>
+          recordingsApi.list({ limit: 5, sortBy: 'submittedAt', sortOrder: 'desc', signal }),
         enabled: canLoadServerData,
         refetchInterval: (query: { state: { data?: Awaited<ReturnType<typeof recordingsApi.list>> } }) => {
           if (!isTabFocused) return false;
@@ -118,7 +127,8 @@ export default function HomeScreen() {
       },
       {
         queryKey: ['recordings', 'drafts', 'recent'],
-        queryFn: () => recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc', status: 'draft' as const }),
+        queryFn: ({ signal }: { signal: AbortSignal }) =>
+          recordingsApi.list({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc', status: 'draft' as const, signal }),
         enabled: canLoadServerData,
       },
     ],
@@ -133,7 +143,7 @@ export default function HomeScreen() {
   } = draftsQuery;
   const qualityQuery = useQuery({
     queryKey: ['dashboard', 'quality', user?.organizationId, user?.id, user?.role],
-    queryFn: () => qualityAnalyticsApi.getDashboardQuality(),
+    queryFn: ({ signal }) => qualityAnalyticsApi.getDashboardQuality({ signal }),
     enabled: canFetchQualityAnalytics,
   });
   const {
@@ -161,20 +171,43 @@ export default function HomeScreen() {
   } = useLocalDraftRecordings();
   const areLocalDraftsStaleRef = useRef(areLocalDraftsStale);
   const processingRecordingIdsRef = useRef<Set<string>>(new Set());
+  const lastQualityRefetchAtRef = useRef(0);
+  const visibleRecordingIds = useMemo(
+    () => new Set(recordings.map((r) => r.id)),
+    [recordings]
+  );
 
   useEffect(() => {
     areLocalDraftsStaleRef.current = areLocalDraftsStale;
   }, [areLocalDraftsStale]);
 
   useEffect(() => {
-    const completedProcessing = [...processingRecordingIdsRef.current].some(
-      (id) => !processingRecordingIds.has(id)
+    // A row that was processing counts as finished only if it is STILL in the
+    // list and has left the processing set — i.e. it genuinely reached a
+    // terminal status. An id that merely vanished proves nothing: this list is
+    // the top 5, so ordinary churn pushes rows out of the window, and the old
+    // "absent means completed" test fired a redundant dashboard fetch every
+    // time that happened. Production Sentry showed two /api/organization/dashboard
+    // requests ~8s apart in a single window from exactly this.
+    const finishedProcessing = [...processingRecordingIdsRef.current].some(
+      (id) => visibleRecordingIds.has(id) && !processingRecordingIds.has(id)
     );
-    if (canFetchQualityAnalytics && completedProcessing) {
+    const now = Date.now();
+    if (
+      canFetchQualityAnalytics &&
+      finishedProcessing &&
+      now - lastQualityRefetchAtRef.current >= QUALITY_REFETCH_MIN_INTERVAL_MS
+    ) {
+      lastQualityRefetchAtRef.current = now;
       refetchQuality().catch(() => {});
     }
     processingRecordingIdsRef.current = processingRecordingIds;
-  }, [canFetchQualityAnalytics, processingRecordingIds, refetchQuality]);
+  }, [
+    canFetchQualityAnalytics,
+    processingRecordingIds,
+    visibleRecordingIds,
+    refetchQuality,
+  ]);
 
   useRetryableInitialLoadError({
     screen: 'home',

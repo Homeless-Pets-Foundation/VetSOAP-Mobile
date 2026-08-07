@@ -148,8 +148,14 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
 
   assert.match(api, /function shouldFallbackSubmittedAtSort\(error: unknown, params: ListRecordingsParams\): boolean/);
   assert.match(api, /error instanceof ApiError && error\.status === 400 && params\.sortBy === 'submittedAt'/);
-  assert.match(api, /return await apiClient\.get\('\/api\/recordings', sanitized\)/);
+  assert.match(api, /return await apiClient\.get\('\/api\/recordings', sanitized, \{ signal \}\)/);
   assert.match(api, /\.\.\.sanitized, sortBy: 'createdAt'/);
+  // `signal` is a transport concern, never a query param — it must be stripped
+  // off before the params object is built, on both the primary and the
+  // submittedAt-fallback request.
+  assert.match(api, /const \{ signal, \.\.\.queryParams \} = params;/);
+  assert.match(api, /const sanitized = \{ \.\.\.queryParams \}/);
+  assert.match(api, /\{ \.\.\.sanitized, sortBy: 'createdAt' \}, \{ signal \}/);
 });
 
 test('APK smoke script translates WSL APK paths before Windows adb install', async () => {

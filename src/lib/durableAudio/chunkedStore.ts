@@ -39,13 +39,17 @@ export async function readChunkedValue(prefix: string): Promise<string | null> {
   if (!countStr) return null;
   const count = parseInt(countStr, 10);
   if (!Number.isFinite(count) || count < 0) return null;
-  let out = '';
-  for (let i = 0; i < count; i++) {
-    const chunk = await secureStorage.getRawItem(`${prefix}_chunk_${i}`, 'durableChunkRead');
-    if (chunk === null) return null; // torn read -> treat as absent
-    out += chunk;
-  }
-  return out;
+  // Key names are known once the count is read. `durableTombstone.has()` calls
+  // this per draft during the orphan/eviction sweeps and the list can reach
+  // ~7 chunks at MAX_TOMBSTONES, so the serial version cost ~8 Keystore round
+  // trips per probe. Index order is preserved; a torn set is still "absent".
+  const chunks = await Promise.all(
+    Array.from({ length: count }, (_, i) =>
+      secureStorage.getRawItem(`${prefix}_chunk_${i}`, 'durableChunkRead'),
+    ),
+  );
+  if (chunks.some((chunk) => chunk === null)) return null; // torn read -> treat as absent
+  return chunks.join('');
 }
 
 export async function deleteChunkedValue(prefix: string): Promise<void> {

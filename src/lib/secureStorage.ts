@@ -11,6 +11,19 @@ const KEYS = {
 } as const;
 
 /**
+ * Process-lifetime memo for the device ID. The value is device-scoped and is
+ * deliberately NOT removed by `clearAll()`, so it can never go stale within a
+ * process — caching it is safe across sign-out and user switches.
+ *
+ * Without this, every caller paid a fresh AndroidKeyStore round trip:
+ * `ApiClient` kept its own private cache but `AuthProvider.registerDevice()`
+ * did not, so a cold start read the same key at least twice, and every repeated
+ * registration read it again. Only non-null values are cached, so a transient
+ * Keystore failure still retries on the next call.
+ */
+let cachedDeviceId: string | null = null;
+
+/**
  * Report a SecureStore failure without creating an import cycle. Loaded
  * lazily so module-load in monitoring.ts staying zero-cost (rule 1). Rate
  * limiting happens inside `captureMessage` so a recurring Keystore fault
@@ -170,6 +183,7 @@ export const secureStorage = {
 
   /** Get or generate a persistent device ID (survives sign-out, tied to this device). */
   async getDeviceId(): Promise<string | null> {
+    if (cachedDeviceId) return cachedDeviceId;
     try {
       let id: string | null = null;
       try {
@@ -201,6 +215,7 @@ export const secureStorage = {
         }
         }
       }
+      if (id) cachedDeviceId = id;
       return id;
     } catch (error) {
       if (__DEV__) console.error('[SecureStorage] getDeviceId failed:', error);

@@ -13,6 +13,14 @@ export interface UseDeviceCapacityResult {
 
 export interface UseDeviceCapacityOptions {
   mode?: 'home' | 'manage';
+  /**
+   * Extra gate ANDed with the normal readiness check. `manage` mode carries a
+   * 60s poll, so a caller that is mounted for the whole app lifetime (the
+   * device-limit modal) must pass `false` while it is not actually showing —
+   * otherwise every signed-in user polls `/api/device-sessions` forever.
+   * Defaults to true so existing callers are unaffected.
+   */
+  enabled?: boolean;
 }
 
 /**
@@ -28,19 +36,22 @@ export interface UseDeviceCapacityOptions {
  */
 export function useDeviceCapacity(options: UseDeviceCapacityOptions = {}): UseDeviceCapacityResult {
   const mode = options.mode ?? 'home';
+  const callerEnabled = options.enabled ?? true;
   const user = useAuthUser();
   const { deviceRegistrationBlock, deviceRegistrationPending } = useAuthDeviceRegistration();
   const isTabFocused = useIsFocused();
   const canQueryDeviceSessions =
-    !!user && !deviceRegistrationBlock && !deviceRegistrationPending;
+    callerEnabled && !!user && !deviceRegistrationBlock && !deviceRegistrationPending;
   const staleTime = mode === 'manage' ? 30_000 : 5 * 60_000;
 
   const query = useQuery({
     queryKey: ['device-sessions'],
     queryFn: () => devicesApi.list(),
     enabled: canQueryDeviceSessions,
-    refetchInterval: mode === 'manage' && isTabFocused ? 60_000 : false,
-    refetchOnWindowFocus: mode === 'manage',
+    // Every `refetch`-ish knob is ANDed with the same gate: a disabled query
+    // must not poll, must not refetch on mount, and must not refetch on focus.
+    refetchInterval: canQueryDeviceSessions && mode === 'manage' && isTabFocused ? 60_000 : false,
+    refetchOnWindowFocus: canQueryDeviceSessions && mode === 'manage',
     refetchOnMount: mode === 'manage' ? 'always' : true,
     staleTime,
   });

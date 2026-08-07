@@ -285,6 +285,15 @@ export interface ListRecordingsParams {
   sortOrder?: string;
   status?: RecordingStatus;
   search?: string;
+  /**
+   * React Query's `refetch()`/`invalidateQueries()` default to
+   * `cancelRefetch: true`, which detaches the previous observer but can only
+   * abort the HTTP request when the queryFn forwards `context.signal`. Without
+   * it, a refetch on a slow link ADDS a request and leaves the previous one
+   * running for the full 30s client timeout — the request pile-up behind the
+   * production slow-phase warnings. Never sent as a query param.
+   */
+  signal?: AbortSignal;
 }
 
 export interface TranslateResult {
@@ -1470,19 +1479,20 @@ async function executeResilientUpload(
 
 export const recordingsApi = {
   async list(params: ListRecordingsParams = {}): Promise<PaginatedResponse<Recording>> {
-    const sanitized = { ...params } as Record<string, string | number | undefined>;
+    const { signal, ...queryParams } = params;
+    const sanitized = { ...queryParams } as Record<string, string | number | undefined>;
     if (params.search) {
       sanitized.search = searchQuerySchema.parse(params.search);
     }
     try {
-      return await apiClient.get('/api/recordings', sanitized);
+      return await apiClient.get('/api/recordings', sanitized, { signal });
     } catch (error) {
       // Compatibility for APKs installed before the matching backend deploy.
       // The new server supports `sortBy=submittedAt`; older servers reject the
       // enum with 400. Retry with createdAt so Recent Recordings and the list do
       // not hard-fail while submitted-id pinning still proves the post-submit rows.
       if (shouldFallbackSubmittedAtSort(error, params)) {
-        return apiClient.get('/api/recordings', { ...sanitized, sortBy: 'createdAt' });
+        return apiClient.get('/api/recordings', { ...sanitized, sortBy: 'createdAt' }, { signal });
       }
       throw error;
     }

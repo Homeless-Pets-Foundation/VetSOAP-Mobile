@@ -74,7 +74,64 @@ function stripComments(source) {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1'); // // line  (the guard skips URLs)
 }
 
-const TAG = /<(\/?)([A-Z][A-Za-z0-9_.]*)((?:[^>'"]|'[^']*'|"[^"]*"|\{[^{}]*\})*?)(\/?)>/g;
+/**
+ * Hand-rolled tag tokenizer rather than one big regex.
+ *
+ * Two reasons, both learned the hard way. A regex cannot balance arbitrary braces,
+ * and JSX attributes nest them freely — `onPress={() => { f().catch(() => {}) }}`
+ * is three levels. Any regex that appears to cope is really relying on a
+ * catch-all character class chewing the braces one at a time, which is exactly the
+ * ambiguity CodeQL flagged here as exponential backtracking (js/redos): the
+ * original `[^>'"]` branch overlapped the `\{[^{}]*\}` branch, so `<A` plus many
+ * `{}` had many possible parses.
+ *
+ * This scanner visits every character at most once. No backtracking is possible,
+ * so the ReDoS class cannot recur, and brace depth is tracked exactly instead of
+ * approximated.
+ *
+ * @returns {{name: string, attrs: string, closing: boolean, selfClosing: boolean, index: number}[]}
+ */
+function tokenizeTags(src) {
+  const tags = [];
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== '<') continue;
+    let j = i + 1;
+    const closing = src[j] === '/';
+    if (closing) j++;
+    if (!/[A-Z]/.test(src[j] ?? '')) continue; // components only, not <div> or <=
+    const nameStart = j;
+    while (j < src.length && /[A-Za-z0-9_.]/.test(src[j])) j++;
+    const name = src.slice(nameStart, j);
+
+    // Walk attributes, respecting strings and brace depth, to the real '>'.
+    const attrStart = j;
+    let depth = 0;
+    let quote = null;
+    for (; j < src.length; j++) {
+      const c = src[j];
+      if (quote) {
+        if (c === '\\') j++;
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') { quote = c; continue; }
+      if (c === '{') { depth++; continue; }
+      if (c === '}') { depth--; continue; }
+      if (c === '>' && depth === 0) break;
+    }
+    if (j >= src.length) break; // unterminated tag — stop rather than guess
+    const attrs = src.slice(attrStart, j);
+    tags.push({
+      name,
+      attrs,
+      closing,
+      selfClosing: src[j - 1] === '/',
+      index: i,
+    });
+    i = j;
+  }
+  return tags;
+}
 
 /**
  * @returns {{file: string, line: number, tag: string, parent: string}[]}
@@ -84,9 +141,7 @@ export function scanSource(source, file) {
   const stack = [];
   const hits = [];
 
-  for (const m of src.matchAll(TAG)) {
-    const [whole, closing, tag, attrs, selfClosing] = m;
-
+  for (const { name: tag, attrs, closing, selfClosing, index } of tokenizeTags(src)) {
     if (closing) {
       // Tolerate unbalanced input rather than throwing: pop to the match if the
       // tag is on the stack, otherwise ignore it.
@@ -102,7 +157,7 @@ export function scanSource(source, file) {
       if (tightParent && !MITIGATED.test(attrs)) {
         hits.push({
           file,
-          line: src.slice(0, m.index).split('\n').length,
+          line: src.slice(0, index).split('\n').length,
           tag,
           parent: parent.tag,
         });
@@ -110,7 +165,6 @@ export function scanSource(source, file) {
     }
 
     if (!selfClosing) stack.push({ tag, attrs });
-    void whole;
   }
 
   return hits;

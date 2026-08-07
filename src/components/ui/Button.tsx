@@ -6,7 +6,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { cx, HIT_SLOP, runMaybeAsyncEvent } from './styles';
+import { CLIP_SAFE, clipSafe, cx, HIT_SLOP, runMaybeAsyncEvent } from './styles';
 import { useThemeColors } from '../../hooks/useThemeColors';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -127,17 +127,13 @@ export function Button({
       ) : (
         <>
           {icon && <View className="mr-2" style={{ flexShrink: 0 }}>{icon}</View>}
-          {/* Trailing space + flexShrink:0 + paddingRight — Android "Bold text"
-              (fontWeightAdjustment=300) paints glyphs wider than Yoga measured
-              them, so a shrink-wrapped label overruns its already-fixed box
-              ("Cop" for "Copy"). These buy measured-width headroom. Baking it
-              here covers every Button call site. CLAUDE.md > UI Gotchas.
-              Do NOT remove the space. */}
-          <Text
-            className={`${v.text} ${s.text}`}
-            style={{ flexShrink: 0, paddingRight: 2 }}
-          >
-            {`${children} `}
+          {/* clipSafe + CLIP_SAFE — Android "Bold text" (fontWeightAdjustment=300)
+              paints glyphs wider than Yoga measured them, so a shrink-wrapped label
+              overruns its already-fixed box ("Cop" for "Copy"). These buy
+              measured-width headroom. Baking it here covers every Button call site.
+              CLAUDE.md > UI Gotchas. */}
+          <Text className={`${v.text} ${s.text}`} style={CLIP_SAFE}>
+            {clipSafe(children)}
           </Text>
         </>
       )}

@@ -125,7 +125,16 @@ export default function DeleteAccountScreen() {
               onPress={() => router.back()}
               className="mr-3"
             />
-            <Text className="text-display font-bold text-content-primary" accessibilityRole="header">
+            {/* flex-1 — the row is IconButton + this header with no width claimed, so
+                the Text shrink-wraps and Android "Bold text" drops "Account", leaving a
+                bare "Delete" at the top of the one screen that destroys on-device work
+                (CLAUDE.md > UI Gotchas). text-display font-bold is the most exposed
+                type in the app: the heavier the face, the wider the overrun. */}
+            <Text
+              className="text-display font-bold text-content-primary flex-1"
+              accessibilityRole="header"
+              numberOfLines={1}
+            >
               {DELETE_ACCOUNT_COPY.title}
             </Text>
           </View>

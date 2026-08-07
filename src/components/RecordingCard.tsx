@@ -7,6 +7,7 @@ import type { Recording } from '../types';
 import { METADATA_REVIEW_COPY } from '../constants/strings';
 import { displayPatientName, isUntitledVisit } from '../lib/recordingDisplay';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 interface RecordingCardProps {
   recording: Recording;
@@ -30,8 +31,8 @@ function DraftLocationChip({ isOnDevice }: { isOnDevice: boolean }) {
     >
       <Icon color={iconColor} size={12} style={{ marginRight: 4, flexShrink: 0 }} />
       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text in self-end flex-rows and clips the last glyph; do NOT remove. */}
-      <Text className={`text-caption font-semibold ${textClass}`} style={{ flexShrink: 0, paddingRight: 2 }}>
-        {`${label} `}
+      <Text className={`text-caption font-semibold ${textClass}`} style={CLIP_SAFE}>
+        {clipSafe(label)}
       </Text>
     </View>
   );
@@ -47,8 +48,8 @@ function AiLabeledChip() {
     >
       <Sparkles color={colors.brand500} size={12} style={{ marginRight: 4, flexShrink: 0 }} />
       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text in self-end flex-rows and clips the last glyph; do NOT remove. */}
-      <Text className="text-caption font-semibold text-brand-700 dark:text-brand-500" style={{ flexShrink: 0, paddingRight: 2 }}>
-        {`${METADATA_REVIEW_COPY.aiLabeled} `}
+      <Text className="text-caption font-semibold text-brand-700 dark:text-brand-500" style={CLIP_SAFE}>
+        {clipSafe(METADATA_REVIEW_COPY.aiLabeled)}
       </Text>
     </View>
   );

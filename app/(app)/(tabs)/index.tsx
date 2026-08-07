@@ -28,7 +28,7 @@ import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
 import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
 import { ERROR_COPY, SUPPORT_RECOVERY_BANNER_COPY } from '../../../src/constants/strings';
-import { HIT_SLOP } from '../../../src/components/ui/styles';
+import { CLIP_SAFE, clipSafe, HIT_SLOP } from '../../../src/components/ui/styles';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -482,7 +482,10 @@ export default function HomeScreen() {
           accessibilityLabel={`Show ${hiddenBannerCount} more alert${hiddenBannerCount > 1 ? 's' : ''}`}
           className="mb-4 rounded-xl border border-border-default bg-surface-raised px-4 py-2.5 items-center"
         >
-          <Text className="text-body-sm font-medium text-content-secondary">
+          {/* w-full — the Pressable is items-center, so the label shrink-wraps and
+              Android "Bold text" drops "alerts", leaving "+3 more" (CLAUDE.md >
+              UI Gotchas). accessibilityLabel above stays unpadded. */}
+          <Text className="text-body-sm font-medium text-content-secondary text-center w-full">
             {`+${hiddenBannerCount} more alert${hiddenBannerCount > 1 ? 's' : ''}`}
           </Text>
         </Pressable>
@@ -614,7 +617,10 @@ export default function HomeScreen() {
       {drafts.length > 0 ? (
         <View className="mb-6">
           <View className="flex-row justify-between items-center mb-3">
-            <Text className="section-title">Not Submitted</Text>
+            {/* flex-1 — sole child of a justify-between row, so it shrink-wraps.
+                "Not Submitted" losing its second word inverts the meaning of the
+                section heading over un-uploaded work (CLAUDE.md > UI Gotchas). */}
+            <Text className="section-title flex-1" numberOfLines={1}>Not Submitted</Text>
           </View>
           {drafts.map((recording) => (
             <View key={recording.id}>
@@ -626,7 +632,9 @@ export default function HomeScreen() {
 
       <View className="mb-8">
         <View className="flex-row justify-between items-center mb-3">
-          <Text className="section-title">Recent Recordings</Text>
+          {/* flex-1 — the "View All" sibling already carries headroom; this header did
+              not, so Bold text dropped "Recordings" (CLAUDE.md > UI Gotchas). */}
+          <Text className="section-title flex-1 mr-2" numberOfLines={1}>Recent Recordings</Text>
           {totalRecordings > 5 && (
             <Pressable
               onPress={() => router.push('/recordings')}
@@ -636,8 +644,8 @@ export default function HomeScreen() {
               style={{ minHeight: 32, justifyContent: 'center' }}
             >
               {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
-              <Text className="text-body-sm text-brand-500 font-medium" style={{ flexShrink: 0, paddingRight: 2 }}>
-                {'View All '}
+              <Text className="text-body-sm text-brand-500 font-medium" style={CLIP_SAFE}>
+                {clipSafe('View All')}
               </Text>
             </Pressable>
           )}

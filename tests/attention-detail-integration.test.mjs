@@ -415,14 +415,15 @@ test('a feed row is dated by visit date, falling back to last-updated', () => {
   );
   assert.doesNotMatch(metaFn, /formatShortDate|submittedAtMs|updatedAtMs/);
 
-  // Android under-measures short Text in a flex-row and clips the last glyph.
-  // `flexShrink: 0` alone was NOT enough: on a physical Pixel 10 Pro XL at font
-  // scale 1.15 the badge measured its own box at 114px and rendered "Jul 30" as
-  // "Jul …". The full shared-Button mitigation — trailing space + paddingRight
-  // — is what actually reserves the glyph.
+  // The Android "Bold text" overrun (CLAUDE.md > UI Gotchas): the badge
+  // shrink-wraps, so on a physical Pixel 10 Pro XL at font scale 1.15 it measured
+  // its own box at 114px and rendered "Jul 30" as "Jul …". `flexShrink: 0` alone
+  // was NOT enough — the trailing space is what buys the measured width back.
+  // Both halves now come from ui/styles, so this asserts the named helpers rather
+  // than a whitespace-exact style literal a Prettier reflow could break.
   const badgeBlock = SECTION.slice(SECTION.indexOf('badge={'), SECTION.indexOf('showChevron'));
-  assert.match(badgeBlock, /flexShrink: 0, paddingRight: 2/);
-  assert.match(badgeBlock, /\{`\$\{dateLabel\} `\}/);
+  assert.match(badgeBlock, /style=\{CLIP_SAFE\}/);
+  assert.match(badgeBlock, /\{clipSafe\(dateLabel\)\}/);
 
   // Screen readers get the date too, WITHOUT the layout padding space.
   assert.match(SECTION, /\$\{item\.accessibilityLabel\}\. \$\{dateLabel\}/);

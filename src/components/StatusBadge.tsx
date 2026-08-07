@@ -10,6 +10,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import type { RecordingStatus } from '../types';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 type BadgeVariant = 'info' | 'warning' | 'success' | 'danger';
 
@@ -109,12 +110,20 @@ export function StatusBadge({ status }: StatusBadgeProps) {
       accessibilityLabel={`Status: ${config.label}`}
     >
       {config.inProgress && <PulsingDot color={dotColor} />}
-      {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph (e.g. "Uploadin"); do NOT remove. */}
+      {/* clipSafe + CLIP_SAFE — Android "Bold text" (fontWeightAdjustment=300) paints
+          glyphs wider than Yoga measured them, and this pill shrink-wraps, so the
+          overrun has nowhere to go. CLAUDE.md > UI Gotchas.
+          numberOfLines only for a multi-token label: with a space to wrap at, the
+          trailing word would otherwise be laid out out of view with no ellipsis, and
+          the prop turns that silent vanish into a visible one. A single-token label
+          has no wrap point, so the prop could only downgrade a full render to
+          "Complete…". accessibilityLabel above stays unpadded. */}
       <Text
         className={`font-semibold ${config.inProgress ? 'text-body-sm' : 'text-caption'} ${v.text}`}
-        style={{ flexShrink: 0, paddingRight: 2 }}
+        style={CLIP_SAFE}
+        numberOfLines={config.label.includes(' ') ? 1 : undefined}
       >
-        {`${config.label} `}
+        {clipSafe(config.label)}
       </Text>
     </View>
   );

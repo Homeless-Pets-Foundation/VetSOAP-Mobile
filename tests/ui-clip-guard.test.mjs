@@ -21,11 +21,22 @@ import path from 'node:path';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFile(path.join(root, rel), 'utf8');
 
-test('Button bakes in the single-word clipping mitigation', async () => {
+// The mitigation is spelled once, in ui/styles.ts. Asserting the named helpers
+// rather than the literal `style={{ flexShrink: 0, paddingRight: 2 }}` is what makes
+// these fences survive a Prettier reflow — the old regex matched the object
+// character-for-character, so any line-splitting would have "broken" a healthy file.
+test('ui/styles.ts owns the single definition of the clipping mitigation', async () => {
+  const src = await read('src/components/ui/styles.ts');
+  assert.match(src, /export const CLIP_SAFE = \{ flexShrink: 0, paddingRight: 2 \} as const;/);
+  assert.match(src, /export function clipSafe\(label: string\)/);
+  assert.match(src, /return `\$\{label\} `;/, 'clipSafe must append the load-bearing space');
+});
+
+test('Button bakes in the clipping mitigation', async () => {
   const src = await read('src/components/ui/Button.tsx');
-  // Label renders with trailing space + flexShrink:0 + paddingRight.
-  assert.match(src, /\{`\$\{children\} `\}/);
-  assert.match(src, /style=\{\{ flexShrink: 0, paddingRight: 2 \}\}/);
+  assert.match(src, /import \{ CLIP_SAFE, clipSafe,[^}]*\} from '\.\/styles';/);
+  assert.match(src, /style=\{CLIP_SAFE\}/);
+  assert.match(src, /\{clipSafe\(children\)\}/);
   // Icon wrapper must not shrink either.
   assert.match(src, /className="mr-2" style=\{\{ flexShrink: 0 \}\}/);
   // The screen-reader label stays un-padded.
@@ -34,10 +45,23 @@ test('Button bakes in the single-word clipping mitigation', async () => {
 
 test('Banner CTA bakes in the mitigation and uses shared HIT_SLOP', async () => {
   const src = await read('src/components/ui/Banner.tsx');
-  assert.match(src, /\{`\$\{cta\.label\} `\}/);
-  assert.match(src, /style=\{\{ flexShrink: 0, paddingRight: 2 \}\}/);
-  assert.match(src, /import \{ HIT_SLOP \} from '\.\/styles';/);
+  assert.match(src, /import \{ CLIP_SAFE, clipSafe, HIT_SLOP \} from '\.\/styles';/);
+  assert.match(src, /style=\{CLIP_SAFE\}/);
+  assert.match(src, /\{clipSafe\(cta\.label\)\}/);
+  assert.match(src, /accessibilityLabel=\{cta\.label\}/, 'CTA a11y label stays unpadded');
   assert.ok(!/hitSlop=\{8\}/.test(src), 'Banner touch targets use HIT_SLOP, not ad-hoc 8');
+});
+
+test('StatusBadge bakes in the mitigation and scopes numberOfLines to multi-token labels', async () => {
+  const src = await read('src/components/StatusBadge.tsx');
+  assert.match(src, /import \{ CLIP_SAFE, clipSafe \} from '\.\/ui\/styles';/);
+  assert.match(src, /style=\{CLIP_SAFE\}/);
+  assert.match(src, /\{clipSafe\(config\.label\)\}/);
+  // A 1-token status ("Completed") must NOT get numberOfLines — it cannot wrap, so
+  // the prop could only turn a full render into "Complete…". A 2-token status
+  // ("Not Submitted") must, so its trailing word ellipsizes instead of vanishing.
+  assert.match(src, /numberOfLines=\{config\.label\.includes\(' '\) \? 1 : undefined\}/);
+  assert.match(src, /accessibilityLabel=\{`Status: \$\{config\.label\}`\}/);
 });
 
 test('no single-word strings.ts value carries a trailing clip-hack space', async () => {
@@ -82,18 +106,18 @@ test('device capacity status labels carry bold-text overrun headroom', async () 
   // All three status branches share the slot and the same failure mode, so all
   // three need the mitigation — not just the branch that happened to render.
   const branches = [
-    "{'Limit reached '}",
-    "{'Approaching limit '}",
-    '{`${capacity.remaining} remaining `}',
+    "{clipSafe('Limit reached')}",
+    "{clipSafe('Approaching limit')}",
+    '{clipSafe(`${capacity.remaining} remaining`)}',
   ];
   for (const label of branches) {
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const branch = row[0].match(new RegExp(`<Text[^>]*?>\\s*${escaped}\\s*<\\/Text>`, 's'));
-    assert.ok(branch, `status branch not found (trailing space is load-bearing): ${label}`);
+    assert.ok(branch, `status branch not found (clipSafe is load-bearing): ${label}`);
     assert.match(
       branch[0],
-      /style=\{\{ flexShrink: 0, paddingRight: 2 \}\}/,
-      `status branch ${label} must set flexShrink: 0 + paddingRight: 2`,
+      /style=\{CLIP_SAFE\}/,
+      `status branch ${label} must carry CLIP_SAFE`,
     );
     assert.match(
       branch[0],

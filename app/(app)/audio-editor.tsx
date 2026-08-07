@@ -20,6 +20,7 @@ import { useThemeColors } from '../../src/hooks/useThemeColors';
 import type { AudioSegment } from '../../src/types/multiPatient';
 import { formatClockDuration } from '../../src/lib/formatClock';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CLIP_SAFE, clipSafe } from '../../src/components/ui/styles';
 
 // H:MM:SS at >=60min via the shared clock util (2h captures read "120:00" before).
 const formatTime = formatClockDuration;
@@ -223,12 +224,17 @@ function SegmentTab({
             isSelected ? 'bg-brand-600' : 'bg-surface-sunken'
           }`}
         >
+          {/* clipSafe + CLIP_SAFE — a rounded-full Pressable shrink-wraps to its
+              label, so the Android "Bold text" overrun has nowhere to go and
+              "Seg 2 (0:45)" loses its duration (CLAUDE.md > UI Gotchas). */}
           <Text
             className={`text-body-sm font-medium ${
               isSelected ? 'text-content-on-brand' : 'text-content-secondary'
             }`}
+            style={CLIP_SAFE}
+            numberOfLines={1}
           >
-            Seg {label} ({formatTime(segment.duration)})
+            {clipSafe(`Seg ${label} (${formatTime(segment.duration)})`)}
           </Text>
           {!isOnly && (
             <Pressable
@@ -1467,7 +1473,10 @@ export default function AudioEditorScreen() {
           >
             <ArrowLeft color={colors.contentBody} size={24} />
           </Pressable>
-          <Text className="text-body-lg font-bold text-content-primary ml-2">Edit Recording</Text>
+          {/* flex-1 — row child with no width claimed; Bold text drops "Recording". */}
+          <Text className="text-body-lg font-bold text-content-primary ml-2 flex-1" numberOfLines={1}>
+            Edit Recording
+          </Text>
         </View>
         <View className="flex-1 items-center justify-center">
           <Text className="text-body text-content-tertiary">No recording to edit.</Text>
@@ -1489,7 +1498,12 @@ export default function AudioEditorScreen() {
         >
           <ArrowLeft color={colors.contentBody} size={24} />
         </Pressable>
-        <Text className="text-body-lg font-bold text-content-primary">Edit Recording</Text>
+        {/* flex-1 + text-center — the parent centred this by justify-between; widening
+            the box un-centres it, so the alignment moves onto the Text
+            (CLAUDE.md > UI Gotchas). */}
+        <Text className="text-body-lg font-bold text-content-primary flex-1 text-center mx-2" numberOfLines={1}>
+          Edit Recording
+        </Text>
         <View className="flex-row items-center gap-1">
           <Pressable
             onPress={handleUndo}
@@ -1652,8 +1666,10 @@ export default function AudioEditorScreen() {
           className="mb-4 px-5 flex-row items-center justify-center gap-2"
           style={{ maxWidth: 600, alignSelf: 'center', width: '100%' }}
         >
-          <Text className="text-caption text-content-tertiary mr-2">
-            Nudge {nudgeTarget === 'start' ? 'start' : 'end'}:
+          {/* Headroom — a shrink-wrapped row child among the nudge buttons; losing
+              "start:"/"end:" leaves a bare "Nudge" with no target. */}
+          <Text className="text-caption text-content-tertiary mr-2" style={CLIP_SAFE} numberOfLines={1}>
+            {clipSafe(`Nudge ${nudgeTarget === 'start' ? 'start' : 'end'}:`)}
           </Text>
           {[
             { label: `-${nudgeSteps.coarse}s`, delta: -nudgeSteps.coarse },
@@ -1705,10 +1721,17 @@ export default function AudioEditorScreen() {
                 ? <StopCircle size={16} color={colors.contentOnBrand} />
                 : <ListMusic size={16} color={colors.brand500} />
               }
-              <Text className={`text-body-sm font-semibold ${
-                isPlayingAll ? 'text-content-on-brand' : 'text-content-body'
-              }`}>
-                {isPlayingAll ? 'Stop' : 'Play All'}
+              {/* Headroom — rounded-full Pressable inside an items-center column, so
+                  it shrink-wraps and "Play All" would render as "Play", which reads as
+                  play-the-selected-segment (CLAUDE.md > UI Gotchas). */}
+              <Text
+                className={`text-body-sm font-semibold ${
+                  isPlayingAll ? 'text-content-on-brand' : 'text-content-body'
+                }`}
+                style={CLIP_SAFE}
+                numberOfLines={1}
+              >
+                {clipSafe(isPlayingAll ? 'Stop' : 'Play All')}
               </Text>
             </Pressable>
           </View>

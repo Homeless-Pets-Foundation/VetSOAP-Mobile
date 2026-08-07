@@ -12,6 +12,7 @@ import { Card } from './ui/Card';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { groupRecordingTasks } from '../lib/recordingTasks';
 import type { RecordingTask, RecordingTaskType } from '../types';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 function groupHeading(type: RecordingTaskType): string {
   return type === 'billing'
@@ -130,10 +131,12 @@ export function SuggestedTasksCard({ recordingId, tasks, canManage }: SuggestedT
                     ) : resolved ? (
                       <Text
                         className="text-caption text-content-tertiary ml-2"
-                        // flexShrink:0 + paddingRight stops Android clipping the last glyph of single-word status labels ("Accepted"/"Dismissed") next to the flex-1 title
-                        style={{ flexShrink: 0, paddingRight: 2 }}
+                        // Headroom for the Android "Bold text" overrun beside a flex-1
+                        // title. Single-token labels ("Accepted"/"Dismissed"), so no
+                        // numberOfLines (CLAUDE.md > UI Gotchas).
+                        style={CLIP_SAFE}
                       >
-                        {resolved}
+                        {clipSafe(resolved)}
                       </Text>
                     ) : null}
                   </View>

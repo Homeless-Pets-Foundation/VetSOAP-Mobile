@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text } from 'react-native';
+import { CLIP_SAFE, clipSafe } from './styles';
 
 type BadgeVariant = 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
@@ -27,7 +28,15 @@ export function Badge({ children, variant = 'neutral', accessibilityLabel }: Bad
       accessibilityLabel={accessibilityLabel ?? children}
       accessibilityRole="text"
     >
-      <Text className={`text-caption font-semibold ${v.text}`} numberOfLines={1}>{children}</Text>
+      {/* clipSafe + CLIP_SAFE — this pill shrink-wraps, so under Android "Bold text"
+          the painted run overruns a box Yoga sized from the unadjusted font
+          (CLAUDE.md > UI Gotchas). numberOfLines={1} was already here, so the failure
+          mode is a *downgrade* rather than a vanish: without headroom the ellipsis
+          eats the word that discriminates one badge from another. accessibilityLabel
+          above stays unpadded. */}
+      <Text className={`text-caption font-semibold ${v.text}`} style={CLIP_SAFE} numberOfLines={1}>
+        {clipSafe(children)}
+      </Text>
     </View>
   );
 }

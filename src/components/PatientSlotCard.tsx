@@ -33,6 +33,7 @@ import {
   LONG_RECORDING_WARNING_THRESHOLD_SEC,
   MULTI_PATIENT_RECORD_FIRST_COPY,
 } from '../constants/strings';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -355,9 +356,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             {/* Trailing space + flexShrink:0 — Android under-measures single-word Text and clips the last glyph; do NOT remove. */}
             <Text
               className="text-body-sm text-status-danger ml-1"
-              style={{ flexShrink: 0, paddingRight: 2 }}
+              style={CLIP_SAFE}
             >
-              {'Remove '}
+              {clipSafe('Remove')}
             </Text>
           </Pressable>
         )}
@@ -369,7 +370,12 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       {/* Recording Controls */}
       <Animated.View style={recordCardAnimStyle}>
       <Card className={`mb-4 items-center ${activeEmphasisClass}`}>
-        <Text className="text-body-lg font-semibold text-content-primary mb-3">Record</Text>
+        {/* The Card is items-center, so this shrink-wraps. Single token, so it can only
+            glyph-clip ("Recor") rather than vanish — headroom, no numberOfLines.
+            This is the literal example in CLAUDE.md > UI Gotchas. */}
+        <Text className="text-body-lg font-semibold text-content-primary mb-3" style={CLIP_SAFE}>
+          {clipSafe('Record')}
+        </Text>
 
         {/* Status badge */}
         <View className="mb-4" accessibilityLiveRegion="polite">
@@ -504,9 +510,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                     {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
                     <Text
                       className="text-body-sm text-content-tertiary"
-                      style={{ flexShrink: 0, paddingRight: 2 }}
+                      style={CLIP_SAFE}
                     >
-                      {'Delete & Start Over '}
+                      {clipSafe('Delete & Start Over')}
                     </Text>
                   </View>
                 </Pressable>
@@ -516,7 +522,10 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
           {/* Stopped with captured audio (segments OR durable): continue, edit, discard */}
           {isStopped && hasCapturedAudio && isFinishSaving && (
-            <Text className="text-body-sm text-content-tertiary text-center" accessibilityLiveRegion="polite">
+            // w-full — the controls column centres its children, so this shrink-wraps
+            // and Bold text could drop "recording..." right when the user is waiting
+            // to learn whether their audio was kept (CLAUDE.md > UI Gotchas).
+            <Text className="text-body-sm text-content-tertiary text-center w-full" accessibilityLiveRegion="polite">
               Saving recording...
             </Text>
           )}
@@ -541,9 +550,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
                   <Text
                     className="text-body-sm text-content-tertiary"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    style={CLIP_SAFE}
                   >
-                    {'Delete & Start Over '}
+                    {clipSafe('Delete & Start Over')}
                   </Text>
                 </View>
               </Pressable>
@@ -571,9 +580,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   {/* Trailing space + flexShrink:0 — Android under-measures Text in flex-row and clips the last glyph; do NOT remove. */}
                   <Text
                     className="text-body-sm text-content-tertiary"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    style={CLIP_SAFE}
                   >
-                    {'Delete & Start Over '}
+                    {clipSafe('Delete & Start Over')}
                   </Text>
                 </View>
               </Pressable>
@@ -596,9 +605,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   <Trash2 color={colors.contentTertiary} size={14} style={{ flexShrink: 0 }} />
                   <Text
                     className="text-body-sm text-content-tertiary"
-                    style={{ flexShrink: 0, paddingRight: 2 }}
+                    style={CLIP_SAFE}
                   >
-                    {'Delete & Start Over '}
+                    {clipSafe('Delete & Start Over')}
                   </Text>
                 </View>
               </Pressable>
@@ -666,11 +675,16 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 accessibilityValue={{ min: 0, max: 100, now: slot.uploadProgress }}
                 accessibilityLiveRegion="polite"
               >
-                <View className="flex-row justify-between mb-1.5">
-                  <Text className="text-caption font-medium text-content-body">
-                    {slot.uploadProgress < 10 ? 'Preparing...' : slot.uploadProgress >= 95 ? 'Processing...' : 'Uploading...'}
+                {/* Both are single tokens, so glyph-clip only ("Uploadin"), never a
+                    vanish — headroom on each, no numberOfLines
+                    (CLAUDE.md > UI Gotchas). */}
+                <View className="flex-row justify-between items-center mb-1.5">
+                  <Text className="text-caption font-medium text-content-body" style={CLIP_SAFE}>
+                    {clipSafe(slot.uploadProgress < 10 ? 'Preparing...' : slot.uploadProgress >= 95 ? 'Processing...' : 'Uploading...')}
                   </Text>
-                  <Text className="text-caption text-content-tertiary">{slot.uploadProgress}%</Text>
+                  <Text className="text-caption text-content-tertiary" style={CLIP_SAFE}>
+                    {clipSafe(`${slot.uploadProgress}%`)}
+                  </Text>
                 </View>
                 <View className="h-2.5 rounded-full bg-surface-sunken overflow-hidden">
                   <View

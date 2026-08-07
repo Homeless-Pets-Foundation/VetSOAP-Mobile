@@ -284,8 +284,11 @@ export default function SettingsScreen() {
               onPress={() => router.back()}
               className="mr-3"
             />
+            {/* flex-1 — same shrink-wrapped header row as devices.tsx. No
+                numberOfLines: "Settings" is one token with no wrap point, so the prop
+                could only turn a full render into "Setting…" (CLAUDE.md > UI Gotchas). */}
             <Text
-              className="text-display font-bold text-content-primary"
+              className="text-display font-bold text-content-primary flex-1"
               accessibilityRole="header"
             >
               Settings

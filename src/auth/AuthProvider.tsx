@@ -163,6 +163,8 @@ interface MfaStatusResponse {
 
 interface MfaApiResponse extends MfaStatusResponse {
   user?: User;
+  /** MFA verify spreads the same `{ user, organization }` profile body as /auth/me. */
+  organization?: { name?: unknown } | null;
   factors?: unknown[];
   factorId?: string;
   challengeId?: string;
@@ -580,6 +582,27 @@ async function clearTransientCaches(): Promise<void> {
   }
   audioEditorBridge.clear();
   clearClipboard();
+}
+
+/** Max practice-name length kept on User; userProfileCache has a hard 1536-byte ceiling. */
+const MAX_ORGANIZATION_NAME_LENGTH = 120;
+
+type AuthMeBody = {
+  user?: User | null;
+  organization?: { name?: unknown } | null;
+};
+
+/**
+ * /auth/me returns `user` and `organization` as siblings; flatten the practice
+ * name onto User so every consumer reads one optional field. Trimmed and
+ * length-capped so a junk value can't bloat the profile cache.
+ */
+function withOrganizationName(body: AuthMeBody): User | null {
+  const user = body.user ?? null;
+  if (!user) return null;
+  const raw = body.organization?.name;
+  const name = typeof raw === 'string' ? raw.trim().slice(0, MAX_ORGANIZATION_NAME_LENGTH) : '';
+  return name ? { ...user, organizationName: name } : user;
 }
 
 /**
@@ -1002,7 +1025,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // starts, so the body can fill in measurements as it goes.
     const phaseTags: Record<string, string | number | boolean | null | undefined> = {};
     const promise = measurePhase('fetchUser', phaseTags, async () => {
-    const requestMe = () => apiClient.get<{ user: User }>('/auth/me');
+    const requestMe = () => apiClient.get<AuthMeBody>('/auth/me');
     setUserFetchState('loading');
     setUserFetchError(null);
 
@@ -1036,7 +1059,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // the device-registration recovery UI can render instead of leaving the
         // app in a half-authenticated retry loop.
         await registerDeviceTimed();
-        applyFetchedUser(body.user ?? null);
+        applyFetchedUser(withOrganizationName(body));
         return 'loaded';
       } catch (error) {
         if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
@@ -1054,7 +1077,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const retryBody = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
             await registerDeviceTimed();
-            applyFetchedUser(retryBody.user ?? null);
+            applyFetchedUser(withOrganizationName(retryBody));
             return 'loaded';
           } catch (retryError) {
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync still missing user', retryError);
@@ -1066,7 +1089,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const body = await requestMe();
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
             await registerDeviceTimed();
-            applyFetchedUser(body.user ?? null);
+            applyFetchedUser(withOrganizationName(body));
             return 'loaded';
           } catch (bootstrapError) {
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap failed', bootstrapError);
@@ -1149,6 +1172,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             role: cached.role,
             organizationId: cached.organizationId,
             avatarUrl: cached.avatarUrl,
+            organizationName: cached.organizationName,
           });
           setProfileSource('cache');
           setUserFetchState('success');
@@ -1436,7 +1460,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (data.user) {
         await registerDevice();
-        applyFetchedUser(data.user);
+        applyFetchedUser(withOrganizationName(data));
         setUserFetchState('success');
         setUserFetchError(null);
         return;

@@ -315,6 +315,11 @@ export default function SettingsScreen() {
                 <Text className="text-body-sm text-content-tertiary mt-0.5" numberOfLines={1}>
                   {user?.email || ''}
                 </Text>
+                {user?.organizationName ? (
+                  <Text className="text-body-sm text-content-tertiary mt-0.5" numberOfLines={1}>
+                    {user.organizationName}
+                  </Text>
+                ) : null}
                 {user?.role ? (
                   <Text className="text-caption text-content-tertiary mt-0.5 capitalize">
                     {user.role.replace(/_/g, ' ')}

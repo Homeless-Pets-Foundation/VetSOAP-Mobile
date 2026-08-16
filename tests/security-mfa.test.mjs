@@ -119,13 +119,13 @@ test('mobile auth provider applies profile when device registration needs recove
   // fire before the device has a session row.
   assert.match(
     provider,
-    /await registerDeviceTimed\(\);\s*applyFetchedUser\(body\.user \?\? null\);\s*return 'loaded';/
+    /await registerDeviceTimed\(\);\s*applyFetchedUser\(withOrganizationName\(body\)\);\s*return 'loaded';/
   );
   assert.match(provider, /const registerDeviceTimed = async \(\): Promise<boolean> => \{/);
   assert.match(provider, /return await registerDevice\(\);/);
   assert.match(
     provider,
-    /await registerDevice\(\);\s*applyFetchedUser\(data\.user\);\s*setUserFetchState\('success'\);/
+    /await registerDevice\(\);\s*applyFetchedUser\(withOrganizationName\(data\)\);\s*setUserFetchState\('success'\);/
   );
   assert.doesNotMatch(provider, /if \(!\(await registerDevice\(\)\)\) return 'deferred';/);
   assert.doesNotMatch(provider, /if \(!\(await registerDevice\(\)\)\) return;/);

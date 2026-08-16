@@ -268,6 +268,12 @@ export interface User {
   organizationId: string;
   avatarUrl: string | null;
   capabilities?: string[];
+  /**
+   * Practice name, flattened from /auth/me's sibling `organization` object.
+   * Optional so older server responses and the profile-cache fallback path
+   * stay valid.
+   */
+  organizationName?: string;
 }
 
 export interface TemplateSection {

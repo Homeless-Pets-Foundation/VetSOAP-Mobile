@@ -78,7 +78,9 @@ export default function ProfileScreen() {
     try {
       const response = await accountApi.updateMe({ fullName: trimmed });
       trackEvent({ name: 'profile_updated', props: { fields: 'full_name' } });
-      saveProfileCache(response.user).catch(() => {});
+      // PATCH /auth/me returns only `user` — carry the practice name over so the
+      // cache write doesn't blank it between here and retryFetchUser() below.
+      saveProfileCache({ ...response.user, organizationName: user?.organizationName }).catch(() => {});
       Alert.alert(PROFILE_COPY.profileUpdatedTitle, PROFILE_COPY.profileUpdatedBody);
       retryFetchUser().catch(() => {});
     } catch {
@@ -86,7 +88,7 @@ export default function ProfileScreen() {
     } finally {
       setIsSavingName(false);
     }
-  }, [fullName, retryFetchUser]);
+  }, [fullName, retryFetchUser, user?.organizationName]);
 
   const handleChangePassword = useCallback(async () => {
     if (password.length < 8) {

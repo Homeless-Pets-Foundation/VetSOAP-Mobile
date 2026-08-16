@@ -409,8 +409,10 @@ export default function HomeScreen() {
         >
           Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
         </Text>
-        <Text className="text-body text-content-tertiary mt-1">
-          Record appointments and generate SOAP notes
+        {/* The practice name is the tenant confirmation on a shared clinic
+            tablet; the static tagline is the fallback until /auth/me lands. */}
+        <Text className="text-body text-content-tertiary mt-1" numberOfLines={1}>
+          {user?.organizationName || 'Record appointments and generate SOAP notes'}
         </Text>
       </View>
 

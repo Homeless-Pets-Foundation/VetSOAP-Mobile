@@ -32,6 +32,8 @@ export interface CachedProfile {
   role: string;
   organizationId: string;
   avatarUrl: string | null;
+  /** Practice name. Optional: entries written before it existed must still parse. */
+  organizationName?: string;
   cachedAt: number;
 }
 
@@ -46,9 +48,11 @@ function utf8ByteLength(value: string): number {
 }
 
 /**
- * Serialize the minimal projection, dropping `avatarUrl` (a potentially long
- * remote URL) if it pushes the payload over the size ceiling. Returns null if
- * the projection cannot fit even without it — caller skips the write.
+ * Serialize the minimal projection, dropping fields in order of expendability
+ * if the payload exceeds the size ceiling: `avatarUrl` (a potentially long
+ * remote URL) first, then `organizationName` (display-only — the header falls
+ * back to its static tagline). Returns null if the projection cannot fit even
+ * without both — caller skips the write.
  */
 export function serializeProfile(user: User, cachedAt: number): string | null {
   const projection: CachedProfile = {
@@ -58,11 +62,15 @@ export function serializeProfile(user: User, cachedAt: number): string | null {
     role: user.role,
     organizationId: user.organizationId,
     avatarUrl: user.avatarUrl ?? null,
+    organizationName: user.organizationName || undefined,
     cachedAt,
   };
   let serialized = JSON.stringify(projection);
   if (utf8ByteLength(serialized) > MAX_SERIALIZED_BYTES) {
     serialized = JSON.stringify({ ...projection, avatarUrl: null });
+  }
+  if (utf8ByteLength(serialized) > MAX_SERIALIZED_BYTES) {
+    serialized = JSON.stringify({ ...projection, avatarUrl: null, organizationName: undefined });
   }
   return utf8ByteLength(serialized) <= MAX_SERIALIZED_BYTES ? serialized : null;
 }
@@ -94,6 +102,8 @@ export function parseCachedProfile(raw: string | null, sessionUserId: string): C
       role: p.role,
       organizationId: p.organizationId,
       avatarUrl: typeof p.avatarUrl === 'string' ? p.avatarUrl : null,
+      organizationName:
+        typeof p.organizationName === 'string' && p.organizationName ? p.organizationName : undefined,
       cachedAt: typeof p.cachedAt === 'number' ? p.cachedAt : 0,
     };
   } catch {

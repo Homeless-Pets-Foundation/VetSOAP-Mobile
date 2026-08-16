@@ -98,6 +98,58 @@ test('oversized avatarUrl is dropped rather than failing the write', () => {
   assert.equal(JSON.parse(serialized).avatarUrl, null);
 });
 
+test('organizationName round-trips so the practice name survives an offline cold start', () => {
+  const withOrg = { ...realisticUser, organizationName: 'Homeless Pets Foundation' };
+  const serialized = serializeProfile(withOrg, 1765432100000);
+  assert.ok(serialized);
+  assert.deepEqual(Object.keys(JSON.parse(serialized)).sort(), [
+    'avatarUrl',
+    'cachedAt',
+    'email',
+    'fullName',
+    'id',
+    'organizationId',
+    'organizationName',
+    'role',
+  ]);
+  assert.equal(parseCachedProfile(serialized, withOrg.id).organizationName, 'Homeless Pets Foundation');
+});
+
+test('a cache entry written before organizationName existed still parses', () => {
+  // Backward compat: absence must yield a usable profile, not a null (which
+  // would strand the vet on the error screen during a terminal /auth/me failure).
+  const legacy = JSON.stringify({
+    id: realisticUser.id,
+    email: realisticUser.email,
+    fullName: realisticUser.fullName,
+    role: realisticUser.role,
+    organizationId: realisticUser.organizationId,
+    avatarUrl: null,
+    cachedAt: 1765432100000,
+  });
+  const parsed = parseCachedProfile(legacy, realisticUser.id);
+  assert.ok(parsed);
+  assert.equal(parsed.organizationName, undefined);
+});
+
+test('over the ceiling, avatarUrl drops before organizationName', () => {
+  // Size the payload so it fits only after BOTH optional fields are dropped:
+  // leave ~40 bytes of slack, far less than either field needs.
+  const floor = serializeProfile({ ...realisticUser, fullName: '', avatarUrl: null }, 0);
+  const padding = MAX_SERIALIZED_BYTES - Buffer.byteLength(floor, 'utf8') - 40;
+  const crowded = {
+    ...realisticUser,
+    fullName: 'X'.repeat(padding),
+    organizationName: 'P'.repeat(120),
+  };
+  const serialized = serializeProfile(crowded, 0);
+  assert.ok(serialized, 'should still write after dropping both optional fields');
+  const parsed = JSON.parse(serialized);
+  assert.equal(parsed.avatarUrl, null);
+  assert.equal(parsed.organizationName, undefined);
+  assert.equal(parsed.fullName.length, padding, 'required fields must survive intact');
+});
+
 test('a projection that cannot fit even without avatarUrl is not written', () => {
   const huge = { ...realisticUser, fullName: 'X'.repeat(3000) };
   assert.equal(serializeProfile(huge, 0), null);
@@ -150,6 +202,45 @@ test('AuthProvider confines cache fallback to the terminal-failure branch with b
   // The cache user must be applied through applyFetchedUser so rule-13
   // user-scoped storage (stash/draft setUserId) is configured.
   assert.match(provider, /applyFetchedUser\(\{\s*id: cached\.id/);
+});
+
+test('every /auth/me path flattens the sibling organization name onto User', async () => {
+  // /auth/me returns { user, organization } as siblings, and MFA verify spreads
+  // the same body. Four call sites apply a fetched profile (first attempt,
+  // post-Apple-sync retry, post-register bootstrap, post-MFA); missing one
+  // silently drops the practice name on that path only.
+  const provider = await read('src/auth/AuthProvider.tsx');
+  assert.equal(
+    (provider.match(/applyFetchedUser\(\s*(?:body|retryBody|data)\.user/g) ?? []).length,
+    0,
+    'no profile path may apply body.user / data.user directly'
+  );
+  assert.equal((provider.match(/applyFetchedUser\(withOrganizationName\(/g) ?? []).length, 4);
+  assert.match(provider, /organizationName: cached\.organizationName/);
+});
+
+test('the MFA profile path refreshes the cache, not just the live user', async () => {
+  // When /auth/me is deferred by MFA this is the ONLY live-profile install, so
+  // it owns the cache write too. Without it an upgraded device keeps a cache
+  // entry that predates organizationName, and a renamed practice keeps showing
+  // the stale name on the next offline cold start.
+  const provider = await read('src/auth/AuthProvider.tsx');
+  assert.match(
+    provider,
+    /applyFetchedUser\(withOrganizationName\(data\)\);[\s\S]{0,800}?saveProfileCache\(liveUser\)\.catch\(\(\) => \{\}\)/
+  );
+});
+
+test('a re-save replaces a stale cached practice name', async () => {
+  storeBacking.clear();
+  await saveProfileCache({ ...realisticUser, organizationName: 'Old Practice Name' });
+  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, 'Old Practice Name');
+  // Practice renamed (or the org transferred) — the next live profile wins.
+  await saveProfileCache({ ...realisticUser, organizationName: 'Homeless Pets Foundation' });
+  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, 'Homeless Pets Foundation');
+  // Name no longer served → the cached one must not linger.
+  await saveProfileCache(realisticUser);
+  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, undefined);
 });
 
 test('OfflineBanner renders only for cached profile source', async () => {

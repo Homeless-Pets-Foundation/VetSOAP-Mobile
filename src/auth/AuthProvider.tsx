@@ -1463,6 +1463,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         applyFetchedUser(withOrganizationName(data));
         setUserFetchState('success');
         setUserFetchError(null);
+        // When /auth/me is deferred by MFA this is the only live-profile
+        // install, so it owns the cache refresh too (1B) — otherwise an
+        // upgraded device keeps a pre-organizationName entry, and a renamed or
+        // transferred practice keeps showing the stale name on the next offline
+        // cold start. Fire-and-forget like the fetchUser success path (rule 4).
+        const liveUser = activeUserRef.current;
+        if (liveUser) {
+          saveProfileCache(liveUser).catch(() => {});
+        }
         return;
       }
 

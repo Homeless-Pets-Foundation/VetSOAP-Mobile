@@ -219,6 +219,30 @@ test('every /auth/me path flattens the sibling organization name onto User', asy
   assert.match(provider, /organizationName: cached\.organizationName/);
 });
 
+test('the MFA profile path refreshes the cache, not just the live user', async () => {
+  // When /auth/me is deferred by MFA this is the ONLY live-profile install, so
+  // it owns the cache write too. Without it an upgraded device keeps a cache
+  // entry that predates organizationName, and a renamed practice keeps showing
+  // the stale name on the next offline cold start.
+  const provider = await read('src/auth/AuthProvider.tsx');
+  assert.match(
+    provider,
+    /applyFetchedUser\(withOrganizationName\(data\)\);[\s\S]{0,800}?saveProfileCache\(liveUser\)\.catch\(\(\) => \{\}\)/
+  );
+});
+
+test('a re-save replaces a stale cached practice name', async () => {
+  storeBacking.clear();
+  await saveProfileCache({ ...realisticUser, organizationName: 'Old Practice Name' });
+  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, 'Old Practice Name');
+  // Practice renamed (or the org transferred) — the next live profile wins.
+  await saveProfileCache({ ...realisticUser, organizationName: 'Homeless Pets Foundation' });
+  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, 'Homeless Pets Foundation');
+  // Name no longer served → the cached one must not linger.
+  await saveProfileCache(realisticUser);
+  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, undefined);
+});
+
 test('OfflineBanner renders only for cached profile source', async () => {
   const banner = await read('src/components/OfflineBanner.tsx');
   assert.match(banner, /profileSource !== 'cache'/);

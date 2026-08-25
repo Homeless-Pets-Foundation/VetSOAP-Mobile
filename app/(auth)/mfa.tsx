@@ -396,12 +396,30 @@ export default function MfaScreen() {
                               backgroundColor={colors.surfaceRaised}
                               color={colors.contentPrimary}
                             />
-                            <Text className="text-caption font-semibold text-content-tertiary mt-4 mb-1">
+                            {/* w-full on both — the parent is items-center, so each Text
+                                shrink-wraps to its measured width and Android "Bold text"
+                                paints past the box Yoga sized from the unadjusted font
+                                (CLAUDE.md > UI Gotchas). Same shape and same fix as the
+                                device-proven login.tsx subtitle (PR #171 / 8388c69).
+
+                                Stakes here are why this is worth doing blind: "Setup key"
+                                has a space to wrap at, so it would silently become
+                                "Setup" and mislabel the value beneath it, and the secret
+                                is what the user transcribes into their authenticator. A
+                                wrong secret produces codes that never verify, and this
+                                client has no unenrol route — see AuthProvider's MFA
+                                helpers — so there is no in-app way back.
+
+                                No numberOfLines on the secret: it is one unbroken Base32
+                                token with no wrap point, so the prop could not prevent a
+                                vanish and could only replace real characters with an
+                                ellipsis, which is just as unusable. */}
+                            <Text className="text-caption font-semibold text-content-tertiary mt-4 mb-1 text-center w-full">
                               Setup key
                             </Text>
                             <Text
                               selectable
-                              className="text-body-sm text-content-body text-center"
+                              className="text-body-sm text-content-body text-center w-full"
                             >
                               {enrollment.secret}
                             </Text>

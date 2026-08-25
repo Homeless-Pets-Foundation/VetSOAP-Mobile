@@ -78,7 +78,9 @@ export default function ProfileScreen() {
     try {
       const response = await accountApi.updateMe({ fullName: trimmed });
       trackEvent({ name: 'profile_updated', props: { fields: 'full_name' } });
-      saveProfileCache(response.user).catch(() => {});
+      // PATCH /auth/me returns only `user` — carry the practice name over so the
+      // cache write doesn't blank it between here and retryFetchUser() below.
+      saveProfileCache({ ...response.user, organizationName: user?.organizationName }).catch(() => {});
       Alert.alert(PROFILE_COPY.profileUpdatedTitle, PROFILE_COPY.profileUpdatedBody);
       retryFetchUser().catch(() => {});
     } catch {
@@ -86,7 +88,7 @@ export default function ProfileScreen() {
     } finally {
       setIsSavingName(false);
     }
-  }, [fullName, retryFetchUser]);
+  }, [fullName, retryFetchUser, user?.organizationName]);
 
   const handleChangePassword = useCallback(async () => {
     if (password.length < 8) {
@@ -133,7 +135,10 @@ export default function ProfileScreen() {
               onPress={() => router.back()}
               className="mr-3"
             />
-            <Text className="text-display font-bold text-content-primary" accessibilityRole="header">
+            {/* flex-1 — the same shrink-wrapped header row as settings.tsx and
+                devices.tsx (IconButton + title, no width claimed). Single-token
+                title, so no numberOfLines (CLAUDE.md > UI Gotchas). */}
+            <Text className="text-display font-bold text-content-primary flex-1" accessibilityRole="header">
               {PROFILE_COPY.title}
             </Text>
           </View>

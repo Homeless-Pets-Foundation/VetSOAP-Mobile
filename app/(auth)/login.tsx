@@ -11,7 +11,7 @@ import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { TextInputField } from '../../src/components/ui/TextInputField';
 import { Button } from '../../src/components/ui/Button';
 import { GoogleGlyph } from '../../src/components/ui/GoogleGlyph';
-import { HIT_SLOP } from '../../src/components/ui/styles';
+import { CLIP_SAFE, clipSafe, HIT_SLOP } from '../../src/components/ui/styles';
 import { emailSchema, passwordSchema } from '../../src/lib/validation';
 import { consumeLogoutReason } from '../../src/lib/logoutReason';
 import {
@@ -218,7 +218,11 @@ export default function LoginScreen() {
             accessibilityLabel="Captivet"
           />
           <Text
-            className="text-body text-content-tertiary mt-3"
+            // w-full is load-bearing: inside an items-center parent the Text
+            // shrink-wraps, and Android under-measures the last word off the
+            // end with no ellipsis ("Sign in to your"). Claiming the full row
+            // width makes it measure against the container instead.
+            className="text-body text-content-tertiary mt-3 w-full"
             style={{ textAlign: 'center' }}
             numberOfLines={2}
           >
@@ -307,8 +311,12 @@ export default function LoginScreen() {
             className="self-end mb-1"
             style={{ minHeight: 32, justifyContent: 'center' }}
           >
-            <Text className="text-body-sm font-medium text-brand-500">
-              {LOGIN_COPY.forgotPassword}
+            {/* clipSafe + CLIP_SAFE — a self-end Pressable shrink-wraps, so there is no
+                slack for the Bold-text overrun (CLAUDE.md > UI Gotchas). This is the
+                account-recovery entry point; losing "password?" leaves a bare "Forgot".
+                accessibilityLabel above stays unpadded. */}
+            <Text className="text-body-sm font-medium text-brand-500" style={CLIP_SAFE} numberOfLines={1}>
+              {clipSafe(LOGIN_COPY.forgotPassword)}
             </Text>
           </Pressable>
 
@@ -329,7 +337,13 @@ export default function LoginScreen() {
             <>
               <View className="flex-row items-center my-5">
                 <View className="flex-1 h-px bg-surface-sunken" />
-                <Text className="px-3 text-body-sm text-content-tertiary">{LOGIN_COPY.orContinueWith}</Text>
+                {/* The two rules are flex-1, so this divider label gets exactly its
+                    measured width and nothing more — the classic Bold-text shape
+                    (CLAUDE.md > UI Gotchas). Headroom rather than flex-1 here, since
+                    widening it would push the rules apart asymmetrically. */}
+                <Text className="px-3 text-body-sm text-content-tertiary" style={CLIP_SAFE} numberOfLines={1}>
+                  {clipSafe(LOGIN_COPY.orContinueWith)}
+                </Text>
                 <View className="flex-1 h-px bg-surface-sunken" />
               </View>
 

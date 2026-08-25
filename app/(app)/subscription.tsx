@@ -144,7 +144,10 @@ export default function SubscriptionScreen() {
               onPress={() => router.back()}
               className="mr-3"
             />
-            <Text className="text-display font-bold text-content-primary" accessibilityRole="header">
+            {/* flex-1 — the same shrink-wrapped header row as settings.tsx and
+                devices.tsx (IconButton + title, no width claimed). Single-token
+                title, so no numberOfLines (CLAUDE.md > UI Gotchas). */}
+            <Text className="text-display font-bold text-content-primary flex-1" accessibilityRole="header">
               {SUBSCRIPTION_COPY.title}
             </Text>
           </View>

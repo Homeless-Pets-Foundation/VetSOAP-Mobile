@@ -5685,7 +5685,10 @@ function RecordingSession() {
           }}
         >
           {paginationText ? (
-            <Text className="text-caption text-content-tertiary">{paginationText}</Text>
+            // w-full — the container is items-center, so this shrink-wraps and Android
+            // "Bold text" can drop the tail of "3 of 8", losing the user's position in
+            // a multi-patient session (CLAUDE.md > UI Gotchas).
+            <Text className="text-caption text-content-tertiary text-center w-full">{paginationText}</Text>
           ) : (
             <View className="flex-row gap-1.5">
               {session.slots.map((slot, i) => (

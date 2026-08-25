@@ -48,12 +48,17 @@ export function EmptyState({
   const content = (
     <View className={cx('items-center py-6', className)}>
       {renderedIcon}
+      {/* w-full — the parent is items-center, so without it both labels shrink-wrap
+          to their measured width and Android "Bold text" lays the trailing word out
+          of view (CLAUDE.md > UI Gotchas; the fenced login.tsx precedent). text-center
+          keeps the visual centring the parent used to provide. An empty state is pure
+          instruction, so the lost half is the actionable half. */}
       {title ? (
-        <Text className="text-body font-semibold text-content-primary mt-3 text-center">
+        <Text className="text-body font-semibold text-content-primary mt-3 text-center w-full">
           {title}
         </Text>
       ) : null}
-      <Text className="text-body text-content-tertiary mt-3 text-center">{description}</Text>
+      <Text className="text-body text-content-tertiary mt-3 text-center w-full">{description}</Text>
       {details ? <View className="mt-2">{details}</View> : null}
       {action || secondaryAction ? (
         <View className="mt-4 flex-row gap-3">

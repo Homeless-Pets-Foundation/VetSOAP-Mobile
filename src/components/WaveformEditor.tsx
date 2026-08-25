@@ -12,6 +12,7 @@ import type { SharedValue } from 'react-native-reanimated';
 import { StaticWaveform } from './StaticWaveform';
 import { TrimOverlay } from './TrimOverlay';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 interface WaveformEditorProps {
   peaks: number[];
@@ -319,16 +320,24 @@ export function WaveformEditor({
       {/* Time labels — visible whenever duration is known, even before peaks load,
           so users see Keep/Remove updates while dragging handles during extraction. */}
       {duration > 0 && (
-        <View className="flex-row justify-between mt-2 px-1">
-          <Text className="text-caption text-brand-600 font-medium">
-            {formatTime(trimStart)}
+        <View className="flex-row justify-between items-center mt-2 px-1">
+          {/* The two edge timestamps are single tokens — they can only glyph-clip, so
+              headroom is enough and flexShrink:0 keeps the middle label from squeezing
+              them (CLAUDE.md > UI Gotchas). */}
+          <Text className="text-caption text-brand-600 font-medium" style={CLIP_SAFE}>
+            {clipSafe(formatTime(trimStart))}
           </Text>
-          <Text className="text-caption text-content-tertiary">
+          {/* flex-1 + text-center — the middle label shrink-wrapped, so Bold text cut
+              "Keep 2:10 · Remove 0:45" down to "Keep 2:10" and the user could not see
+              how much audio the trim was about to destroy. That edit is irreversible,
+              so this is the highest-stakes label on the screen. flex-1 widens the box,
+              which un-centres it, hence text-center in the same edit. */}
+          <Text className="text-caption text-content-tertiary flex-1 text-center px-1" numberOfLines={1}>
             Keep {formatTime(keepDuration)}
             {removeDuration > 0 && ` · Remove ${formatTime(removeDuration)}`}
           </Text>
-          <Text className="text-caption text-brand-600 font-medium">
-            {formatTime(trimEnd)}
+          <Text className="text-caption text-brand-600 font-medium" style={CLIP_SAFE}>
+            {clipSafe(formatTime(trimEnd))}
           </Text>
         </View>
       )}

@@ -95,6 +95,7 @@ import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import type { RecordingMetadataField, UpdateRecordingMetadata } from '../../../../src/types';
+import { CLIP_SAFE, clipSafe } from '../../../../src/components/ui/styles';
 
 function DetailSkeleton() {
   return (
@@ -1467,8 +1468,14 @@ export default function RecordingDetailScreen() {
                   <Text className="text-body-sm text-content-tertiary mb-3">
                     {RECORDING_DETAIL_COPY.audioNotOnDeviceBody}
                   </Text>
-                  <View className="self-start">
-                    {recordingPermissions.canDelete ? (
+                  {/* self-start shrink-wraps this wrapper to its content, which is right
+                      for the Button branch but starves the Text branch of width. That
+                      Text is the only explanation the user gets for why the destructive
+                      action is unavailable, so it takes the full row instead
+                      (CLAUDE.md > UI Gotchas). numberOfLines stays unset — the reason is
+                      a sentence and should wrap, not ellipsize. */}
+                  {recordingPermissions.canDelete ? (
+                    <View className="self-start">
                       <Button
                         variant="danger"
                         size="sm"
@@ -1478,12 +1485,12 @@ export default function RecordingDetailScreen() {
                       >
                         Delete Draft
                       </Button>
-                    ) : (
-                      <Text className="text-caption text-content-tertiary">
-                        {deleteDraftBlockedReason}
-                      </Text>
-                    )}
-                  </View>
+                    </View>
+                  ) : (
+                    <Text className="text-caption text-content-tertiary w-full">
+                      {deleteDraftBlockedReason}
+                    </Text>
+                  )}
                 </View>
               </View>
             </Card>
@@ -1631,9 +1638,9 @@ export default function RecordingDetailScreen() {
                           ? 'text-content-primary font-semibold'
                           : 'text-content-secondary'
                       }`}
-                      style={{ flexShrink: 0, paddingRight: 2 }}
+                      style={CLIP_SAFE}
                     >
-                      {`${label} `}
+                      {clipSafe(label)}
                     </Text>
                   </Pressable>
                 ))}

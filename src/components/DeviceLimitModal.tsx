@@ -14,6 +14,7 @@ import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 import { breadcrumb } from '../lib/monitoring';
 import { SUPPORT_STAFF_RECOVERY_PRESERVE_FAILED } from '../lib/supportStaffRecoveryVault';
 import { DEVICE_LIMIT_COPY } from '../constants/strings';
+import { CLIP_SAFE, clipSafe } from './ui/styles';
 
 function getDeviceIcon(deviceType: string | null) {
   if (!deviceType) return Smartphone;
@@ -376,9 +377,9 @@ export function DeviceLimitModal() {
                               ? 'text-content-tertiary'
                               : 'text-status-danger'
                         }`}
-                        style={{ flexShrink: 0, paddingRight: 2 }}
+                        style={CLIP_SAFE}
                       >
-                        {`${isThisRowBusy ? 'Revoking…' : 'Revoke'} `}
+                        {clipSafe(isThisRowBusy ? 'Revoking…' : 'Revoke')}
                       </Text>
                     </Pressable>
                   </View>

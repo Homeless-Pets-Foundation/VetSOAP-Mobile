@@ -10,7 +10,7 @@ import * as Haptics from 'expo-haptics';
 import { X, type LucideIcon } from 'lucide-react-native';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors } from '../../hooks/useThemeColors';
-import { HIT_SLOP } from './styles';
+import { CLIP_SAFE, clipSafe, HIT_SLOP } from './styles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -126,14 +126,13 @@ export function Banner({
           className="ml-2 justify-center min-h-[44px]"
           style={ctaAnimStyle}
         >
-          {/* Trailing space + flexShrink:0 — Android under-measures single-word
-              Text ("Manage", "Retry") in flex-rows and clips the last glyph;
-              fixing it here covers every Banner call site. Do NOT remove. */}
-          <Text
-            className={`text-body-sm font-semibold ${v.ctaText}`}
-            style={{ flexShrink: 0, paddingRight: 2 }}
-          >
-            {`${cta.label} `}
+          {/* clipSafe + CLIP_SAFE — Android "Bold text" (fontWeightAdjustment=300)
+              paints glyphs wider than Yoga measured them, clipping a shrink-wrapped
+              label ("Manage", "Retry"). These buy measured-width headroom; fixing it
+              here covers every Banner call site. CLAUDE.md > UI Gotchas.
+              accessibilityLabel above stays unpadded. */}
+          <Text className={`text-body-sm font-semibold ${v.ctaText}`} style={CLIP_SAFE}>
+            {clipSafe(cta.label)}
           </Text>
         </AnimatedPressable>
       ) : null}

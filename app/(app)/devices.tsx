@@ -21,6 +21,7 @@ import { ListItem } from '../../src/components/ui/ListItem';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { Toast } from '../../src/components/Toast';
 import { friendlyErrorMessage } from '../../src/lib/errorCopy';
+import { CLIP_SAFE, clipSafe } from '../../src/components/ui/styles';
 
 function formatRelativeTime(isoDate: string): string {
   const date = new Date(isoDate);
@@ -198,9 +199,13 @@ export default function DevicesScreen() {
               onPress={() => router.back()}
               className="mr-3"
             />
+            {/* flex-1 — #171 fixed the capacity row below but not this header, which
+                has the same shrink-wrapped shape and would drop "Devices"
+                (CLAUDE.md > UI Gotchas). */}
             <Text
-              className="text-display font-bold text-content-primary"
+              className="text-display font-bold text-content-primary flex-1"
               accessibilityRole="header"
+              numberOfLines={1}
             >
               Manage Devices
             </Text>
@@ -208,21 +213,45 @@ export default function DevicesScreen() {
 
           {capacity ? (
             <Card className="mb-4">
+              {/* Android "Bold text" (Settings > Accessibility, Configuration
+                  fontWeightAdjustment=300) paints glyphs wider than Yoga
+                  measured them. Yoga sizes these labels for ONE line, Android
+                  then overruns, wraps at a space, and line 2 is clipped by the
+                  already-fixed one-line height — the whole trailing word just
+                  disappears with no ellipsis ("7 remaining" rendered as "7").
+                  Verified on a physical Pixel 10 Pro XL: identical build renders
+                  correctly at fontWeightAdjustment=0 and clips at 300.
+                  The trailing space buys measured-width headroom so the bold
+                  overrun cannot reach a wrap point; numberOfLines={1} makes any
+                  residual overrun ellipsize visibly instead of vanishing.
+                  flexShrink:0 keeps the row from squeezing them further. */}
               <View className="flex-row items-baseline justify-between mb-2">
-                <Text className="text-body font-semibold text-content-primary">
+                <Text className="text-body font-semibold text-content-primary flex-1">
                   {capacity.count} of {capacity.limit} devices in use
                 </Text>
                 {capacity.isAtLimit ? (
-                  <Text className="text-caption font-semibold text-status-danger">
-                    Limit reached
+                  <Text
+                    className="text-caption font-semibold text-status-danger"
+                    style={CLIP_SAFE}
+                    numberOfLines={1}
+                  >
+                    {clipSafe('Limit reached')}
                   </Text>
                 ) : capacity.isNearLimit ? (
-                  <Text className="text-caption font-semibold text-status-warning">
-                    Approaching limit
+                  <Text
+                    className="text-caption font-semibold text-status-warning"
+                    style={CLIP_SAFE}
+                    numberOfLines={1}
+                  >
+                    {clipSafe('Approaching limit')}
                   </Text>
                 ) : (
-                  <Text className="text-caption text-content-tertiary">
-                    {capacity.remaining} remaining
+                  <Text
+                    className="text-caption text-content-tertiary"
+                    style={CLIP_SAFE}
+                    numberOfLines={1}
+                  >
+                    {clipSafe(`${capacity.remaining} remaining`)}
                   </Text>
                 )}
               </View>

@@ -1,13 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
-  Text,
   ScrollView,
   Pressable,
   RefreshControl,
   ActivityIndicator,
   Alert,
 } from 'react-native';
+import { Text } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';

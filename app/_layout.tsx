@@ -1,15 +1,6 @@
 import React, { useEffect } from 'react';
-import {
-  Appearance,
-  Image,
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  Alert,
-  AppState,
-  Platform,
-} from 'react-native';
+import { Appearance, Image, View, Pressable, Alert, AppState, Platform } from 'react-native';
+import { Text } from '../src/components/ui/Text';
 import { Stack, usePathname, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import * as SplashScreen from 'expo-splash-screen';
@@ -30,49 +21,15 @@ import { DARK_THEME_COLORS, LIGHT_THEME_COLORS } from '../src/constants/colors';
 import { useAuthMfa, useAuthReadiness, useAuthUser } from '../src/hooks/useAuth';
 import '../global.css';
 
-// App-wide default font (Inter, embedded at build time — app.config.ts).
-// RN <Text> does NOT inherit fontFamily from a parent View, and the app
-// renders raw <Text>/<TextInput> everywhere with their own style props, so
-// defaultProps.style only reaches style-less elements. Overriding `render`
-// injects Inter UNDER each element's own styles (later array entry wins, so
-// any explicit fontFamily still overrides). Wrapped in try/catch so a render
-// shape change can never throw at module load (rule 1) — worst case is the
-// system-font fallback. Verify weights on a physical device (UI Gotchas).
-//
-// The same patch injects a global maxFontSizeMultiplier cap (1.3). Dense
-// clinical layouts break above ~130% OS text scale; the previous per-site
-// answer was disabling font scaling outright, which froze text entirely for
-// low-vision users. The cap lets everything scale up to 1.3x while an
-// element's own explicit maxFontSizeMultiplier (or allowFontScaling) prop
-// always wins — set a smaller per-element cap where a pill genuinely breaks;
-// never disable scaling again (tests/font-scaling-guard fences this).
-const GLOBAL_MAX_FONT_SIZE_MULTIPLIER = 1.3;
-try {
-  for (const Comp of [Text, TextInput] as const) {
-    const target = Comp as unknown as {
-      render?: (
-        ...args: unknown[]
-      ) => React.ReactElement<{ style?: unknown; maxFontSizeMultiplier?: number }> | null;
-      __interApplied?: boolean;
-    };
-    const baseRender = target.render;
-    if (typeof baseRender === 'function' && !target.__interApplied) {
-      target.render = function patchedRender(...args: unknown[]) {
-        const element = baseRender.apply(this, args);
-        if (!element) return element;
-        return React.cloneElement(element, {
-          style: [{ fontFamily: 'Inter' }, element.props.style],
-          ...(element.props.maxFontSizeMultiplier === undefined
-            ? { maxFontSizeMultiplier: GLOBAL_MAX_FONT_SIZE_MULTIPLIER }
-            : null),
-        });
-      };
-      target.__interApplied = true;
-    }
-  }
-} catch {
-  // noop — fall back to system font rather than crash at module load (rule 1)
-}
+// NOTE: this file used to monkey-patch `Text.render` / `TextInput.render` to
+// inject Inter and a 1.3x maxFontSizeMultiplier cap. RN 0.83 exports both as
+// plain function components with no `.render` static, so the patch never ran —
+// silently, on both platforms, for every release since it was written. The cap
+// now lives in `src/components/ui/Text.tsx`, which every text call site imports
+// instead of `react-native`; `tests/font-scaling-guard.test.mjs` executes the
+// resolver and fences the imports. Inter is NOT currently applied anywhere: the
+// embedded font (app.config.ts) has never actually rendered, so switching to it
+// is a first-time visual change and a separate decision, not a repair.
 
 // Cold-start marker — sampled at module-load time and attached to the first
 // `session_start` event so we can measure boot latency.

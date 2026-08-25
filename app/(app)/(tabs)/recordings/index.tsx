@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Alert, View, Text, TextInput, FlatList, Platform, Pressable, RefreshControl, ActivityIndicator } from 'react-native';
+import {
+  Alert,
+  View,
+  FlatList,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ActivityIndicator,
+} from 'react-native';
+import { Text, TextInput } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';

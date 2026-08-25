@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text } from 'react-native';
+import { View } from 'react-native';
+import { Text } from './ui/Text';
 import { Copy } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { copyWithAutoClear } from '../lib/secureClipboard';

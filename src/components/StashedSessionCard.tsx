@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View } from 'react-native';
+import { Text } from './ui/Text';
 import { Trash2, Play } from 'lucide-react-native';
 import type { StashedSession } from '../types/stash';
 import { Button } from './ui/Button';

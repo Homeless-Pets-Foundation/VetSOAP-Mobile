@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { View, Text, Pressable, TextInput } from 'react-native';
+import { View, Pressable } from 'react-native';
+import { Text, TextInput } from './ui/Text';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,

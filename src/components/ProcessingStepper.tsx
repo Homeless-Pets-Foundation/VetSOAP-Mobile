@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { AccessibilityInfo, Text, View } from 'react-native';
+import { AccessibilityInfo, View } from 'react-native';
+import { Text } from './ui/Text';
 import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { Check, PawPrint } from 'lucide-react-native';
 import { PROCESSING_STEP_LABELS, PROCESSING_WARMTH } from '../constants/strings';

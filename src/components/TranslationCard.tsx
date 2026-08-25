@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
+import { Text } from './ui/Text';
 import { Copy, Languages } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi, type TranslateResult } from '../api/recordings';

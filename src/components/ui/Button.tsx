@@ -1,5 +1,12 @@
 import React from 'react';
-import { Pressable, Text, View, ActivityIndicator, type PressableProps, type GestureResponderEvent } from 'react-native';
+import {
+  Pressable,
+  View,
+  ActivityIndicator,
+  type PressableProps,
+  type GestureResponderEvent,
+} from 'react-native';
+import { Text } from './Text';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,

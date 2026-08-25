@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, Alert, Pressable } from 'react-native';
+import { View, Alert, Pressable } from 'react-native';
+import { Text } from './ui/Text';
 import { AlertCircle, Check, Edit2, Plus, Sparkles } from 'lucide-react-native';
 import type { Recording, RecordingMetadataField, UpdateRecordingMetadata } from '../types';
 import { METADATA_FIELD_LABELS, METADATA_REVIEW_COPY } from '../constants/strings';

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
-import { AccessibilityInfo, ActivityIndicator, View, Text, Image, AppState, Alert } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, View, Image, AppState, Alert } from 'react-native';
+import { Text } from './ui/Text';
 import type { AppStateStatus } from 'react-native';
 import { biometrics } from '../lib/biometrics';
 import { AuthContext } from '../auth/AuthProvider';

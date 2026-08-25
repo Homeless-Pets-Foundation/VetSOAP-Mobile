@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
+import { Text } from './Text';
 import * as Haptics from 'expo-haptics';
 import { FormField } from './FormField';
 import { cx, HIT_SLOP, runMaybeAsync, TOUCH_TARGET } from './styles';

@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, Alert, ScrollView, Pressable, ActivityIndicator, InteractionManager, type LayoutChangeEvent } from 'react-native';
+import {
+  View,
+  Alert,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  InteractionManager,
+  type LayoutChangeEvent,
+} from 'react-native';
+import { Text } from '../../src/components/ui/Text';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useNavigation, useRouter } from 'expo-router';
 import { usePreventRemove, useFocusEffect } from '@react-navigation/native';

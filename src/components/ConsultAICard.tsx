@@ -1,5 +1,6 @@
 import React, { useCallback } from 'react';
-import { Alert, Linking, Text, View } from 'react-native';
+import { Alert, Linking, View } from 'react-native';
+import { Text } from './ui/Text';
 import { ExternalLink } from 'lucide-react-native';
 import { CONSULT_COPY } from '../constants/strings';
 import { Button } from './ui/Button';

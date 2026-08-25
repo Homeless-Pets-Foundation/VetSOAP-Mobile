@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo } from 'react';
-import { View, Text, Pressable, SectionList, RefreshControl, BackHandler } from 'react-native';
+import { View, Pressable, SectionList, RefreshControl, BackHandler } from 'react-native';
+import { Text } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';

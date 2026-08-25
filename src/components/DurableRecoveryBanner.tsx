@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, Text } from 'react-native';
+import { Pressable } from 'react-native';
+import { Text } from './ui/Text';
 import { useRouter } from 'expo-router';
 import { FileClock, ChevronRight } from 'lucide-react-native';
 import { useDurableRecoveries } from '../hooks/useDurableRecoveries';

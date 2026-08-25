@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Redirect, Stack, useRouter } from 'expo-router';
 import { useAuthActions, useAuthMfa, useAuthReadiness, useAuthUser } from '../../src/hooks/useAuth';
-import { View, Text, ActivityIndicator, Alert } from 'react-native';
+import { View, ActivityIndicator, Alert } from 'react-native';
+import { Text } from '../../src/components/ui/Text';
 import { AppLockGuard } from '../../src/components/AppLockGuard';
 import { DeviceRegistrationBanner } from '../../src/components/DeviceRegistrationBanner';
 import { Button } from '../../src/components/ui/Button';

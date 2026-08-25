@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
-import { ScrollView, Text, View, Alert } from 'react-native';
+import { ScrollView, View, Alert } from 'react-native';
+import { Text } from '../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { ChevronLeft, FileClock } from 'lucide-react-native';

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Modal, View, Text, Pressable, ScrollView, Alert } from 'react-native';
+import { Modal, View, Pressable, ScrollView, Alert } from 'react-native';
+import { Text } from './ui/Text';
 import { useQueryClient } from '@tanstack/react-query';
 import { ShieldAlert, Smartphone, Tablet, Monitor } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';

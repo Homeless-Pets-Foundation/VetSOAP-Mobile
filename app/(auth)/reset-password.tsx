@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView } from 'react-native';
+import { View, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView } from 'react-native';
+import { Text } from '../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { AlertCircle, Eye, EyeOff } from 'lucide-react-native';

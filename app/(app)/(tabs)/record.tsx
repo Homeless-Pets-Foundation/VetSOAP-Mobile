@@ -1,5 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, Alert, ActivityIndicator, AccessibilityInfo, Linking, Platform, Pressable, useWindowDimensions, FlatList, AppState, InteractionManager } from 'react-native';
+import {
+  View,
+  Alert,
+  ActivityIndicator,
+  AccessibilityInfo,
+  Linking,
+  Platform,
+  Pressable,
+  useWindowDimensions,
+  FlatList,
+  AppState,
+  InteractionManager,
+} from 'react-native';
+import { Text } from '../../../src/components/ui/Text';
 import type { AppStateStatus } from 'react-native';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { usePreventRemove } from '@react-navigation/native';

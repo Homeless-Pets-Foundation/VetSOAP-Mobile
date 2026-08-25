@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, Text, View, type GestureResponderEvent, type PressableProps } from 'react-native';
+import { Pressable, View, type GestureResponderEvent, type PressableProps } from 'react-native';
+import { Text } from './Text';
 import * as Haptics from 'expo-haptics';
 import { ChevronRight } from 'lucide-react-native';
 import { useThemeColors } from '../../hooks/useThemeColors';

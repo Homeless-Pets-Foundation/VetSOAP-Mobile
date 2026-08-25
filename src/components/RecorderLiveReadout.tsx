@@ -1,5 +1,6 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { Text } from './ui/Text';
 import { AudioWaveform } from './AudioWaveform';
 import {
   LONG_RECORDING_WARNING_COPY,

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Switch, Text, View, type SwitchProps } from 'react-native';
+import { Switch, View, type SwitchProps } from 'react-native';
+import { Text } from './Text';
 import * as Haptics from 'expo-haptics';
 import { cx, runMaybeAsync } from './styles';
 import { useThemeColors } from '../../hooks/useThemeColors';

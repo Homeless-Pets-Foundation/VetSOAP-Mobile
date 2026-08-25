@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, TextInput, type TextInputProps, type NativeSyntheticEvent, type TargetedEvent } from 'react-native';
+import { View, type NativeSyntheticEvent, type TargetedEvent } from 'react-native';
+import { TextInput, type TextInputProps } from './Text';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { FormField } from './FormField';
 import { cx } from './styles';

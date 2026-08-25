@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { AccessibilityInfo, Platform, Text } from 'react-native';
+import { AccessibilityInfo, Platform } from 'react-native';
+import { Text } from './Text';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { SOAP_SECTION_ACTIONS } from '../../constants/strings';
 import { CLIP_SAFE, clipSafe, cx } from './styles';

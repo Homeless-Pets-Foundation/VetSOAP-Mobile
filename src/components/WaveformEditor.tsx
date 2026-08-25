@@ -1,5 +1,6 @@
 import React, { useCallback } from 'react';
-import { View, Text, Platform } from 'react-native';
+import { View, Platform } from 'react-native';
+import { Text } from './ui/Text';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useSharedValue,

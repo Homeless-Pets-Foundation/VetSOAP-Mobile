@@ -12,6 +12,7 @@ export * from './SegmentedControl';
 export * from './Select';
 export * from './Sheet';
 export * from './Skeleton';
+export * from './Text';
 export * from './TextInputField';
 export * from './Toggle';
 export * from './styles';

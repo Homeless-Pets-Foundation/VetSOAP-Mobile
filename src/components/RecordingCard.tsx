@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Pressable } from 'react-native';
+import { Text } from './ui/Text';
 import { useRouter } from 'expo-router';
 import { ChevronRight, CloudOff, Smartphone, Sparkles } from 'lucide-react-native';
 import { StatusBadge } from './StatusBadge';

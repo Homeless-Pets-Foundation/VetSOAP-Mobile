@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View } from 'react-native';
+import { Text } from './ui/Text';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { Button } from './ui/Button';
 import { slotHasRecoverableAudio } from '../types/multiPatient';

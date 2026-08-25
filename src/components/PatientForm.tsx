@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator } from 'react-native';
+import { View, ActivityIndicator } from 'react-native';
+import { Text } from './ui/Text';
 import { Star } from 'lucide-react-native';
 import { SegmentedControl } from './ui/SegmentedControl';
 import { TextInputField } from './ui/TextInputField';

@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
-import { Linking, Share, Text, View } from 'react-native';
+import { Linking, Share, View } from 'react-native';
+import { Text } from './ui/Text';
 import { Copy, Mail, RefreshCw, Share2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi, type EmailDraftResult } from '../api/recordings';

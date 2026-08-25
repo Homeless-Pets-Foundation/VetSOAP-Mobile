@@ -1,7 +1,6 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import {
   View,
-  Text,
   ScrollView,
   Pressable,
   Alert,
@@ -9,6 +8,7 @@ import {
   AppState,
   BackHandler,
 } from 'react-native';
+import { Text } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useFocusEffect } from '@react-navigation/native';

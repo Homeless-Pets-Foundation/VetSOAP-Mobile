@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
+import { Text } from './ui/Text';
 import { CheckCircle, Copy, FileText, Share2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useQueryClient } from '@tanstack/react-query';

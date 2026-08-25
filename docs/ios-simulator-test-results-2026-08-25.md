@@ -54,7 +54,7 @@ same native surface a production iOS build uses. Both `patch-package` patches ap
 | B | `useDeviceCapacity` + `DeviceLimitModal` | **PASS** | **PASS** | Capacity banner rendered a truthful count ("16 of 20" → "17 of 20" after the iPad registered) with a working Manage action; the Devices list rendered the fleet with per-device type, app version and last-active, an "Approaching limit" chip, and a revoke action on every row **except** the current device. `DeviceLimitModal` itself never triggered — capacity stayed under the cap |
 | C | 19 routes | **18/19 rendered, 1 guard-only** | walk-through PASS | 18 screens rendered and were inspected; `mfa` could only be verified at the guard level because the account is not enrolled, so there is no challenge for it to render. See [§3](#3-route-coverage) |
 | D | Light / dark, both geometries | **PASS** | **PASS** | Dark mode correct on Home, Settings, Local Recovery, Recovered Recordings; contrast and brand colours adapt; no clipping |
-| D | Largest Dynamic Type | **FAIL** | **FAIL** | The 1.3× cap is not applied — measured **3.58×** (iPhone) / **3.57×** (iPad). See [F-01](#f-01--p0--the-global-text-patch-is-a-no-op-on-rn-083) and [F-02](#f-02--device-capacity-banner-overflows-at-large-dynamic-type) |
+| D | Largest Dynamic Type | **FAIL → FIXED** | **FAIL → FIXED** | The 1.3× cap was not applied — measured **3.58×** (iPhone) / **3.57×** (iPad). Fixed after the run and re-measured on a rebuilt app at **1.30×**. See [F-01](#f-01--p0--the-global-text-patch-is-a-no-op-on-rn-083--fixed) and [F-02](#f-02--device-capacity-banner-overflows-at-large-dynamic-type--fixed-by-f-01) |
 | E | Sign-out data preservation (rule 8) | **PASS** | n/t | Baseline before sign-out: 2 rows, both `status draft`, both "audio not on this device", against 2952 total. Signed out (**no** unsent-work warning — correct, nothing local existed), signed back in: **both rows still present with identical status**. `clearTransientCaches()` preserved them, and presence reconciliation re-established them after `queryClient.clear()` |
 | — | `DEVICE_REVOKED` force sign-out (bonus) | n/a | **PASS** | Revoking the iPad from the iPhone force-signed-out the iPad to login with a message and no crash — but it is the wrong message, see [F-06](#f-06--an-admin-revoked-device-is-told-its-session-expired) |
 | F | Biometrics | **PARTIAL** | n/t | Enrolment via `notifyutil` works and unhides the Face ID Lock row; `authenticateAsync` never presents a prompt over SSH, so enable/lock/unlock are not drivable. No crash — the toggle simply stays off |
@@ -158,7 +158,7 @@ Two non-crash behaviours worth recording because they *look* like anomalies and 
 
 ## 5. Findings
 
-### F-01 · **P0** · The global text patch is a no-op on RN 0.83
+### F-01 · **P0** · The global text patch is a no-op on RN 0.83 — **FIXED**
 
 `app/_layout.tsx:49-73` monkey-patches `Text.render` and `TextInput.render` to inject **(a)** the
 global `maxFontSizeMultiplier` 1.3 cap and **(b)** `fontFamily: 'Inter'`. It is guarded by
@@ -208,23 +208,61 @@ assert.match(src, /maxFontSizeMultiplier: GLOBAL_MAX_FONT_SIZE_MULTIPLIER/);
 A source-text guard cannot observe that the code it fences never executes. This is exactly the class
 of defect the plan's premise predicted: 849 sandboxed logic tests, none of which run the iOS runtime.
 
-**Not fixed here.** The fix touches shared cross-platform rendering, needs an Android re-verification
-pass, and is out of scope for a test run. It wants its own change: pick a mechanism that works on RN
-0.83 (a `Text` defaultProps shim is also gone; a wrapper component or a NativeWind base style are the
-plausible routes), then extend the guard from a source grep to something that can actually fail when
-the injection stops happening.
+**Fixed (2026-08-25, after this run).** Scope was deliberately limited to the **cap**; Inter was left
+off — see below.
 
-### F-02 · Device-capacity banner overflows at large Dynamic Type
+- `src/lib/fontScaling.ts` holds the cap arithmetic as a plain, side-effect-free module so the guard
+  can **execute** it. A smaller per-element cap wins; a larger one is clamped; null/0/NaN/Infinity
+  fall back to 1.3 rather than disabling scaling.
+- `src/components/ui/Text.tsx` is now the app's `Text`/`TextInput` and the only file allowed to import
+  them from `react-native`. `TextInput` forwards a ref and re-exports itself as a type so
+  `useRef<TextInput>` still resolves. `className` is forwarded to the underlying RN element, so
+  NativeWind interop is unchanged and no `cssInterop` registration is needed.
+- 63 files had their import swapped; the 318 `<Text>` call sites are untouched.
+- The dead patch is deleted from `app/_layout.tsx`.
+- Two independent fences: an ESLint `no-restricted-imports` rule (fails in the editor) and a rewritten
+  `tests/font-scaling-guard.test.mjs` that executes the resolver **and** asserts no file outside the
+  wrapper imports `Text`/`TextInput` from `react-native`.
+
+**Verified at runtime on the rebuilt app**, which is the whole point — a source guard could not have
+caught this. Measured on the pre-auth login screen, same method as the original finding:
+
+| Label | `content_size large` | `accessibility-extra-extra-extra-large` | ratio |
+|---|---|---|---|
+| "Sign in to your account" | 22.00 | 28.67 | **1.303×** |
+| "Email" | 18.00 | 23.67 | **1.315×** |
+| "Password" | 18.00 | 23.67 | **1.315×** |
+
+Was 3.58×. The residual above 1.30 is line-height rounding at 3× pixel snapping. Login and Home
+render pixel-identically to their pre-fix screenshots at default text size, so NativeWind styling did
+not regress.
+
+**Inter deliberately not enabled.** The patch was already dead when it was written (RN was 0.83.6 at
+`a94ffae`), so Inter has *never* rendered — adopting it now is a first-time visual change across all
+318 text elements, and the bundled file is a single variable TTF whose `font-medium`/`semibold`/`bold`
+weights may render synthetically. That is a design decision with a device-verification cost, not a
+repair, and it is tracked separately.
+
+**Android is unverified visually.** No native code changed and the JS bundle is platform-agnostic, so
+an Android build compiles from the same source the iOS build did — but the rendering was only observed
+on iOS. Worth an Android smoke pass before release.
+
+### F-02 · Device-capacity banner overflows at large Dynamic Type — **FIXED by F-01**
 
 At `accessibility-extra-extra-extra-large` on the iPhone, the Home device-capacity banner
 (`app/(app)/(tabs)/index.tsx:463`) breaks: the message text overruns the bottom edge of its card —
 the final word is clipped mid-glyph — and the "Manage" action overlaps the text column rather than
 sitting beside or below it. The banner's row does not grow to fit its content.
 
-This is downstream of [F-01](#f-01--p0--the-global-text-patch-is-a-no-op-on-rn-083): at a correctly
-capped 1.3× the banner very likely holds. It is listed separately because a layout that assumes a cap
-is one bug and a cap that never applies is another, and the banner is worth re-checking after F-01 is
-fixed rather than assumed healed.
+This was downstream of [F-01](#f-01--p0--the-global-text-patch-is-a-no-op-on-rn-083--fixed), and
+re-checking after that fix rather than assuming it healed was the right call — it did heal. On the
+rebuilt app at the same content size the banner wraps to two lines **inside** its card with "Manage"
+beside it, "Welcome, Phil" fits on one line, and the org name is no longer ellipsized. Nothing is
+clipped and nothing overlaps.
+
+One milder case remains at that size: the "Not Submitted" row ellipsizes its client name and breed
+and its two status badges crowd the text column. That is ordinary constrained-row behaviour rather
+than the overflow class above, and it is not tracked as a defect.
 
 Note this is **not** the Android Bold-text class documented in CLAUDE.md's UI Gotchas
 (`fontWeightAdjustment` does not exist on iOS) — it is ordinary Dynamic Type overflow.
@@ -333,7 +371,7 @@ Only `react-native` diverges, and only locally. The Mac installed fresh from the
 **the artifact under test is RN 0.83.10** — the local tree is simply behind. A plain `npm install` in
 WSL resolves it and would drop `expo-doctor` to 21 findings. Worth doing, because a stale local tree
 means local greps of `node_modules` describe a version the app is not built with — which is precisely
-the trap [F-01](#f-01--p0--the-global-text-patch-is-a-no-op-on-rn-083) had to be re-verified around.
+the trap [F-01](#f-01--p0--the-global-text-patch-is-a-no-op-on-rn-083--fixed) had to be re-verified around.
 
 ## 6. Not completed
 

@@ -1,5 +1,6 @@
 import React from 'react';
-import { ActivityIndicator, Text, View, type DimensionValue } from 'react-native';
+import { ActivityIndicator, View, type DimensionValue } from 'react-native';
+import { Text } from './ui/Text';
 import { AlertTriangle, BarChart3, CheckCircle2, RefreshCw, Users } from 'lucide-react-native';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';

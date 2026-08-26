@@ -237,15 +237,10 @@ Was 3.58×. The residual above 1.30 is line-height rounding at 3× pixel snappin
 render pixel-identically to their pre-fix screenshots at default text size, so NativeWind styling did
 not regress.
 
-**Inter deliberately not enabled.** The patch was already dead when it was written (RN was 0.83.6 at
-`a94ffae`), so Inter has *never* rendered — adopting it now is a first-time visual change across all
-318 text elements, and the bundled file is a single variable TTF whose `font-medium`/`semibold`/`bold`
-weights may render synthetically. That is a design decision with a device-verification cost, not a
-repair, and it is tracked separately.
-
-**Android is unverified visually.** No native code changed and the JS bundle is platform-agnostic, so
-an Android build compiles from the same source the iOS build did — but the rendering was only observed
-on iOS. Worth an Android smoke pass before release.
+**Inter was fixed separately, after a device probe** — see
+[F-08](#f-08--inter-never-rendered-on-android-because-the-file-was-named-wrong--fixed). The cap fix
+shipped first on its own because it is unambiguous; adopting the typeface was a design decision that
+needed evidence, and the probe found a second bug.
 
 ### F-02 · Device-capacity banner overflows at large Dynamic Type — **FIXED by F-01**
 
@@ -428,3 +423,61 @@ is not enrolled. Any MFA-enrolled account on any device closes that gap.
 | Artifacts | `~/builds/captivet-ios-sim-1.13.19.tar.gz` kept; `~/builds/captivet-joy-sim-1131.tar.gz` fallback untouched |
 | Broken pre-run tree | parked at `~/VetSOAP-Mobile.shipfail` on the Mac; `~/VetSOAP-Mobile.bak` (Jul 1) untouched |
 | Mac scripts changed | `~/ios-build.sh` rewritten (env fail-fast, no `eas env:pull`, absolute output, `EAS_NO_VCS` first); `~/ios-drive.sh` now requires `SIM_UDID` (original at `~/ios-drive.sh.bak-udid`); `~/ios-ax.sh` added |
+
+### F-08 · Inter never rendered on Android because the file was named wrong — **FIXED**
+
+Enabling the typeface (a one-line change in the wrapper, since the cap fix had already routed every
+call site through it) surfaced a platform-split bug that had been latent since the font was embedded.
+
+**iOS was fine.** A controlled comparison — same build, only the `fontFamily` line differing —
+moved the one shrink-wrapped label on the login screen from **116.33 pt → 117.00 pt**, and a
+same-string weight ladder proved the variable `wght` axis resolves as real instances rather than
+synthetic emboldening:
+
+| class | fontWeight | width | vs 400 |
+|---|---|---|---|
+| `font-normal` | 400 | 121.67 | — |
+| `font-medium` | 500 | 123.67 | +1.64% |
+| `font-semibold` | 600 | 125.67 | +3.29% |
+| `font-bold` | 700 | 127.67 | +4.93% |
+
+Four distinct widths, **exactly +2.00 pt per step**. That linear ladder is axis interpolation; faux
+bold does not produce it.
+
+**Android was not fine.** Android never reads a font's internal name table. `expo-font` enumerates
+`assets/fonts/` with `^(.+?)(_bold|_italic|_bold_italic)?\.(ttf|otf)$`
+(`FontLoaderModule.kt:66-76`) and RN's `ReactFontManager` resolves `fontFamily: "Inter"` to
+`fonts/Inter.ttf`. The file shipped as **`Inter-Variable.ttf`**, which registers as
+`"Inter-Variable"` — so `fontFamily: 'Inter'` matched nothing and **silently fell back to Roboto**,
+while iOS rendered Inter correctly off the internal family name. Enabling the font as-is would have
+shipped two different typefaces on the two platforms, with nothing failing.
+
+Fix: rename the asset to `assets/fonts/Inter.ttf`. iOS is unaffected (it resolves by internal name,
+still `Inter`); Android now matches. Measured on an emulator, same build, only the filename differing:
+
+| label | `Inter-Variable.ttf` (Roboto fallback) | `Inter.ttf` | Δ |
+|---|---|---|---|
+| "Forgot password? " | 294 px | **310 px** | +5.4% |
+| "Sign In " | 142 px | **154 px** | +8.5% |
+
+`tests/font-scaling-guard.test.mjs` now asserts the filename stem equals `APP_FONT_FAMILY`, so the
+next person who renames the asset fails CI instead of shipping a split typeface.
+
+**Android Bold-text was verified, not assumed.** CLAUDE.md records this class as physical-Android-only
+because emulators run `font_weight_adjustment=0` — but the setting can be forced with
+`adb shell settings put secure font_weight_adjustment 300`, and the emulator honours it (0.28% of
+screenshot pixels changed on the re-render). With Inter actually rendering, at `fwa=300`:
+
+- **Login**: every string painted in full — nothing vanished, nothing clipped.
+- **Home** (the dense screen, where most of `ui-clip-guard`'s 64 at-risk shapes live): 23 text nodes,
+  **identical strings and identical bounds** at `fwa=0` and `fwa=300` (Yoga measuring with the
+  unadjusted font, exactly as documented), and every one painted complete — including all four
+  tab-bar labels, the classic at-risk shape.
+
+Worth recording as a capability: **this bug class IS testable on an emulator** with the adb setting,
+which is cheaper than the physical-device round trip CLAUDE.md currently implies.
+
+**Residual.** Verified on login and Home on both platforms. The remaining screens were not walked at
+`fwa=300`, and `ui-clip-guard`'s census is a static shape count that does not move with the font — so
+it neither caught nor could catch a font-induced regression. A physical-device pass over the dense
+screens before release is still the prudent close-out.

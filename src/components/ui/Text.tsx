@@ -6,6 +6,7 @@ import {
   type TextInputProps as RNTextInputProps,
 } from 'react-native';
 import { resolveMaxFontSizeMultiplier } from '../../lib/fontScaling';
+import { APP_FONT_FAMILY } from '../../lib/typography';
 
 /**
  * The app's `Text` and `TextInput`. Every text call site imports from here, not
@@ -19,6 +20,11 @@ import { resolveMaxFontSizeMultiplier } from '../../lib/fontScaling';
  * is an import, and `tests/font-scaling-guard.test.mjs` fails on any import of
  * `Text`/`TextInput` from `react-native` outside this file (with an ESLint
  * `no-restricted-imports` rule catching it earlier, in the editor).
+ *
+ * The app typeface is applied here too, base-first (`[{ fontFamily }, style]`), so
+ * an explicit per-element fontFamily and NativeWind className styles both still
+ * win. RN <Text> does not inherit fontFamily from a parent View, which is why it
+ * has to be set on every element rather than once at the root.
  *
  * NativeWind: `className` is forwarded to the underlying RN component, whose JSX
  * element in THIS file is what NativeWind's transform sees. Interop therefore
@@ -35,21 +41,23 @@ import { resolveMaxFontSizeMultiplier } from '../../lib/fontScaling';
 export type TextProps = RNTextProps & { className?: string };
 export type TextInputProps = RNTextInputProps & { className?: string };
 
-export function Text({ maxFontSizeMultiplier, ...props }: TextProps) {
+export function Text({ maxFontSizeMultiplier, style, ...props }: TextProps) {
   return (
     <RNText
       {...props}
+      style={[{ fontFamily: APP_FONT_FAMILY }, style]}
       maxFontSizeMultiplier={resolveMaxFontSizeMultiplier(maxFontSizeMultiplier)}
     />
   );
 }
 
 export const TextInput = React.forwardRef<RNTextInput, TextInputProps>(
-  function TextInput({ maxFontSizeMultiplier, ...props }, ref) {
+  function TextInput({ maxFontSizeMultiplier, style, ...props }, ref) {
     return (
       <RNTextInput
         {...props}
         ref={ref}
+        style={[{ fontFamily: APP_FONT_FAMILY }, style]}
         maxFontSizeMultiplier={resolveMaxFontSizeMultiplier(maxFontSizeMultiplier)}
       />
     );

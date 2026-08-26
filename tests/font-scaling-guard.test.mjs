@@ -123,3 +123,93 @@ test('the dead Text.render patch is gone from app/_layout.tsx', async () => {
   assert.doesNotMatch(src, /GLOBAL_MAX_FONT_SIZE_MULTIPLIER/);
   assert.doesNotMatch(src, /target\.render/);
 });
+
+// ---------------------------------------------------------------------------
+// App typeface. Inter is embedded by the expo-font plugin and applied by the
+// same wrapper that applies the cap. It previously rode on the dead
+// Text.render patch and therefore never rendered at all, so these assertions
+// check the whole chain — constant, embedded file, plugin registration, and
+// the wrapper actually using it — rather than any one link.
+// ---------------------------------------------------------------------------
+
+/** Read name-table entries from a TTF/OTF so the test reads the REAL family name. */
+async function readFontNames(relPath) {
+  const buf = await readFile(path.join(root, relPath));
+  const numTables = buf.readUInt16BE(4);
+  const tables = {};
+  for (let i = 0; i < numTables; i++) {
+    const p = 12 + i * 16;
+    tables[buf.toString('ascii', p, p + 4)] = buf.readUInt32BE(p + 8);
+  }
+  const off = tables.name;
+  const count = buf.readUInt16BE(off + 2);
+  const strOff = buf.readUInt16BE(off + 4);
+  const names = {};
+  for (let i = 0; i < count; i++) {
+    const p = off + 6 + i * 12;
+    const platformId = buf.readUInt16BE(p);
+    const nameId = buf.readUInt16BE(p + 6);
+    const len = buf.readUInt16BE(p + 8);
+    const strO = buf.readUInt16BE(p + 10);
+    const raw = buf.subarray(off + strOff + strO, off + strOff + strO + len);
+    if (names[nameId] !== undefined) continue;
+    if (platformId === 3) {
+      // Windows platform strings are UTF-16BE; Node only decodes LE, so swap.
+      const swapped = Buffer.from(raw);
+      swapped.swap16();
+      names[nameId] = swapped.toString('utf16le');
+    } else {
+      names[nameId] = raw.toString('latin1');
+    }
+  }
+  return { names, hasVariableAxes: tables.fvar !== undefined };
+}
+
+test('the app font family name matches the embedded font file', async () => {
+  // If someone swaps the TTF for one whose family differs, `fontFamily: 'Inter'`
+  // silently resolves to the system font — the exact class of silent failure
+  // this whole guard exists for.
+  const { APP_FONT_FAMILY, APP_FONT_ASSET } = await loadTsModule('src/lib/typography.ts');
+  const buf = await readFile(path.join(root, APP_FONT_ASSET));
+  assert.ok(buf.length > 0, `${APP_FONT_ASSET} is missing or empty`);
+  const { names, hasVariableAxes } = await readFontNames(APP_FONT_ASSET);
+  const family = (names[1] || '').replace(/[^\x20-\x7E]/g, '');
+  assert.equal(family, APP_FONT_FAMILY, `embedded font family is "${family}", wrapper asks for "${APP_FONT_FAMILY}"`);
+  // The weights the app uses (font-medium/semibold/bold, 174 call sites) come
+  // from the variable wght axis; a static Regular-only file would collapse them.
+  assert.ok(hasVariableAxes, 'embedded font has no fvar table — weights would collapse');
+});
+
+test('the font FILENAME stem matches the family name (Android resolves by filename)', async () => {
+  // Android does not read the font's internal name table. expo-font enumerates
+  // `assets/fonts/` with ^(.+?)(_bold|_italic|_bold_italic)?\.(ttf|otf)$ and RN's
+  // ReactFontManager resolves `fontFamily: "X"` to `fonts/X.ttf`. So a file named
+  // Inter-Variable.ttf registers as "Inter-Variable" and `fontFamily: 'Inter'`
+  // falls back to Roboto — SILENTLY, and only on Android, while iOS (which uses
+  // the internal family name) renders Inter correctly. Verified on an emulator.
+  const { APP_FONT_FAMILY, APP_FONT_ASSET } = await loadTsModule('src/lib/typography.ts');
+  const stem = path.basename(APP_FONT_ASSET).replace(/\.(ttf|otf)$/, '');
+  assert.equal(
+    stem,
+    APP_FONT_FAMILY,
+    `font file must be named ${APP_FONT_FAMILY}.ttf for Android to resolve it; found ${stem}`,
+  );
+});
+
+test('app.config.ts registers the embedded font with expo-font', async () => {
+  const { APP_FONT_ASSET } = await loadTsModule('src/lib/typography.ts');
+  const config = await readFile(path.join(root, 'app.config.ts'), 'utf8');
+  assert.ok(
+    config.includes(`./${APP_FONT_ASSET}`),
+    `app.config.ts must pass ./${APP_FONT_ASSET} to the expo-font plugin`,
+  );
+});
+
+test('the ui/Text wrapper applies the app font family', async () => {
+  const src = await readFile(path.join(root, WRAPPER), 'utf8');
+  assert.match(src, /APP_FONT_FAMILY/);
+  // Base-first: the app font is the FALLBACK layer, so any explicit per-element
+  // fontFamily (and NativeWind className styles) still win.
+  const applied = src.match(/style=\{\[\{ fontFamily: APP_FONT_FAMILY \}, style\]\}/g);
+  assert.equal(applied?.length, 2, 'both Text and TextInput must apply the app font, base-first');
+});

@@ -1,18 +1,18 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     - cron: "0 6 * * 1" # Monday 6am UTC
   workflow_dispatch:
 
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 30
     permissions:
       security-events: write
@@ -30,6 +30,15 @@ jobs:
         with:
           clean: true
           persist-credentials: false
+
+      - name: Report and verify commit
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$checked_out_sha" = "$GITHUB_SHA"
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

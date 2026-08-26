@@ -1,0 +1,315 @@
+name: Self-hosted CI
+
+run-name: Self-hosted CI for ${{ github.ref_name }} at ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: self-hosted-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  confirm-pr-head:
+    name: Confirm PR head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 5
+    outputs:
+      base-sha: ${{ steps.confirm.outputs.base-sha }}
+      head-sha: ${{ steps.confirm.outputs.head-sha }}
+      pr-number: ${{ steps.confirm.outputs.pr-number }}
+    steps:
+      - name: Confirm one open same-repository PR at the dispatch SHA
+        id: confirm
+        uses: actions/github-script@v8
+        with:
+          script: |
+            if (process.env.GITHUB_REF_TYPE !== 'branch' || !context.ref.startsWith('refs/heads/')) {
+              core.setFailed(`Dispatch must target a branch, not ${context.ref}.`);
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const branch = context.ref.slice('refs/heads/'.length);
+            const repository = `${owner}/${repo}`;
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              head: `${owner}:${branch}`,
+              per_page: 100,
+            });
+            const matching = pulls.filter((pull) =>
+              pull.head.ref === branch && pull.head.repo?.full_name === repository
+            );
+
+            if (matching.length !== 1) {
+              core.setFailed(
+                `Expected exactly one open same-repository PR for ${branch}; found ${matching.length}.`,
+              );
+              return;
+            }
+
+            const pull = matching[0];
+            const defaultBranch = context.payload.repository.default_branch;
+            if (pull.base.ref !== defaultBranch) {
+              core.setFailed(
+                `PR #${pull.number} targets ${pull.base.ref}; expected ${defaultBranch}.`,
+              );
+              return;
+            }
+            if (pull.head.sha !== context.sha) {
+              core.setFailed(
+                `Dispatch SHA ${context.sha} is stale; PR #${pull.number} now points to ${pull.head.sha}.`,
+              );
+              return;
+            }
+
+            core.setOutput('base-sha', pull.base.sha);
+            core.setOutput('head-sha', pull.head.sha);
+            core.setOutput('pr-number', String(pull.number));
+            core.summary
+              .addHeading('Confirmed pull request head')
+              .addTable([
+                ['PR', 'Branch', 'Base SHA', 'Head SHA'],
+                [`#${pull.number}`, branch, pull.base.sha, pull.head.sha],
+              ]);
+            await core.summary.write();
+
+  r2-destination-contract:
+    name: R2 Destination Contract
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify R2 contracts
+        run: ./scripts/ci.sh r2
+
+  typecheck:
+    name: Typecheck
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: TypeScript
+        run: ./scripts/ci.sh typecheck
+
+  lint:
+    name: Lint
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: ESLint
+        run: ./scripts/ci.sh lint
+
+  test:
+    name: Test
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: ./scripts/ci.sh test
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript]
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          trap-caching: false
+          dependency-caching: false
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
+          upload: always
+          upload-database: false
+
+  dependency-review:
+    name: Review
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          base-ref: ${{ needs.confirm-pr-head.outputs.base-sha }}
+          head-ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          fail-on-severity: high
+
+  swift-typecheck:
+    name: Swift typecheck (durable recorder)
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, macOS, ARM64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun swiftc --version
+      - name: Type-check ExpoModulesCore-free Swift
+        run: ./scripts/ci.sh swift

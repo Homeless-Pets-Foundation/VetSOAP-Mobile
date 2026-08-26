@@ -90,9 +90,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ],
     // Build-time font embed (variable Inter). Synchronous availability, no
     // runtime useFonts/splash-gate (rules 1/24). The plugin needs explicit
-    // .ttf paths — it does not expand globs. Family registers as "Inter";
+    // .ttf paths — it does not expand globs.
+    //
+    // The FILENAME must equal the family name. Android never reads the font's
+    // internal name table: expo-font enumerates assets/fonts/ with
+    // ^(.+?)(_bold|_italic|_bold_italic)?\.(ttf|otf)$ and RN's ReactFontManager
+    // resolves `fontFamily: "Inter"` to `fonts/Inter.ttf`. This file used to ship
+    // as Inter-Variable.ttf, which registers as "Inter-Variable" — so Android
+    // silently fell back to Roboto while iOS (internal name) rendered Inter.
+    // tests/font-scaling-guard.test.mjs fences the stem against APP_FONT_FAMILY.
     // font-medium/semibold/bold keep working via fontWeight on the wght axis.
-    ['expo-font', { fonts: ['./assets/fonts/Inter-Variable.ttf'] }],
+    ['expo-font', { fonts: ['./assets/fonts/Inter.ttf'] }],
     [
       'expo-audio',
       {

@@ -144,7 +144,7 @@ ssh macmini-ios 'cd ~/VetSOAP-Mobile
   ls modules/captivet-durable-recorder/ios/*.swift | wc -l   # expect 5
   ls modules/captivet-audio-focus/ios/*.swift | wc -l        # expect 1
   ls assets/*.png | wc -l                                    # expect 11
-  test -f assets/fonts/Inter-Variable.ttf && echo font-ok'
+  test -f assets/fonts/Inter.ttf && echo font-ok'
 ```
 
 ## Phase 2 — Build

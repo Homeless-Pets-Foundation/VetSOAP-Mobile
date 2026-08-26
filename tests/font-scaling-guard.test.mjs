@@ -234,8 +234,59 @@ const FRAMEWORK_TEXT_STYLE_OPTIONS = [
   'drawerLabelStyle',
 ];
 
+/**
+ * Blank out comments and string/template bodies, preserving offsets and line
+ * breaks. Brace-balancing the RAW source would count a `{` written inside a
+ * comment or a string, which does not just mis-slice — it can run the slice on
+ * past the real closing brace and swallow a later `APP_FONT_FAMILY` from
+ * somewhere else in the file, passing a style that never set the family. A
+ * guard that can report green while the thing it fences is broken is the exact
+ * failure this file was rewritten to stop, so it must not be reintroduced in
+ * the guard's own helper.
+ *
+ * A template body is blanked whole, `${...}` included, so an interpolation's
+ * braces are removed in matched pairs and the balance is preserved. Regex
+ * literals are not tracked; one containing an apostrophe or an unmatched brace
+ * would mis-mask, which breaks the balance and fails the test loudly rather
+ * than passing it quietly.
+ */
+function maskNonCode(src) {
+  const out = src.split('');
+  const blank = (from, to) => {
+    for (let i = from; i < to; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  for (let i = 0; i < src.length; ) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (c === '/' && next === '/') {
+      const end = src.indexOf('\n', i);
+      const stop = end === -1 ? src.length : end;
+      blank(i, stop);
+      i = stop;
+    } else if (c === '/' && next === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < src.length) {
+        if (src[j] === '\\') j += 2;
+        else if (src[j] === c) break;
+        else j++;
+      }
+      blank(i + 1, Math.min(j, src.length));
+      i = Math.min(j + 1, src.length);
+    } else {
+      i++;
+    }
+  }
+  return out.join('');
+}
+
 /** Extract the balanced `{...}` object literal that follows `key:` in `src`. */
-function objectLiteralsFor(src, key) {
+function objectLiteralsFor(rawSrc, key) {
+  const src = maskNonCode(rawSrc);
   const out = [];
   for (const m of src.matchAll(new RegExp(`\\b${key}\\s*:\\s*\\{`, 'g'))) {
     let depth = 0;
@@ -250,6 +301,32 @@ function objectLiteralsFor(src, key) {
   }
   return out;
 }
+
+test('the object-literal extractor is not fooled by braces in comments or strings', async () => {
+  // Self-test of the helper, because every assertion below is only as good as
+  // it is. Each decoy leaves the flagged style WITHOUT a family and hides one
+  // extra `{` — in a comment, then in a string. Counting braces raw, that stray
+  // `{` consumes the style's own closing brace, so the slice runs on into the
+  // NEXT style and reports APP_FONT_FAMILY as present: a guard that reads green
+  // over a tab bar still rendering in the system font, which is the precise
+  // failure this file was rewritten to stop.
+  const decoys = {
+    comment: '  tabBarLabelStyle: { fontSize: 11 /* stray { */ },',
+    string: "  tabBarLabelStyle: { fontSize: 11, testID: 'stray {' },",
+  };
+  for (const [kind, line] of Object.entries(decoys)) {
+    const src = ['const a = {', line, '  headerTitleStyle: { fontFamily: APP_FONT_FAMILY },', '};'].join('\n');
+    const [labelStyle] = objectLiteralsFor(src, 'tabBarLabelStyle');
+    assert.ok(labelStyle, `extractor found no tabBarLabelStyle literal (${kind} decoy)`);
+    assert.doesNotMatch(labelStyle, /APP_FONT_FAMILY/, `${kind} decoy swallowed the next style`);
+    assert.match(labelStyle, /fontSize: 11/);
+    // The stray brace must not have leaked the following key in either.
+    assert.doesNotMatch(labelStyle, /headerTitleStyle/);
+  }
+  // A key named only inside a comment or a string is not a declaration.
+  assert.deepEqual(objectLiteralsFor('// tabBarLabelStyle: { x }', 'tabBarLabelStyle'), []);
+  assert.deepEqual(objectLiteralsFor("const s = 'tabBarLabelStyle: { x }';", 'tabBarLabelStyle'), []);
+});
 
 test('navigator-rendered text styles declare the app font family', async () => {
   const offenders = [];

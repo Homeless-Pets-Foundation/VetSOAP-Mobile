@@ -213,3 +213,71 @@ test('the ui/Text wrapper applies the app font family', async () => {
   const applied = src.match(/style=\{\[\{ fontFamily: APP_FONT_FAMILY \}, style\]\}/g);
   assert.equal(applied?.length, 2, 'both Text and TextInput must apply the app font, base-first');
 });
+
+// ---------------------------------------------------------------------------
+// Framework-rendered text. The wrapper fence above proves every string WE
+// render routes through `src/components/ui/Text.tsx`. It says nothing about
+// strings a NAVIGATOR renders for us: React Navigation builds the bottom-tab
+// labels from the `title` screen options itself, so they never touch the
+// wrapper and, before this guard, stayed in the system font while every screen
+// switched to Inter. The framework's supported hook is the label style option,
+// which is merged after the navigation theme's own `fonts.*` entry.
+// ---------------------------------------------------------------------------
+
+/** Navigator options whose value styles text the framework renders for us. */
+const FRAMEWORK_TEXT_STYLE_OPTIONS = [
+  'tabBarLabelStyle',
+  'tabBarBadgeStyle',
+  'headerTitleStyle',
+  'headerBackTitleStyle',
+  'headerLargeTitleStyle',
+  'drawerLabelStyle',
+];
+
+/** Extract the balanced `{...}` object literal that follows `key:` in `src`. */
+function objectLiteralsFor(src, key) {
+  const out = [];
+  for (const m of src.matchAll(new RegExp(`\\b${key}\\s*:\\s*\\{`, 'g'))) {
+    let depth = 0;
+    const start = m.index + m[0].length - 1;
+    for (let i = start; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) {
+        out.push(src.slice(start, i + 1));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+test('navigator-rendered text styles declare the app font family', async () => {
+  const offenders = [];
+  for await (const file of walk(path.join(root, 'app'))) {
+    const src = await readFile(file, 'utf8');
+    for (const key of FRAMEWORK_TEXT_STYLE_OPTIONS) {
+      for (const literal of objectLiteralsFor(src, key)) {
+        if (!literal.includes('APP_FONT_FAMILY')) {
+          offenders.push(`${path.relative(root, file).split(path.sep).join('/')} → ${key}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `navigator text styles missing APP_FONT_FAMILY (the framework renders these, so the ui/Text wrapper never sees them): ${offenders.join(', ')}`,
+  );
+});
+
+test('the bottom tab bar styles its labels with the app font family', async () => {
+  // The fence above only fires on a style option that EXISTS. Deleting
+  // `tabBarLabelStyle` outright would drop the labels back to the system font
+  // and pass silently, so the one navigator with visible labels is asserted
+  // positively as well.
+  const src = await readFile(path.join(root, 'app/(app)/(tabs)/_layout.tsx'), 'utf8');
+  const [literal] = objectLiteralsFor(src, 'tabBarLabelStyle');
+  assert.ok(literal, 'the tabs layout must declare tabBarLabelStyle');
+  assert.match(literal, /fontFamily:\s*APP_FONT_FAMILY/);
+  assert.match(src, /import \{ APP_FONT_FAMILY \} from '\.\.\/\.\.\/\.\.\/src\/lib\/typography'/);
+});

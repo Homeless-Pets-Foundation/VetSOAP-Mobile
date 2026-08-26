@@ -16,6 +16,7 @@ import {
   RECORD_APPOINTMENT_PERMISSION_TITLE,
 } from '../../../src/lib/recordingPermissions';
 import { useThemeColors } from '../../../src/hooks/useThemeColors';
+import { APP_FONT_FAMILY } from '../../../src/lib/typography';
 
 // Active-tab indicator (plan option a): scale + lift the focused icon on the
 // brand color. No custom tabBar — just an animated tabBarIcon.
@@ -66,6 +67,14 @@ export default function TabsLayout() {
           // platform-conventional tab-label size and four labels must fit.
           fontSize: 11,
           fontWeight: '600',
+          // React Navigation renders the tab labels itself, from the `title`
+          // strings below, so they never pass through `src/components/ui/Text`
+          // and do not pick up the app typeface the way every in-screen string
+          // does. This is the framework's own override hook: the label style is
+          // merged AFTER the navigation theme's `fonts.medium`, so setting the
+          // family here wins for both the below-icon and beside-icon (tablet /
+          // landscape) layouts without reimplementing either one's metrics.
+          fontFamily: APP_FONT_FAMILY,
         },
       }}
       screenListeners={{

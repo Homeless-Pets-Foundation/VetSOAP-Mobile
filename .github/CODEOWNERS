@@ -19,4 +19,6 @@ tests/helpers/loadTs.mjs @philgooddvm-oss
 .github/scripts/r2-approval-gate.cjs @philgooddvm-oss
 .github/scripts/r2-approval-gate.test.cjs @philgooddvm-oss
 .github/workflows/r2-approval-gate.yml @philgooddvm-oss
+.github/workflows/self-hosted-ci.yml @philgooddvm-oss
 .github/workflows/ci.yml @philgooddvm-oss
+scripts/ci.sh @philgooddvm-oss

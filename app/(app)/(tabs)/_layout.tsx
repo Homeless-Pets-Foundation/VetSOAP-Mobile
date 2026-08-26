@@ -16,7 +16,7 @@ import {
   RECORD_APPOINTMENT_PERMISSION_TITLE,
 } from '../../../src/lib/recordingPermissions';
 import { useThemeColors } from '../../../src/hooks/useThemeColors';
-import { APP_FONT_FAMILY } from '../../../src/lib/typography';
+import { Text } from '../../../src/components/ui/Text';
 
 // Active-tab indicator (plan option a): scale + lift the focused icon on the
 // brand color. No custom tabBar — just an animated tabBarIcon.
@@ -31,6 +31,56 @@ function TabBarIcon({ Icon, color, focused, size }: { Icon: LucideIcon; color: s
     <Animated.View style={style}>
       <Icon color={color} size={size} strokeWidth={focused ? 2.6 : 2} />
     </Animated.View>
+  );
+}
+
+// React Navigation renders the tab labels itself, from the `title` screen
+// options, so they reach neither of the two things src/components/ui/Text.tsx
+// applies to every other string in the app: the 1.3x OS-text-scaling cap and
+// Inter. The typeface half could be fixed with `tabBarLabelStyle`, but the cap
+// is a PROP (`maxFontSizeMultiplier`), not a style, and bottom-tabs exposes only
+// `tabBarAllowFontScaling` — a hard on/off, and disabling scaling is the exact
+// regression the cap exists to undo. The render prop below is the one supported
+// hook that reaches the label element, so the label goes through the wrapper.
+//
+// The cost of that is owning the label's styling: BottomTabItem applies its own
+// per-position metrics only on the STRING branch of `tabBarLabel`. That cost is
+// small here, because the `tabBarLabelStyle` this replaces was merged last and
+// so ALREADY overrode both of React Navigation's sizes (labelBeneath 10,
+// labelBesideUikit 13) with a single 11.
+
+/** Deliberate exception to the semantic type scale: 11px is the
+ *  platform-conventional tab-label size and four labels must fit. */
+const TAB_BAR_LABEL_STYLE = { fontSize: 11, fontWeight: '600', textAlign: 'center' } as const;
+
+/** styles.labelBeside + styles.labelBesideUikit, minus the fontSize we override.
+ *  Reached on tablets (width >= 768) and in landscape, not just hypothetically. */
+const TAB_BAR_LABEL_BESIDE_STYLE = { marginStart: 5, marginEnd: 12, lineHeight: 24 } as const;
+
+function TabBarLabel({
+  color,
+  position,
+  children,
+}: {
+  color: string;
+  position: 'below-icon' | 'beside-icon';
+  children: string;
+}) {
+  return (
+    <Text
+      // Matches React Navigation's own Label. On these one-token labels it is a
+      // visible-ellipsis backstop rather than the fix (per CLAUDE.md); dropping
+      // it would let a scaled label wrap to a second line and fall outside the
+      // fixed tab-bar height.
+      numberOfLines={1}
+      style={[
+        TAB_BAR_LABEL_STYLE,
+        position === 'beside-icon' && TAB_BAR_LABEL_BESIDE_STYLE,
+        { color },
+      ]}
+    >
+      {children}
+    </Text>
   );
 }
 
@@ -62,20 +112,7 @@ export default function TabsLayout() {
           shadowRadius: 4,
           elevation: 4,
         },
-        tabBarLabelStyle: {
-          // Deliberate exception to the semantic type scale: 11px is the
-          // platform-conventional tab-label size and four labels must fit.
-          fontSize: 11,
-          fontWeight: '600',
-          // React Navigation renders the tab labels itself, from the `title`
-          // strings below, so they never pass through `src/components/ui/Text`
-          // and do not pick up the app typeface the way every in-screen string
-          // does. This is the framework's own override hook: the label style is
-          // merged AFTER the navigation theme's `fonts.medium`, so setting the
-          // family here wins for both the below-icon and beside-icon (tablet /
-          // landscape) layouts without reimplementing either one's metrics.
-          fontFamily: APP_FONT_FAMILY,
-        },
+        tabBarLabel: (props) => <TabBarLabel {...props} />,
       }}
       screenListeners={{
         tabPress: () => {

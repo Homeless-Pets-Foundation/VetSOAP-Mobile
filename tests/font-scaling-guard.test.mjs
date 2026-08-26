@@ -347,14 +347,31 @@ test('navigator-rendered text styles declare the app font family', async () => {
   );
 });
 
-test('the bottom tab bar styles its labels with the app font family', async () => {
-  // The fence above only fires on a style option that EXISTS. Deleting
-  // `tabBarLabelStyle` outright would drop the labels back to the system font
-  // and pass silently, so the one navigator with visible labels is asserted
-  // positively as well.
+test('the bottom tab bar renders its labels through the ui/Text wrapper', async () => {
+  // The tab labels are the one text surface React Navigation renders FOR us,
+  // from the `title` screen options, so the import fence above cannot see them.
+  // Styling them via `tabBarLabelStyle` was enough for the typeface but not for
+  // the 1.3x cap: `maxFontSizeMultiplier` is a PROP, and bottom-tabs exposes
+  // only `tabBarAllowFontScaling`, a hard on/off that test 1 forbids. On Android
+  // `allowFontScaling` therefore defaulted to true with no ceiling, so the
+  // labels scaled without limit inside a fixed-height bar.
+  //
+  // The render prop is the only supported hook that reaches the label element.
+  // Routing it through the wrapper is what delivers BOTH the cap and the font,
+  // so that is what this asserts — not the presence of any particular style.
   const src = await readFile(path.join(root, 'app/(app)/(tabs)/_layout.tsx'), 'utf8');
-  const [literal] = objectLiteralsFor(src, 'tabBarLabelStyle');
-  assert.ok(literal, 'the tabs layout must declare tabBarLabelStyle');
-  assert.match(literal, /fontFamily:\s*APP_FONT_FAMILY/);
-  assert.match(src, /import \{ APP_FONT_FAMILY \} from '\.\.\/\.\.\/\.\.\/src\/lib\/typography'/);
+  assert.match(
+    src,
+    /import \{ Text \} from '\.\.\/\.\.\/\.\.\/src\/components\/ui\/Text'/,
+    'the tabs layout must import the shared Text wrapper',
+  );
+  const code = maskNonCode(src);
+  assert.match(code, /tabBarLabel:\s*\(/, 'tabBarLabel must be a render function');
+  // A string label goes back to React Navigation's own <Text>, which the
+  // wrapper never sees — the exact bypass this test exists to prevent.
+  assert.doesNotMatch(code, /tabBarLabel:\s*['"`]/, 'tabBarLabel must not be a plain string');
+  assert.match(code, /<Text\b/, 'the label component must render the shared wrapper');
+  // The cap must come FROM the wrapper. Restating it here would be a second
+  // source of truth that a future change to the global ceiling would not reach.
+  assert.doesNotMatch(code, /maxFontSizeMultiplier/, 'the cap must be inherited from ui/Text, not restated');
 });

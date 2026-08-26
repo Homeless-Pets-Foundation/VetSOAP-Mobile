@@ -26,7 +26,17 @@ install_dependencies() {
 }
 
 run_r2() {
-  (cd contracts && sha256sum --check r2-production-destination-v1.sha256)
+  (
+    cd contracts
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum --check r2-production-destination-v1.sha256
+    elif command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 --check r2-production-destination-v1.sha256
+    else
+      echo "An SHA-256 checksum utility (sha256sum or shasum) is required." >&2
+      exit 1
+    fi
+  )
   node --test tests/r2-presigned-upload-contract.test.mjs
   node --test .github/scripts/r2-approval-gate.test.cjs
 }

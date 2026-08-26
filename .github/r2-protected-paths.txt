@@ -14,7 +14,6 @@ tests/helpers/loadTs.mjs
 .github/CODEOWNERS
 .github/workflows/ci.yml
 .github/workflows/r2-approval-gate.yml
-.github/workflows/r2-approval-gate-self-hosted-pilot.yml
 .github/workflows/self-hosted-ci.yml
 .github/r2-protected-paths.txt
 .github/scripts/r2-approval-gate.cjs

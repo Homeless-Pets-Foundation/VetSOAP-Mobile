@@ -1,4 +1,5 @@
 # Prefixes end with /. All other entries are exact repository-relative paths.
+# Test-only post-cutover marker; this verification PR will be closed without merging.
 contracts/r2-presigned-upload-v1.json
 contracts/r2-production-destination-v1.json
 contracts/r2-production-destination-v1.sha256

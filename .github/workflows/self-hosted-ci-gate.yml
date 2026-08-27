@@ -1,0 +1,142 @@
+name: Self-hosted CI Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: self-hosted-ci-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  confirm-pr-head:
+    name: Confirm PR head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 5
+    outputs:
+      manual-run-id: ${{ steps.confirm.outputs.manual-run-id }}
+    steps:
+      - name: Attest an exact-head successful manual run
+        id: confirm
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const repository = `${owner}/${repo}`;
+            const number = context.payload.pull_request.number;
+            const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+
+            if (
+              pull.state !== 'open' ||
+              pull.head.repo?.full_name !== repository ||
+              pull.base.ref !== context.payload.repository.default_branch
+            ) {
+              core.setFailed(`PR #${number} is not an open same-repository PR to the default branch.`);
+              return;
+            }
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: 'self-hosted-ci.yml',
+              branch: pull.head.ref,
+              event: 'workflow_dispatch',
+              status: 'success',
+              per_page: 100,
+            });
+            const candidates = runs
+              .filter((run) =>
+                run.head_sha === pull.head.sha &&
+                run.head_repository?.full_name === repository &&
+                run.conclusion === 'success'
+              )
+              .sort((a, b) => b.id - a.id);
+
+            if (candidates.length === 0) {
+              core.setFailed(
+                `No successful Self-hosted CI workflow_dispatch run exists for current PR head ${pull.head.sha}.`,
+              );
+              return;
+            }
+
+            const manualRun = candidates[0];
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner,
+              repo,
+              run_id: manualRun.id,
+              filter: 'latest',
+              per_page: 100,
+            });
+            const expected = new Map([
+              ['Confirm PR head', ['self-hosted', 'local-ci', 'linux', 'x64']],
+              ['R2 Destination Contract', ['self-hosted', 'local-ci', 'linux', 'x64']],
+              ['Typecheck', ['self-hosted', 'local-ci', 'linux', 'x64']],
+              ['Lint', ['self-hosted', 'local-ci', 'linux', 'x64']],
+              ['Test', ['self-hosted', 'local-ci', 'linux', 'x64']],
+              ['Analyze (javascript-typescript)', ['self-hosted', 'local-ci', 'linux', 'x64']],
+              ['Review', ['self-hosted', 'local-ci', 'linux', 'x64']],
+              ['Swift typecheck (durable recorder)', ['self-hosted', 'local-ci', 'macOS', 'ARM64']],
+            ]);
+            const failures = [];
+
+            for (const [name, requiredLabels] of expected) {
+              const matching = jobs.filter((job) => job.name === name);
+              if (matching.length !== 1) {
+                failures.push(`${name}: expected one job, found ${matching.length}`);
+                continue;
+              }
+
+              const job = matching[0];
+              const labels = new Set(job.labels ?? []);
+              const missingLabels = requiredLabels.filter((label) => !labels.has(label));
+              if (job.status !== 'completed' || job.conclusion !== 'success') {
+                failures.push(`${name}: ${job.status}/${job.conclusion}`);
+              } else if (!job.runner_name) {
+                failures.push(`${name}: no runner name reported`);
+              } else if (missingLabels.length > 0) {
+                failures.push(`${name}: missing labels ${missingLabels.join(', ')}`);
+              }
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(`Manual run ${manualRun.id} is not a complete runner-attested pass:\n${failures.join('\n')}`);
+              return;
+            }
+
+            core.setOutput('manual-run-id', String(manualRun.id));
+            core.summary
+              .addHeading('Exact-head manual CI attested')
+              .addTable([
+                ['PR', 'Head SHA', 'Manual run'],
+                [`#${number}`, pull.head.sha, `[${manualRun.id}](${manualRun.html_url})`],
+              ]);
+            await core.summary.write();
+
+  attest:
+    name: ${{ matrix.check }}
+    needs: confirm-pr-head
+    runs-on: [self-hosted, local-ci, linux, x64]
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - R2 Destination Contract
+          - Typecheck
+          - Lint
+          - Test
+          - Analyze (javascript-typescript)
+          - Review
+          - Swift typecheck (durable recorder)
+    steps:
+      - name: Report attested manual run
+        env:
+          CHECK_NAME: ${{ matrix.check }}
+          MANUAL_RUN_ID: ${{ needs.confirm-pr-head.outputs.manual-run-id }}
+        run: echo "$CHECK_NAME passed in exact-head manual run $MANUAL_RUN_ID."

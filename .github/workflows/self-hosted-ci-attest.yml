@@ -1,0 +1,87 @@
+name: Self-hosted CI Attestation Bridge
+
+on:
+  workflow_run:
+    workflows: [Self-hosted CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  rerun-pr-attestation:
+    name: Rerun PR attestation
+    if: >-
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Rerun the exact PR gate
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const completed = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+            const repository = `${owner}/${repo}`;
+
+            if (
+              completed.path !== '.github/workflows/self-hosted-ci.yml' ||
+              completed.head_repository?.full_name !== repository
+            ) {
+              core.setFailed(`Refusing unexpected workflow run ${completed.id}.`);
+              return;
+            }
+
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              head: `${owner}:${completed.head_branch}`,
+              per_page: 100,
+            });
+            const matchingPulls = pulls.filter((pull) =>
+              pull.head.repo?.full_name === repository &&
+              pull.head.ref === completed.head_branch &&
+              pull.head.sha === completed.head_sha &&
+              pull.base.ref === context.payload.repository.default_branch
+            );
+
+            if (matchingPulls.length !== 1) {
+              core.setFailed(
+                `Expected one current same-repository PR for manual run ${completed.id}; found ${matchingPulls.length}.`,
+              );
+              return;
+            }
+
+            const pull = matchingPulls[0];
+            const gateRuns = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: 'self-hosted-ci-gate.yml',
+              branch: completed.head_branch,
+              event: 'pull_request',
+              per_page: 100,
+            });
+            const candidates = gateRuns
+              .filter((run) =>
+                run.head_sha === completed.head_sha &&
+                run.pull_requests?.some((linked) =>
+                  linked.number === pull.number
+                )
+              )
+              .sort((a, b) => b.id - a.id);
+
+            if (candidates.length === 0) {
+              core.setFailed(`No pull_request gate run exists for PR #${pull.number} at ${completed.head_sha}.`);
+              return;
+            }
+
+            await github.rest.actions.reRunWorkflow({
+              owner,
+              repo,
+              run_id: candidates[0].id,
+            });
+            core.notice(`Rerunning PR gate ${candidates[0].id} for manual run ${completed.id}.`);

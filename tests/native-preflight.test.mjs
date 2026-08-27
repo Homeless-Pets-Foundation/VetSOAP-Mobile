@@ -56,6 +56,7 @@ test('native preflight preserves source rejection and synchronous factory throw'
   const rejection = new Error('native rejected');
   const batch = createNativePreflightBatch('standard', 1, {
     timeoutMs: 100,
+    now: () => 0,
   });
   await assert.rejects(
     batch.read('segment_metadata', () => Promise.reject(rejection)),

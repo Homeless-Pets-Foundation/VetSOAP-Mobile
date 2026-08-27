@@ -31,7 +31,7 @@ test('pending durable ordinary missing audio retains confirmation-only semantics
     getManifest: async () => ({ audioFile: { uri: 'file:///gone.aac' } }),
     sourceUriFromManifest: (manifest) => manifest.audioFile.uri,
     getMetadata: async () => ({ exists: false, size: 0 }),
-    options: { timeoutMs: 50 },
+    options: { timeoutMs: 50, now: () => 0 },
   });
   assert.equal(result.hasCompleteLocalAudio, false);
   assert.equal(result.sourceUri, 'file:///gone.aac');
@@ -70,7 +70,7 @@ test('main durable native rejection is preserved and phase tagged', async () => 
       },
       sourceUriFromManifest: () => null,
       getMetadata: async () => ({ exists: true, size: 1 }),
-      options: { timeoutMs: 50 },
+      options: { timeoutMs: 50, now: () => 0 },
     }),
     (error) => error === expected && error.uploadPhase === 'preflight',
   );

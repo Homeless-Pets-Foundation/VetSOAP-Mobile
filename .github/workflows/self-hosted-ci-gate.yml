@@ -17,7 +17,7 @@ concurrency:
 jobs:
   confirm-pr-head:
     name: Confirm PR head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       manual-run-id: ${{ steps.confirm.outputs.manual-run-id }}
@@ -121,7 +121,7 @@ jobs:
   attest:
     name: ${{ matrix.check }}
     needs: confirm-pr-head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
       fail-fast: false

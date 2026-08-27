@@ -157,7 +157,7 @@ test('development failpoint is off in production and consumes once in developmen
   assert.equal(production.armNativePreflightHang('api_metadata'), false);
   assert.equal(
     await production
-      .createNativePreflightBatch('standard', 1, { timeoutMs: 20 })
+      .createNativePreflightBatch('standard', 1, { timeoutMs: 20, now: () => 0 })
       .read('api_metadata', async () => 'normal'),
     'normal',
   );
@@ -172,7 +172,7 @@ test('development failpoint is off in production and consumes once in developmen
   assert.equal(development.getArmedNativePreflightHang(), 'api_metadata');
   await assert.rejects(
     development
-      .createNativePreflightBatch('standard', 1, { timeoutMs: 5 })
+      .createNativePreflightBatch('standard', 1, { timeoutMs: 5, now: () => 0 })
       .read('api_metadata', async () => {
         factoryCalls += 1;
         return 'not reached';
@@ -183,7 +183,7 @@ test('development failpoint is off in production and consumes once in developmen
   assert.equal(development.getArmedNativePreflightHang(), null);
   assert.equal(
     await development
-      .createNativePreflightBatch('standard', 1, { timeoutMs: 20 })
+      .createNativePreflightBatch('standard', 1, { timeoutMs: 20, now: () => 0 })
       .read('api_metadata', async () => 'second read'),
     'second read',
   );

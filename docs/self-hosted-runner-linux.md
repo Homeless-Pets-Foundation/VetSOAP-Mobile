@@ -81,9 +81,21 @@ Three independent mechanisms, all verified 2026-08-27:
 |---|---|---|
 | `Runner.Listener` killed | `RunnerService.js` respawns it | back online ~20 s |
 | Whole process tree killed | systemd `Restart=always` | `NRestarts` increments, online ~100 s |
-| WSL distro boots | unit is `enabled` (`WantedBy=multi-user.target`) | starts with the distro |
+| WSL distro boots | unit is `enabled` (`WantedBy=multi-user.target`) | online 5-8 s after boot, `NRestarts=0` |
 
 A *Windows* reboot still needs a WSL terminal opened once — systemd only runs while the distro is up.
+
+The boot row was confirmed across **three** WSL restarts on 2026-08-27 (14:34, 18:07, 18:28). Most recent:
+
+```
+WSL boot:              2026-08-27 18:28:56
+unit ActiveEnterTime:  2026-08-27 18:29:04     # 8s later
+NRestarts=0                                    # started by boot, not crash-restarted
+```
+
+`NRestarts=0` is the load-bearing detail: it proves the unit was started by boot rather than recovered by `Restart=always`. Check that field, not merely that the runner is up, or a crash-restart will read as boot persistence.
+
+Those same three reboots are also the clearest argument for using a service at all. Three other runners on this host (`/home/philgood/actions-runner-*`, serving other repos) were hand-started with `./run.sh` and no unit. They went down at the first reboot and stayed down through all three, blocking their repos' CI, while this one returned unattended every time.
 
 ### The stock unit is not enough
 

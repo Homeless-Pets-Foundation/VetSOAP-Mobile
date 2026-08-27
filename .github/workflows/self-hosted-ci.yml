@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   confirm-pr-head:
-    name: Confirm PR head (self-hosted pilot)
+    name: Confirm PR head
     runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 5
     outputs:
@@ -81,7 +81,7 @@ jobs:
             await core.summary.write();
 
   r2-destination-contract:
-    name: R2 Destination Contract (self-hosted pilot)
+    name: R2 Destination Contract
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 15
@@ -113,7 +113,7 @@ jobs:
         run: ./scripts/ci.sh r2
 
   typecheck:
-    name: Typecheck (self-hosted pilot)
+    name: Typecheck
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 15
@@ -145,7 +145,7 @@ jobs:
         run: ./scripts/ci.sh typecheck
 
   lint:
-    name: Lint (self-hosted pilot)
+    name: Lint
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 15
@@ -177,7 +177,7 @@ jobs:
         run: ./scripts/ci.sh lint
 
   test:
-    name: Test (self-hosted pilot)
+    name: Test
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 30
@@ -209,7 +209,7 @@ jobs:
         run: ./scripts/ci.sh test
 
   analyze:
-    name: Analyze (${{ matrix.language }}) (self-hosted pilot)
+    name: Analyze (${{ matrix.language }})
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 30
@@ -255,7 +255,7 @@ jobs:
           upload-database: false
 
   dependency-review:
-    name: Review (self-hosted pilot)
+    name: Review
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, linux, x64]
     timeout-minutes: 10
@@ -285,7 +285,7 @@ jobs:
           fail-on-severity: high
 
   swift-typecheck:
-    name: Swift typecheck (durable recorder) (self-hosted pilot)
+    name: Swift typecheck (durable recorder)
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, macOS, ARM64]
     timeout-minutes: 10

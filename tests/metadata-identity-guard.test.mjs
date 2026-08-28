@@ -132,18 +132,38 @@ test('species, breed and appointmentType are descriptive and cannot mis-link a p
   assert.equal(hasIdentityDivergence(c), false);
 });
 
-test('an absent server key is unknown and never blocks', () => {
+test('an absent pimsPatientId or non-identity key is unknown and never blocks', () => {
   // The flat pimsPatientId alias is emitted only when the Prisma patient
-  // relation was loaded. Treating absence as a mismatch let one serializer
+  // relation was loaded. Treating that absence as a mismatch let one serializer
   // regression brick every adopt.
   const c = compareRecordingMetadata(
-    { patientName: 'Bella' },
-    { patientName: 'Bella', pimsPatientId: null, templateId: null },
+    { patientName: 'Bella', clientName: 'Smith' },
+    { patientName: 'Bella', clientName: 'Smith', pimsPatientId: null, templateId: null },
     ENRICH
   );
   assert.equal(flat(c).unknown, 'pimsPatientId,templateId');
   assert.equal(divergenceTier(c), null);
   assert.equal(hasIdentityDivergence(c), false);
+});
+
+test('an absent identity ANCHOR blocks instead of reading as benign', () => {
+  // The tolerance above must not generalize. If an adopt response omits
+  // patientName or clientName we cannot verify which patient the row belongs
+  // to — and the adopt path is about to delete the only local copy.
+  for (const missing of ['patientName', 'clientName']) {
+    const recording = { patientName: 'Bella', clientName: 'Smith' };
+    delete recording[missing];
+    const c = compareRecordingMetadata(
+      recording,
+      { patientName: 'Bella', clientName: 'Smith' },
+      ENRICH
+    );
+    assert.equal(flat(c).identity, missing, `${missing} absence must block`);
+    assert.equal(hasIdentityDivergence(c), true);
+    // Still reported as unknown too, so telemetry can tell absence from a
+    // genuine value disagreement.
+    assert.equal(flat(c).unknown, missing);
+  }
 });
 
 test('identity wins the blocking decision when tiers are mixed, but all are reported', () => {

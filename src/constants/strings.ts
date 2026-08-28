@@ -67,6 +67,9 @@ export const METADATA_DIVERGENCE_COPY = {
   processingTitle: 'Some details did not sync',
   processingBody:
     'The recording uploaded and is being processed, but the server kept different settings for it. You can fix the note without re-recording.',
+  unknownTitle: 'The server rejected these details',
+  unknownBody:
+    'The recording is still saved on this device. The server would not accept the patient details as submitted, but did not say which one disagreed. Open the recording to compare, or edit the details here and submit again.',
   descriptiveTitle: 'Some details did not sync',
   descriptiveBody:
     'The recording uploaded and is being processed. The server kept different values for some details, which you can edit on the recording.',

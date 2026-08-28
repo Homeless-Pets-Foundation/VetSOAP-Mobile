@@ -788,22 +788,46 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 <Text className="text-body-sm font-semibold text-content-body w-full">
                   {slot.metadataDivergence.tier === 'identity'
                     ? METADATA_DIVERGENCE_COPY.identityTitle
-                    : slot.metadataDivergence.tier === 'processing'
-                      ? METADATA_DIVERGENCE_COPY.processingTitle
-                      : METADATA_DIVERGENCE_COPY.descriptiveTitle}
+                    : slot.metadataDivergence.tier === 'unknown'
+                      ? METADATA_DIVERGENCE_COPY.unknownTitle
+                      : slot.metadataDivergence.tier === 'processing'
+                        ? METADATA_DIVERGENCE_COPY.processingTitle
+                        : METADATA_DIVERGENCE_COPY.descriptiveTitle}
                 </Text>
                 <Text className="text-body-sm text-content-body w-full mt-1">
                   {slot.metadataDivergence.tier === 'identity'
                     ? METADATA_DIVERGENCE_COPY.identityBody
-                    : slot.metadataDivergence.tier === 'processing'
-                      ? METADATA_DIVERGENCE_COPY.processingBody
-                      : METADATA_DIVERGENCE_COPY.descriptiveBody}
+                    : slot.metadataDivergence.tier === 'unknown'
+                      ? METADATA_DIVERGENCE_COPY.unknownBody
+                      : slot.metadataDivergence.tier === 'processing'
+                        ? METADATA_DIVERGENCE_COPY.processingBody
+                        : METADATA_DIVERGENCE_COPY.descriptiveBody}
                 </Text>
-                <Text className="text-caption text-content-tertiary w-full mt-2">
-                  {`${METADATA_DIVERGENCE_COPY.fieldsPrefix} ${slot.metadataDivergence.fields
-                    .map((field) => METADATA_DIVERGENCE_COPY.fieldLabels[field] ?? field)
-                    .join(', ')}`}
-                </Text>
+                {slot.metadataDivergence.fields.length > 0 && (
+                  <Text className="text-caption text-content-tertiary w-full mt-2">
+                    {`${METADATA_DIVERGENCE_COPY.fieldsPrefix} ${slot.metadataDivergence.fields
+                      .map((field) => METADATA_DIVERGENCE_COPY.fieldLabels[field] ?? field)
+                      .join(', ')}`}
+                  </Text>
+                )}
+
+                {/* An unknown tier gets the non-destructive affordance only:
+                    we do not know whether this is a wrong visit or a template
+                    mismatch, and "submit separately" on the latter would create
+                    a duplicate recording. */}
+                {slot.metadataDivergence.tier === 'unknown' &&
+                  slot.metadataDivergence.recordingId.length > 0 && (
+                    <View className="mt-3">
+                      <Button
+                        variant="secondary"
+                        size="md"
+                        onPress={() => onOpenDivergentRecording?.(slot.id)}
+                        accessibilityLabel={METADATA_DIVERGENCE_COPY.openRecording}
+                      >
+                        {METADATA_DIVERGENCE_COPY.openRecording}
+                      </Button>
+                    </View>
+                  )}
 
                 {slot.metadataDivergence.tier === 'identity' && (
                   <View className="mt-3">

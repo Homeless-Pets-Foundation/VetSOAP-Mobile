@@ -299,3 +299,78 @@ test('the commit path proves identity by recording id, not by metadata equality'
   assert.match(api, /error\.code !== 'RECORDING_METADATA_CONFLICT'/);
   assert.equal((api.match(/typedMetadataConflict\(error, /g) ?? []).length, 2);
 });
+
+test('every durable success path honors the identity hold-back, not just the resume branch', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // There are two durable success paths: the pending-confirm resume branch and
+  // the fresh upload. Holding back only one leaves the reconcile card promising
+  // a copy the other already purged.
+  assert.match(
+    record,
+    /const holdDurableLocalCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';/
+  );
+  assert.match(
+    record,
+    /const holdFreshDurableCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';/
+  );
+  assert.match(record, /if \(!holdFreshDurableCopy\) \{[\s\S]*?purgeAfterUpload/);
+});
+
+test('an unresolved divergence keeps the session mounted so the card is reachable', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // uploadSlot returns a recording id on a non-blocking divergence, and both
+  // submit paths would otherwise reset and navigate away — discarding the card
+  // before the vet sees why a local copy was retained.
+  assert.equal((record.match(/const hasUnresolvedDivergence = sessionRef\.current\.slots\.some\(/g) ?? []).length, 2);
+  assert.match(record, /if \(otherSlotsWithRecordings \|\| hasUnresolvedDivergence\) \{/);
+  // Submit All must not fall into the failure branch: nothing failed.
+  assert.match(record, /if \(allSuccess && hasUnresolvedDivergence\) \{/);
+  assert.match(record, /\} else if \(allSuccess\) \{/);
+});
+
+test('a server-reported conflict is never rendered as a wrong-visit conflict', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  // A server 409 covers processing and descriptive mismatches too. Claiming
+  // identity would offer "submit separately" on a template mismatch, creating
+  // the duplicate this change exists to prevent.
+  assert.match(
+    record,
+    /tier: error\.source === 'client_adopt_guard' \? 'identity' : 'unknown',/
+  );
+  // The unknown tier gets the non-destructive affordance only, and only when
+  // there is actually a recording to open.
+  assert.match(
+    card,
+    /slot\.metadataDivergence\.tier === 'unknown' &&\s*slot\.metadataDivergence\.recordingId\.length > 0/
+  );
+});
+
+test('releasing the local copy verifies the draft is gone before destroying evidence', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const releaseBlock = record.slice(
+    record.indexOf('const handleReleaseLocalCopy = useCallback'),
+    record.indexOf('const handleResubmitAsNew = useCallback')
+  );
+
+  // deleteDraft swallows its own storage failures, so only a read-back can tell
+  // whether the metadata is actually gone. Purging audio while a stale draft
+  // survives is the state an orphan sweep resolves by deleting the server row.
+  assert.match(releaseBlock, /const confirmDraftGone = async \(\): Promise<boolean> => \{/);
+  assert.match(releaseBlock, /let draftDeleted = await confirmDraftGone\(\);/);
+  assert.match(releaseBlock, /if \(!draftDeleted\) draftDeleted = await confirmDraftGone\(\);/);
+  // Tombstone before purge, and purge only on a verified delete.
+  const tombstoneAt = releaseBlock.indexOf('durableTombstone.add');
+  const purgeAt = releaseBlock.indexOf('purgeAfterUpload');
+  assert.ok(tombstoneAt > -1 && purgeAt > -1 && tombstoneAt < purgeAt,
+    'the tombstone must be persisted before the audio is purged');
+  assert.match(releaseBlock, /if \(draftDeleted\) \{\s*await durableRecorder/);
+
+  // The slot must not be left in the adopt-path error state offering Retry
+  // Upload against files that were just deleted.
+  assert.match(releaseBlock, /setUploadStatus\(slot\.id, 'success', \{/);
+  assert.match(releaseBlock, /type: 'REPLACE_ALL_SEGMENTS', slotId: slot\.id, segments: \[\]/);
+});

@@ -160,13 +160,22 @@ function pimsDivergenceTier(
 }
 
 /**
+ * The absent-key tolerance exists for exactly one reason: the server emits the
+ * flat `pimsPatientId` alias only when the Prisma `patient` relation was
+ * loaded, so a route that omits the relation returns no key at all. That is a
+ * serializer shape, not evidence about the patient.
+ *
+ * It must NOT generalize to the identity ANCHORS. If an adopt response omits
+ * `patientName` or `clientName`, we cannot verify which patient the row belongs
+ * to — and the adopt path is about to delete the only local copy. Absence there
+ * has to block, or a serializer regression would silently authorize deletion
+ * against an unverified row.
+ */
+const ABSENCE_TOLERATED_FIELDS: ReadonlySet<string> = new Set(['pimsPatientId']);
+
+/**
  * Compare a server recording against the metadata snapshot the client sent,
  * bucketed by tier.
- *
- * An ABSENT key is reported as unknown and never blocks. The server emits the
- * flat `pimsPatientId` alias only when the Prisma `patient` relation was
- * loaded, so treating absence as a mismatch lets one serializer regression
- * brick every adopt. patientName + clientName remain the anchors.
  */
 export function compareRecordingMetadata(
   recording: Record<string, unknown>,
@@ -181,6 +190,10 @@ export function compareRecordingMetadata(
   for (const [key, submitted] of Object.entries(payload)) {
     if (!Object.prototype.hasOwnProperty.call(recording, key)) {
       unknownFields.push(key);
+      // A missing identity anchor is unverifiable, not benign.
+      if (METADATA_FIELD_TIERS[key] === 'identity' && !ABSENCE_TOLERATED_FIELDS.has(key)) {
+        identityFields.push(key);
+      }
       continue;
     }
     const returned = recording[key] ?? null;

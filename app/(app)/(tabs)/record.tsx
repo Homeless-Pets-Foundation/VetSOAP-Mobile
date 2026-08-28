@@ -2893,30 +2893,41 @@ function RecordingSession() {
             const still = await draftStorage.getDraft(slot.id).catch(() => null);
             return still === null;
           };
-          // Retry once — most deleteDraft failures are a transient SecureStore/
-          // Keystore hiccup. Stale metadata makes Home show a resumable "Not
-          // Submitted" card for an already-confirmed recording; loadDraft's tombstone
-          // guard + cleanupOrphaned self-heal the rest.
-          let draftDeleted = await confirmDraftGone();
-          if (!draftDeleted) draftDeleted = await confirmDraftGone();
-          if (draftDeleted) {
-            if (hasNativeManifest) {
-              await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
-            } else if (durable.recoveredAudioUri) {
-              // Recovered vault copy — no native manifest to purge; delete the
-              // neutral local .aac directly now that the server confirmed.
-              safeDeleteFile(durable.recoveredAudioUri);
+          // An identity-tier divergence means the server row may describe a
+          // different visit. markUploaded above still ran (it is what stops
+          // recovery re-offering an uploaded capture), but the destructive half
+          // is held back so the reconcile card has something to preserve. This
+          // is the COMMON durable path — holding it back only on the
+          // pending-confirm resume branch would have left the card promising a
+          // copy this branch had already destroyed.
+          const holdFreshDurableCopy =
+            (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
+          if (!holdFreshDurableCopy) {
+            // Retry once — most deleteDraft failures are a transient SecureStore/
+            // Keystore hiccup. Stale metadata makes Home show a resumable "Not
+            // Submitted" card for an already-confirmed recording; loadDraft's tombstone
+            // guard + cleanupOrphaned self-heal the rest.
+            let draftDeleted = await confirmDraftGone();
+            if (!draftDeleted) draftDeleted = await confirmDraftGone();
+            if (draftDeleted) {
+              if (hasNativeManifest) {
+                await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
+              } else if (durable.recoveredAudioUri) {
+                // Recovered vault copy — no native manifest to purge; delete the
+                // neutral local .aac directly now that the server confirmed.
+                safeDeleteFile(durable.recoveredAudioUri);
+              }
+              await durableTombstone.add(durable.recordingId).catch(() => {});
+            } else {
+              // deleteDraft still failed after a retry. Leave the uploaded manifest
+              // for next-launch self-heal (idempotent), and tombstone so
+              // cleanupOrphaned drops ONLY the stale local metadata (never the
+              // uploaded server row). loadDraft's tombstone guard blocks any
+              // resume-then-resubmit against the confirmed row until the sweep runs.
+              await durableTombstone.add(durable.recordingId).catch(() => {});
             }
-            await durableTombstone.add(durable.recordingId).catch(() => {});
-          } else {
-            // deleteDraft still failed after a retry. Leave the uploaded manifest
-            // for next-launch self-heal (idempotent), and tombstone so
-            // cleanupOrphaned drops ONLY the stale local metadata (never the
-            // uploaded server row). loadDraft's tombstone guard blocks any
-            // resume-then-resubmit against the confirmed row until the sweep runs.
-            await durableTombstone.add(durable.recordingId).catch(() => {});
+            durableRecoveryStore.remove(durable.recordingId);
           }
-          durableRecoveryStore.remove(durable.recordingId);
 
           const durableLatencyMs = Date.now() - uploadStartedAt;
           trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: durableResult.id } });
@@ -3325,7 +3336,9 @@ function RecordingSession() {
             type: 'SET_METADATA_DIVERGENCE',
             slotId: slot.id,
             divergence: {
-              tier: 'identity',
+              // Only our own adopt guard ran the tiered comparison and knows
+              // the fields. A server 409 reports no tier at all.
+              tier: error.source === 'client_adopt_guard' ? 'identity' : 'unknown',
               fields: [...error.divergentFields],
               recordingId: error.recordingId,
             },
@@ -4476,8 +4489,15 @@ function RecordingSession() {
               (s) => s.id !== slotId && s.uploadStatus !== 'success' &&
                 (slotHasRecoverableAudio(s) || s.audioState === 'recording' || s.audioState === 'paused')
             );
+            // An unresolved divergence is the whole point of holding the local
+            // copy back. Resetting and navigating away here would discard the
+            // reconcile card before the vet ever sees it, and the retained
+            // draft would reappear later with no explanation of why.
+            const hasUnresolvedDivergence = sessionRef.current.slots.some(
+              (s) => s.metadataDivergence !== null
+            );
 
-            if (otherSlotsWithRecordings) {
+            if (otherSlotsWithRecordings || hasUnresolvedDivergence) {
               // Stay on the record screen — uploaded slot already shows success badge.
               // Do NOT release the pinned stash here: remaining slots may still be
               // reading audio files from the stash directory. Release runs only
@@ -4543,37 +4563,79 @@ function RecordingSession() {
               // The server copy is already proven durable (committed keys with
               // a passing R2 HEAD), so releasing the local copy is safe. Only a
               // human can decide it is the same visit, which is what this is.
-              // This mirrors the post-upload cleanup the divergence held back,
-              // including the durable half — otherwise the native manifest and
-              // its audio would linger and keep surfacing in recovery.
-              const durable = slot.durable;
-              const userId = user?.id;
-              slot.segments.forEach((seg) => {
-                safeDeleteFile(seg.uri);
-              });
-              draftStorage.deleteDraft(slot.id).catch(() => {});
-              recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
-              if (durable && userId) {
-                durableRecorder
-                  .purgeAfterUpload({ userId, recordingId: durable.recordingId })
-                  .catch(() => {});
-                if (durable.recoveredAudioUri) safeDeleteFile(durable.recoveredAudioUri);
-                // The tombstone is what stops an offline self-heal from
-                // deleting the server row we just kept.
-                durableTombstone.add(durable.recordingId).catch(() => {});
-                durableRecoveryStore.remove(durable.recordingId);
-              }
-              dispatch({
-                type: 'SET_METADATA_DIVERGENCE',
-                slotId: slot.id,
-                divergence: null,
-              });
+              //
+              // Ordering is load-bearing and mirrors the durable success path:
+              // verify the draft is actually gone BEFORE purging audio, and
+              // persist the tombstone before clearing the card. deleteDraft
+              // swallows its own storage failures, so a try/catch cannot tell
+              // whether the metadata was removed — only a read-back can. Get
+              // this wrong and a stale draft survives with its audio and its
+              // uploaded-manifest evidence destroyed, which is exactly the
+              // state an orphan sweep resolves by deleting the server row the
+              // user just chose to keep.
+              void (async () => {
+                const durable = slot.durable;
+                const userId = user?.id;
+                const recordingId =
+                  slot.metadataDivergence?.recordingId ||
+                  slot.serverRecordingId ||
+                  slot.serverDraftId ||
+                  null;
+
+                const confirmDraftGone = async (): Promise<boolean> => {
+                  try {
+                    await draftStorage.deleteDraft(slot.id);
+                    await recoveryIntent.clearForDraftSlot(slot.id);
+                  } catch {
+                    return false;
+                  }
+                  return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
+                };
+                let draftDeleted = await confirmDraftGone();
+                if (!draftDeleted) draftDeleted = await confirmDraftGone();
+
+                if (durable && userId) {
+                  // Tombstone FIRST: it is what stops an offline self-heal from
+                  // deleting the server row, and it must outlive a purge that
+                  // succeeds while the draft delete did not.
+                  await durableTombstone.add(durable.recordingId).catch(() => {});
+                  if (draftDeleted) {
+                    await durableRecorder
+                      .purgeAfterUpload({ userId, recordingId: durable.recordingId })
+                      .catch(() => {});
+                    if (durable.recoveredAudioUri) safeDeleteFile(durable.recoveredAudioUri);
+                  }
+                  durableRecoveryStore.remove(durable.recordingId);
+                } else if (draftDeleted) {
+                  slot.segments.forEach((seg) => {
+                    safeDeleteFile(seg.uri);
+                  });
+                }
+
+                // Leave the slot resolved, not stuck. Without this the card's
+                // parent slot keeps uploadStatus 'error' from the adopt-path
+                // throw, still offers Retry Upload against files we just
+                // deleted, and still reads as unsaved work to the nav guard.
+                if (draftDeleted) {
+                  dispatch({ type: 'REPLACE_ALL_SEGMENTS', slotId: slot.id, segments: [] });
+                }
+                setUploadStatus(slot.id, 'success', {
+                  progress: 100,
+                  error: null,
+                  ...(recordingId ? { serverRecordingId: recordingId } : {}),
+                });
+                dispatch({
+                  type: 'SET_METADATA_DIVERGENCE',
+                  slotId: slot.id,
+                  divergence: null,
+                });
+              })();
             },
           },
         ]
       );
     },
-    [dispatch, user?.id]
+    [dispatch, setUploadStatus, user?.id]
   );
 
   const handleResubmitAsNew = useCallback(
@@ -4825,7 +4887,17 @@ function RecordingSession() {
 
         invalidateRecordingCaches(queryClient, 'submit_success');
 
-        if (allSuccess) {
+        // Same reason as runSingleSubmit: an unresolved divergence means a local
+        // copy is being held back on purpose, and resetting would discard the
+        // card explaining why before it is ever seen.
+        const hasUnresolvedDivergence = sessionRef.current.slots.some(
+          (s) => s.metadataDivergence !== null
+        );
+
+        if (allSuccess && hasUnresolvedDivergence) {
+          // Every upload succeeded; the session stays put so the reconcile card
+          // is reachable. Nothing failed, so no failure alert and no auto-stash.
+        } else if (allSuccess) {
           releaseResumedStashIfAny();
           resetSession();
           router.push({

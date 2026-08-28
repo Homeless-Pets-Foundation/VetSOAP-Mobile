@@ -84,8 +84,13 @@ export interface PatientSlot {
   // and cleared as soon as the user edits the form. `identity` tier is the only
   // one that holds local audio back from post-upload cleanup; the rest are
   // notices on an otherwise successful submit.
+  // `unknown` is a real state, not a placeholder: the SERVER can reject a
+  // submit with RECORDING_METADATA_CONFLICT without telling us which field
+  // disagreed. That covers processing and descriptive fields too, so it must
+  // never be rendered as a wrong-visit conflict — offering "submit separately"
+  // there would manufacture the duplicate this whole change exists to prevent.
   metadataDivergence: {
-    tier: 'identity' | 'processing' | 'descriptive';
+    tier: 'identity' | 'processing' | 'descriptive' | 'unknown';
     fields: string[];
     recordingId: string;
   } | null;

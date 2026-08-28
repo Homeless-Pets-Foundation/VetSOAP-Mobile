@@ -918,8 +918,16 @@ test('iOS resume closes the previous writer before replacing it', async () => {
 test('background persister includes finished durable slots', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
   const iPersist = rec.indexOf('const slotsToPersist = sessionRef.current.slots.filter(');
-  const body = rec.slice(iPersist, iPersist + 200);
-  assert.match(body, /slotHasRecoverableAudio\(slot\) && slot\.uploadStatus !== 'success'/);
+  const body = rec.slice(iPersist, iPersist + 320);
+  // Finished durable slots (empty segments, audio in audio.aac) must persist,
+  // and so must a SUCCEEDED slot still holding a retained copy for an
+  // unresolved identity divergence — that copy is exactly what a kill would
+  // take, and every guard keyed on "not success" would otherwise skip it.
+  assert.match(body, /slotHasRecoverableAudio\(slot\) &&/);
+  assert.match(
+    body,
+    /\(slot\.uploadStatus !== 'success' \|\|\s*slot\.metadataDivergence\?\.tier === 'identity'\)/
+  );
 });
 
 test('detail-page durable delete spares stash-shared audio and fails CLOSED', async () => {

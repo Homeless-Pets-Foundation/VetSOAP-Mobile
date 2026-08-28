@@ -493,15 +493,81 @@ test('destructive cleanup requires PROVEN draft absence, never a lenient null', 
   );
 });
 
-test('only an actionable identity divergence holds the session open after success', async () => {
+test('every divergence that can hold the session open carries an action', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  // Blocking completion on a notice with no action stranded the vet on the
+  // Record screen; not blocking at all navigated away before it could be read.
+  // So the informational tiers get an explicit acknowledgement, and the guard
+  // blocks until some action is taken.
+  assert.match(
+    card,
+    /\(slot\.metadataDivergence\.tier === 'processing' \|\|\s*slot\.metadataDivergence\.tier === 'descriptive'\) && \(/
+  );
+  assert.match(card, /onDismissDivergence\?\.\(slot\.id\)/);
+  assert.match(record, /onDismissDivergence=\{handleDismissDivergence\}/);
+  assert.match(record, /const handleDismissDivergence = useCallback\(/);
+  assert.equal(
+    (record.match(/\(s\) => s\.metadataDivergence !== null/g) ?? []).length,
+    2,
+    'both completion guards must wait for an explicit resolution'
+  );
+});
+
+test('a retained identity copy stays protected by the durability and nav guards', async () => {
   const record = await read('app/(app)/(tabs)/record.tsx');
 
-  // Processing/descriptive notices are informational and have no dismissal, so
-  // blocking completion on them stranded the vet on the Record screen forever.
-  assert.equal(
-    (record.match(/s\.metadataDivergence\?\.tier === 'identity'/g) ?? []).length,
-    2,
-    'both the single-submit and Submit All guards must be tier-scoped'
+  // The slot is marked success while its local copy is deliberately kept, so
+  // every guard keyed on "not success" would skip exactly the copy that must
+  // survive a kill or a navigation away.
+  assert.match(
+    record,
+    /slotHasRecoverableAudio\(s\) &&\s*s\.uploadStatus === 'success' &&\s*s\.metadataDivergence\?\.tier === 'identity'/
   );
-  assert.doesNotMatch(record, /\(s\) => s\.metadataDivergence !== null/);
+  assert.match(
+    record,
+    /slot\.uploadStatus !== 'success' \|\|\s*slot\.metadataDivergence\?\.tier === 'identity'/
+  );
+});
+
+test('separate submission gets a fresh durable id, promoted segments, and an actual submit', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const convert = record.slice(
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback'),
+    record.indexOf('const handleDismissDivergence = useCallback')
+  );
+  // The original id is about to be tombstoned, and a tombstone means "already
+  // submitted" to loadDraft and cleanupOrphaned — reusing it would delete the
+  // replacement copy the vet just asked for.
+  assert.match(convert, /recordingId: newDurableRecordingId\(\)/);
+  const freshIdAt = convert.indexOf('recordingId: newDurableRecordingId()');
+  const tombstoneAt = convert.indexOf('durableTombstone.add(durable.recordingId)');
+  assert.ok(freshIdAt > -1 && tombstoneAt > freshIdAt);
+
+  const resubmit = record.slice(
+    record.indexOf('const handleResubmitAsNew = useCallback'),
+    record.indexOf('const handleSubmitSingle = useCallback')
+  );
+  // saveDraft promoted the segments and deleted the old files, and
+  // RESET_UPLOAD_ATTEMPT does not carry segments.
+  assert.match(resubmit, /type: 'REPLACE_ALL_SEGMENTS',\s*slotId: slot\.id,\s*segments: restarted\.segments,/);
+  assert.match(resubmit, /runSingleSubmit\(restarted\);/);
+  assert.match(resubmit, /markSubmitIntent\(\[slot\.id\]\)/);
+  assert.match(resubmit, /clearSubmitIntent\(\[slot\.id\]\)/);
+});
+
+test('releasing the local copy reports failure instead of claiming success', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const releaseBlock = record.slice(
+    record.indexOf('const handleReleaseLocalCopy = useCallback'),
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback')
+  );
+  // Clearing the card on an unproven delete tells the vet the copy is gone
+  // while a stale draft survives to rediscover the same conflict later.
+  assert.match(releaseBlock, /if \(!draftDeleted\) \{\s*Alert\.alert\(/);
+  assert.match(releaseBlock, /METADATA_DIVERGENCE_COPY\.releaseLocalCopyFailedTitle/);
+  const failAt = releaseBlock.indexOf('if (!draftDeleted) {');
+  const clearAt = releaseBlock.indexOf("type: 'SET_METADATA_DIVERGENCE'");
+  assert.ok(failAt > -1 && clearAt > failAt, 'the card may only be cleared after a proven delete');
 });

@@ -163,6 +163,17 @@ const UPLOAD_RESTART_LOCAL_TIMEOUT_MS = 15_000;
 function isTrulyUnsavedSlot(s: PatientSlot): boolean {
   return (
     (slotHasRecoverableAudio(s) && !s.draftSlotId && s.uploadStatus !== 'success') ||
+    // A successful upload whose IDENTITY diverged is not finished work: the
+    // local copy is deliberately retained because the server row may describe a
+    // different visit, and only the vet can decide. Every guard keyed on
+    // "not success" would otherwise skip it — the background persist would not
+    // save it and the nav guard would not protect it — so process death or a
+    // cache sweep could take the only copy the vet still controls before they
+    // choose. It stops counting as unsaved the moment a reconciliation action
+    // resolves the divergence.
+    (slotHasRecoverableAudio(s) &&
+      s.uploadStatus === 'success' &&
+      s.metadataDivergence?.tier === 'identity') ||
     s.audioState === 'recording' ||
     s.audioState === 'paused'
   );
@@ -1492,8 +1503,13 @@ function RecordingSession() {
       // right after Finish can lose the patient/client metadata on a kill (the
       // durable audio recovers, but with no form data) — durable finish must get
       // the same restart protection as segment recordings.
+      // ...plus a succeeded slot holding a retained copy for an unresolved
+      // identity divergence: it is exactly the copy that must survive a kill.
       const slotsToPersist = sessionRef.current.slots.filter(
-        (slot) => slotHasRecoverableAudio(slot) && slot.uploadStatus !== 'success'
+        (slot) =>
+          slotHasRecoverableAudio(slot) &&
+          (slot.uploadStatus !== 'success' ||
+            slot.metadataDivergence?.tier === 'identity')
       );
 
       await Promise.all(
@@ -4504,12 +4520,12 @@ function RecordingSession() {
             // copy back. Resetting and navigating away here would discard the
             // reconcile card before the vet ever sees it, and the retained
             // draft would reappear later with no explanation of why.
-            // Identity is the only tier that holds a local copy back and offers
-            // reconciliation actions. Processing/descriptive notices are purely
-            // informational and have no dismissal, so blocking on them stranded
-            // the vet on the Record screen with no way to satisfy the guard.
+            // Every tier that can reach here now carries an action — identity
+            // has the three reconciliation choices, processing/descriptive have
+            // "Got it" — so blocking on any of them cannot strand the vet, and
+            // NOT blocking would navigate away before the notice is read.
             const hasUnresolvedDivergence = sessionRef.current.slots.some(
-              (s) => s.metadataDivergence?.tier === 'identity'
+              (s) => s.metadataDivergence !== null
             );
 
             if (otherSlotsWithRecordings || hasUnresolvedDivergence) {
@@ -4634,13 +4650,23 @@ function RecordingSession() {
                   });
                 }
 
+                // Only a PROVEN delete may report the copy as removed. If the
+                // store stayed unreadable, saying "done" and clearing the card
+                // would leave a stale draft with no way back to the actions —
+                // and it can reappear later and rediscover the same conflict.
+                // Leave the card actionable and say what happened instead.
+                if (!draftDeleted) {
+                  Alert.alert(
+                    METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedTitle,
+                    METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedBody
+                  );
+                  return;
+                }
                 // Leave the slot resolved, not stuck. Without this the card's
                 // parent slot keeps uploadStatus 'error' from the adopt-path
                 // throw, still offers Retry Upload against files we just
                 // deleted, and still reads as unsaved work to the nav guard.
-                if (draftDeleted) {
-                  dispatch({ type: 'REPLACE_ALL_SEGMENTS', slotId: slot.id, segments: [] });
-                }
+                dispatch({ type: 'REPLACE_ALL_SEGMENTS', slotId: slot.id, segments: [] });
                 setUploadStatus(slot.id, 'success', {
                   progress: 100,
                   error: null,
@@ -4711,7 +4737,17 @@ function RecordingSession() {
         return null;
       }
 
-      const looseDurable = { ...durable, recoveredAudioUri: copyUri };
+      // A DISTINCT durable identity for the replacement. The original id is
+      // about to be tombstoned, and a tombstone means "already submitted":
+      // loadDraft refuses to resume that draft and deletes it, and
+      // cleanupOrphaned sweeps it — which would destroy the separate
+      // submission the vet just asked for. The loose copy has no native
+      // manifest behind it, so the id is only a label; give it a fresh one.
+      const looseDurable = {
+        ...durable,
+        recordingId: newDurableRecordingId(),
+        recoveredAudioUri: copyUri,
+      };
       const converted: PatientSlot = { ...slot, durable: looseDurable };
 
       // PERSIST THE POINTER BEFORE PURGING. The purge is the point of no
@@ -4768,6 +4804,20 @@ function RecordingSession() {
     [dispatch, user?.id]
   );
 
+  /**
+   * "Got it" on a processing/descriptive notice. Those tiers hold nothing back
+   * and offer no repair here — the values are editable on the recording — so
+   * acknowledging them is the whole action. It is also what releases the submit
+   * guard, which deliberately keeps the session mounted until then so the
+   * notice cannot flash past unread on the way to the next screen.
+   */
+  const handleDismissDivergence = useCallback(
+    (slotId: string) => {
+      dispatch({ type: 'SET_METADATA_DIVERGENCE', slotId, divergence: null });
+    },
+    [dispatch]
+  );
+
   const handleResubmitAsNew = useCallback(
     (slotId: string) => {
       const slot = sessionRef.current.slots.find((candidate) => candidate.id === slotId);
@@ -4785,6 +4835,17 @@ function RecordingSession() {
               // whose manifest is already confirmed-uploaded cannot be rotated
               // at all, so it is converted to a loose local copy first — see
               // persistPostConfirmSeparateSubmission.
+              const initiatingScopeKey = authScopeKeyRef.current;
+              const initiatingScopeGeneration = authScopeGenerationRef.current;
+              const initiatingUserId = user?.id;
+              const scopeIsCurrent = () =>
+                authScopeMountedRef.current &&
+                initiatingScopeKey !== null &&
+                initiatingUserId !== undefined &&
+                authScopeKeyRef.current === initiatingScopeKey &&
+                authScopeGenerationRef.current === initiatingScopeGeneration &&
+                draftStorage.getUserId() === initiatingUserId;
+              markSubmitIntent([slot.id]);
               void (async () => {
                 const converted = await persistPostConfirmSeparateSubmission(slot).catch(
                   () => null
@@ -4792,21 +4853,36 @@ function RecordingSession() {
                 const restarted = await persistControlledUploadRestart(converted ?? slot).catch(
                   () => null
                 );
+                if (!scopeIsCurrent()) {
+                  clearSubmitIntent([slot.id]);
+                  return;
+                }
                 if (!restarted) {
                   // Never fail silently here: the vet asked for a second
                   // recording and the local copy is still the only one they
                   // control. Saying nothing reads as "done".
+                  clearSubmitIntent([slot.id]);
                   Alert.alert(
                     METADATA_DIVERGENCE_COPY.resubmitAsNewFailedTitle,
                     METADATA_DIVERGENCE_COPY.resubmitAsNewFailedBody
                   );
                   return;
                 }
-                dispatch({
-                  type: 'SET_METADATA_DIVERGENCE',
-                  slotId: slot.id,
-                  divergence: null,
-                });
+                // saveDraft(requireCompleteAudio) PROMOTED the segments to
+                // versioned draft paths and deleted the previous snapshot
+                // files, and RESET_UPLOAD_ATTEMPT does not carry segments — so
+                // live state must take the returned snapshot or the next submit
+                // preflights against URIs that no longer exist.
+                if (!restarted.durable && restarted.segments.length > 0) {
+                  dispatch({
+                    type: 'REPLACE_ALL_SEGMENTS',
+                    slotId: slot.id,
+                    segments: restarted.segments,
+                  });
+                }
+                // The confirmation promised a submission, so perform it rather
+                // than leaving a pending slot the vet has to submit again.
+                runSingleSubmit(restarted);
               })();
             },
           },
@@ -5036,10 +5112,11 @@ function RecordingSession() {
         // Same reason as runSingleSubmit: an unresolved divergence means a local
         // copy is being held back on purpose, and resetting would discard the
         // card explaining why before it is ever seen.
-        // Same tier rule as runSingleSubmit: only an identity conflict, which
-        // retains a local copy and offers actions, may hold the session open.
+        // Same rule as runSingleSubmit: every reachable tier has an action, so
+        // holding the session open until one is taken is safe and is the only
+        // way the notice is seen at all.
         const hasUnresolvedDivergence = sessionRef.current.slots.some(
-          (s) => s.metadataDivergence?.tier === 'identity'
+          (s) => s.metadataDivergence !== null
         );
 
         if (allSuccess && hasUnresolvedDivergence) {
@@ -5918,6 +5995,7 @@ function RecordingSession() {
           onOpenDivergentRecording={handleOpenDivergentRecording}
           onReleaseLocalCopy={handleReleaseLocalCopy}
           onResubmitAsNew={handleResubmitAsNew}
+          onDismissDivergence={handleDismissDivergence}
         />
       );
     },

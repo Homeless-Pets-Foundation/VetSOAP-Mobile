@@ -83,6 +83,7 @@ interface PatientSlotCardProps {
   onOpenDivergentRecording?: (slotId: string) => void;
   onReleaseLocalCopy?: (slotId: string) => void;
   onResubmitAsNew?: (slotId: string) => void;
+  onDismissDivergence?: (slotId: string) => void;
 }
 
 function PulsingDot() {
@@ -143,6 +144,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   onOpenDivergentRecording,
   onReleaseLocalCopy,
   onResubmitAsNew,
+  onDismissDivergence,
 }: PatientSlotCardProps) {
   const { scale } = useResponsive();
   const colors = useThemeColors();
@@ -771,6 +773,26 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 </Button>
               </View>
             )}
+
+          {/* Processing and descriptive notices report a difference the vet
+              can fix on the recording itself; nothing is held back for them.
+              They still need an explicit acknowledgement, because the submit
+              guard keeps the session mounted until the notice is cleared —
+              without a button the vet would be stranded on this screen, and
+              without the guard the notice would flash past unread. */}
+          {(slot.metadataDivergence.tier === 'processing' ||
+            slot.metadataDivergence.tier === 'descriptive') && (
+            <View className="mt-3">
+              <Button
+                variant="secondary"
+                size="md"
+                onPress={() => onDismissDivergence?.(slot.id)}
+                accessibilityLabel={METADATA_DIVERGENCE_COPY.dismissNotice}
+              >
+                {METADATA_DIVERGENCE_COPY.dismissNotice}
+              </Button>
+            </View>
+          )}
 
           {slot.metadataDivergence.tier === 'identity' && (
             <View className="mt-3">

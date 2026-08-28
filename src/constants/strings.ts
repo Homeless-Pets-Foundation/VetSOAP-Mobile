@@ -80,6 +80,10 @@ export const METADATA_DIVERGENCE_COPY = {
   releaseLocalCopyConfirmBody:
     'The recording is already saved on the server and will keep processing. This removes only the copy stored on this device. This cannot be undone.',
   releaseLocalCopyConfirm: 'Remove local copy',
+  releaseLocalCopyFailedTitle: 'This device’s copy was not removed',
+  releaseLocalCopyFailedBody:
+    'The recording is still saved on this device and the options above are still available. Try again in a moment.',
+  dismissNotice: 'Got it',
   resubmitAsNew: 'Not this visit — submit separately',
   resubmitAsNewConfirmTitle: 'Submit as a new recording?',
   resubmitAsNewConfirmBody:

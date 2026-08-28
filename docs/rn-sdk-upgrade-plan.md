@@ -108,8 +108,9 @@ Gradle or CocoaPods changes across an SDK major can break either. Neither is exe
 zipalign -c -P 16 -v 4 android/app/build/outputs/apk/release/app-release.apk
 
 # ELF: every LOAD segment aligned to 0x4000 (16 KB), not 0x1000.
-unzip -o -q app-release.apk 'lib/arm64-v8a/*.so' -d /tmp/apk-libs
-for so in /tmp/apk-libs/lib/arm64-v8a/*.so; do
+APK=android/app/build/outputs/apk/release/app-release.apk
+unzip -o -q "$APK" 'lib/*/*.so' -d /tmp/apk-libs   # every packaged ABI, not just arm64
+for so in /tmp/apk-libs/lib/*/*.so; do
   echo "== $so"; llvm-readelf -l "$so" | awk '/LOAD/ {print $NF}' | sort -u
 done
 ```
@@ -125,6 +126,7 @@ A green Gradle/Xcode build proves the projects compile, not that config-plugin o
 - `expo-build-properties` → Android `usesCleartextTraffic: IS_DEV` (false in production) and `allowBackup: false`
 - the `blockedPermissions` list (storage, location, camera, media)
 - iOS background-audio mode and the microphone usage description
+- the production iOS `NSAppTransportSecurity` dictionary — `NSAllowsArbitraryLoads: false` and `NSAllowsLocalNetworking: false`. The Android cleartext policy is asserted above; its iOS counterpart is just as plugin-generated and just as silently droppable.
 
 After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` and `ios/*/Info.plist` and assert each one is still present and still has the production value. Diff them against the previous SDK's generated output — that diff is the real review surface of an SDK upgrade.
 
@@ -147,7 +149,9 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 **Recording**
 
 - Durable recording across process death, plus crash recovery
-- **A timed capture through backgrounding AND screen lock, on both platforms** — start recording, background the app, lock the device, wait a measured interval, return, finish, and verify the resulting file's duration and audible content match the wall-clock time. This depends on the Android microphone foreground service plus its notification/wake-lock permissions and on iOS background audio / `AVAudioSession`, all of which move between SDK majors. A regression here loses audio during an ordinary appointment without crashing and without failing crash-recovery, so nothing else on this list catches it.
+- **Resume → Continue on a recovered capture**, which is the only thing that exercises the native `resume()` entry point: `useAudioRecorder.resumeDurable()` reloads the manifest, reattaches ownership and timing state, and appends new ADTS frames to the existing `audio.aac`. Recovering and submitting as-is does not touch it, so this path can fail — or desynchronize the recovered duration — while process-death recovery and fresh recordings both pass. Kill a capture, recover it, continue recording, then verify the final duration and that BOTH halves are audible.
+- **A timed capture through backgrounding AND screen lock, on both platforms — run TWICE, with durable capture forced on and forced off** (`EXPO_PUBLIC_FORCE_DURABLE_CAPTURE`, and with the server flag off). `useAudioRecorder.start()` falls back to expo-audio whenever the flag is off or the native module is unavailable, and that fallback's own background-audio implementation is moving in this migration — so it can stop capturing under lock while the durable run and the iOS interruption test both pass. — start recording, background the app, lock the device, wait a measured interval, return, finish, and verify the resulting file's duration and audible content match the wall-clock time. This depends on the Android microphone foreground service plus its notification/wake-lock permissions and on iOS background audio / `AVAudioSession`, all of which move between SDK majors. A regression here loses audio during an ordinary appointment without crashing and without failing crash-recovery, so nothing else on this list catches it.
+- **Input route lost mid-capture on iOS** — unplug a wired mic or power off a Bluetooth one while recording. This is a SEPARATE native path from a call or alarm: `DurableRecorderEngine.handleRouteChange()` observes `AVAudioSession.routeChangeNotification` and treats `.oldDeviceUnavailable` as fatal, flushing the writer, persisting `route_change`, and notifying JS. If that observer or its bridge regresses during the native rebuild, the UI can sit in `recording` with no input and silently lose the rest of the appointment while every call/alarm test passes.
 - Audio focus interruption (call / alarm / other voice app) on **Android**, via `modules/captivet-audio-focus`
 - **The same interruption on iOS**, where that module is a deliberate no-op and recovery depends entirely on expo-audio surfacing the `AVAudioSession` interruption as `hasError` — an SDK-sensitive path that neither the process-death test nor the background/lock test triggers. **The two capture modes have different contracts, so assert them separately:**
   - *Durable capture:* `audio.aac` is already saved and marked interrupted natively, and v1 deliberately does NOT auto-resume-append. The correct behaviour is a silent finalize into a submittable durable draft, with the interruption notice shown — `interruptionPendingResume` is never armed and the iOS engine emits no gain event. Verify the draft exists, carries the full pre-interruption audio, and submits.
@@ -192,7 +196,8 @@ Switch accounts on a real device WHILE a restore or a cleanup is still pending, 
 1. On the **released SDK-55 binary** (see the signing note above), seed one of each: an un-sent draft, a saved session (stash), a durable capture killed mid-recording, and a draft with a `pendingConfirm`. Record the device UUID and its server device row now — see below.
 2. Install the candidate build **over it, without clearing app data**.
 3. Verify every item reappears, still carries its metadata, and is still submittable.
-4. Verify the **device UUID survived**. `getDeviceId()` silently mints a replacement when SecureStore cannot read the stored one, and every check above creates its state under the NEW build — so a candidate-only read looks perfectly stable while every updating tablet has silently re-registered as a new device, consuming another org device slot and orphaning the prior server row that revocation targets. Compare the UUID and the server device row to what step 1 recorded.
+4. Verify the **biometric app-lock preference survived**. Enable it on the released build in step 1. `biometrics.isEnabled()` reads its own `captivet_biometric_enabled` SecureStore key and treats missing OR unreadable as disabled — after which `AppLockGuard` shows the authenticated screen with no prompt. The fresh-candidate biometric test passes happily after re-enabling the setting, so only this step can catch an upgrade silently switching off a security control every existing user had on.
+5. Verify the **device UUID survived**. `getDeviceId()` silently mints a replacement when SecureStore cannot read the stored one, and every check above creates its state under the NEW build — so a candidate-only read looks perfectly stable while every updating tablet has silently re-registered as a new device, consuming another org device slot and orphaning the prior server row that revocation targets. Compare the UUID and the server device row to what step 1 recorded.
 
 **Password-recovery deep link** — `app/_layout.tsx` parses the reset tokens out of a query string OR a fragment, calls `setSession()`, and routes on `PASSWORD_RECOVERY`; it moves with Expo Linking, Expo Router, AND Supabase, so both an Option A Supabase bump and an Option B alignment can break it while ordinary sign-in and the representative deep link both pass. Open a real emailed reset link on a cold start (`getInitialURL`) and again with the app already running (`addEventListener`), then change the password and sign in with the new one.
 

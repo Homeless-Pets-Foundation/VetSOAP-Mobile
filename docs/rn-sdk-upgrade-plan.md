@@ -108,20 +108,52 @@ Gradle or CocoaPods changes across an SDK major can break either. Neither is exe
 zipalign -c -P 16 -v 4 android/app/build/outputs/apk/release/app-release.apk
 
 # ELF: every LOAD segment aligned to 0x4000 (16 KB), not 0x1000.
+#
+# Every step below that CANNOT run has to fail loudly. A check of this shape
+# has three ways to report success while inspecting nothing at all -- a missing
+# llvm-readelf, an extract that produced no .so, and a readelf output the awk
+# no longer matches -- and each one leaves `bad=0` and exits 0. Guard all three
+# explicitly; the release gate is worthless otherwise.
+set -o pipefail   # without this, a failing llvm-readelf is masked by sort's exit 0
+# llvm-readelf specifically, and do NOT substitute GNU readelf: it wraps each
+# program header onto TWO lines, so `$NF` on the LOAD line is an ADDRESS, not
+# the alignment. Measured on an ordinary 4 KB library that reports align 0x1000,
+# GNU readelf yields 0x14000 for the same segment -- which passes this gate.
+command -v llvm-readelf >/dev/null 2>&1 || { echo "FAIL: llvm-readelf not installed"; exit 1; }
+
 APK=android/app/build/outputs/apk/release/app-release.apk
-unzip -o -q "$APK" 'lib/*/*.so' -d /tmp/apk-libs   # every packaged ABI, not just arm64
+rm -rf /tmp/apk-libs
+unzip -o -q "$APK" 'lib/*/*.so' -d /tmp/apk-libs || { echo "FAIL: could not extract libs from $APK"; exit 1; }
+mapfile -t sos < <(find /tmp/apk-libs -type f -name '*.so')   # every packaged ABI, not just arm64
+# Zero libraries is a FAILURE, not a pass: an unmatched glob would otherwise
+# skip the whole loop and report a clean 16 KB artifact.
+[ "${#sos[@]}" -gt 0 ] || { echo "FAIL: no packaged .so found in $APK"; exit 1; }
+
 bad=0
-for so in /tmp/apk-libs/lib/*/*.so; do
-  for align in $(llvm-readelf -l "$so" | awk '/LOAD/ {print $NF}' | sort -u); do
+for so in "${sos[@]}"; do
+  aligns=$(llvm-readelf -l "$so" | awk '$1 == "LOAD" {print $NF}' | sort -u) \
+    || { echo "FAIL: llvm-readelf could not read $so"; bad=1; continue; }
+  # No parsed LOAD row is also a failure: a readelf format change that stops
+  # matching would silently approve every library in the APK.
+  [ -n "$aligns" ] || { echo "FAIL: no LOAD segment parsed from $so"; bad=1; continue; }
+  for align in $aligns; do
+    n=$((align))
+    # A segment alignment is always a power of two. Anything else means the
+    # column being read is not the alignment at all (see the readelf note
+    # above) -- fail rather than compare a misparsed number against 16384.
+    if [ "$n" -le 0 ] || [ $(( n & (n - 1) )) -ne 0 ]; then
+      echo "FAIL: $so parsed a non-power-of-two LOAD align ($align) -- wrong column?"; bad=1; continue
+    fi
     # Must be >= 0x4000. Printing the value is not a gate: a 0x1000 library
     # would sail through with sort's exit status and fail only on real 16 KB
     # hardware, or at Play review.
-    if [ "$((align))" -lt 16384 ]; then
+    if [ "$n" -lt 16384 ]; then
       echo "FAIL 16 KB alignment: $so has LOAD align $align"; bad=1
     fi
   done
 done
 [ "$bad" -eq 0 ] || exit 1
+echo "OK: ${#sos[@]} libraries inspected, every LOAD segment >= 16 KB aligned"
 ```
 
 Then run the recording and editor checks on a 16 KB-page device or emulator image.
@@ -190,7 +222,7 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 
 - Cold-start session restoration after a real app kill (SecureStore round-trip, including the read-back verification in `src/auth/supabase.ts`)
 - **The same cold start with `/auth/me` UNREACHABLE.** `userProfileCache` exists so a vet keeps access to on-device drafts through an API outage, and it is what configures the user-scoped stores at startup; the offline→online case above begins inside an already-running session and never proves this. Kill the app, block the API, launch: the last-known-good profile must restore, the drafts and saved sessions must be there, and the stores must be scoped (not empty).
-- **Refresh-token ROTATION and involuntary `SIGNED_OUT` recovery**, which a cold start with an already-valid session never touches. Rules 16 and 17 exist because the old refresh token is invalidated server-side the moment rotation succeeds: if the rotated one is not persisted (or is persisted unverified), the next refresh fails and the user is logged out despite everything having worked. Force an expiry so a rotation actually happens, kill the app, and confirm the ROTATED session restores; then induce one transient refresh failure and confirm `onAuthStateChange` recovers via `refreshSession()` instead of clearing the session.
+- **Refresh-token ROTATION and involuntary `SIGNED_OUT` recovery**, which a cold start with an already-valid session never touches. Rules 16 and 17 exist because the old refresh token is invalidated server-side the moment rotation succeeds: if the rotated one is not persisted (or is persisted unverified), the next refresh fails and the user is logged out despite everything having worked. Force an expiry so a rotation actually happens, kill the app, and confirm the ROTATED session restores; then induce one transient refresh failure and confirm `onAuthStateChange` recovers via `refreshSession()` instead of clearing the session. **Rotating against a HEALTHY store is not enough** — on ordinary hardware the first write succeeds, so it reaches neither of the adapter's two recovery paths in `src/auth/supabase.ts`: the `readback_mismatch` branch (the write reports success but reads back missing or different) and the throw branch (1.5 s wait, then one retry). A Supabase or SecureStore migration can break either while this rotation-and-relaunch check stays green, and the users it logs out are the ones whose Keystore is already marginal. Inject a first-write failure and, separately, a read-back mismatch; in each case rotate the token, kill the app, and confirm the RETRIED write is what restores the rotated session.
 - **Foreground resume with an EXPIRED token.** The rotation check above can be completed with the app active, which never reaches `AuthProvider`'s AppState-resume handler — the one that must read the CURRENT persisted session rather than a render-time closure before deciding to refresh (rule 18). Background the app until the access token expires, return, and confirm it refreshes before issuing requests instead of firing an expired token and driving an avoidable sign-out.
 - **Sign out of a GOOGLE session specifically, then switch accounts.** `signOutNativeGoogle()` calls `GoogleSignin.hasPreviousSignIn()` and `GoogleSignin.signOut()` in the upgraded native package, and the password sign-out test returns early there because it has no previous Google session — so nothing else exercises it. If that native cleanup regresses on a shared tablet, user B is silently handed back A's Google identity. Sign in as A with Google, sign out, then sign in as B and confirm the account chooser appears and B's own profile loads.
 - **Sign out, then sign in again without restarting the app.** This is a different failure from an ordinary password sign-in: GoTrue's auto-refresh timer leaves a stale `AbortController` after `signOut()`, so the first `signInWithPassword()` rejects instantly with `AuthRetryableFetchError` (rule 22). A Supabase bump can regress the single-retry workaround while every fresh sign-in passes, leaving an iOS user who signs out unable to get back in.
@@ -198,7 +230,7 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 - **Automatic re-registration after a 428.** Registration succeeding on sign-in does not exercise `ApiClient`'s `DEVICE_REGISTRATION_REQUIRED` path, which has to invoke `onDeviceRegistrationRequired`, register, and REPLAY the original request exactly once. If that callback or the replay regresses, every `/api/*` call sticks on 428 while sign-in and the header check both pass. Delete the active device-session row server-side after signing in, make a request, and confirm it self-heals with no user-visible failure.
 - **Server-driven revocation.** Registration succeeding proves nothing about it: `DEVICE_REVOKED` has to be recognised in `ApiClient` BEFORE the token refresh path and then drive an async sign-out and cache clear, and upgraded fetch/auth behaviour can break that callback while sign-in and the UUID check still pass — leaving a revoked shared tablet sitting on an authenticated UI full of cached PHI. Revoke the candidate from another admin session, make any request, and verify it signs out immediately and the query cache is gone.
 - Device TYPE, not just the id (Rule 23): `registerDevice()` reads `Device.deviceType` on Android and `Platform.isPad` on iOS, and an unavailable or renamed Android enum silently falls back to `android_tablet`. Register a representative phone and tablet on each platform and confirm the server and the Devices screen show `ios_phone` / `ios_tablet` / `android_phone` / `android_tablet` correctly — a mislabelled device is what an admin revokes by
-- Biometric unlock through `AppLockGuard`, including a cancelled prompt — **at cold start AND on background resume**. The resume path is the one at risk: it depends on RN's `AppState` ordering to lock synchronously before the current screen renders, so an upgraded runtime that delivers the event late briefly exposes whatever PHI-bearing screen was open. A cold-start-only check passes right through that. Background from a recording or SOAP screen for longer than the 30-second threshold, return, and confirm nothing flashes before the prompt, that cancelling leaves the app locked, and that unlocking returns to the same screen.
+- Biometric unlock through `AppLockGuard`, including a cancelled prompt — **at cold start AND on background resume**. The resume path is the one at risk: it depends on RN's `AppState` ordering to lock synchronously before the current screen renders, so an upgraded runtime that delivers the event late briefly exposes whatever PHI-bearing screen was open. A cold-start-only check passes right through that. Background from a recording or SOAP screen for longer than the 30-second threshold, return, and confirm nothing flashes before the prompt, that cancelling leaves the app locked, and that unlocking returns to the same screen. **Then background again and inject a bridge call that never settles** (a stalled Keystore or local-authentication prompt after an OS update — a hang, not a cancellation, which the check above cannot produce). This is the one path with no rule-24 watchdog: cold start has a 12 s timer that flips `isReady`/`isLocked` and emits `applock_init_watchdog_fired`, but the `AppState` resume handler sets `isLocked(true)` and then awaits `isAvailable()`, `isEnabled()` and `authenticate()` with nothing bounding them, so a stall leaves every biometric user permanently locked out of an app whose session is perfectly valid, with their un-uploaded recordings behind the lock screen. Do not write this down as "confirm the watchdog fires" — there is nothing on this path to fire. Verify whether the candidate recovers, and treat a permanent lock as a release blocker: an SDK major that makes either bridge stall turns this pre-existing gap into an outage, and the fix is a resume-side watchdog, not a note in the test log.
 - Email/password sign-in, plus Google on **both** platforms and Apple on iOS. iOS Google is a real path — `socialAuth.ts` requires both Google client IDs and `app.config.ts` installs the iOS URL-scheme plugin — and it is the one most exposed here, since the migration moves the GoogleSignIn pods and the AppCheckCore graph behind `with-ios-modular-headers.js`. A green pod build and a working Apple login say nothing about the iOS OAuth redirect or the ID-token exchange.
 - **A never-before-seen social account.** An existing-account Google or Apple login skips the bootstrap entirely: `/auth/me` returns 404, Apple's profile metadata has to be awaited, and `/auth/register` creates the application profile BEFORE device registration. A Supabase or native-auth migration can break that ordering while every provider login above passes — and the symptom is a brand-new authorized user being signed straight back out.
 - **First-time MFA ENROLLMENT, not just a challenge**: enrollment and enrollment-verification are distinct routes, and the QR renders through `react-native-qrcode-svg` on the upgraded native SVG renderer. Force a fresh enrolment (including a setup approval code where the org requires one), scan the TOTP QR, verify, then sign out and come back through the ordinary challenge. Every account newly required to enrol depends on this path, and the challenge-only check says nothing about it.

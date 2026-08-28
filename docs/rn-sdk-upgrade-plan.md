@@ -99,7 +99,22 @@ So both platforms need a real build: `npx expo prebuild --platform ios` + `pod i
 
 Gradle or CocoaPods changes across an SDK major can break either. Neither is exercised by CI — both need a real build.
 
-**Verify 16 KB page alignment in the ARTIFACT, not just that it built.** `app.config.ts` sets `useLegacyPackaging: false` specifically for 16 KB memory-page alignment (Android 15+), and the self-hosted FFmpeg AAR is a custom 16 KB build for the same reason. An SDK major replaces the AGP/NDK packaging stack, and losing either property produces an APK that builds, installs, and passes every check on an ordinary 4 KB-page device while failing to load on 16 KB-page hardware — and Play can reject it. After building, inspect the artifact: confirm the native libraries are stored uncompressed and page-aligned in the ZIP (`zipalign -c -P 16 -v`) and that each `.so`'s ELF load segments carry a 16 KB alignment (`llvm-readelf -l`), then run the recording and editor checks on a 16 KB-page device or emulator image.
+**Verify 16 KB page alignment in the ARTIFACT, not just that it built.** `app.config.ts` sets `useLegacyPackaging: false` specifically for 16 KB memory-page alignment (Android 15+), and the self-hosted FFmpeg AAR is a custom 16 KB build for the same reason. An SDK major replaces the AGP/NDK packaging stack, and losing either property produces an APK that builds, installs, and passes every check on an ordinary 4 KB-page device while failing to load on 16 KB-page hardware — and Play can reject it. After building, inspect the artifact — with complete operands, or the commands just fail and the check gets skipped while looking done:
+
+```bash
+# ZIP: .so entries uncompressed and 16 KB-page aligned. -P is the page size in
+# KiB; the trailing 4 is zipalign's own alignment argument, and both are
+# required in check mode.
+zipalign -c -P 16 -v 4 android/app/build/outputs/apk/release/app-release.apk
+
+# ELF: every LOAD segment aligned to 0x4000 (16 KB), not 0x1000.
+unzip -o -q app-release.apk 'lib/arm64-v8a/*.so' -d /tmp/apk-libs
+for so in /tmp/apk-libs/lib/arm64-v8a/*.so; do
+  echo "== $so"; llvm-readelf -l "$so" | awk '/LOAD/ {print $NF}' | sort -u
+done
+```
+
+Then run the recording and editor checks on a 16 KB-page device or emulator image.
 
 **A build is not the FFmpeg gate; the editor is.** Nothing in §6 invokes `src/lib/ffmpeg.ts`, and `app/(app)/audio-editor.tsx` depends on that bridge for waveform peak extraction and trim/concat. A bridge signature or codec incompatibility compiles, links, and passes the playback-seeking check while making editing fail on device. Add to the hardware list: open a recording in the editor, confirm the waveform renders, apply a trim, and play back the result — on both platforms.
 
@@ -236,6 +251,7 @@ Switch accounts on a real device WHILE a restore or a cleanup is still pending, 
 
      Without the full set the APK embeds empty Supabase, R2, and Google configuration, so it cannot run the auth or upload checks §6 requires and the JS bundle it ships is not the one users get. The same rule applies to the iOS prebuild above. A production-parity `eas build --local` is the alternative on either platform, and is the safer choice if the environment is hard to reproduce by hand.
    - §6's device checks are scoped to Option B only because Option A is *usually* JS-only. Any native bump removes that exemption.
+   - **§4b applies to Option A too** whenever the bump set touches `expo-build-properties` or any other config plugin. Those assertions are about plugin OUTPUT, not about the SDK version: a patch-level plugin change can stop emitting `usesCleartextTraffic=false`, `allowBackup=false`, or the blocked-permission list while both builds and every runtime check stay green. Diff the generated manifest and plist, and re-assert the OS floors.
 2. Only then attempt Option B, on a separate branch, one concern at a time: resolve versions → patches → native modules → FFmpeg → typecheck → device test.
 3. Bump the marketing version in `package.json` **and** `package-lock.json` before any store build (`app.config.ts` reads `MARKETING_VERSION` from `package.json` and carries no literal semver).
 

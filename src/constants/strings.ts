@@ -95,6 +95,9 @@ export const METADATA_DIVERGENCE_COPY = {
   resubmitAsNewConfirmBody:
     'This keeps the audio on this device and submits it again as a separate recording. The existing recording on the server is left alone.',
   resubmitAsNewConfirm: 'Submit separately',
+  resubmitStillFinishingTitle: 'Still finishing',
+  resubmitStillFinishingBody:
+    'This device is taking longer than expected to save. The recording is safe and this patient stays locked until it finishes — the rest of the session is usable in the meantime.',
   resubmitAsNewFailedTitle: 'Could not start a separate submission',
   resubmitAsNewFailedBody:
     'The recording on this device was not changed and is still saved here. Try again, or open the existing recording to compare the details.',

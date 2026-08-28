@@ -680,8 +680,14 @@ test('a timed-out conversion never races a restart of the original slot', async 
   // kept refusing and "Try again" pointed at inert controls until a restart.
   // The generation bump makes every remaining step a no-op, which is what
   // makes releasing the gate immediately safe.
-  assert.match(resubmit, /reconcileGenerationRef\.current \+= 1;\s*clearSubmitIntent\(\[slot\.id\]\);/);
-  assert.match(resubmit, /conversion\.catch\(\(\) => \{\}\);/);
+  assert.match(resubmit, /reconcileGenerationRef\.current \+= 1;/);
+  // The submit intent is freed so the rest of the session works, but this
+  // slot's lock is held until the in-flight saveDraft() settles — otherwise a
+  // retry could persist the replacement key only for that older write to land
+  // afterwards and restore the original confirmed identity.
+  assert.match(resubmit, /clearSubmitIntent\(\[slot\.id\]\);/);
+  assert.match(resubmit, /await conversion\.catch\(\(\) => \{\}\);\s*return;/);
+  assert.match(resubmit, /METADATA_DIVERGENCE_COPY\.resubmitStillFinishingTitle/);
   assert.match(
     resubmit,
     /persistPostConfirmSeparateSubmission\(\s*slot,\s*\(\) => reconcileGenerationRef\.current !== generation,\s*\)/
@@ -1073,4 +1079,47 @@ test('an abandoned conversion rechecks before the purge, and standard holds are 
     record.indexOf('const handleSubmitSingle = useCallback')
   );
   assert.match(resubmit, /if \(!converted\) \{\s*await durableReconcileHold\s*\.remove\(slot\.draftSlotId \?\? slot\.id\)/);
+});
+
+test('the release transaction is bounded and cannot strand the slot', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // Every step is a SecureStore, Keystore or native-purge call, and those hang
+  // rather than reject — so a promise that never settles never reaches its
+  // finally, leaving the slot mutation-locked until the app restarts.
+  assert.match(record, /const RECONCILE_TRANSACTION_TIMEOUT_MS = 15_000;/);
+  assert.match(record, /const releaseGeneration = \+\+reconcileGenerationRef\.current;/);
+  assert.match(record, /reconcileGenerationRef\.current === releaseGeneration &&/);
+  assert.match(record, /release_local_copy_watchdog_fired/);
+  assert.match(record, /if \(reconcilingSlotIdRef\.current === slot\.id\) releaseReconcileLock\(\);/);
+});
+
+test('tombstone mutations are serialized like the holds', async () => {
+  const tomb = await read('src/lib/durableAudio/tombstone.ts');
+
+  // A reconciliation action and another slot's upload cleanup can both call
+  // add(); interleaved, the second whole-list write drops the first — and a
+  // dropped tombstone is a confirmed-uploaded recording whose server row
+  // cleanupOrphaned can then delete.
+  assert.match(tomb, /let mutationChain: Promise<unknown> = Promise\.resolve\(\);/);
+  assert.equal((tomb.match(/return serialize\(async \(\) => \{/g) ?? []).length, 3);
+});
+
+test('a held copy survives background autosave and freezes its audio controls', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  // saveDraft has just promoted live state onto the draft-directory URIs, so
+  // deleting here removes the directory it only just wrote.
+  assert.match(
+    record,
+    /if \(completedUploadSlotIdsRef\.current\.has\(slot\.id\)\) \{[\s\S]{0,600}?if \(slot\.metadataDivergence\?\.tier !== 'identity'\) \{\s*deleteLocalSlotDraft\(slot\);/
+  );
+  // Continue Recording is the sharp edge: it flips the slot back to pending
+  // while leaving metadataDivergence intact, so new audio can be appended and
+  // then deleted by an answer about a different recording.
+  assert.match(
+    card,
+    /const isUploading = slot\.uploadStatus === 'uploading' \|\| identityReconciliationPending;/
+  );
 });

@@ -163,6 +163,13 @@ const UPLOAD_RESTART_LOCAL_TIMEOUT_MS = 15_000;
  * file copy plus two small writes.
  */
 const POST_CONFIRM_CONVERSION_TIMEOUT_MS = 12_000;
+/**
+ * Watchdog for the release transaction. It has no natural timeout of its own —
+ * it is a chain of SecureStore, Keystore and native-purge calls, every one of
+ * which can hang instead of rejecting (rule 24) — and it holds the slot's
+ * mutation lock the whole time.
+ */
+const RECONCILE_TRANSACTION_TIMEOUT_MS = 15_000;
 
 /**
  * "Truly unsaved" = work that would actually be lost if the session were
@@ -4076,7 +4083,15 @@ function RecordingSession() {
             stashResumedSlotIdsRef.current.delete(slot.id);
 
             if (completedUploadSlotIdsRef.current.has(slot.id)) {
-              deleteLocalSlotDraft(slot);
+              // ...unless the upload RETAINED this copy. The background persist
+              // deliberately includes a held slot, and saveDraft has just
+              // promoted live state onto the draft-directory URIs — so deleting
+              // here removes the directory it only just wrote and takes the
+              // retained audio with it. The server-sync branches already carry
+              // this exemption; this one did not.
+              if (slot.metadataDivergence?.tier !== 'identity') {
+                deleteLocalSlotDraft(slot);
+              }
               return true;
             }
 
@@ -4849,6 +4864,7 @@ function RecordingSession() {
               // state an orphan sweep resolves by deleting the server row the
               // user just chose to keep.
               if (!claimReconcileLock(slot.id)) return;
+              const releaseGeneration = ++reconcileGenerationRef.current;
               void (async () => {
                 const durable = slot.durable;
                 const userId = user?.id;
@@ -4867,7 +4883,14 @@ function RecordingSession() {
                 // started in, as the separate-submission path does.
                 const initiatingScopeKey = authScopeKeyRef.current;
                 const initiatingScopeGeneration = authScopeGenerationRef.current;
+                // Rule 24: the same abandonment check the conversion uses. Every
+                // step below awaits SecureStore or a native bridge, and both can
+                // HANG rather than reject — so without this the whole task never
+                // settles, its trailing finally never runs, and this slot stays
+                // mutation-locked with every reconciliation action disabled
+                // until the app is restarted.
                 const scopeIsCurrent = () =>
+                  reconcileGenerationRef.current === releaseGeneration &&
                   authScopeMountedRef.current &&
                   initiatingScopeKey !== null &&
                   userId !== undefined &&
@@ -4972,6 +4995,25 @@ function RecordingSession() {
                 });
                 runDeferredSuccessTransition(slot.id);
               })().finally(() => releaseReconcileLock());
+              // The task above can HANG (SecureStore, Keystore, a native purge),
+              // and a promise that never settles never reaches that finally —
+              // leaving this slot mutation-locked and every reconciliation
+              // action disabled until the app restarts. Bound it: bumping the
+              // generation makes each remaining step a no-op (scopeIsCurrent
+              // reads it), so releasing the gate is safe rather than a licence
+              // for late destructive work.
+              setTimeout(() => {
+                if (reconcileGenerationRef.current !== releaseGeneration) return;
+                reconcileGenerationRef.current += 1;
+                captureMessage('release_local_copy_watchdog_fired', 'warning', {
+                  tags: { phase: 'upload_recovery' },
+                });
+                if (reconcilingSlotIdRef.current === slot.id) releaseReconcileLock();
+                Alert.alert(
+                  METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedTitle,
+                  METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedBody
+                );
+              }, RECONCILE_TRANSACTION_TIMEOUT_MS);
             },
           },
         ]
@@ -5242,13 +5284,23 @@ function RecordingSession() {
                   // never settle left "Try again" pointing at controls that
                   // stayed inert until the app was restarted.
                   reconcileGenerationRef.current += 1;
+                  // Free the SUBMIT intent so the rest of the session is usable
+                  // again — but keep this slot's reconciliation lock until the
+                  // conversion actually settles. The generation bump stops every
+                  // remaining STEP, and it cannot stop the `saveDraft()` already
+                  // in flight: if a retry were allowed to start now it could
+                  // persist the replacement upload key only for that older write
+                  // to land afterwards and overwrite the draft with the original
+                  // confirmed identity — after which "submit separately" adopts
+                  // the old row again on the next launch. Awaiting here keeps the
+                  // slot frozen (isSlotUploadActive consults the same ref) while
+                  // leaving everything else responsive.
                   clearSubmitIntent([slot.id]);
-                  // Keep the late rejection observed; its result is discarded.
-                  conversion.catch(() => {});
                   Alert.alert(
-                    METADATA_DIVERGENCE_COPY.resubmitAsNewFailedTitle,
-                    METADATA_DIVERGENCE_COPY.resubmitAsNewFailedBody
+                    METADATA_DIVERGENCE_COPY.resubmitStillFinishingTitle,
+                    METADATA_DIVERGENCE_COPY.resubmitStillFinishingBody
                   );
+                  await conversion.catch(() => {});
                   return;
                 }
                 const restarted = await persistControlledUploadRestart(converted ?? slot).catch(

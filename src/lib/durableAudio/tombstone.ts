@@ -122,6 +122,26 @@ async function readList(userId: string): Promise<string[]> {
  * the cache stays invalidated (storage still holds the previous value, which is
  * what the next read must see) and the caller is told the mutation did not land.
  */
+/**
+ * Serializes read-modify-write. Every mutation here is a whole-list rewrite, so
+ * two concurrent callers — a reconciliation action and another slot's upload
+ * cleanup, say — can read the same list, append different ids, and have the
+ * second write silently drop the first while both report success. A dropped
+ * tombstone is a confirmed-uploaded recording that `cleanupOrphaned` can then
+ * delete the server row for, which is the exact loss this store exists to
+ * prevent. One JS context and short operations, so ordering them is enough.
+ */
+let mutationChain: Promise<unknown> = Promise.resolve();
+
+function serialize<T>(op: () => Promise<T>): Promise<T> {
+  const run = mutationChain.then(op, op);
+  mutationChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 async function writeList(userId: string, list: string[]): Promise<boolean> {
   // Drop the mirror first: if the write fails, the next read must go to storage
   // rather than serve a value that was never persisted.
@@ -158,13 +178,17 @@ export const durableTombstone = {
   async add(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId || !isValidDurableId(recordingId)) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const list = loaded.list;
-    if (list.includes(recordingId)) return true;
-    list.push(recordingId);
-    while (list.length > MAX_TOMBSTONES) list.shift(); // drop oldest
-    return writeList(userId, list);
+    return serialize(async () => {
+      // Re-read inside the lock: a concurrent mutation may have landed while
+      // this call was queued.
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const list = loaded.list;
+      if (list.includes(recordingId)) return true;
+      list.push(recordingId);
+      while (list.length > MAX_TOMBSTONES) list.shift(); // drop oldest
+      return writeList(userId, list);
+    });
   },
 
   async has(recordingId: string): Promise<boolean> {
@@ -182,11 +206,13 @@ export const durableTombstone = {
   async remove(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const next = loaded.list.filter((id) => id !== recordingId);
-    if (next.length === loaded.list.length) return true; // nothing to remove
-    return writeList(userId, next);
+    return serialize(async () => {
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const next = loaded.list.filter((id) => id !== recordingId);
+      if (next.length === loaded.list.length) return true; // nothing to remove
+      return writeList(userId, next);
+    });
   },
 
   async list(): Promise<string[]> {
@@ -203,14 +229,16 @@ export const durableTombstone = {
   async prune(stillReferenced: (recordingId: string) => Promise<boolean>): Promise<boolean> {
     const userId = currentUserId;
     if (!userId) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const keep: string[] = [];
-    for (const id of loaded.list) {
-      if (await stillReferenced(id)) keep.push(id);
-    }
-    if (keep.length === loaded.list.length) return true; // nothing to prune
-    return writeList(userId, keep);
+    return serialize(async () => {
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const keep: string[] = [];
+      for (const id of loaded.list) {
+        if (await stillReferenced(id)) keep.push(id);
+      }
+      if (keep.length === loaded.list.length) return true; // nothing to prune
+      return writeList(userId, keep);
+    });
   },
 
   async clearForUser(userId: string): Promise<void> {

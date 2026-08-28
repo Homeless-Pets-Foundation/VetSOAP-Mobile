@@ -233,7 +233,16 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const isRecording = audioState === 'recording';
   const isPaused = audioState === 'paused';
   const isStopped = audioState === 'stopped';
-  const isUploading = slot.uploadStatus === 'uploading';
+  const identityReconciliationPending = slot.metadataDivergence?.tier === 'identity';
+  // An unresolved identity conflict owns this slot's audio: the vet is deciding
+  // whether the SERVER row is the same visit, and every one of the three
+  // reconciliation actions acts on the bytes that exist right now. Continue
+  // Recording is the sharp edge — it flips the slot back to pending while
+  // leaving `metadataDivergence` intact, so freshly recorded audio can be
+  // appended and then deleted by "This is the right visit", which was answering
+  // a question about a different recording. Freeze the audio controls with the
+  // same switch that already hides the submit card.
+  const isUploading = slot.uploadStatus === 'uploading' || identityReconciliationPending;
   const hasSegments = slot.segments.length > 0;
   // A durable recording has empty `segments` (audio lives in audio.aac), so any
   // submit/upload gate must treat a durable ref as captured audio too — else a
@@ -280,7 +289,6 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   // metadataDivergence and re-runs the same adopt path, looping on the conflict
   // at best, and resuming automatic local deletion if the canonical response
   // shifts between attempts.
-  const identityReconciliationPending = slot.metadataDivergence?.tier === 'identity';
   const showSubmitCard =
     (recordFirstEnabled || hasRequiredFields) &&
     hasCapturedAudio &&

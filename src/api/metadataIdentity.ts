@@ -196,6 +196,20 @@ export function compareRecordingMetadata(
       if (METADATA_FIELD_TIERS[key] === 'identity' && !ABSENCE_TOLERATED_FIELDS.has(key)) {
         identityFields.push(key);
       }
+      // The pimsPatientId tolerance is a SERIALIZER allowance, and it stops
+      // being harmless at the adopt deletion gate: if we SENT a non-blank id,
+      // an omitted alias means the strongest patient identifier we had was
+      // never verified against the row whose existence is about to justify
+      // deleting the local audio — and a same-named chart would pass every
+      // other check. Absence stays tolerated on commit responses and for an id
+      // we never sent.
+      if (
+        opts.adoptDeletionGate &&
+        ABSENCE_TOLERATED_FIELDS.has(key) &&
+        normalizeBlank(submitted) !== null
+      ) {
+        identityFields.push(key);
+      }
       // At the adopt deletion gate with no usable PIMS anchor, an ABSENT
       // species/breed is no safer than a differing one: it is the remaining
       // evidence about which of two same-named charts this is, and a response

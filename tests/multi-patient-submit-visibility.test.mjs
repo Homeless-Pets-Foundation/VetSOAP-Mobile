@@ -312,7 +312,7 @@ test('every durable success path honors the identity hold-back, not just the res
   );
   assert.match(
     record,
-    /const holdFreshDurableCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';/
+    /const holdIdentityCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';[\s\S]{0,3000}?const holdFreshDurableCopy = holdIdentityCopy;/
   );
   assert.match(record, /if \(!holdFreshDurableCopy\) \{[\s\S]*?purgeAfterUpload/);
 });
@@ -856,10 +856,25 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   assert.match(auth, /durableReconcileHold\.setUserId\(scopedUserId\);/);
   assert.equal((auth.match(/durableReconcileHold\.setUserId\(null\)/g) ?? []).length, 2);
 
-  // Held on BOTH durable success paths...
+  // Held on BOTH durable success paths, and BEFORE markUploaded() — which is
+  // what makes the manifest self-heal eligible, so a hold written after it
+  // leaves a crash window and an ignored failure leaves none at all.
   assert.equal(
     (record.match(/durableReconcileHold\.add\(durable\.recordingId\)/g) ?? []).length,
     2
+  );
+  assert.equal(
+    (record.match(/\? await durableReconcileHold\.add\(durable\.recordingId\)\.catch\(\(\) => false\)/g) ?? [])
+      .length,
+    2,
+    'the write result must be honoured, not discarded'
+  );
+  assert.match(record, /if \(nativeManifest && \(!holdDurableLocalCopy \|\| holdPersisted\)\) \{/);
+  assert.match(record, /if \(hasNativeManifest && \(!holdIdentityCopy \|\| identityHoldPersisted\)\) \{/);
+  assert.equal(
+    (record.match(/durable_identity_hold_not_persisted/g) ?? []).length,
+    2,
+    'a failed hold write must be reported, not silent'
   );
   // ...and released by every resolution: the release action (only after the
   // delete it authorizes succeeded), the conversion, and a dismissal.
@@ -874,4 +889,32 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   const purgeAt = releaseBlock.indexOf('purgeAfterUpload');
   const unholdAt = releaseBlock.indexOf('durableReconcileHold.remove');
   assert.ok(purgeAt > -1 && unholdAt > purgeAt, 'the hold must outlive the steps it protects');
+});
+
+test('the recovery scan defers self-heal when hold membership is unknown', async () => {
+  const recovery = await read('src/lib/durableAudio/durableRecovery.ts');
+  const hold = await read('src/lib/durableAudio/reconcileHold.ts');
+
+  // Self-heal DELETES a draft and purges audio. An empty set on an unreadable
+  // list would say "nothing is held", so one transient Keystore failure would
+  // destroy every retained copy at once.
+  assert.match(hold, /async listStrict\(\): Promise<\{ known: true; list: string\[\] \} \| \{ known: false \}>/);
+  assert.match(recovery, /const holdsKnown = heldRead\.known;/);
+  assert.match(recovery, /if \(holdsKnown\) \{\s*for \(const m of toHeal\)/);
+  assert.match(recovery, /durable_recovery_selfheal_deferred/);
+  assert.doesNotMatch(recovery, /durableReconcileHold\s*\.list\(\)\s*\.catch/);
+});
+
+test('an omitted PIMS id fails closed at the adopt gate when we sent one', async () => {
+  const identity = await read('src/api/metadataIdentity.ts');
+
+  // The tolerance is a serializer allowance. At the adopt gate it stops being
+  // harmless: a same-named chart passes every other check while the strongest
+  // identifier we held was never verified against the row.
+  assert.match(
+    identity,
+    /opts\.adoptDeletionGate &&\s*ABSENCE_TOLERATED_FIELDS\.has\(key\) &&\s*normalizeBlank\(submitted\) !== null/
+  );
+  // Still tolerated on commit responses and for an id we never sent.
+  assert.match(identity, /const ABSENCE_TOLERATED_FIELDS: ReadonlySet<string> = new Set\(\['pimsPatientId'\]\);/);
 });

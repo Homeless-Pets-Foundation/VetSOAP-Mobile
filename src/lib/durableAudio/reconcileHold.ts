@@ -144,6 +144,18 @@ export const durableReconcileHold = {
     return readList(userId);
   },
 
+  /**
+   * Strict read for the RECOVERY SCAN, which purges on this answer. An
+   * unreadable list must not read as "nothing is held": every confirmed-uploaded
+   * manifest would then be self-healed, destroying exactly the copies this store
+   * exists to protect. `known: false` tells the caller to defer and retry.
+   */
+  async listStrict(): Promise<{ known: true; list: string[] } | { known: false }> {
+    const userId = currentUserId;
+    if (!userId) return { known: false };
+    return loadList(userId);
+  },
+
   async clearForUser(userId: string): Promise<void> {
     if (cachedListUserId === userId) invalidateCache();
     await deleteChunkedValue(prefixFor(userId));

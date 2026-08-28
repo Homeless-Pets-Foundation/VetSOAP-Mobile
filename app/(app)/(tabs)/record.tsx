@@ -2636,13 +2636,21 @@ function RecordingSession() {
             const divergenceReport = metadataDivergence as MetadataDivergenceReport | null;
             const holdDurableLocalCopy =
               divergenceReport?.tier === 'identity' && localAudioAvailableForRestart;
-            if (holdDurableLocalCopy && durable && uid) {
-              // PERSIST the hold. The divergence lives in React state and dies
-              // with the process, but markUploaded() above is permanent — so
-              // the next launch would see a confirmed-uploaded manifest and
-              // self-heal it, destroying the retained copy for a vet who just
-              // closed the app before deciding.
-              await durableReconcileHold.add(durable.recordingId).catch(() => {});
+            // PERSIST the hold BEFORE markUploaded. The divergence lives in
+            // React state and dies with the process, while markUploaded() is
+            // permanent AND is what makes the manifest eligible for startup
+            // self-heal — so writing the hold afterwards leaves a crash window,
+            // and ignoring a failed write leaves a confirmed manifest with no
+            // hold at all. Either way the next scan purges the copy the card
+            // promised to keep.
+            const holdPersisted =
+              holdDurableLocalCopy && durable && uid
+                ? await durableReconcileHold.add(durable.recordingId).catch(() => false)
+                : false;
+            if (holdDurableLocalCopy && !holdPersisted) {
+              captureMessage('durable_identity_hold_not_persisted', 'warning', {
+                tags: { phase: 'upload_recovery', mode: 'durable' },
+              });
             }
             if (divergenceReport?.tier === 'identity' && !localAudioAvailableForRestart) {
               dispatch({
@@ -2658,11 +2666,14 @@ function RecordingSession() {
 
             if (durable && uid) {
               const confirmedAt = new Date().toISOString();
-              // ALWAYS mark the manifest uploaded, even when holding the local
-              // copy back. This is the record that stops durable recovery from
-              // re-offering an already-uploaded capture; skipping it would
-              // trade a false failure for a duplicate server recording.
-              if (nativeManifest) {
+              // Mark the manifest uploaded — the record that stops durable
+              // recovery re-offering an already-uploaded capture; skipping it
+              // would trade a false failure for a duplicate server recording.
+              // The ONE exception is an identity hold we could not persist: an
+              // un-marked manifest is re-OFFERED (recoverable, and the
+              // deterministic durable key makes a re-submit promote the same
+              // row), while a marked one with no hold is PURGED.
+              if (nativeManifest && (!holdDurableLocalCopy || holdPersisted)) {
                 await durableRecorder
                   .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
                   .catch(() => {});
@@ -2957,8 +2968,33 @@ function RecordingSession() {
 
           // Post-success, strict order: write the uploaded marker FIRST, then
           // delete the draft, then (only if that succeeded) purge + tombstone.
+          //
+          // EXCEPT when the copy is being retained for an identity conflict.
+          // markUploaded() is what makes the manifest eligible for startup
+          // self-heal, so the hold has to be persisted BEFORE it — a crash in
+          // between, or an ignored `false` from a failed SecureStore write,
+          // would leave a confirmed manifest with no hold and the next scan
+          // would purge the copy the card promised to keep.
+          const holdIdentityCopy =
+            (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
+          const identityHoldPersisted =
+            holdIdentityCopy && durable && uid
+              ? await durableReconcileHold.add(durable.recordingId).catch(() => false)
+              : false;
+          if (holdIdentityCopy && !identityHoldPersisted) {
+            // The hold could not be persisted. Do NOT terminalize the manifest:
+            // an un-marked manifest is re-OFFERED by recovery (recoverable, and
+            // the deterministic `durable-${recordingId}` key makes a re-submit
+            // promote the same row), whereas a marked one with no hold is
+            // PURGED. Between a possible duplicate and losing the only local
+            // copy of a recording whose visit is already in question, this is
+            // the direction to fail in.
+            captureMessage('durable_identity_hold_not_persisted', 'warning', {
+              tags: { phase: 'upload_recovery', mode: 'durable' },
+            });
+          }
           const confirmedAt = new Date().toISOString();
-          if (hasNativeManifest) {
+          if (hasNativeManifest && (!holdIdentityCopy || identityHoldPersisted)) {
             await durableRecorder
               .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
               .catch(() => {});
@@ -2989,13 +3025,7 @@ function RecordingSession() {
           // is the COMMON durable path — holding it back only on the
           // pending-confirm resume branch would have left the card promising a
           // copy this branch had already destroyed.
-          const holdFreshDurableCopy =
-            (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
-          if (holdFreshDurableCopy && durable && uid) {
-            // Same persistence as the pending-confirm branch: without it the
-            // next recovery scan purges the copy this branch just kept.
-            await durableReconcileHold.add(durable.recordingId).catch(() => {});
-          }
+          const holdFreshDurableCopy = holdIdentityCopy;
           if (!holdFreshDurableCopy) {
             // Retry once — most deleteDraft failures are a transient SecureStore/
             // Keystore hiccup. Stale metadata makes Home show a resumable "Not

@@ -210,11 +210,16 @@ export async function scanDurableRecoveries(
     }
   }
 
-  // A read failure yields an empty set, which is the LENIENT direction here on
-  // purpose: the alternative — treating unreadable as "everything is held" —
-  // would stall every legitimate self-heal indefinitely. The draft and
-  // tombstone checks still apply, and the next scan retries.
-  const heldRecordingIds = new Set(await durableReconcileHold.list().catch(() => []));
+  // FAIL CLOSED on an unreadable hold list. Self-heal DELETES a draft and
+  // purges audio, and an empty set would say "nothing is held" — so one
+  // transient Keystore failure would destroy every retained copy at once. When
+  // membership is unknown, skip the destructive half entirely and let a later
+  // scan do it; the offers below are unaffected, and nothing is lost by waiting.
+  const heldRead = await durableReconcileHold
+    .listStrict()
+    .catch(() => ({ known: false }) as const);
+  const holdsKnown = heldRead.known;
+  const heldRecordingIds = new Set(holdsKnown ? heldRead.list : []);
 
   const { offer, selfHeal: toHeal } = selectRecoverableSessions({
     manifests,
@@ -224,9 +229,16 @@ export async function scanDurableRecoveries(
     heldRecordingIds,
   });
 
-  for (const m of toHeal) {
-    if (isCancelled()) return [];
-    await selfHeal(userId, m);
+  if (holdsKnown) {
+    for (const m of toHeal) {
+      if (isCancelled()) return [];
+      await selfHeal(userId, m);
+    }
+  } else if (toHeal.length > 0) {
+    breadcrumb('record', 'durable_recovery_selfheal_deferred', {
+      count: toHeal.length,
+      reason: 'reconcile_holds_unreadable',
+    });
   }
 
   if (toHeal.length > 0 || offer.length > 0) {

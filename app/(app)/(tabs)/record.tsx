@@ -56,6 +56,7 @@ import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/free
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
+import { withPromiseTimeout } from '../../../src/lib/promiseTimeout';
 import { isValidDurableId, RECOVERED_DURABLE_DIR_NAME } from '../../../src/lib/durableAudio/paths';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
 import { validatePendingConfirm } from '../../../src/lib/pendingConfirm';
@@ -152,6 +153,15 @@ function uploadKeyForSlot(slot: PatientSlot): string {
 }
 
 const UPLOAD_RESTART_LOCAL_TIMEOUT_MS = 15_000;
+/**
+ * The post-confirm conversion runs INSIDE markSubmitIntent, before the restart
+ * transaction's own watchdog exists. SecureStore and the Keystore hang rather
+ * than reject on Direct Boot, low storage, or a corrupted keystore (rule 24),
+ * and a hang there would freeze the Record UI until the app restarts. Bounded
+ * separately, and shorter than the restart's own window since this is only a
+ * file copy plus two small writes.
+ */
+const POST_CONFIRM_CONVERSION_TIMEOUT_MS = 12_000;
 
 /**
  * "Truly unsaved" = work that would actually be lost if the session were
@@ -945,6 +955,13 @@ function RecordingSession() {
   // Guard: if upload wins the race against deferred local draft persistence, auto-save
   // must immediately clean up the late draft instead of leaving it behind locally.
   const completedUploadSlotIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * The reset+navigate a completed submit deferred because a divergence
+   * notice still needed to be read. Held as a closure so the resumption uses
+   * the ORIGINAL transition — single submit goes to its detail, Submit All to
+   * the list — instead of re-deriving it from stale state.
+   */
+  const deferredSuccessTransitionRef = useRef<(() => void) | null>(null);
   // Set when uploadSlot fails on a network-dead phase that the user should be
   // able to recover from by going online later: transient r2_put exhaustion
   // (Sentry REACT-NATIVE-4: DNS resolve / socket reset after 3 retries) or
@@ -3576,6 +3593,13 @@ function RecordingSession() {
             const persistedDraft = await awaitScoped(() => draftStorage.getDraft(draftSlotId));
             if (persistedDraft?.supersededUploadKey || persistedDraft?.uploadRestartPending) return;
             if (completedUploadSlotIdsRef.current.has(slotId)) {
+              // ...unless the upload deliberately RETAINED the local copy for an
+              // unresolved identity divergence. The upload marks the slot
+              // completed either way, so without this the background persist
+              // saves the held draft and this branch immediately deletes the
+              // draft and audio it just wrote — destroying the copy the
+              // reconciliation card promises to keep.
+              if (slot.metadataDivergence?.tier === 'identity') return;
               await awaitScoped(() => draftStorage.deleteDraft(slotId).catch(() => {}));
               await awaitScoped(() => recoveryIntent.clearForDraftSlot(slotId).catch(() => {}));
               return;
@@ -3657,7 +3681,11 @@ function RecordingSession() {
                 // Deleting it here would recreate the stale-row 404 window this
                 // protocol closes. Leave the server winner intact; only transient
                 // local draft state may be removed after proven upload success.
-                if (completedUploadSlotIdsRef.current.has(slotId)) {
+                // Same retention exemption as above.
+                if (
+                  completedUploadSlotIdsRef.current.has(slotId) &&
+                  slot.metadataDivergence?.tier !== 'identity'
+                ) {
                   await awaitScoped(() => draftStorage.deleteDraft(slotId).catch(() => {}));
                   await awaitScoped(() => recoveryIntent.clearForDraftSlot(slotId).catch(() => {}));
                 }
@@ -4528,18 +4556,30 @@ function RecordingSession() {
               (s) => s.metadataDivergence !== null
             );
 
-            if (otherSlotsWithRecordings || hasUnresolvedDivergence) {
-              // Stay on the record screen — uploaded slot already shows success badge.
-              // Do NOT release the pinned stash here: remaining slots may still be
-              // reading audio files from the stash directory. Release runs only
-              // after the whole session is resolved.
-            } else {
+            const completeSingleSubmit = () => {
               releaseResumedStashIfAny();
               resetSession();
               // from=submit: the detail screen's Back must return to the
               // recordings list, not router.back() into this just-reset form
               // (Codex P2, PR #143).
               router.push(`/recordings/${serverRecordingId}?from=submit` as `/recordings/${string}`);
+            };
+            if (otherSlotsWithRecordings || hasUnresolvedDivergence) {
+              // Stay on the record screen — uploaded slot already shows success badge.
+              // Do NOT release the pinned stash here: remaining slots may still be
+              // reading audio files from the stash directory. Release runs only
+              // after the whole session is resolved.
+              //
+              // Hand the deferred transition to the reconcile actions, but only
+              // when a notice is the ONLY thing holding us here: with other
+              // slots still unfinished the session must stay regardless, and
+              // resuming later would reset it out from under them.
+              deferredSuccessTransitionRef.current =
+                hasUnresolvedDivergence && !otherSlotsWithRecordings
+                  ? completeSingleSubmit
+                  : null;
+            } else {
+              completeSingleSubmit();
             }
           } else {
             // Upload returned null — uploadSlot already set the on-card error
@@ -4577,6 +4617,22 @@ function RecordingSession() {
     },
     [router]
   );
+
+  /**
+   * Run the reset+navigate a completed submit deferred while a notice still
+   * needed reading — but only once the LAST one is resolved. Clearing the field
+   * alone would leave the vet sitting on a finished session, having to navigate
+   * out by hand.
+   */
+  const runDeferredSuccessTransition = useCallback((resolvedSlotId: string) => {
+    const stillBlocked = sessionRef.current.slots.some(
+      (s) => s.id !== resolvedSlotId && s.metadataDivergence !== null
+    );
+    if (stillBlocked) return;
+    const resume = deferredSuccessTransitionRef.current;
+    deferredSuccessTransitionRef.current = null;
+    resume?.();
+  }, []);
 
   const handleReleaseLocalCopy = useCallback(
     (slotId: string) => {
@@ -4677,13 +4733,14 @@ function RecordingSession() {
                   slotId: slot.id,
                   divergence: null,
                 });
+                runDeferredSuccessTransition(slot.id);
               })();
             },
           },
         ]
       );
     },
-    [dispatch, setUploadStatus, user?.id]
+    [dispatch, runDeferredSuccessTransition, setUploadStatus, user?.id]
   );
 
   /**
@@ -4715,9 +4772,26 @@ function RecordingSession() {
       const userId = user?.id;
       // No durable manifest to be blocked by: the standard restart already works.
       if (!durable || !userId || durable.recoveredAudioUri) return null;
+
+      // Every write below is user-scoped (draftStorage and the tombstone both
+      // key off the CURRENT user), and the caller only rechecks scope after
+      // this helper returns. A sign-out plus another sign-in while the copy is
+      // in flight would otherwise persist this user's slot and audio URI into
+      // the next user's namespace on a shared tablet.
+      const initiatingScopeKey = authScopeKeyRef.current;
+      const initiatingScopeGeneration = authScopeGenerationRef.current;
+      const scopeIsCurrent = () =>
+        authScopeMountedRef.current &&
+        initiatingScopeKey !== null &&
+        authScopeKeyRef.current === initiatingScopeKey &&
+        authScopeGenerationRef.current === initiatingScopeGeneration &&
+        draftStorage.getUserId() === userId;
+      if (!scopeIsCurrent()) return null;
+
       const manifest = await durableRecorder
         .getManifest({ userId, recordingId: durable.recordingId })
         .catch(() => null);
+      if (!scopeIsCurrent()) return null;
       if (!manifest) return null;
       const confirmed = manifest.state === 'uploaded' || !!manifest.confirmedUploadAt;
       if (!confirmed) return null;
@@ -4733,6 +4807,13 @@ function RecordingSession() {
       }
       const info = await getInfoAsync(copyUri).catch(() => null);
       if (!info?.exists || !((info.size ?? 0) > 0)) {
+        safeDeleteFile(copyUri);
+        return null;
+      }
+      // The copy lives under the INITIATING user's directory, so if the account
+      // changed while it was being written it is this user's file to remove and
+      // nothing may be persisted under the new one.
+      if (!scopeIsCurrent()) {
         safeDeleteFile(copyUri);
         return null;
       }
@@ -4765,6 +4846,7 @@ function RecordingSession() {
         safeDeleteFile(copyUri);
         return null;
       }
+      if (!scopeIsCurrent()) return null;
       const readBack = await draftStorage.getDraft(persistedDraftSlotId).catch(() => null);
       if (readBack?.durable?.recoveredAudioUri !== copyUri) {
         // KEEP the copy here, unlike the throw above. The write may have landed
@@ -4781,14 +4863,16 @@ function RecordingSession() {
       // legitimately confirmed to. add() returns false when the write did not
       // land, so a failure means keeping the native manifest — which is
       // recoverable — rather than purging without the guard.
+      if (!scopeIsCurrent()) return null;
       const tombstoned = await durableTombstone.add(durable.recordingId).catch(() => false);
-      if (!tombstoned) return null;
+      if (!tombstoned || !scopeIsCurrent()) return null;
 
       await durableRecorder
         .purgeAfterUpload({ userId, recordingId: durable.recordingId })
         .catch(() => {});
       durableRecoveryStore.remove(durable.recordingId);
 
+      if (!scopeIsCurrent()) return null;
       dispatch({ type: 'SET_DURABLE_RECORDING', slotId: slot.id, durable: looseDurable });
       if (persistedDraftSlotId && persistedDraftSlotId !== slot.draftSlotId) {
         dispatch({
@@ -4814,8 +4898,9 @@ function RecordingSession() {
   const handleDismissDivergence = useCallback(
     (slotId: string) => {
       dispatch({ type: 'SET_METADATA_DIVERGENCE', slotId, divergence: null });
+      runDeferredSuccessTransition(slotId);
     },
-    [dispatch]
+    [dispatch, runDeferredSuccessTransition]
   );
 
   const handleResubmitAsNew = useCallback(
@@ -4847,9 +4932,16 @@ function RecordingSession() {
                 draftStorage.getUserId() === initiatingUserId;
               markSubmitIntent([slot.id]);
               void (async () => {
-                const converted = await persistPostConfirmSeparateSubmission(slot).catch(
-                  () => null
-                );
+                // Rule 24: bound it. A hung native bridge here never rejects,
+                // so the .catch() would never run, the restart watchdog would
+                // never be reached, and clearSubmitIntent would never fire —
+                // leaving the whole Record UI frozen. On timeout the original
+                // manifest and the copied audio both remain recoverable.
+                const converted = await withPromiseTimeout(
+                  persistPostConfirmSeparateSubmission(slot),
+                  POST_CONFIRM_CONVERSION_TIMEOUT_MS,
+                  'post_confirm_separate_submission'
+                ).catch(() => null);
                 const restarted = await persistControlledUploadRestart(converted ?? slot).catch(
                   () => null
                 );
@@ -4880,6 +4972,10 @@ function RecordingSession() {
                     segments: restarted.segments,
                   });
                 }
+                // This submit will produce its own transition; drop the one the
+                // previous submit deferred so it cannot fire against a session
+                // that has moved on.
+                deferredSuccessTransitionRef.current = null;
                 // The confirmation promised a submission, so perform it rather
                 // than leaving a pending slot the vet has to submit again.
                 runSingleSubmit(restarted);
@@ -4889,7 +4985,15 @@ function RecordingSession() {
         ]
       );
     },
-    [dispatch, persistControlledUploadRestart, persistPostConfirmSeparateSubmission]
+    [
+      clearSubmitIntent,
+      dispatch,
+      markSubmitIntent,
+      persistControlledUploadRestart,
+      persistPostConfirmSeparateSubmission,
+      runSingleSubmit,
+      user?.id,
+    ]
   );
 
   const handleSubmitSingle = useCallback(
@@ -5119,16 +5223,21 @@ function RecordingSession() {
           (s) => s.metadataDivergence !== null
         );
 
-        if (allSuccess && hasUnresolvedDivergence) {
-          // Every upload succeeded; the session stays put so the reconcile card
-          // is reachable. Nothing failed, so no failure alert and no auto-stash.
-        } else if (allSuccess) {
+        const completeSubmitAll = () => {
           releaseResumedStashIfAny();
           resetSession();
           router.push({
             pathname: '/recordings',
             params: { submittedIds: submittedRecordingIds.join(',') },
           } as never);
+        };
+        if (allSuccess && hasUnresolvedDivergence) {
+          // Every upload succeeded; the session stays put so the reconcile card
+          // is reachable. Nothing failed, so no failure alert and no auto-stash.
+          // Acknowledging the last notice runs the navigation deferred here.
+          deferredSuccessTransitionRef.current = completeSubmitAll;
+        } else if (allSuccess) {
+          completeSubmitAll();
         } else {
           // If every failure was a transient r2_put exhaustion (network died
           // during sequential upload), auto-stash the failed slots instead of
@@ -6000,6 +6109,7 @@ function RecordingSession() {
       );
     },
     [
+      handleDismissDivergence,
       handleOpenDivergentRecording,
       handleReleaseLocalCopy,
       handleResubmitAsNew,

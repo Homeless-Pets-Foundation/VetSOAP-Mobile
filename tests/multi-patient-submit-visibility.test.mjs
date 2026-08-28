@@ -457,13 +457,27 @@ test('submitting separately converts a confirmed durable manifest instead of res
   assert.ok(saveAt > sizeAt, 'the draft pointer must be persisted after the copy is verified');
   assert.ok(readBackAt > saveAt, 'the persisted pointer must be read back');
   assert.ok(tombstonedAt > readBackAt && tombstonedAt < purgeAt);
-  assert.match(convert, /if \(!tombstoned\) return null;/);
+  assert.match(convert, /if \(!tombstoned \|\| !scopeIsCurrent\(\)\) return null;/);
+  // Every user-scoped write is fenced: a sign-out plus another sign-in while
+  // the copy is in flight must not land this user's slot and audio URI in the
+  // next user's namespace on a shared tablet.
+  assert.match(convert, /const scopeIsCurrent = \(\) =>/);
+  assert.ok(
+    (convert.match(/if \(!scopeIsCurrent\(\)\)/g) ?? []).length >= 4,
+    'the conversion must recheck auth scope around every storage mutation'
+  );
 
   const resubmit = record.slice(
     record.indexOf('const handleResubmitAsNew = useCallback'),
     record.indexOf('const handleSubmitSingle = useCallback')
   );
-  assert.match(resubmit, /await persistPostConfirmSeparateSubmission\(slot\)/);
+  // Rule 24: the conversion runs inside markSubmitIntent and before the
+  // restart's own watchdog exists, so a hung Keystore would freeze the whole
+  // Record UI. It must be bounded, and the timeout must unwind the intent.
+  assert.match(
+    resubmit,
+    /withPromiseTimeout\(\s*persistPostConfirmSeparateSubmission\(slot\),\s*POST_CONFIRM_CONVERSION_TIMEOUT_MS/
+  );
   assert.match(resubmit, /persistControlledUploadRestart\(converted \?\? slot\)/);
   // A failed separate submission must say so — silence reads as "done".
   assert.match(resubmit, /METADATA_DIVERGENCE_COPY\.resubmitAsNewFailedTitle/);
@@ -570,4 +584,46 @@ test('releasing the local copy reports failure instead of claiming success', asy
   const failAt = releaseBlock.indexOf('if (!draftDeleted) {');
   const clearAt = releaseBlock.indexOf("type: 'SET_METADATA_DIVERGENCE'");
   assert.ok(failAt > -1 && clearAt > failAt, 'the card may only be cleared after a proven delete');
+});
+
+test('a retained copy is exempt from completed-upload draft cleanup', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // The upload marks the slot completed even when it holds the local copy back,
+  // so the background persist would save the held draft and this path would
+  // immediately delete the draft and audio it just wrote.
+  assert.match(
+    record,
+    /if \(completedUploadSlotIdsRef\.current\.has\(slotId\)\) \{[\s\S]{0,600}?if \(slot\.metadataDivergence\?\.tier === 'identity'\) return;/
+  );
+  assert.match(
+    record,
+    /completedUploadSlotIdsRef\.current\.has\(slotId\) &&\s*slot\.metadataDivergence\?\.tier !== 'identity'/
+  );
+});
+
+test('acknowledging the last notice runs the transition the submit deferred', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // Clearing the field alone left the vet on a finished session with no way out
+  // but manual navigation. The ORIGINAL transition is held as a closure so a
+  // single submit still lands on its detail and Submit All on the list.
+  assert.match(record, /const deferredSuccessTransitionRef = useRef<\(\(\) => void\) \| null>\(null\)/);
+  assert.match(record, /const runDeferredSuccessTransition = useCallback\(/);
+  assert.match(record, /const stillBlocked = sessionRef\.current\.slots\.some\(/);
+  assert.match(record, /const completeSingleSubmit = \(\) => \{/);
+  assert.match(record, /const completeSubmitAll = \(\) => \{/);
+  // Only when a notice is the sole reason to stay — other unfinished slots must
+  // keep the session regardless, and resuming would reset it under them.
+  assert.match(
+    record,
+    /hasUnresolvedDivergence && !otherSlotsWithRecordings\s*\?\s*completeSingleSubmit\s*:\s*null/
+  );
+  // Both resolutions that leave the vet on the screen must release it.
+  assert.equal(
+    (record.match(/runDeferredSuccessTransition\((slotId|slot\.id)\)/g) ?? []).length,
+    2
+  );
+  // A fresh submit supersedes the deferred one.
+  assert.match(record, /deferredSuccessTransitionRef\.current = null;\s*\n\s*\/\/ The confirmation promised a submission/);
 });

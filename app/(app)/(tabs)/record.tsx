@@ -2439,6 +2439,11 @@ function RecordingSession() {
       // case that must hold the local copy back from cleanup until a human
       // settles which visit the server row belongs to.
       let metadataDivergence: MetadataDivergenceReport | null = null;
+      // A new attempt re-derives the answer, so a card from the previous one
+      // must not linger over it.
+      if (slot.metadataDivergence) {
+        dispatch({ type: 'SET_METADATA_DIVERGENCE', slotId: slot.id, divergence: null });
+      }
       const onMetadataDivergence = (report: MetadataDivergenceReport) => {
         metadataDivergence = report;
         // A divergence that no longer fails the submit must still be visible,

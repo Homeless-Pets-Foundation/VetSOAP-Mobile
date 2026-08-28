@@ -52,12 +52,14 @@ Ordered by what blocks what.
 `npx expo install --fix` aligns every other dependency against the **currently installed** `expo`; it does not select or install a new SDK. Starting from an SDK 55 checkout and running only `--fix` re-pins you to SDK 55. Install the target `expo` first, then align:
 
 ```bash
-# 1. move the SDK itself (pick one target; ^56 or ^57)
+# 1. move the SDK itself — ONE major at a time
 npx expo install expo@^56
 # 2. only now align everything else to the installed SDK
 npx expo install --fix
 npx expo-doctor
 ```
+
+**One major per branch, even when 57 is the destination.** Expo's own guidance is incremental, and 55 → 57 in a single alignment fuses two sets of native, config, and API migrations before either intermediate state has been validated — so a regression cannot be attributed to the step that caused it. Complete and validate 55 → 56 (including §6 on hardware) before starting 56 → 57.
 
 `expo-doctor` runs before every EAS build anyway (`.claude/hooks/pre-eas-build.sh`). Its output defines the RN version — record it, and stop if it disagrees with the intended SDK. Confirm `node_modules/expo/package.json` really reports the target major before trusting anything `--fix` picked.
 
@@ -97,6 +99,8 @@ So both platforms need a real build: `npx expo prebuild --platform ios` + `pod i
 
 Gradle or CocoaPods changes across an SDK major can break either. Neither is exercised by CI — both need a real build.
 
+**A build is not the FFmpeg gate; the editor is.** Nothing in §6 invokes `src/lib/ffmpeg.ts`, and `app/(app)/audio-editor.tsx` depends on that bridge for waveform peak extraction and trim/concat. A bridge signature or codec incompatibility compiles, links, and passes the playback-seeking check while making editing fail on device. Add to the hardware list: open a recording in the editor, confirm the waveform renders, apply a trim, and play back the result — on both platforms.
+
 ### 4b. Verify the GENERATED manifests, not just that they build
 
 A green Gradle/Xcode build proves the projects compile, not that config-plugin output still carries our hardening. These live in `app.config.ts` and are produced by plugins, so an SDK-major plugin change can drop or alter them while both builds stay green:
@@ -106,6 +110,8 @@ A green Gradle/Xcode build proves the projects compile, not that config-plugin o
 - iOS background-audio mode and the microphone usage description
 
 After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` and `ios/*/Info.plist` and assert each one is still present and still has the production value. Diff them against the previous SDK's generated output — that diff is the real review surface of an SDK upgrade.
+
+**Assert the supported-OS floors in the same pass.** `app.config.ts` requests Android `minSdkVersion: 24` (required by ffmpeg-kit) and iOS `deploymentTarget: '15.1'`. An Expo/RN/`expo-build-properties` major can raise either, and every build you run will be on modern hardware, so the release silently stops installing on older clinic devices while all checks stay green. Read the effective `minSdkVersion` out of the generated Gradle config and `IPHONEOS_DEPLOYMENT_TARGET` out of the Xcode project, compare them to those two numbers, and either hold the floors or get the compatibility drop explicitly approved and communicated.
 
 ### 5. Expect the #184 typecheck errors
 
@@ -125,7 +131,8 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 
 - Durable recording across process death, plus crash recovery
 - **A timed capture through backgrounding AND screen lock, on both platforms** — start recording, background the app, lock the device, wait a measured interval, return, finish, and verify the resulting file's duration and audible content match the wall-clock time. This depends on the Android microphone foreground service plus its notification/wake-lock permissions and on iOS background audio / `AVAudioSession`, all of which move between SDK majors. A regression here loses audio during an ordinary appointment without crashing and without failing crash-recovery, so nothing else on this list catches it.
-- Audio focus interruption (call / alarm / other voice app) on Android
+- Audio focus interruption (call / alarm / other voice app) on **Android**, via `modules/captivet-audio-focus`
+- **The same interruption on iOS**, where that module is a deliberate no-op and recovery depends entirely on expo-audio surfacing the `AVAudioSession` interruption as `hasError` — an SDK-sensitive path that neither the process-death test nor the background/lock test triggers. Verify the partial segment is retained and recording resumes on `gain`.
 - Recorder start latency — the `expo-audio` patch exists to keep it low; `measurePhase` warns above `NATIVE_RECORDER_PHASE_WARNING_MS` (1000 ms)
 - Playback seeking on durable ADTS AAC files
 
@@ -141,6 +148,10 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 1. On the **released SDK-55 binary**, seed one of each: an un-sent draft, a saved session (stash), a durable capture killed mid-recording, and a draft with a `pendingConfirm`.
 2. Install the candidate build **over it, without clearing app data**.
 3. Verify every item reappears, still carries its metadata, and is still submittable.
+
+**Navigation** — an SDK major moves Expo Router, `react-native-screens`, and React Navigation together, and a routing regression compiles cleanly while leaving a list unreachable. This app has already been bitten once: the attention screen had to move inside the `(tabs)` group because `router.back()` follows the ROOT history and stranded the Recordings tab on a detail with its list gone. Walk every tab, open and exit a recording detail and the attention screen, exercise Android hardware back from each, and restore a representative deep link.
+
+**Crash reporting** — if `@sentry/react-native` moved, a green build proves nothing about delivery. Confirm the EAS production build still uploads source maps (`sentry-cli` in the build log, `SENTRY_AUTH_TOKEN` present as a build-time secret), then send a test event and trigger a native crash against the resulting release and confirm both arrive symbolicated. Losing this is invisible until the next production incident.
 
 **Platforms** — run the whole list on Android hardware and on iOS via the Mac mini.
 

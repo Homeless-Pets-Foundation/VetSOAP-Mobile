@@ -3136,6 +3136,26 @@ function RecordingSession() {
               // resume-then-resubmit against the confirmed row until the sweep runs.
               await durableTombstone.add(durable.recordingId).catch(() => {});
             }
+            // Release any hold this recording still carries.
+            //
+            // Editing a FAILED identity conflict clears `metadataDivergence`
+            // (the edit-to-retry affordance in SET_FORM_FIELD) but cannot touch
+            // the PERSISTED hold the conflict handler wrote — the reducer is
+            // pure. When the edited retry then succeeds it lands here, deletes
+            // the draft and purges the audio, and with the card gone no
+            // reconciliation action remains that could ever release it. A
+            // `clientName` edit clears every non-succeeded slot at once, so one
+            // edit can strand several. Each leak is permanent, and `add()`
+            // refuses past MAX_RECONCILE_HOLDS rather than evicting, so enough
+            // of them stop a future conflict from protecting its copy at all.
+            //
+            // Safe here specifically because this branch is the NOT-held one:
+            // an unresolved identity divergence takes the `holdFreshDurableCopy`
+            // path above and never reaches this line, so the retained-copy case
+            // keeps its hold. And it runs AFTER the purge, like every other
+            // release — the hold must outlive the steps it protects.
+            await releaseReconcileHold(durable.recordingId, 'upload_success_durable');
+            await releaseReconcileHold(slot.draftSlotId ?? slot.id, 'upload_success_durable_slot');
             durableRecoveryStore.remove(durable.recordingId);
           }
 
@@ -3475,6 +3495,10 @@ function RecordingSession() {
           // Clean up local draft after successful upload
           draftStorage.deleteDraft(slot.id).catch(() => {});
           recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+          // ...and the hold, if a cleared-by-edit conflict left one behind. Same
+          // reasoning as the durable branch: this is the NOT-held path, so a
+          // divergence still awaiting the vet keeps its protection.
+          void releaseReconcileHold(slot.draftSlotId ?? slot.id, 'upload_success_standard');
         }
         // FFmpeg-split temp parts are derived scratch, never the only copy.
         for (const tempUri of splitTempUris) safeDeleteFile(tempUri);
@@ -3759,7 +3783,7 @@ function RecordingSession() {
     // networkStateForTelemetry closed over `netInfo` directly — which is exactly
     // why the reported transport was the one the upload STARTED on. It now reads
     // netInfoRef, so the dep list is genuinely complete and the rule is silent.
-    [addReconcileHoldForUser, setUploadStatus, dispatch, user?.id, user?.role]
+    [addReconcileHoldForUser, setUploadStatus, dispatch, user?.id, user?.role, releaseReconcileHold]
   );
 
   // Phase 2 of autoSaveDraft — the network half. Patches an existing draft in

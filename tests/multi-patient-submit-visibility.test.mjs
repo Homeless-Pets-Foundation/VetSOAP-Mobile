@@ -922,7 +922,7 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   // stranded entries silently remove the ability to protect the next conflict.
   assert.equal(
     (record.match(/releaseReconcileHold\(/g) ?? []).length,
-    7,
+    10,
     'every release site must report its result, not discard it'
   );
   assert.match(record, /const released = await durableReconcileHold\.remove\(holdId\)\.catch\(\(\) => false\);/);
@@ -1002,6 +1002,52 @@ test('a held manifest nothing owns is offered, not hidden forever', async () => 
   const drainAt = addBody.indexOf('applyPendingRemovals(userId, loaded.list)');
   const capAt = addBody.indexOf('list.length >= MAX_RECONCILE_HOLDS');
   assert.ok(drainAt > -1 && capAt > drainAt, 'add() must drain queued releases before testing the cap');
+});
+
+test('a hold survives the edit-to-retry clear, and is released when that retry succeeds', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const session = await read('src/hooks/useMultiPatientSession.ts');
+
+  // Editing a FAILED conflict clears metadataDivergence — that is the
+  // edit-to-retry affordance — but the reducer is PURE, so it cannot touch the
+  // persisted hold the conflict handler wrote. A succeeded slot keeps its
+  // divergence, because there the copy is being deliberately retained.
+  assert.match(
+    session,
+    /metadataDivergence:\s*slot\.uploadStatus === 'success' \? slot\.metadataDivergence : null,/
+  );
+  // ...so the card is gone while the hold remains, and nothing in the
+  // reconciliation UI can ever release it again. A clientName edit runs this
+  // for EVERY slot, so one edit can strand several at once, and add() refuses
+  // past MAX_RECONCILE_HOLDS rather than evicting.
+  assert.match(session, /if \(action\.field === 'clientName'\) \{/);
+
+  // The successful upload is therefore the release point — on both backends.
+  assert.match(record, /releaseReconcileHold\(durable\.recordingId, 'upload_success_durable'\);/);
+  assert.match(record, /releaseReconcileHold\(slot\.draftSlotId \?\? slot\.id, 'upload_success_durable_slot'\);/);
+  assert.match(record, /releaseReconcileHold\(slot\.draftSlotId \?\? slot\.id, 'upload_success_standard'\);/);
+
+  const upload = record.slice(
+    record.indexOf('const uploadSlot = useCallback'),
+    record.indexOf('const runSingleSubmit')
+  );
+
+  // Both releases must sit in the NOT-HELD branch. An unresolved identity
+  // divergence takes the held path instead and must keep its protection —
+  // releasing there would hand the retained copy to the next self-heal.
+  const durableHeldAt = upload.indexOf('if (!holdFreshDurableCopy) {');
+  const durableReleaseAt = upload.indexOf("'upload_success_durable'");
+  assert.ok(durableHeldAt > -1 && durableReleaseAt > durableHeldAt);
+  const standardHeldAt = upload.indexOf('if (!holdLocalCopy) {');
+  const standardReleaseAt = upload.indexOf("'upload_success_standard'");
+  assert.ok(standardHeldAt > -1 && standardReleaseAt > standardHeldAt);
+
+  // ...and after the purge it protects, the same ordering every other release
+  // site follows: a hold released before a failed delete exposes the copy.
+  const durablePurgeAt = upload.lastIndexOf('purgeAfterUpload', durableReleaseAt);
+  const tombstoneAt = upload.lastIndexOf('durableTombstone.add(', durableReleaseAt);
+  assert.ok(durablePurgeAt > -1 && durablePurgeAt < durableReleaseAt, 'release must follow the purge');
+  assert.ok(tombstoneAt > -1 && tombstoneAt < durableReleaseAt, 'release must follow the tombstone');
 });
 
 test('an unclassifiable 409 hides Retry Upload, which would loop on the same conflict', async () => {

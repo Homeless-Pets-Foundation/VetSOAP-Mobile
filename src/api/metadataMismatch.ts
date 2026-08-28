@@ -178,14 +178,3 @@ export function formatMetadataMismatchDiagnostic(
     MAX_DIAGNOSTIC_LENGTH
   );
 }
-
-/**
- * Whether the assertion ran against a row the server had ALREADY committed on
- * a previous attempt. `confirm` and `confirm_api` are NOT replays: the bytes
- * uploaded, confirm-upload returned 2xx, the server enqueued processing, and
- * the client then dead-ends the user on a submit that actually succeeded.
- * Those are the only two origins that should page.
- */
-export function isReplayMetadataOrigin(origin: MetadataAssertionOrigin): boolean {
-  return origin !== 'confirm' && origin !== 'confirm_api';
-}

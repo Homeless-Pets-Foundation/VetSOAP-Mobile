@@ -46,6 +46,7 @@ async function loadHarness({
   const pending = await loadPure('src/lib/pendingConfirm.ts');
   const retry = await loadPure('src/api/uploadRetry.ts');
   const metadataMismatch = await loadPure('src/api/metadataMismatch.ts');
+  const metadataIdentity = await loadPure('src/api/metadataIdentity.ts');
   const pimsPatientIdIntent = await loadPure('src/lib/pimsPatientIdIntent.ts');
   const nativePreflight = await loadTsModule(
     'src/lib/nativePreflight.ts',
@@ -103,6 +104,7 @@ async function loadHarness({
       './uploadPreparation': preparation,
       './uploadRetry': retry,
       './metadataMismatch': metadataMismatch,
+      './metadataIdentity': metadataIdentity,
       '../lib/pimsPatientIdIntent': pimsPatientIdIntent,
       './draftPresenceContract': {
         draftPresenceRequestSchema: { parse: (value) => value },
@@ -443,7 +445,13 @@ test('fresh confirmation accepts a server-supplied Patient ID when the submitted
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
-test('fresh confirmation rejects a server Patient ID after the user explicitly cleared it', async () => {
+test('fresh confirmation reports, but does not fail, a declined Patient ID clear', async () => {
+  // Commit path. prepare + PUT + confirm all succeeded, so the audio is in R2,
+  // the server wrote our snapshot, and processing is already enqueued. The
+  // server keeps the PIMS id because it lives on the linked Patient row, not on
+  // the recording. Failing here used to strand a completed recording as a
+  // permanently unsubmittable local draft.
+  const divergences = [];
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),
     post: async (path) => {
@@ -455,28 +463,32 @@ test('fresh confirmation rejects a server Patient ID after the user explicitly c
     },
   });
 
-  await assert.rejects(
-    harness.recordingsApi.createWithFile(
-      { ...metadata, pimsPatientId: '' },
-      'file:///one.m4a',
-      'audio/x-m4a',
-      {
-        idempotencyKey: 'intent-explicit-patient-id-clear',
-        pimsPatientIdExplicitlyCleared: true,
-      },
-    ),
-    (error) =>
-      error?.uploadPhase === 'patch_draft' &&
-      /Could not sync the latest patient details/.test(error.message),
+  const result = await harness.recordingsApi.createWithFile(
+    { ...metadata, pimsPatientId: '' },
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent-explicit-patient-id-clear',
+      pimsPatientIdExplicitlyCleared: true,
+      onMetadataDivergence: (report) => divergences.push(report),
+    },
   );
+
+  assert.equal(result.pimsPatientId, 'server-chart-id');
+  assert.equal(divergences.length, 1);
+  // Still identity tier: the caller must retain the local copy and let a human
+  // settle it. It just is not a failed submit.
+  assert.equal(divergences[0].tier, 'identity');
+  assert.equal(Array.from(divergences[0].fields).join(','), 'pimsPatientId');
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
-test('a post-confirm metadata mismatch names its origin and field and is not recoverable', async () => {
-  // This runs on the HAPPY path: prepare + PUT + confirm all succeeded, the
-  // bytes are in R2, and the server has enqueued processing. The client throws
-  // anyway, so the user is told a successful submit failed and no retry
-  // converges. That is the failure this diagnostic exists to make visible.
+test('a post-confirm template divergence is reported, not thrown', async () => {
+  // Commit path with a processing-tier field. templateId changes how the note
+  // is formatted and is repairable in-app with Regenerate SOAP; it cannot
+  // mis-attribute the recording, and by this point the job is already enqueued
+  // so failing the submit could not have prevented it anyway.
+  const divergences = [];
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),
     post: async (path) => {
@@ -488,31 +500,59 @@ test('a post-confirm metadata mismatch names its origin and field and is not rec
     },
   });
 
-  await assert.rejects(
-    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
       idempotencyKey: 'intent-confirm-template-mismatch',
-    }),
-    (error) => {
-      assert.equal(error.uploadPhase, 'patch_draft');
-      assert.equal(error.code, 'PATCH_DRAFT_METADATA_MISMATCH');
-      assert.match(error.diagnostic, /origin=confirm\b/);
-      assert.match(error.diagnostic, /templateId:differs/);
-      // The two dead-end origins must page rather than stay warnings.
-      assert.equal(error.recoverableHint, false);
-      // The template id is a value, not a field name — it must not leak.
-      assert.ok(!error.diagnostic.includes('99999999'));
-      return true;
+      onMetadataDivergence: (report) => divergences.push(report),
     },
   );
+
+  assert.equal(result.id, recording.id);
+  assert.equal(divergences.length, 1);
+  assert.equal(divergences[0].tier, 'processing');
+  assert.equal(Array.from(divergences[0].fields).join(','), 'templateId');
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
 });
 
-test('a confirm response missing a key reports absent, not differs', async () => {
+test('a confirmed recording whose id is not the one we asked for still fails closed', async () => {
+  // The metadata equality check is gone from the commit path, replaced by this
+  // strictly stronger invariant: the row we get back must be the row named in
+  // the request URL.
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) {
+        return { ...recording, id: '44444444-4444-4444-8444-444444444444' };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent-confirm-wrong-row',
+    }),
+    (error) => {
+      assert.equal(error.code, 'CONFIRM_RECORDING_ID_MISMATCH');
+      assert.equal(error.recoverableHint, false);
+      return true;
+    },
+  );
+});
+
+test('a confirm response missing a key is tolerated, not treated as a mismatch', async () => {
   // The server emits the flat pimsPatientId alias only when the Prisma
-  // `patient` relation was loaded, so a route that omits it returns no key.
+  // `patient` relation was loaded, so a route that omits it returns no key at
+  // all. Hard-failing on absence let one serializer regression fail every
+  // submit through that route.
   const withoutPims = { ...recording };
   delete withoutPims.pimsPatientId;
 
+  const divergences = [];
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),
     post: async (path) => {
@@ -522,18 +562,24 @@ test('a confirm response missing a key reports absent, not differs', async () =>
     },
   });
 
-  await assert.rejects(
-    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
       idempotencyKey: 'intent-confirm-absent-pims',
-    }),
-    (error) => {
-      assert.match(error.diagnostic, /pimsPatientId:absent/);
-      return true;
+      onMetadataDivergence: (report) => divergences.push(report),
     },
   );
+
+  assert.equal(result.id, recording.id);
+  assert.equal(divergences.length, 0, 'an absent key is not a divergence');
 });
 
-test('an already-uploaded replay mismatch stays recoverable and names the replay origin', async () => {
+test('an adopt-path cosmetic divergence no longer blocks the local-deletion signal', async () => {
+  // already_uploaded IS the local-deletion gate, so identity divergence still
+  // fails closed there — but a processing-tier field never should.
+  const divergences = [];
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),
     post: async (path) => {
@@ -549,18 +595,19 @@ test('an already-uploaded replay mismatch stays recoverable and names the replay
     },
   });
 
-  await assert.rejects(
-    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+  const result = await harness.recordingsApi.createWithFile(
+    metadata,
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
       idempotencyKey: 'intent-replay-template-mismatch',
-    }),
-    (error) => {
-      assert.match(error.diagnostic, /origin=prepare_already_uploaded/);
-      // An idempotent replay is genuinely recovered — it keeps PR #92's
-      // warning classification and must NOT start paging.
-      assert.equal(error.recoverableHint, true);
-      return true;
+      onMetadataDivergence: (report) => divergences.push(report),
     },
   );
+
+  assert.equal(result.id, recording.id);
+  assert.equal(divergences.length, 1);
+  assert.equal(divergences[0].tier, 'processing');
 });
 
 test('a complete confirmation hint resumes without reading a missing local file', async () => {
@@ -788,9 +835,18 @@ test('typed confirm conflict rejects a server Patient ID after the user explicit
         pimsPatientIdExplicitlyCleared: true,
       },
     ),
-    (error) =>
-      error?.uploadPhase === 'patch_draft' &&
-      /Could not sync the latest patient details/.test(error.message),
+    (error) => {
+      // ADOPT path: the client uploaded nothing this attempt and is about to
+      // delete its only local copy, so identity divergence must still fail
+      // closed. It is now a typed, actionable conflict rather than generic copy.
+      assert.equal(error.uploadPhase, 'patch_draft');
+      assert.equal(error.code, 'RECORDING_METADATA_CONFLICT');
+      assert.equal(error.source, 'client_adopt_guard');
+      assert.equal(Array.from(error.divergentFields).join(','), 'pimsPatientId');
+      assert.match(error.message, /Could not sync the latest patient details/);
+      assert.match(error.diagnostic, /origin=recovery_inspect/);
+      return true;
+    },
   );
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'post']);
 });
@@ -827,7 +883,7 @@ test('untyped confirm 409 accepts a server-supplied Patient ID when submitted bl
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
 });
 
-test('untyped confirm 409 rejects a server Patient ID after an explicit clear', async () => {
+test('untyped confirm 409 reports a declined Patient ID clear without failing the submit', async () => {
   const completed = {
     ...recording,
     status: 'completed',
@@ -846,19 +902,23 @@ test('untyped confirm 409 rejects a server Patient ID after an explicit clear', 
     get: async () => completed,
   });
 
-  await assert.rejects(
-    harness.recordingsApi.confirmPendingUpload(
-      { ...metadata, pimsPatientId: '' },
-      hint,
-      {
-        idempotencyKey: 'intent-untyped-explicit-clear',
-        pimsPatientIdExplicitlyCleared: true,
-      },
-    ),
-    (error) =>
-      error?.uploadPhase === 'patch_draft' &&
-      /Could not sync the latest patient details/.test(error.message),
+  // This is a COMMIT site, not an adopt site: the GET probe fetches the row
+  // named in the confirm URL, so the id already proves identity and the row is
+  // provably completed. Blocking here stranded a finished recording.
+  const divergences = [];
+  const result = await harness.recordingsApi.confirmPendingUpload(
+    { ...metadata, pimsPatientId: '' },
+    hint,
+    {
+      idempotencyKey: 'intent-untyped-explicit-clear',
+      pimsPatientIdExplicitlyCleared: true,
+      onMetadataDivergence: (report) => divergences.push(report),
+    },
   );
+
+  assert.equal(result.id, recording.id);
+  assert.equal(divergences.length, 1);
+  assert.equal(divergences[0].tier, 'identity');
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'get']);
 });
 
@@ -1025,7 +1085,7 @@ test('controlled restart inspects the replacement identity after a typed confirm
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post', 'post']);
 });
 
-test('confirmation rejects a different server Patient ID when the submitted ID is nonblank', async () => {
+test('confirmation reports a different server Patient ID as identity divergence without failing the submit', async () => {
   const harness = await loadHarness({
     getInfoAsync: async () => ({ exists: true, size: 128 }),
     post: async (path) => {
@@ -1037,17 +1097,24 @@ test('confirmation rejects a different server Patient ID when the submitted ID i
     },
   });
 
-  await assert.rejects(
-    harness.recordingsApi.createWithFile(
-      { ...metadata, pimsPatientId: 'chart-A' },
-      'file:///one.m4a',
-      'audio/x-m4a',
-      { idempotencyKey: 'intent-patient-id-mismatch' },
-    ),
-    (error) =>
-      error?.uploadPhase === 'patch_draft' &&
-      /Could not sync the latest patient details/.test(error.message),
+  const divergences = [];
+  const result = await harness.recordingsApi.createWithFile(
+    { ...metadata, pimsPatientId: 'chart-A' },
+    'file:///one.m4a',
+    'audio/x-m4a',
+    {
+      idempotencyKey: 'intent-patient-id-mismatch',
+      onMetadataDivergence: (report) => divergences.push(report),
+    },
   );
+
+  // A non-blank id answered with a DIFFERENT non-blank id is the genuine
+  // wrong-chart risk, so it stays identity tier — but on the commit path the
+  // recording exists and is processing, so it is surfaced, not thrown.
+  assert.equal(result.id, recording.id);
+  assert.equal(divergences.length, 1);
+  assert.equal(divergences[0].tier, 'identity');
+  assert.equal(Array.from(divergences[0].fields).join(','), 'pimsPatientId');
 });
 
 test('only an untyped route-level prepare 404 enters the legacy compatibility flow', async () => {
@@ -1303,9 +1370,15 @@ test('already-processed preparation rejects enrichment for a legacy null Patient
       'audio/x-m4a',
       { idempotencyKey: 'intent-legacy-null-patient-id-clear' },
     ),
-    (error) =>
-      error?.uploadPhase === 'patch_draft' &&
-      /Could not sync the latest patient details/.test(error.message),
+    (error) => {
+      // already_processed is the local-deletion gate. A legacy null clear still
+      // blocks here; the dead end is closed by the reconcile surface, not by
+      // demoting the check.
+      assert.equal(error.code, 'RECORDING_METADATA_CONFLICT');
+      assert.equal(error.source, 'client_adopt_guard');
+      assert.match(error.diagnostic, /origin=prepare_already_uploaded/);
+      return true;
+    },
   );
   assert.deepEqual(harness.events.map((event) => event[0]), ['post']);
 });

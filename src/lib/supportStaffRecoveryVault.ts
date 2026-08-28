@@ -967,6 +967,7 @@ function makeRestoredSlot(
     uploadKeyOverride: reuseSourceUpload ? (slot.uploadKeyOverride ?? null) : null,
     supersededUploadKey: reuseSourceUpload ? (slot.supersededUploadKey ?? null) : null,
     uploadRecovery: null,
+    metadataDivergence: null,
     formData,
     pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
       formData.pimsPatientId,

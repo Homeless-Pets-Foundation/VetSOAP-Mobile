@@ -333,6 +333,7 @@ export function useStashedSessions(userId: string | null) {
             uploadKeyOverride: slot.uploadKeyOverride ?? null,
             supersededUploadKey: slot.supersededUploadKey ?? null,
             uploadRecovery: null,
+            metadataDivergence: null,
             formData: { ...slot.formData },
             pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
               slot.formData.pimsPatientId,

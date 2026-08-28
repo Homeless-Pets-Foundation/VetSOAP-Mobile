@@ -6,7 +6,6 @@ const {
   findMetadataMismatches,
   recordingMatchesMetadataPayload,
   formatMetadataMismatchDiagnostic,
-  isReplayMetadataOrigin,
   METADATA_MISMATCH_ERROR_CODE,
   MAX_DIAGNOSTIC_LENGTH,
 } = await loadTsModule('src/api/metadataMismatch.ts');
@@ -18,16 +17,6 @@ const {
  */
 const shape = (mismatches) =>
   Array.from(mismatches, (m) => `${m.key}:${m.kind}`).sort().join(',');
-
-const ORIGINS = [
-  'prepare_already_uploaded',
-  'confirm',
-  'confirm_409_probe',
-  'recovery_restart',
-  'recovery_inspect',
-  'confirm_api',
-  'confirm_api_409_probe',
-];
 
 /** A server row and the payload the client submitted, agreeing on everything. */
 const agreeingPair = () => ({
@@ -229,12 +218,4 @@ test('METADATA_MISMATCH_ERROR_CODE fits the 64-char column and record.tsx UPPER_
   // record.tsx only trusts a `.code` matching this shape; anything else falls
   // back to the phase name, which is the collapse this code exists to end.
   assert.match(METADATA_MISMATCH_ERROR_CODE, /^[A-Z][A-Z0-9_]{2,}$/);
-});
-
-test('isReplayMetadataOrigin is false only for confirm and confirm_api', () => {
-  const notReplays = ORIGINS.filter((origin) => !isReplayMetadataOrigin(origin));
-  // These two run after confirm-upload returned 2xx: the bytes are in R2 and
-  // the server enqueued processing, so the user's submit dead-ends. Every other
-  // origin is an idempotent replay and keeps PR #92's warning classification.
-  assert.equal(notReplays.sort().join(','), 'confirm,confirm_api');
 });

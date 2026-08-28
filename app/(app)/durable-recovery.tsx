@@ -68,6 +68,7 @@ function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
     uploadKeyOverride: m.uploadKeyOverride ?? null,
     supersededUploadKey: m.supersededUploadKey ?? null,
     uploadRecovery: null,
+    metadataDivergence: null,
     formData: { ...BLANK_FORM },
     pimsPatientIdExplicitlyCleared: false,
     audioState: 'stopped',

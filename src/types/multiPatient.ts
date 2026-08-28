@@ -79,6 +79,16 @@ export interface PatientSlot {
     conflict: UploadIntentConflictDetails;
     canRestart: boolean;
   } | null;
+  // The server's copy of the metadata disagrees with the snapshot we sent.
+  // Ephemeral like uploadRecovery — reconstructible by inspecting the server —
+  // and cleared as soon as the user edits the form. `identity` tier is the only
+  // one that holds local audio back from post-upload cleanup; the rest are
+  // notices on an otherwise successful submit.
+  metadataDivergence: {
+    tier: 'identity' | 'processing' | 'descriptive';
+    fields: string[];
+    recordingId: string;
+  } | null;
   formData: CreateRecording;
   // Distinguishes an untouched blank Patient ID (server enrichment allowed)
   // from one the user deliberately removed (server must preserve the clear).
@@ -135,6 +145,11 @@ export type SessionAction =
       slotId: string;
       recovery: PatientSlot['uploadRecovery'];
       error?: string | null;
+    }
+  | {
+      type: 'SET_METADATA_DIVERGENCE';
+      slotId: string;
+      divergence: PatientSlot['metadataDivergence'];
     }
   | {
       type: 'RESET_UPLOAD_ATTEMPT';

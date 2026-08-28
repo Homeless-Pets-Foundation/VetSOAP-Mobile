@@ -36,6 +36,7 @@ import {
   TEMPLATE_DEFAULT_COPY,
   UPLOAD_OVERLAY_COPY,
   UPLOAD_RECOVERY_COPY,
+  METADATA_DIVERGENCE_COPY,
 } from '../../../src/constants/strings';
 import { Toast } from '../../../src/components/Toast';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
@@ -84,6 +85,11 @@ import {
   type RecordingDeleteReason,
 } from '../../../src/api/recordings';
 import { networkStateFromNetInfo } from '../../../src/lib/networkState';
+import { METADATA_MISMATCH_ERROR_CODE } from '../../../src/api/metadataMismatch';
+import {
+  RecordingMetadataConflictError,
+  type MetadataDivergenceReport,
+} from '../../../src/api/metadataIdentity';
 import {
   getDraftPresenceSnapshot,
   linkedServerDraftIds,
@@ -2428,6 +2434,35 @@ function RecordingSession() {
       const segmentCount = slot.durable ? 1 : slot.segments.length;
       const uploadStartedAt = Date.now();
       const netState = networkStateForTelemetry();
+      // The server's copy of the metadata can differ from the snapshot we sent
+      // without that being a failed submit. Identity-tier divergence is the one
+      // case that must hold the local copy back from cleanup until a human
+      // settles which visit the server row belongs to.
+      let metadataDivergence: MetadataDivergenceReport | null = null;
+      const onMetadataDivergence = (report: MetadataDivergenceReport) => {
+        metadataDivergence = report;
+        // A divergence that no longer fails the submit must still be visible,
+        // or the fix would just convert loud false failures into silence.
+        reportClientError({
+          phase: 'patch_draft',
+          severity: report.tier === 'identity' ? 'error' : 'warning',
+          errorCode: METADATA_MISMATCH_ERROR_CODE,
+          message: `Recording metadata diverged after upload. tier=${report.tier} fields=${[...report.fields].sort().join(',')}`,
+          recordingId: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
+          slotIndex,
+          networkState: networkStateForTelemetry(),
+          attemptNumber,
+        });
+        dispatch({
+          type: 'SET_METADATA_DIVERGENCE',
+          slotId: slot.id,
+          divergence: {
+            tier: report.tier,
+            fields: [...report.fields],
+            recordingId: slot.serverDraftId ?? slot.serverRecordingId ?? '',
+          },
+        });
+      };
       const willUseAtomicMetadataUpdate = !!slot.serverDraftId && slot.draftMetadataDirty;
       const baseSubmitDiagnostics = slotSubmitDiagnostics(slot, slotCount, {
         confirmUsedAtomicMetadataUpdate: willUseAtomicMetadataUpdate,
@@ -2520,6 +2555,7 @@ function RecordingSession() {
                   slot.formData.pimsPatientId,
                   slot.pimsPatientIdExplicitlyCleared,
                 ),
+                onMetadataDivergence,
                 onClearPendingConfirm,
                 mode: durable ? 'durable' : 'standard',
                 slotIndex,
@@ -2530,8 +2566,19 @@ function RecordingSession() {
             setUploadStatus(slot.id, 'success', { progress: 100, serverRecordingId: result.id });
             recordSubmitAttempt(result.id);
 
+            // Same hold-back as the standard success path below. Durable
+            // captures are exactly the recordings the durability work exists to
+            // protect, so an identity divergence must not purge the native
+            // manifest, the recovered audio, or the draft that anchors them.
+            const holdDurableLocalCopy =
+              (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
+
             if (durable && uid) {
               const confirmedAt = new Date().toISOString();
+              // ALWAYS mark the manifest uploaded, even when holding the local
+              // copy back. This is the record that stops durable recovery from
+              // re-offering an already-uploaded capture; skipping it would
+              // trade a false failure for a duplicate server recording.
               if (nativeManifest) {
                 await durableRecorder
                   .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
@@ -2546,19 +2593,22 @@ function RecordingSession() {
                 }
                 return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
               };
-              let draftDeleted = await confirmDraftGone();
-              if (!draftDeleted) draftDeleted = await confirmDraftGone();
-              if (draftDeleted) {
-                if (nativeManifest) {
-                  await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
-                } else if (durable.recoveredAudioUri) {
-                  safeDeleteFile(durable.recoveredAudioUri);
+              // Only the destructive half is held back.
+              if (!holdDurableLocalCopy) {
+                let draftDeleted = await confirmDraftGone();
+                if (!draftDeleted) draftDeleted = await confirmDraftGone();
+                if (draftDeleted) {
+                  if (nativeManifest) {
+                    await durableRecorder.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId }).catch(() => {});
+                  } else if (durable.recoveredAudioUri) {
+                    safeDeleteFile(durable.recoveredAudioUri);
+                  }
                 }
+                await durableTombstone.add(durable.recordingId).catch(() => {});
+                durableRecoveryStore.remove(durable.recordingId);
               }
-              await durableTombstone.add(durable.recordingId).catch(() => {});
-              durableRecoveryStore.remove(durable.recordingId);
               trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: result.id } });
-            } else {
+            } else if (!holdDurableLocalCopy) {
               slot.segments.forEach((segment) => safeDeleteFile(segment.uri));
               draftStorage.deleteDraft(slot.id).catch(() => {});
               recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
@@ -2804,6 +2854,7 @@ function RecordingSession() {
                   slot.formData.pimsPatientId,
                   slot.pimsPatientIdExplicitlyCleared,
                 ),
+                onMetadataDivergence,
                 mode: 'durable',
                 audioDurationSeconds: durableDurationSeconds,
                 slotIndex,
@@ -3108,6 +3159,7 @@ function RecordingSession() {
                 slot.formData.pimsPatientId,
                 slot.pimsPatientIdExplicitlyCleared,
               ),
+              onMetadataDivergence,
               mode: 'standard',
               audioDurationSeconds: durationSeconds,
               slotIndex,
@@ -3135,6 +3187,7 @@ function RecordingSession() {
                 slot.formData.pimsPatientId,
                 slot.pimsPatientIdExplicitlyCleared,
               ),
+              onMetadataDivergence,
               mode: 'standard',
               slotIndex,
             }
@@ -3152,16 +3205,26 @@ function RecordingSession() {
         // conflate with other slots; the submit delta is the more useful
         // product metric anyway.
         recordSubmitAttempt(result.id);
-        // Clean up local audio files now that they're safely on R2
-        slot.segments.forEach((seg) => {
-          safeDeleteFile(seg.uri);
-        });
-        // Also clean up any FFmpeg-split temp parts + their containing dir.
+        // An identity-tier divergence means the server row may describe a
+        // different visit than the one on this device. The upload itself
+        // succeeded and the recording is real, so this is NOT a failed submit —
+        // but the local copy is the only thing that could still be lost, so it
+        // is retained until the vet reconciles. Everything else cleans up
+        // normally. Never auto-delete un-sent local work.
+        const holdLocalCopy =
+          (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
+        if (!holdLocalCopy) {
+          // Clean up local audio files now that they're safely on R2
+          slot.segments.forEach((seg) => {
+            safeDeleteFile(seg.uri);
+          });
+          // Clean up local draft after successful upload
+          draftStorage.deleteDraft(slot.id).catch(() => {});
+          recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+        }
+        // FFmpeg-split temp parts are derived scratch, never the only copy.
         for (const tempUri of splitTempUris) safeDeleteFile(tempUri);
         if (splitTempDir) safeDeleteDirectory(splitTempDir);
-        // Clean up local draft after successful upload
-        draftStorage.deleteDraft(slot.id).catch(() => {});
-        recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
 
         const latencyMs = Date.now() - uploadStartedAt;
         trackEvent({
@@ -3247,6 +3310,21 @@ function RecordingSession() {
             can_restart: canRestart,
           });
           return null;
+        }
+
+        // The server row's identity fields disagree with this device's copy on
+        // a path that was about to release the local audio. Never delete
+        // anything here: surface a reconcile card and let the vet decide.
+        if (error instanceof RecordingMetadataConflictError) {
+          dispatch({
+            type: 'SET_METADATA_DIVERGENCE',
+            slotId: slot.id,
+            divergence: {
+              tier: 'identity',
+              fields: [...error.divergentFields],
+              recordingId: error.recordingId,
+            },
+          });
         }
 
         // Errors crafted at our own tagged throw sites (silent_check, presign,
@@ -4146,7 +4224,14 @@ function RecordingSession() {
 
   const persistControlledUploadRestart = useCallback(
     async (slot: PatientSlot): Promise<PatientSlot | null> => {
-      if (!slot.uploadRecovery?.canRestart) return null;
+      // Also reachable from the metadata-divergence reconcile card: "not this
+      // visit" needs exactly this — a rotated upload intent with the local
+      // audio preserved — and reusing it keeps the transaction, auth-scope
+      // checks, watchdog, and draft persistence rather than reimplementing them.
+      const restartAllowed =
+        slot.uploadRecovery?.canRestart === true ||
+        slot.metadataDivergence?.tier === 'identity';
+      if (!restartAllowed) return null;
       const userId = user?.id;
       const initiatingScopeKey = authScopeKeyRef.current;
       const initiatingScopeGeneration = authScopeGenerationRef.current;
@@ -4308,6 +4393,7 @@ function RecordingSession() {
             uploadKeyOverride: replacementKey,
             supersededUploadKey: expectedOldKey,
             uploadRecovery: null,
+            metadataDivergence: null,
             uploadStatus: 'pending',
             uploadProgress: 0,
             uploadError: null,
@@ -4419,6 +4505,87 @@ function RecordingSession() {
       });
     },
     [clearSubmitIntent, markSubmitIntent, recordSelectedSlotUploadNull, uploadSlot, queryClient, resetSession, router, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath]
+  );
+
+  // --- Metadata-divergence reconcile actions ------------------------------
+  // All three are explicit, bounded, and never automatic. Un-sent local work is
+  // only ever removed by a confirmed user action (CLAUDE.md rules 8 and 13).
+
+  const handleOpenDivergentRecording = useCallback(
+    (slotId: string) => {
+      const slot = sessionRef.current.slots.find((candidate) => candidate.id === slotId);
+      const recordingId =
+        slot?.metadataDivergence?.recordingId || slot?.serverRecordingId || slot?.serverDraftId;
+      if (!recordingId) return;
+      router.push(`/(app)/(tabs)/recordings/${recordingId}`);
+    },
+    [router]
+  );
+
+  const handleReleaseLocalCopy = useCallback(
+    (slotId: string) => {
+      const slot = sessionRef.current.slots.find((candidate) => candidate.id === slotId);
+      if (!slot) return;
+      Alert.alert(
+        METADATA_DIVERGENCE_COPY.releaseLocalCopyConfirmTitle,
+        METADATA_DIVERGENCE_COPY.releaseLocalCopyConfirmBody,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: METADATA_DIVERGENCE_COPY.releaseLocalCopyConfirm,
+            style: 'destructive',
+            onPress: () => {
+              // The server copy is already proven durable (committed keys with
+              // a passing R2 HEAD), so releasing the local copy is safe. Only a
+              // human can decide it is the same visit, which is what this is.
+              slot.segments.forEach((seg) => {
+                safeDeleteFile(seg.uri);
+              });
+              draftStorage.deleteDraft(slot.id).catch(() => {});
+              recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+              dispatch({
+                type: 'SET_METADATA_DIVERGENCE',
+                slotId: slot.id,
+                divergence: null,
+              });
+            },
+          },
+        ]
+      );
+    },
+    [dispatch]
+  );
+
+  const handleResubmitAsNew = useCallback(
+    (slotId: string) => {
+      const slot = sessionRef.current.slots.find((candidate) => candidate.id === slotId);
+      if (!slot) return;
+      Alert.alert(
+        METADATA_DIVERGENCE_COPY.resubmitAsNewConfirmTitle,
+        METADATA_DIVERGENCE_COPY.resubmitAsNewConfirmBody,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: METADATA_DIVERGENCE_COPY.resubmitAsNewConfirm,
+            onPress: () => {
+              // Rotates the upload intent so the server creates a separate row,
+              // and preserves the local audio throughout.
+              persistControlledUploadRestart(slot)
+                .then((restarted) => {
+                  if (!restarted) return;
+                  dispatch({
+                    type: 'SET_METADATA_DIVERGENCE',
+                    slotId: slot.id,
+                    divergence: null,
+                  });
+                })
+                .catch(() => {});
+            },
+          },
+        ]
+      );
+    },
+    [dispatch, persistControlledUploadRestart]
   );
 
   const handleSubmitSingle = useCallback(
@@ -4941,6 +5108,7 @@ function RecordingSession() {
           supersededUploadKey:
             nativeManifest?.supersededUploadKey ?? draft.supersededUploadKey,
           uploadRecovery: null,
+          metadataDivergence: null,
           formData: draft.formData,
           pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
             draft.formData.pimsPatientId,
@@ -5507,10 +5675,16 @@ function RecordingSession() {
           onEditRecording={handleEditRecording}
           submitBlockedByLiveRecording={slotHasLiveRecorder(item)}
           recordFirstEnabled={recordFirstEnabled}
+          onOpenDivergentRecording={handleOpenDivergentRecording}
+          onReleaseLocalCopy={handleReleaseLocalCopy}
+          onResubmitAsNew={handleResubmitAsNew}
         />
       );
     },
     [
+      handleOpenDivergentRecording,
+      handleReleaseLocalCopy,
+      handleResubmitAsNew,
       session.recorderBoundToSlotId,
       session.slots.length,
       recorder,

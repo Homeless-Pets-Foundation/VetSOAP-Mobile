@@ -33,6 +33,7 @@ import {
   LONG_RECORDING_WARNING_COPY,
   LONG_RECORDING_WARNING_THRESHOLD_SEC,
   MULTI_PATIENT_RECORD_FIRST_COPY,
+  METADATA_DIVERGENCE_COPY,
 } from '../constants/strings';
 import { CLIP_SAFE, clipSafe } from './ui/styles';
 
@@ -77,6 +78,11 @@ interface PatientSlotCardProps {
   onEditRecording: (slotId: string) => void;
   submitBlockedByLiveRecording: boolean;
   recordFirstEnabled?: boolean;
+  // Reconcile actions for a metadata divergence. Only the identity tier offers
+  // them; the other tiers render an informational notice.
+  onOpenDivergentRecording?: (slotId: string) => void;
+  onReleaseLocalCopy?: (slotId: string) => void;
+  onResubmitAsNew?: (slotId: string) => void;
 }
 
 function PulsingDot() {
@@ -134,6 +140,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   onEditRecording,
   submitBlockedByLiveRecording,
   recordFirstEnabled = false,
+  onOpenDivergentRecording,
+  onReleaseLocalCopy,
+  onResubmitAsNew,
 }: PatientSlotCardProps) {
   const { scale } = useResponsive();
   const colors = useThemeColors();
@@ -760,6 +769,76 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 accessibilityLiveRegion="assertive"
               >
                 <Text className="text-body-sm text-status-danger">{slot.uploadError}</Text>
+              </View>
+            )}
+
+            {slot.metadataDivergence && (
+              <View
+                className={`mb-4 p-3 rounded-lg ${
+                  slot.metadataDivergence.tier === 'identity'
+                    ? 'bg-status-warning'
+                    : 'bg-surface-sunken'
+                }`}
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+              >
+                {/* One row per line, each a single flex-1 Text — never a
+                    flex-wrap bag of unconstrained <Text> (CLAUDE.md > UI
+                    Gotchas). Height may grow; width must not be tight. */}
+                <Text className="text-body-sm font-semibold text-content-body w-full">
+                  {slot.metadataDivergence.tier === 'identity'
+                    ? METADATA_DIVERGENCE_COPY.identityTitle
+                    : slot.metadataDivergence.tier === 'processing'
+                      ? METADATA_DIVERGENCE_COPY.processingTitle
+                      : METADATA_DIVERGENCE_COPY.descriptiveTitle}
+                </Text>
+                <Text className="text-body-sm text-content-body w-full mt-1">
+                  {slot.metadataDivergence.tier === 'identity'
+                    ? METADATA_DIVERGENCE_COPY.identityBody
+                    : slot.metadataDivergence.tier === 'processing'
+                      ? METADATA_DIVERGENCE_COPY.processingBody
+                      : METADATA_DIVERGENCE_COPY.descriptiveBody}
+                </Text>
+                <Text className="text-caption text-content-tertiary w-full mt-2">
+                  {`${METADATA_DIVERGENCE_COPY.fieldsPrefix} ${slot.metadataDivergence.fields
+                    .map((field) => METADATA_DIVERGENCE_COPY.fieldLabels[field] ?? field)
+                    .join(', ')}`}
+                </Text>
+
+                {slot.metadataDivergence.tier === 'identity' && (
+                  <View className="mt-3">
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      onPress={() => onOpenDivergentRecording?.(slot.id)}
+                      accessibilityLabel={METADATA_DIVERGENCE_COPY.openRecording}
+                    >
+                      {METADATA_DIVERGENCE_COPY.openRecording}
+                    </Button>
+                    <View className="mt-2">
+                      <Button
+                        variant="secondary"
+                        size="md"
+                        onPress={() => onReleaseLocalCopy?.(slot.id)}
+                        accessibilityLabel={METADATA_DIVERGENCE_COPY.releaseLocalCopy}
+                      >
+                        {METADATA_DIVERGENCE_COPY.releaseLocalCopy}
+                      </Button>
+                    </View>
+                    {/* Listed last on purpose: it is the only action that
+                        legitimately creates a second server recording. */}
+                    <View className="mt-2">
+                      <Button
+                        variant="ghost"
+                        size="md"
+                        onPress={() => onResubmitAsNew?.(slot.id)}
+                        accessibilityLabel={METADATA_DIVERGENCE_COPY.resubmitAsNew}
+                      >
+                        {METADATA_DIVERGENCE_COPY.resubmitAsNew}
+                      </Button>
+                    </View>
+                  </View>
+                )}
               </View>
             )}
 

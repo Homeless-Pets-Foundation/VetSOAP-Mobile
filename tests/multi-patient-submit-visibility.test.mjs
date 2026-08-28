@@ -224,3 +224,68 @@ test('recording deletes send explicit PHI-free delete reasons', async () => {
   assert.match(record, /reason: 'user_delete'/);
   assert.match(detail, /recordingsApi\.delete\(id, \{ reason: 'user_delete' \}\)/);
 });
+
+test('a metadata divergence never deletes local work, and identity tier holds the copy back', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // The reconcile sink is passed at every upload call site, or a divergence on
+  // that path is silently lost.
+  assert.equal((record.match(/onMetadataDivergence,/g) ?? []).length, 4);
+
+  // The post-upload cleanup is gated. An identity divergence means the server
+  // row may describe a different visit, so the only local copy is retained
+  // until a human settles it (CLAUDE.md rules 8 and 13: un-sent local work is
+  // never auto-deleted).
+  assert.match(
+    record,
+    /const holdLocalCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';/
+  );
+  assert.match(record, /if \(!holdLocalCopy\) \{[\s\S]*?draftStorage\.deleteDraft\(slot\.id\)/);
+
+  // Durable captures have their own success path. The hold-back applies there
+  // too — they are the recordings the durability work exists to protect.
+  assert.match(
+    record,
+    /const holdDurableLocalCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';/
+  );
+  assert.match(record, /if \(!holdDurableLocalCopy\) \{[\s\S]*?purgeAfterUpload/);
+  // ...but markUploaded must run REGARDLESS, or durable recovery would
+  // re-offer an already-uploaded capture and create a duplicate server row.
+  const durableBranch = record.slice(
+    record.indexOf('if (durable && uid) {'),
+    record.indexOf('if (!holdDurableLocalCopy) {')
+  );
+  assert.match(durableBranch, /durableRecorder\s*\.markUploaded\(/);
+
+  // The typed conflict is caught and surfaced, and deletes nothing.
+  assert.match(record, /if \(error instanceof RecordingMetadataConflictError\) \{/);
+
+  // A divergence that no longer fails the submit must still reach telemetry,
+  // or the fix converts loud false failures into silence.
+  assert.match(record, /errorCode: METADATA_MISMATCH_ERROR_CODE,/);
+
+  // Every reconcile action is behind an explicit confirmation.
+  assert.match(record, /METADATA_DIVERGENCE_COPY\.releaseLocalCopyConfirmTitle/);
+  assert.match(record, /METADATA_DIVERGENCE_COPY\.resubmitAsNewConfirmTitle/);
+});
+
+test('the commit path proves identity by recording id, not by metadata equality', async () => {
+  const api = await read('src/api/recordings.ts');
+
+  // Metadata equality never protected the commit path: the recording id is in
+  // the confirm URL and the server independently verifies key grammar, the
+  // upload manifest, and an R2 HEAD. This is the strictly stronger check that
+  // replaces it.
+  assert.match(api, /function assertCommittedRecordingIdentity\(/);
+  assert.match(api, /assertCommittedRecordingIdentity\(recordingId, confirmed, 'confirm'\);/);
+  assert.match(api, /assertCommittedRecordingIdentity\(recordingId, recording, 'confirm_api'\);/);
+
+  // Only the adopt sites — the local-deletion gates — still fail closed.
+  assert.match(api, /if \(isAdoptMetadataOrigin\(origin\) && hasIdentityDivergence\(comparison\)\)/);
+
+  // The server's own 409 must reach the same reconcile surface, or the retry
+  // dead-ends on the server after the client guard is fixed.
+  assert.match(api, /function typedMetadataConflict\(/);
+  assert.match(api, /error\.code !== 'RECORDING_METADATA_CONFLICT'/);
+  assert.equal((api.match(/typedMetadataConflict\(error, /g) ?? []).length, 2);
+});

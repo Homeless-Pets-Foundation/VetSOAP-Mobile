@@ -56,6 +56,46 @@ export const STALE_RECORDING_UPLOAD_COPY =
   "We couldn't finish the upload. The recording is still saved on this device. Check your connection and try again.";
 
 /**
+ * Shown when the server's copy of a recording's details differs from this
+ * device's. Only the identity tier is a decision the vet has to make; the other
+ * two are informational, because the recording is real and already processing.
+ */
+export const METADATA_DIVERGENCE_COPY = {
+  identityTitle: 'Check which visit this is',
+  identityBody:
+    'This recording uploaded successfully, but the patient details on the server do not match the ones on this device. The recording on this device has been kept until you decide.',
+  processingTitle: 'Some details did not sync',
+  processingBody:
+    'The recording uploaded and is being processed, but the server kept different settings for it. You can fix the note without re-recording.',
+  descriptiveTitle: 'Some details did not sync',
+  descriptiveBody:
+    'The recording uploaded and is being processed. The server kept different values for some details, which you can edit on the recording.',
+  fieldsPrefix: 'Differs on:',
+  openRecording: 'Open the recording',
+  releaseLocalCopy: 'This is the right visit',
+  releaseLocalCopyConfirmTitle: 'Remove this device’s copy?',
+  releaseLocalCopyConfirmBody:
+    'The recording is already saved on the server and will keep processing. This removes only the copy stored on this device. This cannot be undone.',
+  releaseLocalCopyConfirm: 'Remove local copy',
+  resubmitAsNew: 'Not this visit — submit separately',
+  resubmitAsNewConfirmTitle: 'Submit as a new recording?',
+  resubmitAsNewConfirmBody:
+    'This keeps the audio on this device and submits it again as a separate recording. The existing recording on the server is left alone.',
+  resubmitAsNewConfirm: 'Submit separately',
+  /** Field labels for the "Differs on:" list — never show raw schema keys. */
+  fieldLabels: {
+    patientName: 'Patient name',
+    clientName: 'Client name',
+    pimsPatientId: 'PIMS Patient ID',
+    templateId: 'Template',
+    foreignLanguage: 'Foreign language',
+    species: 'Species',
+    breed: 'Breed',
+    appointmentType: 'Appointment type',
+  } as Record<string, string>,
+};
+
+/**
  * Raised when a server recording's metadata does not match the snapshot the
  * client submitted. Wording is load-bearing: five assertions in
  * tests/stale-recording-upload-behavior.test.mjs match it. Change the copy and

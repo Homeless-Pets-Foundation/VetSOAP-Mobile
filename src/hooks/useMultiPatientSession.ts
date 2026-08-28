@@ -70,6 +70,7 @@ function createEmptySlot(defaultTemplateId?: string, clientName = ''): PatientSl
     uploadKeyOverride: null,
     supersededUploadKey: null,
     uploadRecovery: null,
+    metadataDivergence: null,
     formData: {
       pimsPatientId: '',
       patientName: '',
@@ -111,6 +112,7 @@ function invalidatePendingConfirmForAudioChange(
       uploadKeyOverride: freshAudioUploadKey,
       supersededUploadKey: null,
       uploadRecovery: null,
+      metadataDivergence: null,
       pendingConfirm: null,
       serverRecordingId: null,
       draftMetadataDirty: false,
@@ -133,6 +135,7 @@ function invalidatePendingConfirmForAudioChange(
     uploadKeyOverride: null,
     supersededUploadKey: null,
     uploadRecovery: null,
+    metadataDivergence: null,
     pendingConfirm: null,
     serverDraftId: null,
     serverRecordingId: null,
@@ -208,6 +211,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           formData: { ...slot.formData, [field]: value },
           pimsPatientIdExplicitlyCleared,
           uploadRecovery: null,
+          metadataDivergence: null,
         });
       };
 
@@ -274,7 +278,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         slots: state.slots.map((slot) =>
           slot.id === action.slotId
-            ? { ...slot, uploadIntentId: createUploadIntentId(), uploadKeyOverride: null, supersededUploadKey: null, uploadRecovery: null, segments: [], durable: null, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
+            ? { ...slot, uploadIntentId: createUploadIntentId(), uploadKeyOverride: null, supersededUploadKey: null, uploadRecovery: null, metadataDivergence: null, segments: [], durable: null, audioUri: null, audioDuration: 0, audioState: 'idle', uploadStatus: 'pending', uploadProgress: 0, uploadError: null, serverRecordingId: null, pendingConfirm: null, draftSlotId: null, serverDraftId: null, draftMetadataDirty: false }
             : slot
         ),
       };
@@ -384,6 +388,14 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ),
       };
 
+    case 'SET_METADATA_DIVERGENCE':
+      return {
+        ...state,
+        slots: state.slots.map((slot) =>
+          slot.id === action.slotId ? { ...slot, metadataDivergence: action.divergence } : slot
+        ),
+      };
+
     case 'RESET_UPLOAD_ATTEMPT':
       return {
         ...state,
@@ -394,6 +406,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
                 uploadKeyOverride: action.uploadKeyOverride,
                 supersededUploadKey: action.supersededUploadKey,
                 uploadRecovery: null,
+                metadataDivergence: null,
                 uploadStatus: 'pending',
                 uploadProgress: 0,
                 uploadError: null,
@@ -430,6 +443,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             uploadKeyOverride: normalizeUploadKeyOverride(slot.uploadKeyOverride),
             supersededUploadKey: normalizeSupersededUploadKey(slot.supersededUploadKey),
             uploadRecovery: null,
+            metadataDivergence: null,
             // Preserve persisted fail-closed metadata state across local draft
             // and stash resume. If true, submit must send current formData with
             // confirm-upload rather than promoting stale server-draft metadata.

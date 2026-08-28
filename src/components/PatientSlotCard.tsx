@@ -775,6 +775,27 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               we do not know whether this is a wrong visit or a template
               mismatch, and "submit separately" on the latter would create
               a duplicate recording. */}
+          {/* A server 409 dead-ends without this: the recording id is often
+              empty (a fresh prepare conflict has no canonical row to point at),
+              dismissing only hides the notice, and Retry reuses the same upload
+              intent to collect the same 409 forever. Rotating the intent is the
+              only exit, behind the same explicit confirmation the identity tier
+              uses — which is what keeps the earlier objection answered: it is a
+              deliberate choice, never an automatic one. */}
+          {slot.metadataDivergence.tier === 'unknown' && (
+            <View className="mt-3">
+              <Button
+                variant="secondary"
+                size="md"
+                onPress={() => onResubmitAsNew?.(slot.id)}
+                disabled={divergenceActionsBusy}
+                accessibilityLabel={METADATA_DIVERGENCE_COPY.resubmitAsNew}
+              >
+                {METADATA_DIVERGENCE_COPY.resubmitAsNew}
+              </Button>
+            </View>
+          )}
+
           {slot.metadataDivergence.tier === 'unknown' &&
             slot.metadataDivergence.recordingId.length > 0 && (
               <View className="mt-3">

@@ -3385,6 +3385,15 @@ function RecordingSession() {
         // normally. Never auto-delete un-sent local work.
         const holdLocalCopy =
           (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
+        if (holdLocalCopy && user?.id) {
+          // A STANDARD held copy needs the same persistent marker a durable one
+          // gets. DraftMetadata carries no divergence field, so after a restart
+          // evictExpired() sees only an old draft whose server row is confirmed
+          // and deletes it silently at 30 days — and a draft resumed at 29 days
+          // can reach that on the very next Record mount. Keyed by draft slot
+          // id here, since there is no durable recordingId to key by.
+          await addReconcileHoldForUser(user.id, slot.draftSlotId ?? slot.id);
+        }
         if (!holdLocalCopy) {
           // Clean up local audio files now that they're safely on R2
           slot.segments.forEach((seg) => {
@@ -4413,9 +4422,15 @@ function RecordingSession() {
       // visit" needs exactly this — a rotated upload intent with the local
       // audio preserved — and reusing it keeps the transaction, auth-scope
       // checks, watchdog, and draft persistence rather than reimplementing them.
+      // 'unknown' is here for the SERVER's 409: prepare/confirm rejected the
+      // metadata without saying which field disagreed, so the vet has no way to
+      // edit their way out — and a retry reuses the same upload intent and
+      // collects the same 409 forever. Rotating the intent is the only exit,
+      // and it is behind the same explicit confirmation as the identity tier.
       const restartAllowed =
         slot.uploadRecovery?.canRestart === true ||
-        slot.metadataDivergence?.tier === 'identity';
+        slot.metadataDivergence?.tier === 'identity' ||
+        slot.metadataDivergence?.tier === 'unknown';
       if (!restartAllowed) return null;
       const userId = user?.id;
       const initiatingScopeKey = authScopeKeyRef.current;
@@ -4899,6 +4914,10 @@ function RecordingSession() {
                   slot.segments.forEach((seg) => {
                     safeDeleteFile(seg.uri);
                   });
+                  // Standard holds are keyed by draft slot id (no durable id).
+                  await durableReconcileHold
+                    .remove(slot.draftSlotId ?? slot.id)
+                    .catch(() => {});
                 }
 
                 // Only a PROVEN delete may report the copy as removed. If the
@@ -5084,6 +5103,7 @@ function RecordingSession() {
       // original's hold has nothing left to protect — and leaving it would
       // permanently suppress a manifest we are about to purge.
       await durableReconcileHold.remove(durable.recordingId).catch(() => {});
+      await durableReconcileHold.remove(slot.draftSlotId ?? slot.id).catch(() => {});
 
       await durableRecorder
         .purgeAfterUpload({ userId, recordingId: durable.recordingId })
@@ -5121,6 +5141,8 @@ function RecordingSession() {
       // so the recording stops being suppressed from recovery forever.
       const durableId = slot?.durable?.recordingId;
       if (durableId) durableReconcileHold.remove(durableId).catch(() => {});
+      const standardKey = slot?.draftSlotId ?? slot?.id;
+      if (standardKey) durableReconcileHold.remove(standardKey).catch(() => {});
       runDeferredSuccessTransition(slotId);
     },
     [dispatch, runDeferredSuccessTransition]

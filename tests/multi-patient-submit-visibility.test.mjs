@@ -764,7 +764,7 @@ test('reconciliation actions are serialized and inert while one runs', async () 
   assert.match(record, /divergenceActionsBusy=\{reconcilingSlotId !== null\}/);
   assert.equal(
     (card.match(/disabled=\{divergenceActionsBusy\}/g) ?? []).length,
-    5,
+    6,
     'every divergence action button must go inert'
   );
 });
@@ -872,11 +872,20 @@ test('a held durable copy survives a restart, and the hold is released on resolu
     'a failed hold write must be reported, not silent'
   );
   // ...and released by every resolution: the release action (only after the
-  // delete it authorizes succeeded), the conversion, and a dismissal — plus the
-  // scope-rollback inside addReconcileHoldForUser.
+  // delete it authorizes succeeded), the conversion, and a dismissal — each of
+  // which must clear BOTH keys, since a standard hold is keyed by draft slot id
+  // and a durable one by recordingId — plus the scope-rollback inside
+  // addReconcileHoldForUser.
   assert.equal(
-    (record.match(/durableReconcileHold\.remove\(/g) ?? []).length,
-    4
+    (record.match(/durableReconcileHold\s*\.remove\(/g) ?? []).length,
+    7
+  );
+  // A STANDARD held copy needs the marker too: DraftMetadata carries no
+  // divergence field, so evictExpired() would otherwise delete it silently at
+  // 30 days as ordinary redundant local data.
+  assert.match(
+    record,
+    /await addReconcileHoldForUser\(user\.id, slot\.draftSlotId \?\? slot\.id\);/
   );
   const releaseBlock = record.slice(
     record.indexOf('const handleReleaseLocalCopy = useCallback'),
@@ -981,4 +990,40 @@ test('the hold is written for the initiating user, not whoever is scoped later',
   );
   // The only direct add() is inside that helper.
   assert.equal((record.match(/durableReconcileHold\.add\(/g) ?? []).length, 1);
+});
+
+test('age eviction never silently deletes a retained conflict copy', async () => {
+  const drafts = await read('src/lib/draftStorage.ts');
+
+  // A retained copy is server-confirmed by definition — the upload succeeded and
+  // the row's IDENTITY is what diverged — so it reaches the "redundant local
+  // data" branch looking ordinary. Nothing in DraftMetadata records the hold.
+  const evictAt = drafts.indexOf('async evictExpired(');
+  const body = drafts.slice(evictAt);
+  const holdAt = body.indexOf('durableReconcileHold.has(draft.slotId)');
+  const deleteAt = body.indexOf('await this.deleteDraftForUser(userId, draft.slotId)');
+  assert.ok(holdAt > -1 && deleteAt > holdAt, 'the hold must be checked before the silent delete');
+  assert.match(body, /if \(await durableReconcileHold\.has\(draft\.slotId\)\) continue;/);
+  assert.match(
+    body,
+    /draft\.durable &&\s*isValidDurableId\(draft\.durable\.recordingId\) &&\s*\(await durableReconcileHold\.has\(draft\.durable\.recordingId\)\)/
+  );
+});
+
+test('a server 409 has a way out, not just a dismissal', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  // The recording id is often empty on a fresh prepare conflict, dismissing only
+  // hides the notice, and Retry reuses the same upload intent to collect the
+  // same 409 — so without rotating the intent the submit dead-ends forever.
+  assert.match(
+    record,
+    /slot\.metadataDivergence\?\.tier === 'identity' \|\|\s*slot\.metadataDivergence\?\.tier === 'unknown';/
+  );
+  const unknownBlock = card.slice(
+    card.indexOf("{slot.metadataDivergence.tier === 'unknown' && ("),
+    card.indexOf("{slot.metadataDivergence.tier === 'identity' && (")
+  );
+  assert.match(unknownBlock, /onResubmitAsNew\?\.\(slot\.id\)/);
 });

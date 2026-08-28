@@ -16,6 +16,7 @@ import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '
 import type { CreateRecording } from '../types/index';
 import { isValidDurableId } from './durableAudio/paths';
 import { durableTombstone } from './durableAudio/tombstone';
+import { durableReconcileHold } from './durableAudio/reconcileHold';
 import { clonePendingConfirm } from './pendingConfirm';
 import {
   effectiveUploadIdempotencyKey,
@@ -2115,6 +2116,23 @@ export const draftStorage = {
         }
 
         if (uploadedConfirmed) {
+          // A RETAINED conflict copy is server-confirmed by definition — the
+          // upload succeeded and the row's identity metadata is what diverged —
+          // so it lands here looking like ordinary redundant local data. It is
+          // not: the vet was promised this copy until they choose which visit
+          // the row belongs to, and nothing in DraftMetadata records that. The
+          // hold does, keyed by draft slot id for a standard recording and by
+          // durable recordingId for a durable one, so consult it before any
+          // silent delete.
+          if (await durableReconcileHold.has(draft.slotId)) continue;
+          if (
+            draft.durable &&
+            isValidDurableId(draft.durable.recordingId) &&
+            (await durableReconcileHold.has(draft.durable.recordingId))
+          ) {
+            continue;
+          }
+          if (!isScopeValid()) return { expired: [], expiring: [] };
           // Never silently delete a non-purged durable recording: its audio.aac
           // is the only local copy until purgeAfterUpload runs. Defer to the
           // launch self-heal, which purges only after confirmed upload.

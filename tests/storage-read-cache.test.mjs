@@ -290,6 +290,11 @@ async function loadDraftStorage(state, opts = {}) {
     './durableAudio/tombstone': {
       durableTombstone: { has: async () => false },
     },
+    './durableAudio/reconcileHold': {
+      // A retained conflict copy is never evicted; the default here is 'no hold'
+      // so these cases exercise ordinary eviction.
+      durableReconcileHold: { has: async () => false },
+    },
     './pendingConfirm': {
       clonePendingConfirm: (value) => value ? structuredClone(value) : null,
     },

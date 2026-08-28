@@ -780,8 +780,13 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
               guard keeps the session mounted until the notice is cleared —
               without a button the vet would be stranded on this screen, and
               without the guard the notice would flash past unread. */}
+          {/* 'unknown' joins them: it is either a server 409 whose tier we
+              cannot know, or an identity conflict on a recording whose local
+              copy is already gone. Neither can offer a retained-copy action, so
+              acknowledgement is the only way off this screen. */}
           {(slot.metadataDivergence.tier === 'processing' ||
-            slot.metadataDivergence.tier === 'descriptive') && (
+            slot.metadataDivergence.tier === 'descriptive' ||
+            slot.metadataDivergence.tier === 'unknown') && (
             <View className="mt-3">
               <Button
                 variant="secondary"

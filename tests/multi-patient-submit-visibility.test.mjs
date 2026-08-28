@@ -246,7 +246,7 @@ test('a metadata divergence never deletes local work, and identity tier holds th
   // too — they are the recordings the durability work exists to protect.
   assert.match(
     record,
-    /const holdDurableLocalCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';/
+    /const holdDurableLocalCopy =\s*divergenceReport\?\.tier === 'identity' && localAudioAvailableForRestart;/
   );
   assert.match(record, /if \(!holdDurableLocalCopy\) \{[\s\S]*?purgeAfterUpload/);
   // ...but markUploaded must run REGARDLESS, or durable recovery would
@@ -308,7 +308,7 @@ test('every durable success path honors the identity hold-back, not just the res
   // a copy the other already purged.
   assert.match(
     record,
-    /const holdDurableLocalCopy =\s*\(metadataDivergence as MetadataDivergenceReport \| null\)\?\.tier === 'identity';/
+    /const holdDurableLocalCopy =\s*divergenceReport\?\.tier === 'identity' && localAudioAvailableForRestart;/
   );
   assert.match(
     record,
@@ -363,7 +363,7 @@ test('releasing the local copy verifies the draft is gone before destroying evid
   assert.match(releaseBlock, /let draftDeleted = await confirmDraftGone\(\);/);
   assert.match(releaseBlock, /if \(!draftDeleted\) draftDeleted = await confirmDraftGone\(\);/);
   // Tombstone before purge, and purge only on a verified delete.
-  const tombstoneAt = releaseBlock.indexOf('durableTombstone.add');
+  const tombstoneAt = releaseBlock.indexOf('durableTombstone');
   const purgeAt = releaseBlock.indexOf('purgeAfterUpload');
   assert.ok(tombstoneAt > -1 && purgeAt > -1 && tombstoneAt < purgeAt,
     'the tombstone must be persisted before the audio is purged');
@@ -476,7 +476,7 @@ test('submitting separately converts a confirmed durable manifest instead of res
   // Record UI. It must be bounded, and the timeout must unwind the intent.
   assert.match(
     resubmit,
-    /withPromiseTimeout\(\s*persistPostConfirmSeparateSubmission\(slot\),\s*POST_CONFIRM_CONVERSION_TIMEOUT_MS/
+    /const conversion = persistPostConfirmSeparateSubmission\(slot\);[\s\S]{0,200}?withPromiseTimeout\(\s*conversion,\s*POST_CONFIRM_CONVERSION_TIMEOUT_MS/
   );
   assert.match(resubmit, /persistControlledUploadRestart\(converted \?\? slot\)/);
   // A failed separate submission must say so — silence reads as "done".
@@ -517,7 +517,7 @@ test('every divergence that can hold the session open carries an action', async 
   // blocks until some action is taken.
   assert.match(
     card,
-    /\(slot\.metadataDivergence\.tier === 'processing' \|\|\s*slot\.metadataDivergence\.tier === 'descriptive'\) && \(/
+    /\(slot\.metadataDivergence\.tier === 'processing' \|\|\s*slot\.metadataDivergence\.tier === 'descriptive' \|\|\s*slot\.metadataDivergence\.tier === 'unknown'\) && \(/
   );
   assert.match(card, /onDismissDivergence\?\.\(slot\.id\)/);
   assert.match(record, /onDismissDivergence=\{handleDismissDivergence\}/);
@@ -579,9 +579,9 @@ test('releasing the local copy reports failure instead of claiming success', asy
   );
   // Clearing the card on an unproven delete tells the vet the copy is gone
   // while a stale draft survives to rediscover the same conflict later.
-  assert.match(releaseBlock, /if \(!draftDeleted\) \{\s*Alert\.alert\(/);
+  assert.match(releaseBlock, /if \(!draftDeleted \|\| !scopeIsCurrent\(\)\) \{\s*reportCleanupFailed\(\);/);
   assert.match(releaseBlock, /METADATA_DIVERGENCE_COPY\.releaseLocalCopyFailedTitle/);
-  const failAt = releaseBlock.indexOf('if (!draftDeleted) {');
+  const failAt = releaseBlock.indexOf('if (!draftDeleted || !scopeIsCurrent()) {');
   const clearAt = releaseBlock.indexOf("type: 'SET_METADATA_DIVERGENCE'");
   assert.ok(failAt > -1 && clearAt > failAt, 'the card may only be cleared after a proven delete');
 });
@@ -626,4 +626,84 @@ test('acknowledging the last notice runs the transition the submit deferred', as
   );
   // A fresh submit supersedes the deferred one.
   assert.match(record, /deferredSuccessTransitionRef\.current = null;\s*\n\s*\/\/ The confirmation promised a submission/);
+});
+
+test('the release transaction is bound to its auth scope and needs a persisted tombstone', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const releaseBlock = record.slice(
+    record.indexOf('const handleReleaseLocalCopy = useCallback'),
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback')
+  );
+
+  // draftStorage and the tombstone key off the CURRENT user: an account change
+  // mid-delete would prove absence in the replacement user's namespace and
+  // tombstone there, while the purge destroys this user's manifest.
+  assert.match(releaseBlock, /const scopeIsCurrent = \(\) =>/);
+  assert.ok(
+    (releaseBlock.match(/scopeIsCurrent\(\)/g) ?? []).length >= 4,
+    'scope must be rechecked across the release transaction'
+  );
+  // add() reports a failed write by RESOLVING false, so .catch() alone would
+  // purge with no guard protecting the confirmed server row.
+  assert.match(releaseBlock, /const tombstoned = await durableTombstone\s*\.add\(durable\.recordingId\)\s*\.catch\(\(\) => false\);/);
+  assert.match(releaseBlock, /if \(!tombstoned \|\| !scopeIsCurrent\(\)\) \{\s*reportCleanupFailed\(\);\s*return;\s*\}/);
+  const tombstonedAt = releaseBlock.indexOf('const tombstoned =');
+  const purgeAt = releaseBlock.indexOf('purgeAfterUpload');
+  assert.ok(tombstonedAt > -1 && purgeAt > tombstonedAt);
+});
+
+test('a timed-out conversion never races a restart of the original slot', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const resubmit = record.slice(
+    record.indexOf('const handleResubmitAsNew = useCallback'),
+    record.indexOf('const handleSubmitSingle = useCallback')
+  );
+
+  // withPromiseTimeout recovers the UI but cannot cancel the conversion, which
+  // may already have persisted the loose-copy pointer.
+  assert.match(resubmit, /let timedOut = false;/);
+  assert.match(resubmit, /if \(timedOut\) \{/);
+  assert.match(resubmit, /conversion\s*\.then\(\(\) => clearSubmitIntent\(\[slot\.id\]\)\)\s*\.catch\(\(\) => clearSubmitIntent\(\[slot\.id\]\)\);/);
+  const timeoutAt = resubmit.indexOf('if (timedOut) {');
+  const restartAt = resubmit.indexOf('persistControlledUploadRestart(converted ?? slot)');
+  assert.ok(timeoutAt > -1 && restartAt > timeoutAt, 'the timeout branch must return before any restart');
+});
+
+test('an identity divergence with no local bytes becomes a server-only conflict', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  // Confirmation-only recovery reaches the hold-back with the local audio
+  // already gone; holding then promises a copy that does not exist and offers
+  // "submit separately" that can only fail preflight.
+  assert.match(
+    record,
+    /const holdDurableLocalCopy =\s*divergenceReport\?\.tier === 'identity' && localAudioAvailableForRestart;/
+  );
+  assert.match(
+    record,
+    /if \(divergenceReport\?\.tier === 'identity' && !localAudioAvailableForRestart\) \{[\s\S]{0,400}?tier: 'unknown',/
+  );
+  // ...and that tier must be acknowledgeable, or the guard strands the vet.
+  assert.match(card, /slot\.metadataDivergence\.tier === 'unknown'\) && \(/);
+});
+
+test('species and breed block adoption when no stronger anchor can disambiguate', async () => {
+  const identity = await read('src/api/metadataIdentity.ts');
+  const recordings = await read('src/api/recordings.ts');
+  const mismatch = await read('src/api/metadataMismatch.ts');
+
+  // Two charts in one practice can share a patient AND client name. With a
+  // blank pimsPatientId on both sides, species/breed are the only remaining
+  // evidence that the server resolved the other chart — and the adopt path is
+  // about to delete the only local copy.
+  assert.match(mismatch, /adoptDeletionGate\?: boolean;/);
+  assert.match(recordings, /adoptDeletionGate: isAdoptMetadataOrigin\(origin\),/);
+  assert.match(identity, /const PROFILE_DISAMBIGUATORS: readonly string\[\] = \['species', 'breed'\];/);
+  assert.match(identity, /if \(opts\.adoptDeletionGate && !pimsAnchorUsable\(recording, payload\)\) \{/);
+  // An absent key is not agreement: the server omits the flat alias whenever
+  // the patient relation was not loaded.
+  assert.match(identity, /if \(!Object\.prototype\.hasOwnProperty\.call\(recording, 'pimsPatientId'\)\) return false;/);
+  // They stay descriptive everywhere else.
+  assert.match(identity, /species: 'descriptive',\n\s*breed: 'descriptive',/);
 });

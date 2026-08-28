@@ -455,7 +455,12 @@ function assertRecordingMatchesMetadataPayload(
 ): Recording {
   if (!payload || Object.keys(payload).length === 0) return recording;
   const recordingData = recording as unknown as Record<string, unknown>;
-  const comparison = compareRecordingMetadata(recordingData, payload, opts);
+  const comparison = compareRecordingMetadata(recordingData, payload, {
+    ...opts,
+    // Adopt origins are the local-deletion gate, so species/breed get to
+    // block when nothing stronger can tell two same-named charts apart.
+    adoptDeletionGate: isAdoptMetadataOrigin(origin),
+  });
   const report = buildDivergenceReport(comparison);
   if (!report) return recording;
 

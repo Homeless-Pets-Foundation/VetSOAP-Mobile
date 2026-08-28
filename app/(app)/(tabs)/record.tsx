@@ -2608,8 +2608,27 @@ function RecordingSession() {
             // captures are exactly the recordings the durability work exists to
             // protect, so an identity divergence must not purge the native
             // manifest, the recovered audio, or the draft that anchors them.
+            //
+            // ...but only when there is something to hold. This branch also
+            // covers confirmation-only recovery, where the local audio is
+            // already gone; holding then promises a device copy that does not
+            // exist, blocks navigation on it, and offers "submit separately"
+            // that can only fail preflight. With no bytes left the conflict is
+            // server-only, so it is re-tiered to the non-destructive card.
+            const divergenceReport = metadataDivergence as MetadataDivergenceReport | null;
             const holdDurableLocalCopy =
-              (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
+              divergenceReport?.tier === 'identity' && localAudioAvailableForRestart;
+            if (divergenceReport?.tier === 'identity' && !localAudioAvailableForRestart) {
+              dispatch({
+                type: 'SET_METADATA_DIVERGENCE',
+                slotId: slot.id,
+                divergence: {
+                  tier: 'unknown',
+                  fields: [...divergenceReport.fields],
+                  recordingId: result.id,
+                },
+              });
+            }
 
             if (durable && uid) {
               const confirmedAt = new Date().toISOString();
@@ -4669,6 +4688,33 @@ function RecordingSession() {
                   slot.serverDraftId ||
                   null;
 
+                // draftStorage and the tombstone both key off the CURRENT user.
+                // If the account changes while deleteDraft awaits SecureStore,
+                // the strict read would prove absence in the REPLACEMENT user's
+                // namespace and the tombstone would land there, after which the
+                // purge destroys this user's manifest and leaves the confirmed
+                // row unguarded. Bind the whole transaction to the scope it
+                // started in, as the separate-submission path does.
+                const initiatingScopeKey = authScopeKeyRef.current;
+                const initiatingScopeGeneration = authScopeGenerationRef.current;
+                const scopeIsCurrent = () =>
+                  authScopeMountedRef.current &&
+                  initiatingScopeKey !== null &&
+                  userId !== undefined &&
+                  authScopeKeyRef.current === initiatingScopeKey &&
+                  authScopeGenerationRef.current === initiatingScopeGeneration &&
+                  draftStorage.getUserId() === userId;
+                const reportCleanupFailed = () => {
+                  Alert.alert(
+                    METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedTitle,
+                    METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedBody
+                  );
+                };
+                if (!scopeIsCurrent()) {
+                  reportCleanupFailed();
+                  return;
+                }
+
                 const confirmDraftGone = async (): Promise<boolean> => {
                   try {
                     await draftStorage.deleteDraft(slot.id);
@@ -4687,12 +4733,27 @@ function RecordingSession() {
                 };
                 let draftDeleted = await confirmDraftGone();
                 if (!draftDeleted) draftDeleted = await confirmDraftGone();
+                if (!scopeIsCurrent()) {
+                  reportCleanupFailed();
+                  return;
+                }
 
                 if (durable && userId) {
                   // Tombstone FIRST: it is what stops an offline self-heal from
                   // deleting the server row, and it must outlive a purge that
-                  // succeeds while the draft delete did not.
-                  await durableTombstone.add(durable.recordingId).catch(() => {});
+                  // succeeds while the draft delete did not. add() reports a
+                  // failed write by RESOLVING false, not by rejecting, so a
+                  // .catch() alone would purge without the guard in place — and
+                  // an identity-copy autosave racing behind us could recreate
+                  // the draft with neither manifest nor tombstone left, which is
+                  // how orphan cleanup reaches a confirmed server row.
+                  const tombstoned = await durableTombstone
+                    .add(durable.recordingId)
+                    .catch(() => false);
+                  if (!tombstoned || !scopeIsCurrent()) {
+                    reportCleanupFailed();
+                    return;
+                  }
                   if (draftDeleted) {
                     await durableRecorder
                       .purgeAfterUpload({ userId, recordingId: durable.recordingId })
@@ -4711,11 +4772,8 @@ function RecordingSession() {
                 // would leave a stale draft with no way back to the actions —
                 // and it can reappear later and rediscover the same conflict.
                 // Leave the card actionable and say what happened instead.
-                if (!draftDeleted) {
-                  Alert.alert(
-                    METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedTitle,
-                    METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedBody
-                  );
+                if (!draftDeleted || !scopeIsCurrent()) {
+                  reportCleanupFailed();
                   return;
                 }
                 // Leave the slot resolved, not stuck. Without this the card's
@@ -4937,11 +4995,33 @@ function RecordingSession() {
                 // never be reached, and clearSubmitIntent would never fire —
                 // leaving the whole Record UI frozen. On timeout the original
                 // manifest and the copied audio both remain recoverable.
+                const conversion = persistPostConfirmSeparateSubmission(slot);
+                let timedOut = false;
                 const converted = await withPromiseTimeout(
-                  persistPostConfirmSeparateSubmission(slot),
+                  conversion,
                   POST_CONFIRM_CONVERSION_TIMEOUT_MS,
                   'post_confirm_separate_submission'
-                ).catch(() => null);
+                ).catch(() => {
+                  timedOut = true;
+                  return null;
+                });
+                if (timedOut) {
+                  // The timeout recovered the UI; it did NOT cancel the
+                  // conversion. Restarting the ORIGINAL slot now would race a
+                  // conversion that may already have persisted the loose-copy
+                  // pointer — overwriting it with the original durable pointer,
+                  // which the late conversion then purges. Hold the submit
+                  // guard until the conversion actually settles, then let the
+                  // vet try again against whatever state it left behind.
+                  conversion
+                    .then(() => clearSubmitIntent([slot.id]))
+                    .catch(() => clearSubmitIntent([slot.id]));
+                  Alert.alert(
+                    METADATA_DIVERGENCE_COPY.resubmitAsNewFailedTitle,
+                    METADATA_DIVERGENCE_COPY.resubmitAsNewFailedBody
+                  );
+                  return;
+                }
                 const restarted = await persistControlledUploadRestart(converted ?? slot).catch(
                   () => null
                 );

@@ -225,7 +225,40 @@ export function compareRecordingMetadata(
     // rather than inventing a blocking reason from an unknown field.
   }
 
+  // On an ADOPT response the comparison decides whether the client may delete
+  // its only copy of the audio, and the tiering above assumes a stronger anchor
+  // settled WHICH patient the row is. When `pimsPatientId` is blank on both
+  // sides, name equality is all that remains — and two charts in one practice
+  // can share a patient and client name ("Bella" / "Smith"). A different
+  // species or breed is then the only remaining evidence that the server picked
+  // the other chart, so it has to block here even though it stays descriptive
+  // everywhere else (it participates in no lookup key and cannot itself cause a
+  // mis-link).
+  if (opts.adoptDeletionGate && !pimsAnchorUsable(recording, payload)) {
+    for (const field of PROFILE_DISAMBIGUATORS) {
+      if (descriptiveFields.includes(field)) identityFields.push(field);
+    }
+  }
+
   return { identityFields, processingFields, descriptiveFields, unknownFields };
+}
+
+/** Fields that only disambiguate a patient when no stronger anchor can. */
+const PROFILE_DISAMBIGUATORS: readonly string[] = ['species', 'breed'];
+
+/**
+ * True when `pimsPatientId` actually identifies the patient on BOTH sides. An
+ * absent key counts as unusable, not as agreement: the server omits the flat
+ * alias whenever the Prisma `patient` relation was not loaded.
+ */
+function pimsAnchorUsable(
+  recording: Record<string, unknown>,
+  payload: RecordingPayload
+): boolean {
+  const submitted = normalizeBlank((payload as Record<string, unknown>).pimsPatientId ?? null);
+  if (submitted === null) return false;
+  if (!Object.prototype.hasOwnProperty.call(recording, 'pimsPatientId')) return false;
+  return normalizeBlank(recording.pimsPatientId ?? null) !== null;
 }
 
 export function hasIdentityDivergence(comparison: MetadataComparison): boolean {

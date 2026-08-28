@@ -32,6 +32,13 @@ export type RecordingPayload = Record<string, string | boolean | null>;
 export interface MetadataMatchOptions {
   allowServerEnrichedBlankFields?: boolean;
   pimsPatientIdExplicitlyCleared?: boolean;
+  /**
+   * Set only by the ADOPT origins, where the comparison is the gate on deleting
+   * the client's only copy of the audio. It promotes species/breed from
+   * descriptive to identity when no stronger anchor can tell two charts apart —
+   * see `compareRecordingMetadata`.
+   */
+  adoptDeletionGate?: boolean;
 }
 
 /**

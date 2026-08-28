@@ -826,10 +826,10 @@ test('stashing cannot destroy a held conflict copy', async () => {
   // would go with it, and for a durable capture markUploaded() has already
   // removed it from recovery, leaving nothing pointing at it.
   assert.match(record, /const hasUnresolvedHeldCopy = useCallback\(/);
-  assert.match(
-    record,
-    /\(s\) => s\.uploadStatus === 'success' && s\.metadataDivergence\?\.tier === 'identity',/
-  );
+  // Not just succeeded slots: an adopt-path conflict sits in 'error', and the
+  // stash payload does not carry metadataDivergence — resume restores it null,
+  // stripping every reconciliation action while the hold still protects audio.
+  assert.match(record, /\(s\) => s\.metadataDivergence\?\.tier === 'identity',/);
   assert.equal(
     (record.match(/if \(hasUnresolvedHeldCopy\(\)\) \{/g) ?? []).length,
     2,
@@ -1185,7 +1185,10 @@ test('a restored draft rebuilds its conflict from the persisted hold', async () 
   // the conflict erased — and the deterministic durable key means the next
   // submit can re-adopt the disputed row and purge the audio, card unseen.
   assert.match(record, /const heldConflictKey = draft\.durable\?\.recordingId \?\? draft\.slotId;/);
-  assert.match(record, /const conflictHeld = await durableReconcileHold\s*\.has\(heldConflictKey\)/);
+  // Fail CLOSED: a transient Keystore failure must not restore the draft with
+  // no card while it still carries the disputed identity.
+  assert.match(record, /const holdState = await durableReconcileHold\s*\.hasStrict\(heldConflictKey\)/);
+  assert.match(record, /const conflictHeld = holdState !== 'not_held';/);
   assert.match(
     record,
     /metadataDivergence: conflictHeld\s*\? \{\s*tier: 'identity',/

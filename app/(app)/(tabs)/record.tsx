@@ -5742,7 +5742,12 @@ function RecordingSession() {
   const hasUnresolvedHeldCopy = useCallback(
     () =>
       sessionRef.current.slots.some(
-        (s) => s.uploadStatus === 'success' && s.metadataDivergence?.tier === 'identity',
+        // Not just the succeeded ones. An ADOPT-path conflict leaves the slot in
+        // 'error', and the stash payload does not carry metadataDivergence —
+        // `useStashedSessions` restores it as null — so Save Session then Resume
+        // silently strips all three reconciliation actions while the persisted
+        // hold keeps protecting audio nothing can now resolve.
+        (s) => s.metadataDivergence?.tier === 'identity',
       ),
     [],
   );
@@ -5998,9 +6003,17 @@ function RecordingSession() {
         // the conflict from it. Fields are unknown here; the card renders
         // without the "Differs on:" line and still offers all three choices.
         const heldConflictKey = draft.durable?.recordingId ?? draft.slotId;
-        const conflictHeld = await durableReconcileHold
-          .has(heldConflictKey)
-          .catch(() => false);
+        // STRICT, and fail CLOSED. `has()` maps an unreadable list to false, and
+        // this answer decides whether the conflict is shown at all — a transient
+        // Keystore failure would restore the draft with no card while it still
+        // carries the disputed server identity (or the deterministic durable
+        // key), so the next submit re-adopts that row and purges the audio.
+        // Showing the card when we are unsure costs a dismissal; not showing it
+        // costs the recording.
+        const holdState = await durableReconcileHold
+          .hasStrict(heldConflictKey)
+          .catch(() => 'unknown' as const);
+        const conflictHeld = holdState !== 'not_held';
 
         // Local files are present or R2 proof is sufficient — restore session.
         const restoredSlot: PatientSlot = {

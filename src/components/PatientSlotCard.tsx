@@ -273,7 +273,19 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
   // Allow recording when idle (even with existing segments — for continuation)
   const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !isUploading && !recorder.isStarting && !isFinishSaving;
-  const showSubmitCard = (recordFirstEnabled || hasRequiredFields) && hasCapturedAudio && slot.uploadStatus !== 'success';
+  // An unresolved IDENTITY conflict must be settled through the reconciliation
+  // card's three explicit choices. The slot is still in 'error' from the adopt
+  // guard, so the submit card would otherwise render underneath offering
+  // "Retry Upload" — which bypasses the choice entirely: uploadSlot() clears
+  // metadataDivergence and re-runs the same adopt path, looping on the conflict
+  // at best, and resuming automatic local deletion if the canonical response
+  // shifts between attempts.
+  const identityReconciliationPending = slot.metadataDivergence?.tier === 'identity';
+  const showSubmitCard =
+    (recordFirstEnabled || hasRequiredFields) &&
+    hasCapturedAudio &&
+    slot.uploadStatus !== 'success' &&
+    !identityReconciliationPending;
   const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading' && !isFinishSaving;
   const patientForm = (
     <PatientForm

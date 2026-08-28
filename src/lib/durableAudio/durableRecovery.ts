@@ -19,6 +19,7 @@ import type { DurableRecordingManifest } from './manifest';
 import { selectRecoverableSessions, needsServerReconcile } from './recoveryLogic';
 import { isValidDurableId } from './paths';
 import { durableTombstone } from './tombstone';
+import { durableReconcileHold } from './reconcileHold';
 import { durableActiveStore } from './activeStore';
 import { draftStorage } from '../draftStorage';
 import { stashStorage } from '../stashStorage';
@@ -131,6 +132,7 @@ export async function scanDurableRecoveries(
 ): Promise<DurableRecordingManifest[]> {
   if (!isValidDurableId(userId)) return [];
   durableTombstone.setUserId(userId);
+  durableReconcileHold.setUserId(userId);
   durableActiveStore.setUserId(userId);
 
   let manifests: DurableRecordingManifest[];
@@ -208,11 +210,18 @@ export async function scanDurableRecoveries(
     }
   }
 
+  // A read failure yields an empty set, which is the LENIENT direction here on
+  // purpose: the alternative — treating unreadable as "everything is held" —
+  // would stall every legitimate self-heal indefinitely. The draft and
+  // tombstone checks still apply, and the next scan retries.
+  const heldRecordingIds = new Set(await durableReconcileHold.list().catch(() => []));
+
   const { offer, selfHeal: toHeal } = selectRecoverableSessions({
     manifests,
     draftRecordingIds,
     stashRecordingIds,
     tombstonedRecordingIds,
+    heldRecordingIds,
   });
 
   for (const m of toHeal) {

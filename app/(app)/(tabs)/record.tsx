@@ -56,6 +56,7 @@ import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/free
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
+import { durableReconcileHold } from '../../../src/lib/durableAudio/reconcileHold';
 import { withPromiseTimeout } from '../../../src/lib/promiseTimeout';
 import { isValidDurableId, RECOVERED_DURABLE_DIR_NAME } from '../../../src/lib/durableAudio/paths';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
@@ -2635,6 +2636,14 @@ function RecordingSession() {
             const divergenceReport = metadataDivergence as MetadataDivergenceReport | null;
             const holdDurableLocalCopy =
               divergenceReport?.tier === 'identity' && localAudioAvailableForRestart;
+            if (holdDurableLocalCopy && durable && uid) {
+              // PERSIST the hold. The divergence lives in React state and dies
+              // with the process, but markUploaded() above is permanent — so
+              // the next launch would see a confirmed-uploaded manifest and
+              // self-heal it, destroying the retained copy for a vet who just
+              // closed the app before deciding.
+              await durableReconcileHold.add(durable.recordingId).catch(() => {});
+            }
             if (divergenceReport?.tier === 'identity' && !localAudioAvailableForRestart) {
               dispatch({
                 type: 'SET_METADATA_DIVERGENCE',
@@ -2982,6 +2991,11 @@ function RecordingSession() {
           // copy this branch had already destroyed.
           const holdFreshDurableCopy =
             (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
+          if (holdFreshDurableCopy && durable && uid) {
+            // Same persistence as the pending-confirm branch: without it the
+            // next recovery scan purges the copy this branch just kept.
+            await durableReconcileHold.add(durable.recordingId).catch(() => {});
+          }
           if (!holdFreshDurableCopy) {
             // Retry once — most deleteDraft failures are a transient SecureStore/
             // Keystore hiccup. Stale metadata makes Home show a resumable "Not
@@ -4796,6 +4810,11 @@ function RecordingSession() {
                       .purgeAfterUpload({ userId, recordingId: durable.recordingId })
                       .catch(() => {});
                     if (durable.recoveredAudioUri) safeDeleteFile(durable.recoveredAudioUri);
+                    // Only now: the hold is what keeps recovery off this
+                    // recording, so it must outlive every step it protects.
+                    // Releasing it before a failed delete would expose the copy
+                    // to the next scan instead of leaving it retained.
+                    await durableReconcileHold.remove(durable.recordingId).catch(() => {});
                   }
                   durableRecoveryStore.remove(durable.recordingId);
                 } else if (draftDeleted) {
@@ -4983,6 +5002,10 @@ function RecordingSession() {
       if (!scopeIsCurrent()) return null;
       const tombstoned = await durableTombstone.add(durable.recordingId).catch(() => false);
       if (!tombstoned || !scopeIsCurrent()) return null;
+      // The replacement carries a fresh durable id and its own draft, so the
+      // original's hold has nothing left to protect — and leaving it would
+      // permanently suppress a manifest we are about to purge.
+      await durableReconcileHold.remove(durable.recordingId).catch(() => {});
 
       await durableRecorder
         .purgeAfterUpload({ userId, recordingId: durable.recordingId })
@@ -5014,7 +5037,12 @@ function RecordingSession() {
    */
   const handleDismissDivergence = useCallback(
     (slotId: string) => {
+      const slot = sessionRef.current.slots.find((candidate) => candidate.id === slotId);
       dispatch({ type: 'SET_METADATA_DIVERGENCE', slotId, divergence: null });
+      // An acknowledged notice is a resolved conflict: drop any persisted hold
+      // so the recording stops being suppressed from recovery forever.
+      const durableId = slot?.durable?.recordingId;
+      if (durableId) durableReconcileHold.remove(durableId).catch(() => {});
       runDeferredSuccessTransition(slotId);
     },
     [dispatch, runDeferredSuccessTransition]

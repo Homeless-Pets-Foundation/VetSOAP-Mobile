@@ -98,7 +98,7 @@ test('record-first UI is fail-closed behind auth capability and removes both req
   assert.match(slotCard, /recordFirstEnabled\?: boolean/);
   assert.match(slotCard, /slot\.formData\.species\?\.trim\(\)\.length/);
   assert.match(slotCard, /const canStartRecording = \(recordFirstEnabled \|\| hasRequiredFields\)/);
-  assert.match(slotCard, /const showSubmitCard = \(recordFirstEnabled \|\| hasRequiredFields\)/);
+  assert.match(slotCard, /const showSubmitCard =\s*\(recordFirstEnabled \|\| hasRequiredFields\)/);
   assert.match(slotCard, /Optional — AI will fill blanks from audio\./);
 
   const form = await read('src/components/PatientForm.tsx');

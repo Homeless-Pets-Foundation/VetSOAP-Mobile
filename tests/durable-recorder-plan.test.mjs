@@ -344,7 +344,10 @@ test('durable-only slots are submit-reachable (per-patient + Submit All)', async
   // PatientSlotCard: the Submit card must show for a durable slot with empty segments.
   const card = await read('src/components/PatientSlotCard.tsx');
   assert.match(card, /const hasCapturedAudio = slotHasRecoverableAudio\(slot\)/);
-  assert.match(card, /showSubmitCard = \(recordFirstEnabled \|\| hasRequiredFields\) && hasCapturedAudio/);
+  assert.match(
+    card,
+    /showSubmitCard =\s*\(recordFirstEnabled \|\| hasRequiredFields\) &&\s*hasCapturedAudio/
+  );
   // SubmitPanel already counts all recoverable audio.
   const panel = await read('src/components/SubmitPanel.tsx');
   assert.match(panel, /const hasAudio = \(s: PatientSlot\) => slotHasRecoverableAudio\(s\)/);

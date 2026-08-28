@@ -205,9 +205,9 @@ export function compareRecordingMetadata(
       // missing in this sense — a blank we never sent proves nothing.
       if (
         opts.adoptDeletionGate &&
-        !anchorUsable &&
-        PROFILE_DISAMBIGUATORS.includes(key) &&
-        normalizeBlank(submitted) !== null
+        normalizeBlank(submitted) !== null &&
+        (VISIT_DISAMBIGUATORS.includes(key) ||
+          (!anchorUsable && PROFILE_DISAMBIGUATORS.includes(key)))
       ) {
         identityFields.push(key);
       }
@@ -251,8 +251,13 @@ export function compareRecordingMetadata(
   // the other chart, so it has to block here even though it stays descriptive
   // everywhere else (it participates in no lookup key and cannot itself cause a
   // mis-link).
-  if (opts.adoptDeletionGate && !anchorUsable) {
-    for (const field of PROFILE_DISAMBIGUATORS) {
+  if (opts.adoptDeletionGate) {
+    // The visit discriminator blocks unconditionally; the patient ones only
+    // when nothing stronger settled which chart this is.
+    const promote = anchorUsable
+      ? VISIT_DISAMBIGUATORS
+      : [...VISIT_DISAMBIGUATORS, ...PROFILE_DISAMBIGUATORS];
+    for (const field of promote) {
       if (descriptiveFields.includes(field)) identityFields.push(field);
     }
   }
@@ -260,8 +265,23 @@ export function compareRecordingMetadata(
   return { identityFields, processingFields, descriptiveFields, unknownFields };
 }
 
-/** Fields that only disambiguate a patient when no stronger anchor can. */
+/** Fields that only disambiguate a PATIENT when no stronger anchor can. */
 const PROFILE_DISAMBIGUATORS: readonly string[] = ['species', 'breed'];
+
+/**
+ * The one VISIT-level discriminator in the payload.
+ *
+ * `patientName`, `clientName` and `pimsPatientId` identify the patient, not the
+ * appointment — so when a stale upload intent resolves to a DIFFERENT visit for
+ * the SAME patient, all three match and none of them notices. A Sick Visit
+ * followed by a Follow-up is the everyday version of this. At the adopt gate,
+ * where the client is about to delete the new visit's only local audio,
+ * `appointmentType` is the last thing that can say the row is the wrong visit,
+ * so it blocks there regardless of whether the patient anchor is usable. It
+ * stays descriptive everywhere else, where it genuinely cannot cause a mis-link
+ * (it appears in no lookup key, no upsert `where`, and no identity guard).
+ */
+const VISIT_DISAMBIGUATORS: readonly string[] = ['appointmentType'];
 
 /**
  * True when `pimsPatientId` actually identifies the patient on BOTH sides. An

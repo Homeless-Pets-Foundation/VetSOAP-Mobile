@@ -384,8 +384,14 @@ test('the divergence notice renders outside the submit card, which excludes succ
   // to reach any of the three reconciliation actions.
   assert.match(
     card,
-    /const showSubmitCard = .*slot\.uploadStatus !== 'success';/,
-    'showSubmitCard must still exclude succeeded slots'
+    /const showSubmitCard =[\s\S]{0,200}?slot\.uploadStatus !== 'success' &&\s*!identityReconciliationPending;/,
+    'showSubmitCard must exclude succeeded slots AND pending identity reconciliation'
+  );
+  // Retry Upload would bypass the three explicit choices: uploadSlot() clears
+  // metadataDivergence and re-runs the same adopt path.
+  assert.match(
+    card,
+    /const identityReconciliationPending = slot\.metadataDivergence\?\.tier === 'identity';/
   );
   const submitCardAt = card.indexOf('{showSubmitCard && (');
   const noticeAt = card.indexOf('{slot.metadataDivergence && (');
@@ -716,7 +722,17 @@ test('species and breed block adoption when no stronger anchor can disambiguate'
   assert.match(mismatch, /adoptDeletionGate\?: boolean;/);
   assert.match(recordings, /adoptDeletionGate: isAdoptMetadataOrigin\(origin\),/);
   assert.match(identity, /const PROFILE_DISAMBIGUATORS: readonly string\[\] = \['species', 'breed'\];/);
-  assert.match(identity, /if \(opts\.adoptDeletionGate && !anchorUsable\) \{/);
+  assert.match(identity, /if \(opts\.adoptDeletionGate\) \{/);
+  // appointmentType is the only VISIT-level discriminator: patientName,
+  // clientName and pimsPatientId all identify the PATIENT, so a stale intent
+  // resolving to that patient's other visit matches on every one of them.
+  assert.match(identity, /const VISIT_DISAMBIGUATORS: readonly string\[\] = \['appointmentType'\];/);
+  assert.match(
+    identity,
+    /const promote = anchorUsable\s*\? VISIT_DISAMBIGUATORS\s*: \[\.\.\.VISIT_DISAMBIGUATORS, \.\.\.PROFILE_DISAMBIGUATORS\];/
+  );
+  // ...and it stays descriptive in the tier map, where it cannot mis-link.
+  assert.match(identity, /appointmentType: 'descriptive',/);
   // An absent key is not agreement: the server omits the flat alias whenever
   // the patient relation was not loaded.
   assert.match(identity, /if \(!Object\.prototype\.hasOwnProperty\.call\(recording, 'pimsPatientId'\)\) return false;/);
@@ -778,7 +794,7 @@ test('an absent species or breed also fails closed at the adopt gate', async () 
   assert.match(identity, /const anchorUsable = pimsAnchorUsable\(recording, payload\);/);
   assert.match(
     identity,
-    /opts\.adoptDeletionGate &&\s*!anchorUsable &&\s*PROFILE_DISAMBIGUATORS\.includes\(key\) &&\s*normalizeBlank\(submitted\) !== null/
+    /opts\.adoptDeletionGate &&\s*normalizeBlank\(submitted\) !== null &&\s*\(VISIT_DISAMBIGUATORS\.includes\(key\) \|\|\s*\(!anchorUsable && PROFILE_DISAMBIGUATORS\.includes\(key\)\)\)/
   );
 });
 
@@ -815,4 +831,47 @@ test('an abandoned conversion cannot mutate storage afterwards', async () => {
   assert.match(record, /const reconcileGenerationRef = useRef\(0\);/);
   assert.match(convert, /isAbandoned: \(\) => boolean = \(\) => false,/);
   assert.match(convert, /const scopeIsCurrent = \(\) =>\s*!isAbandoned\(\) &&/);
+});
+
+test('a held durable copy survives a restart, and the hold is released on resolution', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const logic = await read('src/lib/durableAudio/recoveryLogic.ts');
+  const recovery = await read('src/lib/durableAudio/durableRecovery.ts');
+  const hold = await read('src/lib/durableAudio/reconcileHold.ts');
+  const auth = await read('src/auth/AuthProvider.tsx');
+
+  // The divergence is React state and dies with the process, while
+  // markUploaded() is permanent — so the next scan saw a confirmed-uploaded
+  // manifest, self-healed it, and destroyed the retained copy.
+  assert.match(hold, /export const durableReconcileHold = \{/);
+  assert.match(hold, /const KEY_PREFIX = 'captivet_durable_reconcile_hold';/);
+  // Suppressed BEFORE the confirmed-uploaded and tombstoned branches, both of
+  // which are terminal.
+  const selectBody = logic.slice(logic.indexOf('export function selectRecoverableSessions'));
+  const heldAt = selectBody.indexOf('if (held.has(manifest.recordingId))');
+  const uploadedAt = selectBody.indexOf('if (isConfirmedUploaded(manifest))');
+  assert.ok(heldAt > -1 && uploadedAt > heldAt, 'the hold must be checked before self-heal');
+  assert.match(recovery, /heldRecordingIds,/);
+  // User-scoped like every other durable store (shared clinic tablets).
+  assert.match(auth, /durableReconcileHold\.setUserId\(scopedUserId\);/);
+  assert.equal((auth.match(/durableReconcileHold\.setUserId\(null\)/g) ?? []).length, 2);
+
+  // Held on BOTH durable success paths...
+  assert.equal(
+    (record.match(/durableReconcileHold\.add\(durable\.recordingId\)/g) ?? []).length,
+    2
+  );
+  // ...and released by every resolution: the release action (only after the
+  // delete it authorizes succeeded), the conversion, and a dismissal.
+  assert.equal(
+    (record.match(/durableReconcileHold\.remove\(/g) ?? []).length,
+    3
+  );
+  const releaseBlock = record.slice(
+    record.indexOf('const handleReleaseLocalCopy = useCallback'),
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback')
+  );
+  const purgeAt = releaseBlock.indexOf('purgeAfterUpload');
+  const unholdAt = releaseBlock.indexOf('durableReconcileHold.remove');
+  assert.ok(purgeAt > -1 && unholdAt > purgeAt, 'the hold must outlive the steps it protects');
 });

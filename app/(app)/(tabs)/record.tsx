@@ -2478,6 +2478,34 @@ function RecordingSession() {
     []
   );
 
+  /**
+   * Release a reconciliation hold and REPORT whether it actually landed.
+   *
+   * `remove()` signals a failed read-or-rewrite by resolving false, and every
+   * release site below runs after the draft and audio it protected are already
+   * deleted — so there is no object and no card action left that could retry
+   * it. Swallowing the result stranded one entry per failure, permanently, and
+   * `add()` refuses past MAX_RECONCILE_HOLDS rather than evicting, so enough of
+   * them quietly remove the ability to protect the NEXT conflict at all.
+   *
+   * The store now queues a failed release and applies it on the next successful
+   * mutation for the user (which includes the `add()` that would otherwise hit
+   * the cap). This is the observability half: the reconciliation itself has
+   * genuinely succeeded, so it must not be failed back to the vet, but a store
+   * that keeps refusing writes should be visible rather than silent.
+   */
+  const releaseReconcileHold = useCallback(
+    async (holdId: string | null | undefined, context: string): Promise<boolean> => {
+      if (!holdId) return true;
+      const released = await durableReconcileHold.remove(holdId).catch(() => false);
+      if (!released) {
+        breadcrumb('upload', 'reconcile_hold_release_deferred', { context });
+      }
+      return released;
+    },
+    []
+  );
+
   const uploadSlot = useCallback(
     async (slotArg: PatientSlot): Promise<string | null> => {
       // Re-read the latest slot from state. A stale closure (e.g. held by a
@@ -5006,7 +5034,7 @@ function RecordingSession() {
                     // recording, so it must outlive every step it protects.
                     // Releasing it before a failed delete would expose the copy
                     // to the next scan instead of leaving it retained.
-                    await durableReconcileHold.remove(durable.recordingId).catch(() => {});
+                    await releaseReconcileHold(durable.recordingId, 'release_durable');
                   }
                   durableRecoveryStore.remove(durable.recordingId);
                 } else if (draftDeleted) {
@@ -5014,9 +5042,7 @@ function RecordingSession() {
                     safeDeleteFile(seg.uri);
                   });
                   // Standard holds are keyed by draft slot id (no durable id).
-                  await durableReconcileHold
-                    .remove(slot.draftSlotId ?? slot.id)
-                    .catch(() => {});
+                  await releaseReconcileHold(slot.draftSlotId ?? slot.id, 'release_standard');
                 }
 
                 // Only a PROVEN delete may report the copy as removed. If the
@@ -5109,6 +5135,7 @@ function RecordingSession() {
       runDeferredSuccessTransition,
       setUploadStatus,
       user?.id,
+      releaseReconcileHold,
     ]
   );
 
@@ -5253,8 +5280,8 @@ function RecordingSession() {
       // The replacement carries a fresh durable id and its own draft, so the
       // original's hold has nothing left to protect — and leaving it would
       // permanently suppress a manifest we are about to purge.
-      await durableReconcileHold.remove(durable.recordingId).catch(() => {});
-      await durableReconcileHold.remove(slot.draftSlotId ?? slot.id).catch(() => {});
+      await releaseReconcileHold(durable.recordingId, 'resubmit_as_new_durable');
+      await releaseReconcileHold(slot.draftSlotId ?? slot.id, 'resubmit_as_new_standard');
 
       // Last check before the point of no return. The timeout can fire while
       // either removal above is awaiting storage, after which the gates are
@@ -5281,7 +5308,7 @@ function RecordingSession() {
       }
       return { ...converted, draftSlotId: persistedDraftSlotId ?? slot.draftSlotId };
     },
-    [dispatch, user?.id]
+    [dispatch, user?.id, releaseReconcileHold]
   );
 
   /**
@@ -5298,12 +5325,12 @@ function RecordingSession() {
       // An acknowledged notice is a resolved conflict: drop any persisted hold
       // so the recording stops being suppressed from recovery forever.
       const durableId = slot?.durable?.recordingId;
-      if (durableId) durableReconcileHold.remove(durableId).catch(() => {});
+      if (durableId) void releaseReconcileHold(durableId, 'dismiss_durable');
       const standardKey = slot?.draftSlotId ?? slot?.id;
-      if (standardKey) durableReconcileHold.remove(standardKey).catch(() => {});
+      if (standardKey) void releaseReconcileHold(standardKey, 'dismiss_standard');
       runDeferredSuccessTransition(slotId);
     },
-    [dispatch, runDeferredSuccessTransition]
+    [dispatch, runDeferredSuccessTransition, releaseReconcileHold]
   );
 
   const handleResubmitAsNew = useCallback(
@@ -5424,9 +5451,7 @@ function RecordingSession() {
                 // cap, after which a future conflict cannot persist its
                 // protection at all.
                 if (!converted) {
-                  await durableReconcileHold
-                    .remove(slot.draftSlotId ?? slot.id)
-                    .catch(() => {});
+                  await releaseReconcileHold(slot.draftSlotId ?? slot.id, 'restart_standard');
                 }
                 // This submit will produce its own transition; drop the one the
                 // previous submit deferred so it cannot fire against a session
@@ -5460,6 +5485,7 @@ function RecordingSession() {
       persistPostConfirmSeparateSubmission,
       runSingleSubmit,
       user?.id,
+      releaseReconcileHold,
     ]
   );
 

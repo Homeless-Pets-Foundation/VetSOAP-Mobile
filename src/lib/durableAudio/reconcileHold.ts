@@ -44,6 +44,60 @@ let currentUserId: string | null = null;
 let cachedListUserId: string | null = null;
 let cachedList: string[] | null = null;
 
+/**
+ * Releases that could not be written, retained per user for retry.
+ *
+ * `remove()` reports a failed read-or-rewrite by RESOLVING false, and its
+ * callers reach it only AFTER the draft and audio they were protecting are
+ * already gone — the card is dismissed and the slot resolved, so no object and
+ * no UI action remains that could ever retry it. Left alone, each such failure
+ * strands one entry forever, and because `add()` REFUSES past
+ * MAX_RECONCILE_HOLDS rather than evicting, enough of them silently take away
+ * the ability to protect a future conflict at all.
+ *
+ * Memory-only, deliberately, and modelled on `orphanDraftRetry`: a hold id is
+ * a durable recordingId or draft slot id, never PHI, and losing the queue to a
+ * restart forfeits one retry opportunity, never correctness — the entry is
+ * inert (whatever it protected is already deleted) until the cap matters, and
+ * the cap is reached through `add()`, which drains this first.
+ */
+const pendingRemovals = new Map<string, Set<string>>();
+
+/** Bound the queue itself, so a permanently unreadable store cannot grow it without limit. */
+const MAX_PENDING_REMOVALS = MAX_RECONCILE_HOLDS;
+
+function rememberPendingRemoval(userId: string, recordingId: string): void {
+  const queued = pendingRemovals.get(userId) ?? new Set<string>();
+  if (queued.size >= MAX_PENDING_REMOVALS && !queued.has(recordingId)) return;
+  queued.add(recordingId);
+  pendingRemovals.set(userId, queued);
+}
+
+/**
+ * Apply every queued release to a list already proven readable, inside the
+ * caller's lock. Returns whether anything changed, so the caller can fold it
+ * into the single write it was going to make anyway.
+ */
+function applyPendingRemovals(userId: string, list: string[]): { list: string[]; changed: boolean } {
+  const queued = pendingRemovals.get(userId);
+  if (!queued || queued.size === 0) return { list, changed: false };
+  const next = list.filter((id) => !queued.has(id));
+  return { list: next, changed: next.length !== list.length };
+}
+
+/**
+ * Clear the queue only once the write that applied it has SUCCEEDED. Dropping
+ * it on a failed write would lose the retry that is the whole point.
+ */
+function commitPendingRemovals(userId: string): void {
+  pendingRemovals.delete(userId);
+}
+
+/** Test/diagnostic surface: how many releases are still awaiting a writable store. */
+export function pendingReconcileHoldReleases(userId: string): number {
+  return pendingRemovals.get(userId)?.size ?? 0;
+}
+
 function invalidateCache(): void {
   cachedListUserId = null;
   cachedList = null;
@@ -156,13 +210,27 @@ export const durableReconcileHold = {
       // call was queued, and the cached list it saw before is now stale.
       const loaded = await loadList(userId);
       if (!loaded.known) return false;
-      const list = loaded.list;
-      if (list.includes(recordingId)) return true;
+      // Drain first, and specifically BEFORE the cap test: a queue of failed
+      // releases is exactly what pushes a healthy device to the cap, and
+      // refusing to protect a real conflict because of entries that are
+      // already meant to be gone is the failure this drain exists to prevent.
+      const drained = applyPendingRemovals(userId, loaded.list);
+      const list = drained.list;
+      if (list.includes(recordingId)) {
+        // Still owe the queue a write even on the no-op add path.
+        if (drained.changed && (await writeList(userId, list))) commitPendingRemovals(userId);
+        return true;
+      }
       // Refuse rather than evict: dropping the oldest hold would hand a
       // retained recording to the next self-heal without anyone deciding.
-      if (list.length >= MAX_RECONCILE_HOLDS) return false;
+      if (list.length >= MAX_RECONCILE_HOLDS) {
+        if (drained.changed && (await writeList(userId, list))) commitPendingRemovals(userId);
+        return false;
+      }
       list.push(recordingId);
-      return writeList(userId, list);
+      const wrote = await writeList(userId, list);
+      if (wrote && drained.changed) commitPendingRemovals(userId);
+      return wrote;
     });
   },
 
@@ -186,16 +254,33 @@ export const durableReconcileHold = {
     return loaded.list.includes(recordingId) ? 'held' : 'not_held';
   },
 
-  /** Release a hold once its divergence has been resolved. */
+  /**
+   * Release a hold once its divergence has been resolved.
+   *
+   * Resolves false when the store could not be read or rewritten. Callers reach
+   * this only after the copy it protected is already deleted, so there is
+   * nothing left for them to retry with — the failed release is queued here
+   * instead and applied by the next successful mutation for this user.
+   */
   async remove(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId) return false;
     return serialize(userId, async () => {
       const loaded = await loadList(userId);
-      if (!loaded.known) return false;
-      const next = loaded.list.filter((id) => id !== recordingId);
-      if (next.length === loaded.list.length) return true;
-      return writeList(userId, next);
+      if (!loaded.known) {
+        rememberPendingRemoval(userId, recordingId);
+        return false;
+      }
+      const drained = applyPendingRemovals(userId, loaded.list);
+      const next = drained.list.filter((id) => id !== recordingId);
+      if (next.length === drained.list.length && !drained.changed) return true;
+      const wrote = await writeList(userId, next);
+      if (!wrote) {
+        rememberPendingRemoval(userId, recordingId);
+        return false;
+      }
+      commitPendingRemovals(userId);
+      return true;
     });
   },
 
@@ -219,6 +304,10 @@ export const durableReconcileHold = {
 
   async clearForUser(userId: string): Promise<void> {
     if (cachedListUserId === userId) invalidateCache();
+    // The queue only ever asks for entries to be REMOVED, and the whole list is
+    // about to go — keeping it would let a stale id survive into a re-signed-in
+    // session's fresh store.
+    commitPendingRemovals(userId);
     await deleteChunkedValue(prefixFor(userId));
     if (cachedListUserId === userId) invalidateCache();
   },

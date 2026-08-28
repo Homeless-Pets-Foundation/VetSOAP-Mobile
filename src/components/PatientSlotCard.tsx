@@ -234,6 +234,18 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const isPaused = audioState === 'paused';
   const isStopped = audioState === 'stopped';
   const identityReconciliationPending = slot.metadataDivergence?.tier === 'identity';
+  // ANY unresolved divergence owns this slot's submit decision, not just the
+  // identity tier. A server `409 RECORDING_METADATA_CONFLICT` we cannot
+  // classify lands as tier 'unknown' with uploadStatus 'error', and gating on
+  // identity alone left the ordinary "Retry Upload" card rendering directly
+  // beneath the conflict card — the familiar, more prominent of the two.
+  // Pressing it re-enters uploadSlot(), which clears metadataDivergence and
+  // reuses the same stable upload intent, so it earns the identical 409 and
+  // loops there indefinitely while "Submit separately" — the actual way out —
+  // sits unused above it. Every tier is reachable from here: 'processing' and
+  // 'descriptive' resolve through "Got it", which clears the divergence and
+  // brings this card straight back, so nothing is stranded.
+  const reconciliationPending = !!slot.metadataDivergence;
   // An unresolved identity conflict owns this slot's audio: the vet is deciding
   // whether the SERVER row is the same visit, and every one of the three
   // reconciliation actions acts on the bytes that exist right now. Continue
@@ -293,7 +305,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     (recordFirstEnabled || hasRequiredFields) &&
     hasCapturedAudio &&
     slot.uploadStatus !== 'success' &&
-    !identityReconciliationPending;
+    !reconciliationPending;
   const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading' && !isFinishSaving;
   const patientForm = (
     <PatientForm

@@ -384,14 +384,26 @@ test('the divergence notice renders outside the submit card, which excludes succ
   // to reach any of the three reconciliation actions.
   assert.match(
     card,
-    /const showSubmitCard =[\s\S]{0,200}?slot\.uploadStatus !== 'success' &&\s*!identityReconciliationPending;/,
-    'showSubmitCard must exclude succeeded slots AND pending identity reconciliation'
+    /const showSubmitCard =[\s\S]{0,200}?slot\.uploadStatus !== 'success' &&\s*!reconciliationPending;/,
+    'showSubmitCard must exclude succeeded slots AND every unresolved divergence'
   );
   // Retry Upload would bypass the three explicit choices: uploadSlot() clears
   // metadataDivergence and re-runs the same adopt path.
   assert.match(
     card,
     /const identityReconciliationPending = slot\.metadataDivergence\?\.tier === 'identity';/
+  );
+  // ...and the submit gate is the BROAD one, not the identity-only one. A
+  // server 409 we cannot classify lands as tier 'unknown' with uploadStatus
+  // 'error'; gating on identity alone rendered the ordinary Retry Upload card
+  // right beneath the conflict card, and pressing it re-enters uploadSlot(),
+  // clears the divergence, reuses the same stable upload intent, and earns the
+  // identical 409 forever — while "Submit separately" sits unused above it.
+  assert.match(card, /const reconciliationPending = !!slot\.metadataDivergence;/);
+  assert.doesNotMatch(
+    card,
+    /const showSubmitCard =[\s\S]{0,240}?!identityReconciliationPending;/,
+    'the submit gate must not narrow back to the identity tier'
   );
   const submitCardAt = card.indexOf('{showSubmitCard && (');
   const noticeAt = card.indexOf('{slot.metadataDivergence && (');
@@ -903,9 +915,23 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   // which must clear BOTH keys, since a standard hold is keyed by draft slot id
   // and a durable one by recordingId — plus the scope-rollback inside
   // addReconcileHoldForUser.
+  // Every release goes through releaseReconcileHold(), which honours remove()'s
+  // boolean instead of swallowing it: the sites all run AFTER the copy they
+  // protected is deleted, so nothing is left that could retry a failed release,
+  // and add() refuses past MAX_RECONCILE_HOLDS rather than evicting — enough
+  // stranded entries silently remove the ability to protect the next conflict.
+  assert.equal(
+    (record.match(/releaseReconcileHold\(/g) ?? []).length,
+    7,
+    'every release site must report its result, not discard it'
+  );
+  assert.match(record, /const released = await durableReconcileHold\.remove\(holdId\)\.catch\(\(\) => false\);/);
+  assert.match(record, /if \(!released\) \{\s*breadcrumb\('upload', 'reconcile_hold_release_deferred'/);
+  // Only the scope-rollback inside addReconcileHoldForUser may call remove()
+  // directly — it is taking BACK a stray write, not resolving a conflict.
   assert.equal(
     (record.match(/durableReconcileHold\s*\.remove\(/g) ?? []).length,
-    8
+    2
   );
   // A STANDARD held copy needs the marker too: DraftMetadata carries no
   // divergence field, so evictExpired() would otherwise delete it silently at
@@ -922,7 +948,7 @@ test('a held durable copy survives a restart, and the hold is released on resolu
     record.indexOf('const persistPostConfirmSeparateSubmission = useCallback')
   );
   const purgeAt = releaseBlock.indexOf('purgeAfterUpload');
-  const unholdAt = releaseBlock.indexOf('durableReconcileHold.remove');
+  const unholdAt = releaseBlock.indexOf('releaseReconcileHold(');
   assert.ok(purgeAt > -1 && unholdAt > purgeAt, 'the hold must outlive the steps it protects');
 });
 
@@ -967,8 +993,49 @@ test('a held manifest nothing owns is offered, not hidden forever', async () => 
 
   // The cap REFUSES rather than evicting: dropping the oldest hold would hand a
   // retained recording to the next self-heal with nobody deciding.
-  assert.match(hold, /if \(list\.length >= MAX_RECONCILE_HOLDS\) return false;/);
+  assert.match(hold, /if \(list\.length >= MAX_RECONCILE_HOLDS\) \{/);
   assert.doesNotMatch(hold, /while \(list\.length > MAX_RECONCILE_HOLDS\) list\.shift\(\);/);
+  // The cap test runs on the DRAINED list. A queue of failed releases is what
+  // walks a healthy device to the cap, so testing before the drain would refuse
+  // to protect a real conflict on account of entries already meant to be gone.
+  const addBody = hold.slice(hold.indexOf('async add('), hold.indexOf('async has('));
+  const drainAt = addBody.indexOf('applyPendingRemovals(userId, loaded.list)');
+  const capAt = addBody.indexOf('list.length >= MAX_RECONCILE_HOLDS');
+  assert.ok(drainAt > -1 && capAt > drainAt, 'add() must drain queued releases before testing the cap');
+});
+
+test('an unclassifiable 409 hides Retry Upload, which would loop on the same conflict', async () => {
+  const card = await read('src/components/PatientSlotCard.tsx');
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // A server `409 RECORDING_METADATA_CONFLICT` we cannot classify becomes tier
+  // 'unknown' with uploadStatus 'error'. Gating the submit card on the identity
+  // tier alone left the ordinary Retry Upload rendering directly beneath the
+  // conflict card — the familiar and more prominent of the two — and pressing
+  // it re-enters uploadSlot(), which clears metadataDivergence and reuses the
+  // same stable upload intent, so it earns the identical 409 forever while
+  // "Submit separately" sits unused above it.
+  assert.match(card, /const reconciliationPending = !!slot\.metadataDivergence;/);
+  assert.match(card, /!reconciliationPending;/);
+
+  // Every tier still has a way off this screen, so nothing is stranded by the
+  // broader gate: 'unknown' has "Submit separately" and "Got it"; 'processing'
+  // and 'descriptive' have "Got it" alone.
+  assert.match(
+    card,
+    /\{slot\.metadataDivergence\.tier === 'unknown' && \(\s*<View[\s\S]{0,400}?onResubmitAsNew\?\.\(slot\.id\)/
+  );
+  assert.match(
+    card,
+    /\(slot\.metadataDivergence\.tier === 'processing' \|\|\s*slot\.metadataDivergence\.tier === 'descriptive' \|\|\s*slot\.metadataDivergence\.tier === 'unknown'\)/
+  );
+  // ...and "Got it" clears the divergence, which brings the submit card back —
+  // the gate defers the decision, it does not remove it.
+  const dismiss = record.slice(
+    record.indexOf('const handleDismissDivergence = useCallback'),
+    record.indexOf('const handleResubmitAsNew = useCallback')
+  );
+  assert.match(dismiss, /dispatch\(\{ type: 'SET_METADATA_DIVERGENCE', slotId, divergence: null \}\);/);
 });
 
 test('the deferred transition re-checks for work recorded while the notice sat', async () => {
@@ -1090,7 +1157,7 @@ test('an abandoned conversion rechecks before the purge, and standard holds are 
 
   // The timeout can fire while a hold removal awaits storage; a retry may then
   // be copying to the same URI that this purge is about to destroy.
-  const lastRemoveAt = convert.lastIndexOf('durableReconcileHold.remove(');
+  const lastRemoveAt = convert.lastIndexOf('releaseReconcileHold(');
   const recheckAt = convert.indexOf('if (!scopeIsCurrent()) return null;', lastRemoveAt);
   const purgeAt = convert.indexOf('purgeAfterUpload', lastRemoveAt);
   assert.ok(recheckAt > lastRemoveAt && purgeAt > recheckAt, 'recheck must sit between the removals and the purge');
@@ -1101,7 +1168,7 @@ test('an abandoned conversion rechecks before the purge, and standard holds are 
     record.indexOf('const handleResubmitAsNew = useCallback'),
     record.indexOf('const handleSubmitSingle = useCallback')
   );
-  assert.match(resubmit, /if \(!converted\) \{\s*await durableReconcileHold\s*\.remove\(slot\.draftSlotId \?\? slot\.id\)/);
+  assert.match(resubmit, /if \(!converted\) \{\s*await releaseReconcileHold\(slot\.draftSlotId \?\? slot\.id, 'restart_standard'\);/);
 });
 
 test('the release transaction is bounded and cannot strand the slot', async () => {

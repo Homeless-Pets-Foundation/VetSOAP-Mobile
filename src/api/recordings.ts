@@ -843,6 +843,12 @@ async function postConfirm(
         current.status !== 'uploading' &&
         current.status !== 'failed'
       ) {
+        // The probe is a plain GET by id, so the row it returns must still be
+        // PROVEN to be the row we asked for — the normal confirm path asserts
+        // this and the fallback did not. Metadata equality is not a substitute:
+        // two same-named patients can match on every compared field, and this
+        // result authorizes deleting the local audio.
+        assertCommittedRecordingIdentity(recordingId, current, 'confirm_409_probe');
         return assertRecordingMatchesMetadataPayload(
           current,
           metadataAsPayload(metadata),
@@ -1773,6 +1779,10 @@ export const recordingsApi = {
           tagPhase(probeError, 'confirm');
         }
         if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
+          // Same identity proof as the typed path: a GET by id can be served a
+          // different completed row by a serializer, cache, or routing
+          // regression, and matching metadata would not reveal it.
+          assertCommittedRecordingIdentity(recordingId, current, 'confirm_api_409_probe');
           return assertRecordingMatchesMetadataPayload(
             current,
             metadataPayload,

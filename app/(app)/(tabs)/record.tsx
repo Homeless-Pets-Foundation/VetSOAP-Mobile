@@ -962,6 +962,16 @@ function RecordingSession() {
    * the list — instead of re-deriving it from stale state.
    */
   const deferredSuccessTransitionRef = useRef<(() => void) | null>(null);
+  /**
+   * The slot whose reconciliation transaction is running. Both actions take
+   * seconds (a file copy, SecureStore writes, a native purge) while their
+   * buttons stay on screen, and they mutate the same draft, the same copy URI,
+   * and the same manifest — so a second tap, or the other action, would run
+   * concurrently against half-applied state. State drives the disabled UI; the
+   * ref is the synchronous gate, since a tap can land before React re-renders.
+   */
+  const [reconcilingSlotId, setReconcilingSlotId] = useState<string | null>(null);
+  const reconcilingSlotIdRef = useRef<string | null>(null);
   // Set when uploadSlot fails on a network-dead phase that the user should be
   // able to recover from by going online later: transient r2_put exhaustion
   // (Sentry REACT-NATIVE-4: DNS resolve / socket reset after 3 retries) or
@@ -4637,6 +4647,25 @@ function RecordingSession() {
     [router]
   );
 
+  /** Claim the reconciliation lock for a slot, or refuse if one is running. */
+  const claimReconcileLock = useCallback((slotId: string): boolean => {
+    if (
+      reconcilingSlotIdRef.current !== null ||
+      submitIntentSlotIdsRef.current.has(slotId) ||
+      uploadRestartSlotIdsRef.current.has(slotId)
+    ) {
+      return false;
+    }
+    reconcilingSlotIdRef.current = slotId;
+    setReconcilingSlotId(slotId);
+    return true;
+  }, []);
+
+  const releaseReconcileLock = useCallback(() => {
+    reconcilingSlotIdRef.current = null;
+    setReconcilingSlotId(null);
+  }, []);
+
   /**
    * Run the reset+navigate a completed submit deferred while a notice still
    * needed reading — but only once the LAST one is resolved. Clearing the field
@@ -4679,6 +4708,7 @@ function RecordingSession() {
               // uploaded-manifest evidence destroyed, which is exactly the
               // state an orphan sweep resolves by deleting the server row the
               // user just chose to keep.
+              if (!claimReconcileLock(slot.id)) return;
               void (async () => {
                 const durable = slot.durable;
                 const userId = user?.id;
@@ -4792,13 +4822,20 @@ function RecordingSession() {
                   divergence: null,
                 });
                 runDeferredSuccessTransition(slot.id);
-              })();
+              })().finally(() => releaseReconcileLock());
             },
           },
         ]
       );
     },
-    [dispatch, runDeferredSuccessTransition, setUploadStatus, user?.id]
+    [
+      claimReconcileLock,
+      dispatch,
+      releaseReconcileLock,
+      runDeferredSuccessTransition,
+      setUploadStatus,
+      user?.id,
+    ]
   );
 
   /**
@@ -4988,6 +5025,7 @@ function RecordingSession() {
                 authScopeKeyRef.current === initiatingScopeKey &&
                 authScopeGenerationRef.current === initiatingScopeGeneration &&
                 draftStorage.getUserId() === initiatingUserId;
+              if (!claimReconcileLock(slot.id)) return;
               markSubmitIntent([slot.id]);
               void (async () => {
                 // Rule 24: bound it. A hung native bridge here never rejects,
@@ -5059,16 +5097,18 @@ function RecordingSession() {
                 // The confirmation promised a submission, so perform it rather
                 // than leaving a pending slot the vet has to submit again.
                 runSingleSubmit(restarted);
-              })();
+              })().finally(() => releaseReconcileLock());
             },
           },
         ]
       );
     },
     [
+      claimReconcileLock,
       clearSubmitIntent,
       dispatch,
       markSubmitIntent,
+      releaseReconcileLock,
       persistControlledUploadRestart,
       persistPostConfirmSeparateSubmission,
       runSingleSubmit,
@@ -6185,12 +6225,14 @@ function RecordingSession() {
           onReleaseLocalCopy={handleReleaseLocalCopy}
           onResubmitAsNew={handleResubmitAsNew}
           onDismissDivergence={handleDismissDivergence}
+          divergenceActionsBusy={reconcilingSlotId !== null}
         />
       );
     },
     [
       handleDismissDivergence,
       handleOpenDivergentRecording,
+      reconcilingSlotId,
       handleReleaseLocalCopy,
       handleResubmitAsNew,
       session.recorderBoundToSlotId,

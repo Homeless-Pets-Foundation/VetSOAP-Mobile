@@ -186,12 +186,29 @@ export function compareRecordingMetadata(
   const processingFields: string[] = [];
   const descriptiveFields: string[] = [];
   const unknownFields: string[] = [];
+  // Computed once, before the loop: the absent-key branch needs it too.
+  const anchorUsable = pimsAnchorUsable(recording, payload);
 
   for (const [key, submitted] of Object.entries(payload)) {
     if (!Object.prototype.hasOwnProperty.call(recording, key)) {
       unknownFields.push(key);
       // A missing identity anchor is unverifiable, not benign.
       if (METADATA_FIELD_TIERS[key] === 'identity' && !ABSENCE_TOLERATED_FIELDS.has(key)) {
+        identityFields.push(key);
+      }
+      // At the adopt deletion gate with no usable PIMS anchor, an ABSENT
+      // species/breed is no safer than a differing one: it is the remaining
+      // evidence about which of two same-named charts this is, and a response
+      // that simply omits it would otherwise slip past the promotion below
+      // (absent keys never reach descriptiveFields at all) and authorize
+      // deleting the only local copy. Only a value we actually sent can be
+      // missing in this sense — a blank we never sent proves nothing.
+      if (
+        opts.adoptDeletionGate &&
+        !anchorUsable &&
+        PROFILE_DISAMBIGUATORS.includes(key) &&
+        normalizeBlank(submitted) !== null
+      ) {
         identityFields.push(key);
       }
       continue;
@@ -234,7 +251,7 @@ export function compareRecordingMetadata(
   // the other chart, so it has to block here even though it stays descriptive
   // everywhere else (it participates in no lookup key and cannot itself cause a
   // mis-link).
-  if (opts.adoptDeletionGate && !pimsAnchorUsable(recording, payload)) {
+  if (opts.adoptDeletionGate && !anchorUsable) {
     for (const field of PROFILE_DISAMBIGUATORS) {
       if (descriptiveFields.includes(field)) identityFields.push(field);
     }

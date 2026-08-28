@@ -700,10 +700,68 @@ test('species and breed block adoption when no stronger anchor can disambiguate'
   assert.match(mismatch, /adoptDeletionGate\?: boolean;/);
   assert.match(recordings, /adoptDeletionGate: isAdoptMetadataOrigin\(origin\),/);
   assert.match(identity, /const PROFILE_DISAMBIGUATORS: readonly string\[\] = \['species', 'breed'\];/);
-  assert.match(identity, /if \(opts\.adoptDeletionGate && !pimsAnchorUsable\(recording, payload\)\) \{/);
+  assert.match(identity, /if \(opts\.adoptDeletionGate && !anchorUsable\) \{/);
   // An absent key is not agreement: the server omits the flat alias whenever
   // the patient relation was not loaded.
   assert.match(identity, /if \(!Object\.prototype\.hasOwnProperty\.call\(recording, 'pimsPatientId'\)\) return false;/);
   // They stay descriptive everywhere else.
   assert.match(identity, /species: 'descriptive',\n\s*breed: 'descriptive',/);
+});
+
+test('reconciliation actions are serialized and inert while one runs', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  // Both actions take seconds (a file copy, SecureStore writes, a native purge)
+  // with their buttons still on screen, and they mutate the same draft, copy
+  // URI, and manifest. A second tap — or the other action — would run
+  // concurrently against half-applied state.
+  assert.match(record, /const claimReconcileLock = useCallback\(/);
+  assert.match(record, /reconcilingSlotIdRef\.current !== null \|\|\s*submitIntentSlotIdsRef\.current\.has\(slotId\) \|\|\s*uploadRestartSlotIdsRef\.current\.has\(slotId\)/);
+  assert.equal(
+    (record.match(/if \(!claimReconcileLock\(slot\.id\)\) return;/g) ?? []).length,
+    2,
+    'both reconciliation actions must claim the lock'
+  );
+  assert.equal(
+    (record.match(/\.finally\(\(\) => releaseReconcileLock\(\)\)/g) ?? []).length,
+    2,
+    'both must release it on every exit'
+  );
+  // The ref is the synchronous gate; the state drives the disabled UI.
+  assert.match(record, /divergenceActionsBusy=\{reconcilingSlotId !== null\}/);
+  assert.equal(
+    (card.match(/disabled=\{divergenceActionsBusy\}/g) ?? []).length,
+    5,
+    'every divergence action button must go inert'
+  );
+});
+
+test('the 409 confirm probes prove the row is the one that was asked for', async () => {
+  const api = await read('src/api/recordings.ts');
+
+  // The probe is a plain GET by id; metadata equality is not identity, and two
+  // same-named patients can match on every compared field while this result
+  // authorizes deleting the local audio.
+  assert.match(
+    api,
+    /assertCommittedRecordingIdentity\(recordingId, current, 'confirm_409_probe'\);\s*return assertRecordingMatchesMetadataPayload\(/
+  );
+  assert.match(
+    api,
+    /assertCommittedRecordingIdentity\(recordingId, current, 'confirm_api_409_probe'\);\s*return assertRecordingMatchesMetadataPayload\(/
+  );
+});
+
+test('an absent species or breed also fails closed at the adopt gate', async () => {
+  const identity = await read('src/api/metadataIdentity.ts');
+
+  // Absent keys never reach descriptiveFields, so the post-loop promotion could
+  // not see them: a response that simply OMITS the disambiguator would slip
+  // past while a differing one blocked.
+  assert.match(identity, /const anchorUsable = pimsAnchorUsable\(recording, payload\);/);
+  assert.match(
+    identity,
+    /opts\.adoptDeletionGate &&\s*!anchorUsable &&\s*PROFILE_DISAMBIGUATORS\.includes\(key\) &&\s*normalizeBlank\(submitted\) !== null/
+  );
 });

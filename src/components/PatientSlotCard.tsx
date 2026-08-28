@@ -84,6 +84,8 @@ interface PatientSlotCardProps {
   onReleaseLocalCopy?: (slotId: string) => void;
   onResubmitAsNew?: (slotId: string) => void;
   onDismissDivergence?: (slotId: string) => void;
+  /** A reconciliation transaction is running: every action must be inert. */
+  divergenceActionsBusy?: boolean;
 }
 
 function PulsingDot() {
@@ -145,6 +147,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   onReleaseLocalCopy,
   onResubmitAsNew,
   onDismissDivergence,
+  divergenceActionsBusy = false,
 }: PatientSlotCardProps) {
   const { scale } = useResponsive();
   const colors = useThemeColors();
@@ -767,6 +770,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   variant="secondary"
                   size="md"
                   onPress={() => onOpenDivergentRecording?.(slot.id)}
+                  disabled={divergenceActionsBusy}
                   accessibilityLabel={METADATA_DIVERGENCE_COPY.openRecording}
                 >
                   {METADATA_DIVERGENCE_COPY.openRecording}
@@ -792,6 +796,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 variant="secondary"
                 size="md"
                 onPress={() => onDismissDivergence?.(slot.id)}
+                disabled={divergenceActionsBusy}
                 accessibilityLabel={METADATA_DIVERGENCE_COPY.dismissNotice}
               >
                 {METADATA_DIVERGENCE_COPY.dismissNotice}
@@ -805,6 +810,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 variant="secondary"
                 size="md"
                 onPress={() => onOpenDivergentRecording?.(slot.id)}
+                disabled={divergenceActionsBusy}
                 accessibilityLabel={METADATA_DIVERGENCE_COPY.openRecording}
               >
                 {METADATA_DIVERGENCE_COPY.openRecording}
@@ -814,6 +820,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   variant="secondary"
                   size="md"
                   onPress={() => onReleaseLocalCopy?.(slot.id)}
+                  disabled={divergenceActionsBusy}
                   accessibilityLabel={METADATA_DIVERGENCE_COPY.releaseLocalCopy}
                 >
                   {METADATA_DIVERGENCE_COPY.releaseLocalCopy}
@@ -826,6 +833,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   variant="ghost"
                   size="md"
                   onPress={() => onResubmitAsNew?.(slot.id)}
+                  disabled={divergenceActionsBusy}
                   accessibilityLabel={METADATA_DIVERGENCE_COPY.resubmitAsNew}
                 >
                   {METADATA_DIVERGENCE_COPY.resubmitAsNew}

@@ -98,9 +98,35 @@ export function pendingReconcileHoldReleases(userId: string): number {
   return pendingRemovals.get(userId)?.size ?? 0;
 }
 
+/**
+ * Bumped by every cache invalidation and every publish.
+ *
+ * The mutation chain orders WRITES, but `has()`, `hasStrict()` and
+ * `listStrict()` populate the same cache from OUTSIDE it. A read that captured
+ * SecureStore's old value can finish after an `add()` has written and cached
+ * the new list, publish its pre-write snapshot over the top, and the next
+ * serialized mutation then trusts that stale cache and rewrites storage without
+ * the new hold — whose retained audio the next startup self-heal purges. The
+ * read's own RETURN value being a moment stale is fine and always was; what
+ * cannot happen is a stale snapshot outliving the read into the shared cache.
+ *
+ * So a read publishes only if nothing invalidated or published while it was
+ * awaiting. Cheaper than serializing reads behind the mutation chain, which
+ * would put every membership check behind a SecureStore call that can hang.
+ */
+let cacheGeneration = 0;
+
 function invalidateCache(): void {
   cachedListUserId = null;
   cachedList = null;
+  cacheGeneration++;
+}
+
+/** Publish a list to the cache, invalidating any read still in flight. */
+function publishCache(userId: string, list: string[]): void {
+  cachedListUserId = userId;
+  cachedList = list.slice();
+  cacheGeneration++;
 }
 
 function prefixFor(userId: string): string {
@@ -119,19 +145,21 @@ async function loadList(userId: string): Promise<HoldLoad> {
   if (cachedList && cachedListUserId === userId) {
     return { known: true, list: cachedList.slice() };
   }
+  // Captured BEFORE the await: anything that invalidates or publishes while
+  // this read is outstanding makes its result unfit to become the cache.
+  const generation = cacheGeneration;
   const read = await readChunkedValueStrict(prefixFor(userId));
+  const publishable = (): boolean => cacheGeneration === generation;
   if (read.status === 'unavailable') return { known: false };
   if (read.status === 'absent') {
-    cachedListUserId = userId;
-    cachedList = [];
+    if (publishable()) publishCache(userId, []);
     return { known: true, list: [] };
   }
   try {
     const parsed: unknown = JSON.parse(read.value);
     if (!Array.isArray(parsed)) return { known: false };
     const list = parsed.filter((id): id is string => typeof id === 'string' && isValidDurableId(id));
-    cachedListUserId = userId;
-    cachedList = list.slice();
+    if (publishable()) publishCache(userId, list);
     return { known: true, list };
   } catch {
     return { known: false };
@@ -186,8 +214,10 @@ async function writeList(userId: string, list: string[]): Promise<boolean> {
   invalidateCache();
   const persisted = await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
   if (!persisted) return false;
-  cachedListUserId = userId;
-  cachedList = list.slice();
+  // publishCache, not a bare assignment: a read that began between the
+  // invalidate above and this line saw pre-write storage, and must not be
+  // allowed to overwrite what we just persisted.
+  publishCache(userId, list);
   return true;
 }
 

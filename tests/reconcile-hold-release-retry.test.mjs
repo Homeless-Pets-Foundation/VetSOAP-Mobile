@@ -56,8 +56,13 @@ function makeStorage() {
     api: {
       async readChunkedValueStrict(prefix) {
         if (!flags.readable) return { status: 'unavailable' };
-        if (!state.has(prefix)) return { status: 'absent' };
-        return { status: 'present', value: state.get(prefix) };
+        // Snapshot BEFORE any gate, so a held read returns the value it
+        // captured when it started — a real in-flight SecureStore read.
+        const snapshot = state.has(prefix)
+          ? { status: 'present', value: state.get(prefix) }
+          : { status: 'absent' };
+        if (flags.gate) await flags.gate;
+        return snapshot;
       },
       async writeChunkedValue(prefix, value) {
         if (!flags.writable) return false;
@@ -184,4 +189,44 @@ test('a queued release cannot leak into another user, or across a sign-out', asy
   // Clearing u2 drops its queue with the list it referred to.
   await durableReconcileHold.clearForUser('u2');
   assert.equal(pendingReconcileHoldReleases('u2'), 0);
+});
+
+test('a read that lands after a write cannot publish its pre-write snapshot', async () => {
+  const storage = makeStorage();
+  const { durableReconcileHold } = await loadHold({ storage: storage.api });
+  durableReconcileHold.setUserId('u1');
+
+  assert.equal(await durableReconcileHold.add('rec-a'), true);
+  coolCache(durableReconcileHold, 'u1');
+
+  // A membership read starts and captures storage as it is now: ['rec-a'].
+  // has()/hasStrict()/listStrict() are NOT on the mutation chain — they are
+  // called from renders — so this genuinely overlaps the add() below.
+  let openGate = () => {};
+  storage.flags.gate = new Promise((resolve) => {
+    openGate = resolve;
+  });
+  const inFlightRead = durableReconcileHold.has('rec-anything');
+
+  // ...and an add() completes underneath it, writing AND caching ['rec-a','rec-b'].
+  storage.flags.gate = null;
+  assert.equal(await durableReconcileHold.add('rec-b'), true);
+  assert.deepEqual(persisted(storage, 'u1'), ['rec-a', 'rec-b']);
+
+  // Now the stale read finishes. Its own answer may be a moment out of date —
+  // that was always true of a point-in-time read — but it must not become the
+  // shared cache, because the next serialized mutation trusts that cache.
+  openGate();
+  await inFlightRead;
+
+  // Without the generation gate the cache is now ['rec-a'], so this remove
+  // rewrites storage as [] and 'rec-b' is gone — and a hold that vanishes is a
+  // retained recording the next startup self-heal purges.
+  assert.equal(await durableReconcileHold.remove('rec-a'), true);
+  assert.deepEqual(
+    persisted(storage, 'u1'),
+    ['rec-b'],
+    'a stale read must not erase a hold that was written while it was in flight'
+  );
+  assert.equal(await durableReconcileHold.has('rec-b'), true);
 });

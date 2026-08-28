@@ -151,7 +151,7 @@ Port 8081 busy → `lsof -ti:8081 | xargs kill -9`.
 
 **Keycode gotcha:** `KEYCODE_ESCAPE` (111) + `KEYCODE_MENU` (82) → Expo dev element inspector → intercepts taps → session unworkable. Dismiss keyboard via neutral tap or ENTER (66); reload via `Reload` in dev menu, not MENU; toggle off `Tools button` at session start (steals taps near top-right where `Save for Later` sits). Inspector stuck → `am force-stop com.captivet.mobile` + relaunch.
 
-**Emulator upload limit:** `hasSilentAudioOnly()` uses `peakMetering` at record-time; emulator mic peaks ≤ −20 dBFS → every Submit throws "This recording appears silent" **before** API call. Upload-path regressions (e.g. `serverDraftId` promotion) verifiable only by count-doesn't-bump on emulator; full server path = physical device.
+**Emulator silence check is a WARNING, not a wall (corrected 2026-08-28):** emulator mic peaks ≤ −20 dBFS trip the silence heuristic, but `hasSilentAudioOnly()` no longer exists and nothing rejects the submit outright — `record.tsx` runs `checkSilentAudio()` and then `confirmSilentUpload()`, whose alert offers **Upload Anyway**. Take that override and the emulator exercises the real prepare → PUT → confirm path, so upload-path regressions (`serverDraftId` promotion, idempotency) ARE testable there and should be. What the emulator cannot give is real microphone audio, so silence thresholds, latency, and audio quality still need a physical device.
 
 **Tap coords:** prefer `uiautomator dump` (`bounds="[left,top][right,bottom]"`, center = midpoints; filter `grep -iE "button_text|content_desc"`). Fallback: screenshot + Read + estimate (1080x2400). Dump fails mid-animation ("could not get idle state").
 

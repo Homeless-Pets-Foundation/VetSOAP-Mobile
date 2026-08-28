@@ -88,12 +88,24 @@ Expo Modules API changes between SDK majors are the main risk — and that is ex
 
 So both platforms need a real build: `npx expo prebuild --platform ios` + `pod install` + `xcodebuild` on the Mac mini, and a production Gradle build for Android.
 
+**Run the iOS validation with the production Google variables set.** `app.config.ts` includes the `@react-native-google-signin/google-signin` plugin *and* `plugins/with-ios-modular-headers.js` only when `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` is present. A bare local prebuild therefore never pulls in GoogleSignIn → AppCheckCore → GoogleUtilities/RecaptchaInterop — the exact pod graph that needed the modular-headers workaround in PR #90, and the one most likely to break again on an SDK major. Export the production Google environment before prebuilding, or use a production-parity `eas build --local --platform ios`. A green build without those variables has not tested the shipping pod graph.
+
 ### 4. FFmpeg
 
 - **Android:** self-hosted Maven at `homeless-pets-foundation.github.io/ffmpeg-kit-maven`, currently `6.0-3` (16KB page size), wired via `extraMavenRepos` in `app.config.ts`.
 - **iOS:** `plugins/with-ffmpeg-ios-pod-source.js` injects a `:podspec =>` URL because the trunk podspec 404s. Rebuilding the xcframework needs an Apple Silicon Mac.
 
 Gradle or CocoaPods changes across an SDK major can break either. Neither is exercised by CI — both need a real build.
+
+### 4b. Verify the GENERATED manifests, not just that they build
+
+A green Gradle/Xcode build proves the projects compile, not that config-plugin output still carries our hardening. These live in `app.config.ts` and are produced by plugins, so an SDK-major plugin change can drop or alter them while both builds stay green:
+
+- `expo-build-properties` → Android `usesCleartextTraffic: IS_DEV` (false in production) and `allowBackup: false`
+- the `blockedPermissions` list (storage, location, camera, media)
+- iOS background-audio mode and the microphone usage description
+
+After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` and `ios/*/Info.plist` and assert each one is still present and still has the production value. Diff them against the previous SDK's generated output — that diff is the real review surface of an SDK upgrade.
 
 ### 5. Expect the #184 typecheck errors
 
@@ -109,19 +121,38 @@ Gradle or CocoaPods changes across an SDK major can break either. Neither is exe
 
 `npm run ci` cannot validate this. Required on real hardware:
 
+**Recording**
+
 - Durable recording across process death, plus crash recovery
+- **A timed capture through backgrounding AND screen lock, on both platforms** — start recording, background the app, lock the device, wait a measured interval, return, finish, and verify the resulting file's duration and audible content match the wall-clock time. This depends on the Android microphone foreground service plus its notification/wake-lock permissions and on iOS background audio / `AVAudioSession`, all of which move between SDK majors. A regression here loses audio during an ordinary appointment without crashing and without failing crash-recovery, so nothing else on this list catches it.
 - Audio focus interruption (call / alarm / other voice app) on Android
 - Recorder start latency — the `expo-audio` patch exists to keep it low; `measurePhase` warns above `NATIVE_RECORDER_PHASE_WARNING_MS` (1000 ms)
 - Playback seeking on durable ADTS AAC files
-- iOS via the Mac mini
 
-The emulator cannot cover the upload path (`hasSilentAudioOnly()` rejects emulator mic input before any API call).
+**Auth, storage and device identity** — the Node tests mock every one of these bridges, and compiling proves nothing about them. An SDK major moves `expo-secure-store`, `expo-crypto`, `expo-local-authentication`, and the social-auth modules underneath:
+
+- Cold-start session restoration after a real app kill (SecureStore round-trip, including the read-back verification in `src/auth/supabase.ts`)
+- Device registration: confirm `X-Device-Id` is present on requests and that `getDeviceId()` still returns a stable UUID (Rule 21 — Hermes has no `globalThis.crypto` on iOS)
+- Biometric unlock through `AppLockGuard`, including a cancelled prompt
+- Email/password sign-in plus Google (Android) and Apple (iOS) sign-in
+
+**Upgrade-in-place, with pre-existing work** — every check above creates its data under the new build, but real users install over SDK 55 with drafts, stashes, recovery intents, and durable manifests already on disk. The migration moves both `expo-secure-store` and `expo-file-system`, so a path, accessibility-class, or serialization change can make that work vanish while fresh recordings and crash recovery both pass:
+
+1. On the **released SDK-55 binary**, seed one of each: an un-sent draft, a saved session (stash), a durable capture killed mid-recording, and a draft with a `pendingConfirm`.
+2. Install the candidate build **over it, without clearing app data**.
+3. Verify every item reappears, still carries its metadata, and is still submittable.
+
+**Platforms** — run the whole list on Android hardware and on iOS via the Mac mini.
+
+**The Android emulator can cover the upload path; the iOS simulator cannot.** The old blanket exclusion is out of date — `hasSilentAudioOnly()` no longer exists and nothing rejects a silent recording outright. `record.tsx` runs `checkSilentAudio()` and, when it trips, `confirmSilentUpload()` offers **Upload Anyway**; taking that override submits normally. So an emulator that produces any recording can exercise prepare → PUT → confirm, promotion, and idempotency, and those paths should be regression-tested there rather than deferred to hardware. What the emulator still cannot give you is real microphone audio, so silence-detection thresholds, latency, and audio quality remain device-only. The iOS *simulator* has no microphone capture at all, which is a capture limitation, not an upload-gate one.
 
 ## Sequencing
 
 1. Option A on its own branch — take the SDK-55-safe bumps, get CI green.
-   - **If `expo-audio` does not move, CI is a sufficient gate** and Option A ships on green.
-   - **If `expo-audio` moves, CI is not sufficient.** `tests/legacy-android-recorder-latency.test.mjs` is a *source-text* test: it regex-matches the patched Kotlin in `node_modules` and asserts statement ordering. A regenerated patch can satisfy it and still fail to compile, or compile and regress the behaviour it exists to protect. Before shipping, add: a production Gradle build (`npx expo prebuild --platform android` first — `android/` is not committed — then `cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true ./gradlew :app:assembleRelease`) and, on a physical Android device, the recorder-start-latency, ADTS-seeking, and audio-focus-interruption checks from §6. The device checks below are scoped to Option B only because Option A normally touches no native code — a patch regeneration removes that exemption.
+   - **CI is a sufficient gate only for a JS-ONLY bump set.** Sentry, Supabase and TanStack move JS; `expo-*` packages generally do not. `expo-secure-store`, `expo-local-authentication`, `expo-file-system`, `expo-audio`, `expo-device`, `expo-crypto` and `@sentry/react-native` all ship native code, and none of it is compiled anywhere in `npm run ci` — so green CI says nothing about whether either generated native project still builds. **If the bump set touches ANY native package, require a production Android build and a production-parity iOS build (§3) before shipping**, plus the runtime checks in §6 for the subsystems that moved.
+   - **If `expo-audio` moves specifically, its fence is weaker than it looks.** `tests/legacy-android-recorder-latency.test.mjs` is a *source-text* test: it regex-matches the patched Kotlin in `node_modules` and asserts statement ordering. A regenerated patch can satisfy it and still fail to compile, or compile and regress the behaviour it exists to protect. Add the recorder-start-latency, ADTS-seeking, and audio-focus-interruption checks from §6 on a physical Android device.
+   - The Android production build is `npx expo prebuild --platform android` first — `android/` is not committed — then `cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true ./gradlew :app:assembleRelease`.
+   - §6's device checks are scoped to Option B only because Option A is *usually* JS-only. Any native bump removes that exemption.
 2. Only then attempt Option B, on a separate branch, one concern at a time: resolve versions → patches → native modules → FFmpeg → typecheck → device test.
 3. Bump the marketing version in `package.json` **and** `package-lock.json` before any store build (`app.config.ts` reads `MARKETING_VERSION` from `package.json` and carries no literal semver).
 

@@ -526,10 +526,15 @@ test('destructive cleanup requires PROVEN draft absence, never a lenient null', 
     'no destructive path may treat a lenient getDraft null as proof of deletion'
   );
   assert.equal(
-    (record.match(/draftMetadataExistsStrict\(slot\.id\)/g) ?? []).length,
+    (record.match(/draftMetadataExistsStrict\(ownedDraftSlotId\)/g) ?? []).length,
     3,
     'all three confirmDraftGone sites must use the strict read'
   );
+  // ...and take it against the key that OWNS the draft. slot.id is not that key
+  // for a slot resumed from a stash, and proving a never-written key missing is
+  // what licenses the purge.
+  assert.equal((record.match(/const ownedDraftSlotId = slot\.draftSlotId \?\? slot\.id;/g) ?? []).length, 3);
+  assert.doesNotMatch(record, /draftMetadataExistsStrict\(slot\.id\)/);
 });
 
 test('every divergence that can hold the session open carries an action', async () => {
@@ -1002,6 +1007,59 @@ test('a held manifest nothing owns is offered, not hidden forever', async () => 
   const drainAt = addBody.indexOf('applyPendingRemovals(userId, loaded.list)');
   const capAt = addBody.indexOf('list.length >= MAX_RECONCILE_HOLDS');
   assert.ok(drainAt > -1 && capAt > drainAt, 'add() must drain queued releases before testing the cap');
+});
+
+test('the release transaction addresses the draft that actually owns the audio', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const release = record.slice(
+    record.indexOf('const handleReleaseLocalCopy = useCallback'),
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback')
+  );
+
+  // A slot restored from a stash carries a draftSlotId that is NOT slot.id
+  // (stashResumedSlotIdsRef exists precisely for that case). Deleting slot.id
+  // there removes nothing, and the STRICT check then proves that never-written
+  // key missing -- draftDeleted turns true and the transaction purges the
+  // manifest and segments out from under a draft that still exists and still
+  // points at them. One function must not address the same draft two ways: the
+  // hold release in this same block already used draftSlotId ?? id.
+  assert.match(release, /const ownedDraftSlotId = slot\.draftSlotId \?\? slot\.id;/);
+  assert.match(release, /await draftStorage\.deleteDraft\(ownedDraftSlotId\);/);
+  assert.match(release, /await recoveryIntent\.clearForDraftSlot\(ownedDraftSlotId\);/);
+  assert.match(release, /\.draftMetadataExistsStrict\(ownedDraftSlotId\)/);
+  assert.doesNotMatch(
+    release,
+    /draftMetadataExistsStrict\(slot\.id\)/,
+    'the strict existence proof must not be taken against a key that may never have existed'
+  );
+});
+
+test('the loose-copy pointer is never recoverable while still naming the disputed row', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const convert = record.slice(
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback'),
+    record.indexOf('const handleDismissDivergence = useCallback')
+  );
+
+  // saveDraft makes this draft crash-recoverable immediately, but the restart
+  // that clears the disputed anchor runs much later -- after the tombstone, the
+  // hold release and the purge. In that window the recovered draft carries the
+  // NEW durable id, so the hold (keyed by the ORIGINAL id) is not found and no
+  // conflict card opens, while `serverDraftId` still names the disputed row --
+  // and the next ordinary submit passes it as existingRecordingId, promoting
+  // the very row the vet chose to submit SEPARATELY from.
+  assert.match(
+    convert,
+    /const converted: PatientSlot = \{\s*\.\.\.slot,\s*durable: looseDurable,\s*serverDraftId: null,\s*serverRecordingId: null,\s*pendingConfirm: null,\s*\};/
+  );
+  const anchorAt = convert.indexOf('serverDraftId: null,');
+  const saveAt = convert.indexOf('await draftStorage.saveDraft(converted)');
+  assert.ok(anchorAt > -1 && saveAt > anchorAt, 'the anchor must be cleared BEFORE the draft is persisted');
+
+  // The upload KEY stays put: persistControlledUploadRestart rotates it under a
+  // begin/commit protocol and derives expectedOldKey from this slot, so an early
+  // rotation would break that comparison.
+  assert.doesNotMatch(convert, /const converted: PatientSlot = \{[\s\S]{0,300}?uploadKeyOverride:/);
 });
 
 test('a hold survives the edit-to-retry clear, and is released when that retry succeeds', async () => {

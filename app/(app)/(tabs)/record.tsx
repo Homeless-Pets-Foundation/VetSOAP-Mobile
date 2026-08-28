@@ -2764,10 +2764,16 @@ function RecordingSession() {
                   .markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt: confirmedAt })
                   .catch(() => {});
               }
+              // Same key rule as the release transaction: the draft is owned
+              // by draftSlotId, which is NOT slot.id for a slot resumed from a
+              // stash. Addressing slot.id deletes nothing and then PROVES that
+              // never-written key missing, so the purge below runs against a
+              // draft that still exists and still points at the audio.
+              const ownedDraftSlotId = slot.draftSlotId ?? slot.id;
               const confirmDraftGone = async (): Promise<boolean> => {
                 try {
-                  await draftStorage.deleteDraft(slot.id);
-                  await recoveryIntent.clearForDraftSlot(slot.id);
+                  await draftStorage.deleteDraft(ownedDraftSlotId);
+                  await recoveryIntent.clearForDraftSlot(ownedDraftSlotId);
                 } catch {
                   return false;
                 }
@@ -2776,7 +2782,7 @@ function RecordingSession() {
                 // below. Only PROVEN absence counts.
                 return (
                   (await draftStorage
-                    .draftMetadataExistsStrict(slot.id)
+                    .draftMetadataExistsStrict(ownedDraftSlotId)
                     .catch(() => 'unknown' as const)) === 'missing'
                 );
               };
@@ -3090,17 +3096,19 @@ function RecordingSession() {
           // the metadata was actually removed. VERIFY via getDraft — otherwise a
           // Keystore failure would leave the draft on disk while we purge the native
           // audio.aac, stranding a "Not Submitted" card whose recording is gone.
+          // Owned by draftSlotId, not slot.id — see the standard path above.
+          const ownedDraftSlotId = slot.draftSlotId ?? slot.id;
           const confirmDraftGone = async (): Promise<boolean> => {
             try {
-              await draftStorage.deleteDraft(slot.id);
-              await recoveryIntent.clearForDraftSlot(slot.id);
+              await draftStorage.deleteDraft(ownedDraftSlotId);
+              await recoveryIntent.clearForDraftSlot(ownedDraftSlotId);
             } catch {
               return false;
             }
             // Proven absence only — getDraft collapses a Keystore/chunk-read
             // failure to null, and the caller purges audio on this answer.
             const still = await draftStorage
-              .draftMetadataExistsStrict(slot.id)
+              .draftMetadataExistsStrict(ownedDraftSlotId)
               .catch(() => 'unknown' as const);
             return still === 'missing';
           };
@@ -5005,10 +5013,20 @@ function RecordingSession() {
                   return;
                 }
 
+                // The key that OWNS the persisted draft, not the slot's own id.
+                // A slot restored from a stash carries a draftSlotId that does
+                // not equal `slot.id` (see stashResumedSlotIdsRef), and deleting
+                // `slot.id` there removes nothing while the strict check then
+                // PROVES that never-written key missing — `draftDeleted` turns
+                // true and the transaction purges the manifest and segments out
+                // from under a draft that still exists and still points at them.
+                // The hold release below already uses this key; one function
+                // must not address the same draft two ways.
+                const ownedDraftSlotId = slot.draftSlotId ?? slot.id;
                 const confirmDraftGone = async (): Promise<boolean> => {
                   try {
-                    await draftStorage.deleteDraft(slot.id);
-                    await recoveryIntent.clearForDraftSlot(slot.id);
+                    await draftStorage.deleteDraft(ownedDraftSlotId);
+                    await recoveryIntent.clearForDraftSlot(ownedDraftSlotId);
                   } catch {
                     return false;
                   }
@@ -5017,7 +5035,7 @@ function RecordingSession() {
                 // below. Only PROVEN absence counts.
                 return (
                   (await draftStorage
-                    .draftMetadataExistsStrict(slot.id)
+                    .draftMetadataExistsStrict(ownedDraftSlotId)
                     .catch(() => 'unknown' as const)) === 'missing'
                 );
                 };
@@ -5264,7 +5282,27 @@ function RecordingSession() {
         recordingId: newDurableRecordingId(),
         recoveredAudioUri: copyUri,
       };
-      const converted: PatientSlot = { ...slot, durable: looseDurable };
+      // Drop the DISPUTED server anchor in the same object that is about to be
+      // persisted. This draft becomes crash-recoverable the instant saveDraft
+      // lands, but the restart that clears the anchor runs much later — after
+      // the tombstone, the hold release and the purge. Die in that window and
+      // the recovered draft carries the NEW durable id (so the hold, keyed by
+      // the ORIGINAL id, is not found and no conflict card opens) while still
+      // naming the disputed `serverDraftId` — and its next ordinary submit
+      // passes that as `existingRecordingId`, promoting the very row the vet
+      // chose to submit SEPARATELY from. Clearing it here makes the worst case
+      // a new recording, which is what they asked for.
+      //
+      // The upload KEY is deliberately left alone: persistControlledUploadRestart
+      // rotates it under a begin/commit protocol and derives `expectedOldKey`
+      // from this slot, so rotating it early would make that comparison fail.
+      const converted: PatientSlot = {
+        ...slot,
+        durable: looseDurable,
+        serverDraftId: null,
+        serverRecordingId: null,
+        pendingConfirm: null,
+      };
 
       // PERSIST THE POINTER BEFORE PURGING. The purge is the point of no
       // return, and everything that records where the audio went happens after

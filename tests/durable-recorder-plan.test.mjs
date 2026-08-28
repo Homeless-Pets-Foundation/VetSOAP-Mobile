@@ -92,7 +92,10 @@ test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone',
   assert.match(src, /setServerRecordingId\(\{ userId: uid, recordingId: durable\.recordingId/);
   // markUploaded appears before deleteDraft which appears before purgeAfterUpload.
   const iMark = src.indexOf('.markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt');
-  const iDelete = src.indexOf('await draftStorage.deleteDraft(slot.id);', iMark);
+  // Keyed by the draft's OWNER (draftSlotId), not slot.id — a stash-resumed
+  // slot's draft lives under a different key, and proving THAT key missing is
+  // what licenses the purge below.
+  const iDelete = src.indexOf('await draftStorage.deleteDraft(ownedDraftSlotId);', iMark);
   const iPurge = src.indexOf('.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId })', iDelete);
   assert.ok(iMark > 0 && iDelete > iMark && iPurge > iDelete, 'durable post-upload order must hold');
   assert.match(src, /durableTombstone\.add\(durable\.recordingId\)/);
@@ -711,7 +714,7 @@ test('post-upload deleteDraft is verified + retried; loadDraft blocks a tombston
   assert.match(rec, /const confirmDraftGone = async \(\): Promise<boolean>/);
   assert.match(
     rec,
-    /const still = await draftStorage\n\s*\.draftMetadataExistsStrict\(slot\.id\)\n\s*\.catch\(\(\) => 'unknown' as const\);\n\s*return still === 'missing';/
+    /const still = await draftStorage\n\s*\.draftMetadataExistsStrict\(ownedDraftSlotId\)\n\s*\.catch\(\(\) => 'unknown' as const\);\n\s*return still === 'missing';/
   );
   assert.match(rec, /let draftDeleted = await confirmDraftGone\(\);\n\s*if \(!draftDeleted\) draftDeleted = await confirmDraftGone\(\);/);
   // loadDraft refuses to resume an already-uploaded (tombstoned) durable draft.

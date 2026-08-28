@@ -39,9 +39,37 @@ let currentUserId: string | null = null;
 let cachedListUserId: string | null = null;
 let cachedList: string[] | null = null;
 
+/**
+ * Bumped by every invalidation and every publish. Same hazard as the
+ * reconciliation hold: the mutation chain orders WRITES, but `has()` and
+ * `list()` fill this cache from OUTSIDE it. A cold read that captured the
+ * pre-write value can finish after an `add()` has written and cached the new
+ * list, publish its stale snapshot over the top, and the next serialized
+ * mutation then persists a list with the new tombstone missing.
+ *
+ * A dropped tombstone is not cosmetic here: it is the record that a durable
+ * recording was confirmed-uploaded and purged, so losing it lets
+ * `cleanupOrphaned` and the offline self-heal act on a stale draft as if its
+ * local audio were still there — a phantom recoverable draft that cannot be
+ * submitted, and in the worst case a delete aimed at a real server row.
+ *
+ * A read publishes only if nothing invalidated or published while it awaited.
+ * Its own RETURN value being a moment stale is fine; the snapshot outliving the
+ * read into the shared cache is not.
+ */
+let cacheGeneration = 0;
+
 function invalidateCache(): void {
   cachedListUserId = null;
   cachedList = null;
+  cacheGeneration++;
+}
+
+/** Publish to the cache, invalidating any read still in flight. */
+function publishCache(userId: string, list: string[]): void {
+  cachedListUserId = userId;
+  cachedList = list.slice();
+  cacheGeneration++;
 }
 
 function prefixFor(userId: string): string {
@@ -72,14 +100,16 @@ async function loadList(userId: string): Promise<TombstoneLoad> {
     return { known: true, list: cachedList.slice() };
   }
 
+  // Captured BEFORE the await; see cacheGeneration.
+  const generation = cacheGeneration;
   const read = await readChunkedValueStrict(prefixFor(userId));
+  const publishable = (): boolean => cacheGeneration === generation;
   if (read.status === 'unavailable') return { known: false };
 
   if (read.status === 'absent') {
     // No count pointer at all: proven empty, so this IS safe to cache and safe
     // to build a write on top of.
-    cachedListUserId = userId;
-    cachedList = [];
+    if (publishable()) publishCache(userId, []);
     return { known: true, list: [] };
   }
 
@@ -93,8 +123,7 @@ async function loadList(userId: string): Promise<TombstoneLoad> {
     return { known: false };
   }
 
-  cachedListUserId = userId;
-  cachedList = list.slice();
+  if (publishable()) publishCache(userId, list);
   return { known: true, list };
 }
 
@@ -158,8 +187,10 @@ async function writeList(userId: string, list: string[]): Promise<boolean> {
   invalidateCache();
   const persisted = await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
   if (!persisted) return false;
-  cachedListUserId = userId;
-  cachedList = list.slice();
+  // publishCache, not a bare assignment: a read that began between the
+  // invalidate above and this line saw pre-write storage and must not be
+  // allowed to overwrite what we just persisted.
+  publishCache(userId, list);
   return true;
 }
 

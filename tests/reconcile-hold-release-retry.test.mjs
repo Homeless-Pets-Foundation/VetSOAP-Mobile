@@ -23,7 +23,12 @@ const root = new URL('../', import.meta.url);
 
 /** Load reconcileHold.ts for real, with its two imports mocked. */
 async function loadHold({ storage }) {
-  const source = await readFile(new URL('src/lib/durableAudio/reconcileHold.ts', root), 'utf8');
+  return loadDurableStore('src/lib/durableAudio/reconcileHold.ts', storage);
+}
+
+/** Same, for any durableAudio store whose only imports are chunkedStore + paths. */
+async function loadDurableStore(relPath, storage) {
+  const source = await readFile(new URL(relPath, root), 'utf8');
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -229,4 +234,43 @@ test('a read that lands after a write cannot publish its pre-write snapshot', as
     'a stale read must not erase a hold that was written while it was in flight'
   );
   assert.equal(await durableReconcileHold.has('rec-b'), true);
+});
+
+test('a stale tombstone read cannot drop a tombstone written behind it', async () => {
+  // Identical hazard to the reconciliation hold, and a worse consequence: the
+  // tombstone is the record that a durable recording was confirmed-uploaded and
+  // purged. Lose one and cleanupOrphaned/self-heal treat a stale draft as if its
+  // local audio were still present -- a phantom recoverable draft that cannot be
+  // submitted, and a delete aimed at a real server row.
+  const storage = makeStorage();
+  const { durableTombstone } = await loadDurableStore(
+    'src/lib/durableAudio/tombstone.ts',
+    storage.api
+  );
+  durableTombstone.setUserId('u1');
+
+  assert.equal(await durableTombstone.add('rec-a'), true);
+  coolCache(durableTombstone, 'u1');
+
+  let openGate = () => {};
+  storage.flags.gate = new Promise((resolve) => {
+    openGate = resolve;
+  });
+  const inFlightRead = durableTombstone.has('rec-anything');
+
+  storage.flags.gate = null;
+  assert.equal(await durableTombstone.add('rec-b'), true);
+
+  openGate();
+  await inFlightRead;
+
+  // Without the generation gate the cache is now ['rec-a'], so this write
+  // persists a list with 'rec-b' missing.
+  assert.equal(await durableTombstone.remove('rec-a'), true);
+  const raw = storage.state.get('captivet_durable_tombstone_u1');
+  assert.deepEqual(
+    raw ? JSON.parse(raw) : [],
+    ['rec-b'],
+    'a stale read must not erase a tombstone written while it was in flight'
+  );
 });

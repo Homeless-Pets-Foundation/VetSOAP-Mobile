@@ -918,3 +918,48 @@ test('an omitted PIMS id fails closed at the adopt gate when we sent one', async
   // Still tolerated on commit responses and for an id we never sent.
   assert.match(identity, /const ABSENCE_TOLERATED_FIELDS: ReadonlySet<string> = new Set\(\['pimsPatientId'\]\);/);
 });
+
+test('a held manifest nothing owns is offered, not hidden forever', async () => {
+  const logic = await read('src/lib/durableAudio/recoveryLogic.ts');
+  const hold = await read('src/lib/durableAudio/reconcileHold.ts');
+
+  // If the draft save failed or the process died before background persistence,
+  // the hold survives with no draft or stash referencing it — suppressing there
+  // too would leave the audio on disk and permanently unreachable, since the
+  // hold is surfaced nowhere else.
+  assert.match(logic, /const ownedLocally =\s*input\.draftRecordingIds\.has\(manifest\.recordingId\) \|\|\s*input\.stashRecordingIds\.has\(manifest\.recordingId\);/);
+  assert.match(logic, /\} else if \(manifest\.adtsFrameCount > 0\) \{\s*(\/\/[^\n]*\n\s*)*offer\.push\(manifest\);/);
+
+  // The cap REFUSES rather than evicting: dropping the oldest hold would hand a
+  // retained recording to the next self-heal with nobody deciding.
+  assert.match(hold, /if \(list\.length >= MAX_RECONCILE_HOLDS\) return false;/);
+  assert.doesNotMatch(hold, /while \(list\.length > MAX_RECONCILE_HOLDS\) list\.shift\(\);/);
+});
+
+test('the deferred transition re-checks for work recorded while the notice sat', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // The closure ends in resetSession(). The submit deferred it only because
+  // nothing else was unfinished, but the vet can add a patient and record while
+  // the notice is up — running it then would silently discard that audio.
+  assert.match(record, /const othersUnfinished = sessionRef\.current\.slots\.some\(/);
+  assert.match(
+    record,
+    /if \(othersUnfinished\) \{\s*deferredSuccessTransitionRef\.current = null;\s*return;\s*\}/
+  );
+});
+
+test('an omitted non-blank field is reported in its own tier, not swallowed', async () => {
+  const identity = await read('src/api/metadataIdentity.ts');
+
+  // unknownFields is invisible: divergenceTier() and buildDivergenceReport()
+  // never read it, so a rolling serializer that drops templateId,
+  // foreignLanguage, or appointmentType produced no notice at all.
+  assert.match(
+    identity,
+    /if \(!ABSENCE_TOLERATED_FIELDS\.has\(key\) && normalizeBlank\(submitted\) !== null\) \{\s*const tier = METADATA_FIELD_TIERS\[key\];\s*if \(tier === 'processing'\) processingFields\.push\(key\);\s*else if \(tier === 'descriptive'\) descriptiveFields\.push\(key\);/
+  );
+  // A field already promoted to identity must not also be listed under its
+  // declared tier.
+  assert.match(identity, /identityFields\.push\(key\);\s*continue;\s*\}/);
+});

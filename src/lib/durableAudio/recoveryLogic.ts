@@ -85,7 +85,27 @@ export function selectRecoverableSessions(input: RecoverySelectionInput): Recove
     // may also be tombstoned by a later action, but until the conflict is
     // resolved its local footprint must survive.
     if (held.has(manifest.recordingId)) {
-      suppressed.push(manifest);
+      const ownedLocally =
+        input.draftRecordingIds.has(manifest.recordingId) ||
+        input.stashRecordingIds.has(manifest.recordingId);
+      if (ownedLocally) {
+        // A draft or stash owns it, so the reconciliation card is reachable
+        // through that. Neither offer it (two surfaces on one file) nor purge.
+        suppressed.push(manifest);
+      } else if (manifest.adtsFrameCount > 0) {
+        // Nothing owns it — the draft save failed, or the process died before
+        // background persistence ran. Suppressing here too would leave the
+        // audio on disk and permanently unreachable: the hold is surfaced
+        // nowhere else. OFFER it instead, which is the vet's only route back to
+        // a recording we promised to keep. `shouldOfferRecovery` would refuse
+        // (it excludes confirmed-uploaded manifests), and that exclusion is
+        // right for every case except this one — a re-submit is safe here
+        // anyway, since the deterministic `durable-${recordingId}` key promotes
+        // the same server row rather than creating a second.
+        offer.push(manifest);
+      } else {
+        suppressed.push(manifest); // zero frames: nothing to recover
+      }
       continue;
     }
     if (isConfirmedUploaded(manifest)) {

@@ -4728,6 +4728,22 @@ function RecordingSession() {
       (s) => s.id !== resolvedSlotId && s.metadataDivergence !== null
     );
     if (stillBlocked) return;
+    // Re-derive the OTHER half of the original decision too. The submit only
+    // deferred this because nothing else was unfinished, but the vet can add a
+    // patient and record while the notice sits there — and the closure ends in
+    // resetSession(), which would silently discard that new audio. Drop the
+    // closure instead of running it; the new work keeps the session, which is
+    // what the submit would have done had that slot existed at the time.
+    const othersUnfinished = sessionRef.current.slots.some(
+      (s) =>
+        s.id !== resolvedSlotId &&
+        s.uploadStatus !== 'success' &&
+        (slotHasRecoverableAudio(s) || s.audioState === 'recording' || s.audioState === 'paused')
+    );
+    if (othersUnfinished) {
+      deferredSuccessTransitionRef.current = null;
+      return;
+    }
     const resume = deferredSuccessTransitionRef.current;
     deferredSuccessTransitionRef.current = null;
     resume?.();

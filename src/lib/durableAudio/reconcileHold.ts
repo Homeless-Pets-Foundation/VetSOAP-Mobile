@@ -30,8 +30,13 @@ import { isValidDurableId } from './paths';
 
 const KEY_PREFIX = 'captivet_durable_reconcile_hold';
 /**
- * FIFO cap. Far smaller than the tombstone's: a hold is a conflict awaiting a
- * human, and a device with hundreds of them is broken in some other way.
+ * Hard cap, NOT a FIFO window. Far smaller than the tombstone's: a hold is a
+ * conflict awaiting a human, and a device with dozens of them is already in
+ * trouble. Unlike a tombstone, evicting the oldest entry here is destructive —
+ * the evicted recording's confirmed-uploaded manifest goes straight to
+ * self-heal on the next scan, deleting a local copy the vet was promised. So
+ * `add()` REFUSES past the cap instead, and the caller's fail-closed path
+ * (don't terminalize the manifest) keeps that recording recoverable.
  */
 export const MAX_RECONCILE_HOLDS = 50;
 
@@ -116,8 +121,10 @@ export const durableReconcileHold = {
     if (!loaded.known) return false;
     const list = loaded.list;
     if (list.includes(recordingId)) return true;
+    // Refuse rather than evict: dropping the oldest hold would hand a retained
+    // recording to the next self-heal without anyone deciding.
+    if (list.length >= MAX_RECONCILE_HOLDS) return false;
     list.push(recordingId);
-    while (list.length > MAX_RECONCILE_HOLDS) list.shift();
     return writeList(userId, list);
   },
 

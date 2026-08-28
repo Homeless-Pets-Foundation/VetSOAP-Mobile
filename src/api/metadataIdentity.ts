@@ -224,6 +224,20 @@ export function compareRecordingMetadata(
           (!anchorUsable && PROFILE_DISAMBIGUATORS.includes(key)))
       ) {
         identityFields.push(key);
+        continue;
+      }
+      // A non-blank value we SENT that the response does not echo is not
+      // nothing: it means the server never confirmed that setting. Only the
+      // pimsPatientId serializer exception is silent (and only outside the
+      // adopt gate, handled above), so bucket the rest into their declared tier
+      // — otherwise a rolling serializer that drops `templateId`,
+      // `foreignLanguage`, or `appointmentType` would clean up and navigate
+      // with no notice at all. `unknownFields` alone is invisible:
+      // divergenceTier() and buildDivergenceReport() do not read it.
+      if (!ABSENCE_TOLERATED_FIELDS.has(key) && normalizeBlank(submitted) !== null) {
+        const tier = METADATA_FIELD_TIERS[key];
+        if (tier === 'processing') processingFields.push(key);
+        else if (tier === 'descriptive') descriptiveFields.push(key);
       }
       continue;
     }

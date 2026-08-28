@@ -84,6 +84,9 @@ export const METADATA_DIVERGENCE_COPY = {
   releaseLocalCopyFailedBody:
     'The recording is still saved on this device and the options above are still available. Try again in a moment.',
   dismissNotice: 'Got it',
+  holdUnprotectedTitle: 'Choose now — this copy is not protected',
+  holdUnprotectedBody:
+    'The recording is still on this device, but this device could not save the note that keeps it. Pick one of the options on the recording before closing the app.',
   stashBlockedTitle: 'Finish checking the visit first',
   stashBlockedBody:
     'One recording uploaded to a visit whose details do not match, and this device’s copy is being kept until you decide. Choose one of the options on that recording, then save the rest for later.',

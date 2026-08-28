@@ -134,6 +134,20 @@ export const durableReconcileHold = {
     return (await readList(userId)).includes(recordingId);
   },
 
+  /**
+   * Strict membership, for callers that DELETE on the answer. `has()` maps an
+   * unreadable list to "not held", which is fine for a render and fatal for age
+   * eviction: one transient Keystore failure would authorize deleting a
+   * retained copy whose hold is sitting on disk, unread.
+   */
+  async hasStrict(recordingId: string): Promise<'held' | 'not_held' | 'unknown'> {
+    const userId = currentUserId;
+    if (!userId) return 'unknown';
+    const loaded = await loadList(userId);
+    if (!loaded.known) return 'unknown';
+    return loaded.list.includes(recordingId) ? 'held' : 'not_held';
+  },
+
   /** Release a hold once its divergence has been resolved. */
   async remove(recordingId: string): Promise<boolean> {
     const userId = currentUserId;

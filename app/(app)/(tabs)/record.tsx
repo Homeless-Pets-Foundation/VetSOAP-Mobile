@@ -3392,7 +3392,26 @@ function RecordingSession() {
           // and deletes it silently at 30 days — and a draft resumed at 29 days
           // can reach that on the very next Record mount. Keyed by draft slot
           // id here, since there is no durable recordingId to key by.
-          await addReconcileHoldForUser(user.id, slot.draftSlotId ?? slot.id);
+          const holdKey = slot.draftSlotId ?? slot.id;
+          let standardHoldPersisted = await addReconcileHoldForUser(user.id, holdKey);
+          if (!standardHoldPersisted) {
+            standardHoldPersisted = await addReconcileHoldForUser(user.id, holdKey);
+          }
+          if (!standardHoldPersisted) {
+            // Honour the result, as the durable paths do. There is no manifest
+            // to leave un-terminalized here, and deleting the audio to "not
+            // promise retention" would be the worst outcome of the three — so
+            // the copy stays, and the promise stops being silent instead: say
+            // plainly that only an answer NOW protects it, rather than letting
+            // the card imply it is safe for 30 days.
+            captureMessage('standard_identity_hold_not_persisted', 'warning', {
+              tags: { phase: 'upload_recovery', mode: 'standard' },
+            });
+            Alert.alert(
+              METADATA_DIVERGENCE_COPY.holdUnprotectedTitle,
+              METADATA_DIVERGENCE_COPY.holdUnprotectedBody
+            );
+          }
         }
         if (!holdLocalCopy) {
           // Clean up local audio files now that they're safely on R2

@@ -2124,13 +2124,19 @@ export const draftStorage = {
           // hold does, keyed by draft slot id for a standard recording and by
           // durable recordingId for a durable one, so consult it before any
           // silent delete.
-          if (await durableReconcileHold.has(draft.slotId)) continue;
-          if (
-            draft.durable &&
-            isValidDurableId(draft.durable.recordingId) &&
-            (await durableReconcileHold.has(draft.durable.recordingId))
-          ) {
-            continue;
+          // STRICT: `has()` maps an unreadable list to "not held", and this
+          // branch DELETES on the answer — one transient Keystore failure would
+          // destroy a retained copy whose hold is on disk. Anything but a proven
+          // "not_held" defers to a later sweep, exactly as the recovery scan does.
+          const slotHold = await durableReconcileHold
+            .hasStrict(draft.slotId)
+            .catch(() => 'unknown' as const);
+          if (slotHold !== 'not_held') continue;
+          if (draft.durable && isValidDurableId(draft.durable.recordingId)) {
+            const durableHold = await durableReconcileHold
+              .hasStrict(draft.durable.recordingId)
+              .catch(() => 'unknown' as const);
+            if (durableHold !== 'not_held') continue;
           }
           if (!isScopeValid()) return { expired: [], expiring: [] };
           // Never silently delete a non-purged durable recording: its audio.aac

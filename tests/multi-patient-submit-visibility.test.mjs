@@ -883,10 +883,13 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   // A STANDARD held copy needs the marker too: DraftMetadata carries no
   // divergence field, so evictExpired() would otherwise delete it silently at
   // 30 days as ordinary redundant local data.
-  assert.match(
-    record,
-    /await addReconcileHoldForUser\(user\.id, slot\.draftSlotId \?\? slot\.id\);/
-  );
+  assert.match(record, /let standardHoldPersisted = await addReconcileHoldForUser\(user\.id, holdKey\);/);
+  // The result is honoured, not discarded: retried once, then said out loud —
+  // deleting the audio to avoid "promising retention" would be the worst of the
+  // three outcomes, so the copy stays and the promise stops being silent.
+  assert.match(record, /standardHoldPersisted = await addReconcileHoldForUser\(user\.id, holdKey\);/);
+  assert.match(record, /METADATA_DIVERGENCE_COPY\.holdUnprotectedTitle/);
+  assert.match(record, /standard_identity_hold_not_persisted/);
   const releaseBlock = record.slice(
     record.indexOf('const handleReleaseLocalCopy = useCallback'),
     record.indexOf('const persistPostConfirmSeparateSubmission = useCallback')
@@ -1000,14 +1003,13 @@ test('age eviction never silently deletes a retained conflict copy', async () =>
   // data" branch looking ordinary. Nothing in DraftMetadata records the hold.
   const evictAt = drafts.indexOf('async evictExpired(');
   const body = drafts.slice(evictAt);
-  const holdAt = body.indexOf('durableReconcileHold.has(draft.slotId)');
+  const holdAt = body.indexOf('durableReconcileHold');
   const deleteAt = body.indexOf('await this.deleteDraftForUser(userId, draft.slotId)');
   assert.ok(holdAt > -1 && deleteAt > holdAt, 'the hold must be checked before the silent delete');
-  assert.match(body, /if \(await durableReconcileHold\.has\(draft\.slotId\)\) continue;/);
-  assert.match(
-    body,
-    /draft\.durable &&\s*isValidDurableId\(draft\.durable\.recordingId\) &&\s*\(await durableReconcileHold\.has\(draft\.durable\.recordingId\)\)/
-  );
+  // STRICT: has() maps an unreadable list to "not held", and this branch
+  // deletes on the answer — anything but a proven not_held must defer.
+  assert.match(body, /hasStrict\(draft\.slotId\)\s*\.catch\(\(\) => 'unknown' as const\);\s*if \(slotHold !== 'not_held'\) continue;/);
+  assert.match(body, /if \(durableHold !== 'not_held'\) continue;/);
 });
 
 test('a server 409 has a way out, not just a dismissal', async () => {

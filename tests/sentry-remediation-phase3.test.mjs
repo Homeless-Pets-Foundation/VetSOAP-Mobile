@@ -277,7 +277,7 @@ async function loadDraftStorage(state) {
     './durableAudio/reconcileHold': {
       // A retained conflict copy is never evicted; the default here is 'no hold'
       // so these cases exercise ordinary eviction.
-      durableReconcileHold: { has: async () => false },
+      durableReconcileHold: { has: async () => false, hasStrict: async () => 'not_held' },
     },
     './pendingConfirm': {
       clonePendingConfirm: (value) => (value ? structuredClone(value) : null),

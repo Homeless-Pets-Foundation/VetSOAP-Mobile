@@ -436,8 +436,15 @@ test('submitting separately converts a confirmed durable manifest instead of res
   assert.match(convert, /manifest\.state === 'uploaded' \|\| !!manifest\.confirmedUploadAt/);
   assert.match(convert, /if \(!confirmed\) return null;/);
   // Nothing destructive until a NON-EMPTY copy is verified on disk.
-  const copyAt = convert.indexOf('safeCopyFile(sourceUri, copyUri)');
-  const sizeAt = convert.indexOf('info.size ?? 0) > 0');
+  // The copy is the COMPLETE-FRAME PREFIX, never the raw file: a recovered
+  // audio.aac can end in a torn ADTS frame, the recovered-copy upload path
+  // skips truncation, and this transaction purges the manifest that carries the
+  // boundary needed to repair it.
+  assert.match(convert, /const completeBytes = manifest\.audioFile\?\.completeFrameBytes \?\? 0;/);
+  assert.match(convert, /if \(!\(completeBytes > 0\)\) return null;/);
+  assert.doesNotMatch(convert, /safeCopyFile\(/);
+  const copyAt = convert.indexOf('writeFilePrefix(sourceUri, copyUri, completeBytes)');
+  const sizeAt = convert.indexOf('info.size !== completeBytes');
   const tombstoneAt = convert.indexOf('durableTombstone.add');
   const purgeAt = convert.indexOf('purgeAfterUpload');
   assert.ok(copyAt > -1 && sizeAt > copyAt, 'the copy must be size-verified');
@@ -476,7 +483,7 @@ test('submitting separately converts a confirmed durable manifest instead of res
   // Record UI. It must be bounded, and the timeout must unwind the intent.
   assert.match(
     resubmit,
-    /const conversion = persistPostConfirmSeparateSubmission\(slot\);[\s\S]{0,200}?withPromiseTimeout\(\s*conversion,\s*POST_CONFIRM_CONVERSION_TIMEOUT_MS/
+    /const conversion = persistPostConfirmSeparateSubmission\([\s\S]{0,200}?withPromiseTimeout\(\s*conversion,\s*POST_CONFIRM_CONVERSION_TIMEOUT_MS/
   );
   assert.match(resubmit, /persistControlledUploadRestart\(converted \?\? slot\)/);
   // A failed separate submission must say so — silence reads as "done".
@@ -663,7 +670,16 @@ test('a timed-out conversion never races a restart of the original slot', async 
   // may already have persisted the loose-copy pointer.
   assert.match(resubmit, /let timedOut = false;/);
   assert.match(resubmit, /if \(timedOut\) \{/);
-  assert.match(resubmit, /conversion\s*\.then\(\(\) => clearSubmitIntent\(\[slot\.id\]\)\)\s*\.catch\(\(\) => clearSubmitIntent\(\[slot\.id\]\)\);/);
+  // Waiting for settlement left the submit intent set, so claimReconcileLock
+  // kept refusing and "Try again" pointed at inert controls until a restart.
+  // The generation bump makes every remaining step a no-op, which is what
+  // makes releasing the gate immediately safe.
+  assert.match(resubmit, /reconcileGenerationRef\.current \+= 1;\s*clearSubmitIntent\(\[slot\.id\]\);/);
+  assert.match(resubmit, /conversion\.catch\(\(\) => \{\}\);/);
+  assert.match(
+    resubmit,
+    /persistPostConfirmSeparateSubmission\(\s*slot,\s*\(\) => reconcileGenerationRef\.current !== generation,\s*\)/
+  );
   const timeoutAt = resubmit.indexOf('if (timedOut) {');
   const restartAt = resubmit.indexOf('persistControlledUploadRestart(converted ?? slot)');
   assert.ok(timeoutAt > -1 && restartAt > timeoutAt, 'the timeout branch must return before any restart');
@@ -764,4 +780,39 @@ test('an absent species or breed also fails closed at the adopt gate', async () 
     identity,
     /opts\.adoptDeletionGate &&\s*!anchorUsable &&\s*PROFILE_DISAMBIGUATORS\.includes\(key\) &&\s*normalizeBlank\(submitted\) !== null/
   );
+});
+
+test('stashing cannot destroy a held conflict copy', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // stashSession() skips succeeded slots, but the stash cleanup deletes the
+  // local draft for EVERY slot and then resets the session — so the held audio
+  // would go with it, and for a durable capture markUploaded() has already
+  // removed it from recovery, leaving nothing pointing at it.
+  assert.match(record, /const hasUnresolvedHeldCopy = useCallback\(/);
+  assert.match(
+    record,
+    /\(s\) => s\.uploadStatus === 'success' && s\.metadataDivergence\?\.tier === 'identity',/
+  );
+  assert.equal(
+    (record.match(/if \(hasUnresolvedHeldCopy\(\)\) \{/g) ?? []).length,
+    2,
+    'checked before starting AND after the draft flush await'
+  );
+  assert.match(record, /METADATA_DIVERGENCE_COPY\.stashBlockedTitle/);
+});
+
+test('an abandoned conversion cannot mutate storage afterwards', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const convert = record.slice(
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback'),
+    record.indexOf('const handleDismissDivergence = useCallback')
+  );
+
+  // withPromiseTimeout cannot cancel a native call, so abandonment has to be
+  // checked by the transaction itself — it rides along with the scope check
+  // that already fences every mutation.
+  assert.match(record, /const reconcileGenerationRef = useRef\(0\);/);
+  assert.match(convert, /isAbandoned: \(\) => boolean = \(\) => false,/);
+  assert.match(convert, /const scopeIsCurrent = \(\) =>\s*!isAbandoned\(\) &&/);
 });

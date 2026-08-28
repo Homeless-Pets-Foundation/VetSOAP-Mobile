@@ -19,7 +19,7 @@ import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { safeDeleteFile, safeDeleteDirectory, fileExists, writeFilePrefix, ensureDirectory, safeCopyFile } from '../../../src/lib/fileOps';
+import { safeDeleteFile, safeDeleteDirectory, fileExists, writeFilePrefix, ensureDirectory } from '../../../src/lib/fileOps';
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { Paths } from 'expo-file-system';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
@@ -972,6 +972,13 @@ function RecordingSession() {
    */
   const [reconcilingSlotId, setReconcilingSlotId] = useState<string | null>(null);
   const reconcilingSlotIdRef = useRef<string | null>(null);
+  /**
+   * Bumped whenever a reconciliation transaction starts OR is abandoned. A
+   * transaction captures the value and stops before every destructive step once
+   * it no longer matches — which is what lets a timeout walk away from a native
+   * call it cannot cancel, instead of leaving the UI gated on it forever.
+   */
+  const reconcileGenerationRef = useRef(0);
   // Set when uploadSlot fails on a network-dead phase that the user should be
   // able to recover from by going online later: transient r2_put exhaustion
   // (Sentry REACT-NATIVE-4: DNS resolve / socket reset after 3 retries) or
@@ -4862,7 +4869,10 @@ function RecordingSession() {
    * server row this recording legitimately confirmed to.
    */
   const persistPostConfirmSeparateSubmission = useCallback(
-    async (slot: PatientSlot): Promise<PatientSlot | null> => {
+    async (
+      slot: PatientSlot,
+      isAbandoned: () => boolean = () => false,
+    ): Promise<PatientSlot | null> => {
       const durable = slot.durable;
       const userId = user?.id;
       // No durable manifest to be blocked by: the standard restart already works.
@@ -4875,7 +4885,10 @@ function RecordingSession() {
       // the next user's namespace on a shared tablet.
       const initiatingScopeKey = authScopeKeyRef.current;
       const initiatingScopeGeneration = authScopeGenerationRef.current;
+      // Abandonment rides along with scope: once the caller has stopped waiting,
+      // a late step must not mutate storage it no longer coordinates with.
       const scopeIsCurrent = () =>
+        !isAbandoned() &&
         authScopeMountedRef.current &&
         initiatingScopeKey !== null &&
         authScopeKeyRef.current === initiatingScopeKey &&
@@ -4893,15 +4906,24 @@ function RecordingSession() {
       const sourceUri = manifest.audioFile?.uri;
       if (!sourceUri) return null;
 
+      // Copy the COMPLETE-FRAME PREFIX, not the raw file. A crash-recovered
+      // audio.aac can end in a torn partial ADTS frame; the ordinary upload
+      // truncates at `completeFrameBytes` for exactly that reason, but the
+      // recovered-copy path explicitly skips that truncation — so copying the
+      // whole file here would ship the malformed tail, and this transaction
+      // then purges the manifest that carries the frame boundary needed to
+      // repair it.
+      const completeBytes = manifest.audioFile?.completeFrameBytes ?? 0;
+      if (!(completeBytes > 0)) return null;
       const dir = `${Paths.document.uri}${RECOVERED_DURABLE_DIR_NAME}/${userId}/`;
       if (!ensureDirectory(dir)) return null;
       const copyUri = `${dir}${durable.recordingId}-separate.aac`;
-      if (!(await safeCopyFile(sourceUri, copyUri))) {
+      if (!writeFilePrefix(sourceUri, copyUri, completeBytes)) {
         safeDeleteFile(copyUri);
         return null;
       }
       const info = await getInfoAsync(copyUri).catch(() => null);
-      if (!info?.exists || !((info.size ?? 0) > 0)) {
+      if (!info?.exists || info.size !== completeBytes) {
         safeDeleteFile(copyUri);
         return null;
       }
@@ -5027,13 +5049,17 @@ function RecordingSession() {
                 draftStorage.getUserId() === initiatingUserId;
               if (!claimReconcileLock(slot.id)) return;
               markSubmitIntent([slot.id]);
+              const generation = ++reconcileGenerationRef.current;
               void (async () => {
                 // Rule 24: bound it. A hung native bridge here never rejects,
                 // so the .catch() would never run, the restart watchdog would
                 // never be reached, and clearSubmitIntent would never fire —
                 // leaving the whole Record UI frozen. On timeout the original
                 // manifest and the copied audio both remain recoverable.
-                const conversion = persistPostConfirmSeparateSubmission(slot);
+                const conversion = persistPostConfirmSeparateSubmission(
+                  slot,
+                  () => reconcileGenerationRef.current !== generation,
+                );
                 let timedOut = false;
                 const converted = await withPromiseTimeout(
                   conversion,
@@ -5048,12 +5074,16 @@ function RecordingSession() {
                   // conversion. Restarting the ORIGINAL slot now would race a
                   // conversion that may already have persisted the loose-copy
                   // pointer — overwriting it with the original durable pointer,
-                  // which the late conversion then purges. Hold the submit
-                  // guard until the conversion actually settles, then let the
-                  // vet try again against whatever state it left behind.
-                  conversion
-                    .then(() => clearSubmitIntent([slot.id]))
-                    .catch(() => clearSubmitIntent([slot.id]));
+                  // which the late conversion then purges. So ABANDON it
+                  // instead: bumping the generation makes every remaining step
+                  // a no-op before it can touch storage, and that is what makes
+                  // releasing the gate now safe. Waiting for a call that may
+                  // never settle left "Try again" pointing at controls that
+                  // stayed inert until the app was restarted.
+                  reconcileGenerationRef.current += 1;
+                  clearSubmitIntent([slot.id]);
+                  // Keep the late rejection observed; its result is discarded.
+                  conversion.catch(() => {});
                   Alert.alert(
                     METADATA_DIVERGENCE_COPY.resubmitAsNewFailedTitle,
                     METADATA_DIVERGENCE_COPY.resubmitAsNewFailedBody
@@ -5419,9 +5449,33 @@ function RecordingSession() {
 
   // -- Stash handlers --
 
+  /**
+   * A slot holding a local copy for an unresolved identity divergence cannot be
+   * stashed: `stashSession()` skips every succeeded slot, yet the stash's
+   * cleanup deletes the local draft for EVERY slot in the session and then
+   * resets it. The held audio would be destroyed — and for a durable capture
+   * `markUploaded()` has already removed it from recovery, so nothing would be
+   * left pointing at it. Fail closed the same way in-flight upload work does;
+   * the three reconciliation actions are all quick.
+   */
+  const hasUnresolvedHeldCopy = useCallback(
+    () =>
+      sessionRef.current.slots.some(
+        (s) => s.uploadStatus === 'success' && s.metadataDivergence?.tier === 'identity',
+      ),
+    [],
+  );
+
   const executeStash = useCallback(() => {
     if (hasBlockingUploadWork()) {
       showUploadInProgressAlert();
+      return;
+    }
+    if (hasUnresolvedHeldCopy()) {
+      Alert.alert(
+        METADATA_DIVERGENCE_COPY.stashBlockedTitle,
+        METADATA_DIVERGENCE_COPY.stashBlockedBody,
+      );
       return;
     }
     setIsStashing(true);
@@ -5439,6 +5493,15 @@ function RecordingSession() {
         // persisted identity until it settles, so stashing must fail closed.
         if (hasBlockingUploadWork()) {
           showUploadInProgressAlert();
+          return;
+        }
+        // Re-check after the await: a divergence can land while draft flushing
+        // waited on storage, and the cleanup below deletes every slot's draft.
+        if (hasUnresolvedHeldCopy()) {
+          Alert.alert(
+            METADATA_DIVERGENCE_COPY.stashBlockedTitle,
+            METADATA_DIVERGENCE_COPY.stashBlockedBody,
+          );
           return;
         }
         // Read sessionRef (not the closure-captured `session`): flushScheduledDraft
@@ -5490,7 +5553,7 @@ function RecordingSession() {
     })().catch(() => {
       setIsStashing(false);
     });
-  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteLocalSlotDraft, flushScheduledDraft, hasBlockingUploadWork]);
+  }, [stashSession, resetSession, releaseResumedStashIfAny, deleteLocalSlotDraft, flushScheduledDraft, hasBlockingUploadWork, hasUnresolvedHeldCopy]);
 
   // Effect: execute pending stash after SAVE_AUDIO has been processed by React.
   // The audio capture effect sets pendingStashRef but defers the actual stash to here,

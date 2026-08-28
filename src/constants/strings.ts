@@ -84,6 +84,9 @@ export const METADATA_DIVERGENCE_COPY = {
   releaseLocalCopyFailedBody:
     'The recording is still saved on this device and the options above are still available. Try again in a moment.',
   dismissNotice: 'Got it',
+  stashBlockedTitle: 'Finish checking the visit first',
+  stashBlockedBody:
+    'One recording uploaded to a visit whose details do not match, and this device’s copy is being kept until you decide. Choose one of the options on that recording, then save the rest for later.',
   resubmitAsNew: 'Not this visit — submit separately',
   resubmitAsNewConfirmTitle: 'Submit as a new recording?',
   resubmitAsNewConfirmBody:

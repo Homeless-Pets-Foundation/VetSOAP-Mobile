@@ -30,7 +30,7 @@ import { validatePendingConfirm } from '../lib/pendingConfirm';
 import { trackEvent } from '../lib/analytics';
 import { breadcrumb } from '../lib/monitoring';
 import { waitForNetworkOnline } from '../lib/networkWait';
-import { STALE_RECORDING_UPLOAD_COPY } from '../constants/strings';
+import { STALE_RECORDING_UPLOAD_COPY, METADATA_SYNC_FAILURE_COPY } from '../constants/strings';
 import {
   validatePreparedUploadEnvelope,
   validateUploadIntentConflictDetails,
@@ -42,12 +42,22 @@ import {
 import {
   tagPhase,
   phaseError,
+  phaseErrorWithDetail,
   isTransientUploadError,
   isStalePresignError,
   uploadTimeoutMs,
   runWithConcurrency,
   type TaggedError,
 } from './uploadRetry';
+import {
+  findMetadataMismatches,
+  formatMetadataMismatchDiagnostic,
+  isReplayMetadataOrigin,
+  METADATA_MISMATCH_ERROR_CODE,
+  type MetadataAssertionOrigin,
+  type MetadataMatchOptions,
+  type RecordingPayload,
+} from './metadataMismatch';
 import { isPimsPatientIdExplicitlyCleared } from '../lib/pimsPatientIdIntent';
 import {
   draftPresenceRequestSchema,
@@ -139,6 +149,8 @@ export {
   isStalePresignError,
   getUploadPhase,
   getUploadHttpStatus,
+  getUploadDiagnostic,
+  getUploadRecoverableHint,
 } from './uploadRetry';
 export type { UploadPhase, TaggedError } from './uploadRetry';
 
@@ -308,17 +320,7 @@ export interface EmailDraftResult {
   body: string;
 }
 
-type RecordingPayload = Record<string, string | boolean | null>;
-
 const createRecordingPartialSchema = createRecordingSchema.partial();
-const SERVER_ENRICHABLE_BLANK_METADATA_FIELDS = new Set([
-  'patientName',
-  'clientName',
-  'species',
-  'breed',
-  'appointmentType',
-  'pimsPatientId',
-]);
 const DRAFT_NULLABLE_FIELDS = new Set<keyof CreateRecording>([
   'pimsPatientId',
   'clientName',
@@ -387,47 +389,33 @@ export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): R
   });
 }
 
-interface MetadataMatchOptions {
-  allowServerEnrichedBlankFields?: boolean;
-  pimsPatientIdExplicitlyCleared?: boolean;
-}
-
-function recordingMatchesMetadataPayload(
-  recording: Recording,
-  payload: RecordingPayload,
-  opts: MetadataMatchOptions = {}
-): boolean {
-  const recordingData = recording as unknown as Record<string, unknown>;
-  for (const [key, value] of Object.entries(payload)) {
-    if (!Object.prototype.hasOwnProperty.call(recordingData, key)) return false;
-    const recordingValue = recordingData[key] ?? null;
-    if (
-      opts.allowServerEnrichedBlankFields &&
-      SERVER_ENRICHABLE_BLANK_METADATA_FIELDS.has(key) &&
-      !(key === 'pimsPatientId' && opts.pimsPatientIdExplicitlyCleared) &&
-      (value === null || value === '') &&
-      recordingValue !== null &&
-      recordingValue !== ''
-    ) {
-      continue;
-    }
-    if (recordingValue !== value) return false;
-  }
-  return true;
-}
-
+/**
+ * `origin` is REQUIRED so the compiler enumerates every call site: a missed one
+ * would silently reintroduce an anonymous `patch_draft` failure, which is the
+ * exact defect this parameter exists to end.
+ */
 function assertRecordingMatchesMetadataPayload(
   recording: Recording,
-  payload?: RecordingPayload,
-  opts: MetadataMatchOptions = {}
+  payload: RecordingPayload | undefined,
+  opts: MetadataMatchOptions,
+  origin: MetadataAssertionOrigin
 ): Recording {
-  if (payload && Object.keys(payload).length > 0 && !recordingMatchesMetadataPayload(recording, payload, opts)) {
-    phaseError(
-      'patch_draft',
-      'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
-    );
-  }
-  return recording;
+  if (!payload || Object.keys(payload).length === 0) return recording;
+  const mismatches = findMetadataMismatches(
+    recording as unknown as Record<string, unknown>,
+    payload,
+    opts
+  );
+  if (mismatches.length === 0) return recording;
+  phaseErrorWithDetail('patch_draft', METADATA_SYNC_FAILURE_COPY, {
+    code: METADATA_MISMATCH_ERROR_CODE,
+    diagnostic: formatMetadataMismatchDiagnostic(origin, mismatches),
+    // A replay origin is a genuinely recovered/idempotent case and keeps PR
+    // #92's warning classification. `confirm` / `confirm_api` are not: the
+    // bytes are in R2 and the server already enqueued processing, so the
+    // user's submit dead-ends and no retry converges.
+    recoverableHint: isReplayMetadataOrigin(origin),
+  });
 }
 
 function shouldFallbackSubmittedAtSort(error: unknown, params: ListRecordingsParams): boolean {
@@ -568,7 +556,12 @@ function validatePreparationResponse(
     tagPhase(error, 'prepare');
   }
   if (value.outcome !== 'prepared') {
-    assertRecordingMatchesMetadataPayload(value.recording, metadataAsPayload(metadata), matchOptions);
+    assertRecordingMatchesMetadataPayload(
+      value.recording,
+      metadataAsPayload(metadata),
+      matchOptions,
+      'prepare_already_uploaded',
+    );
     return value;
   }
   for (const upload of value.uploads!) {
@@ -754,12 +747,18 @@ async function postConfirm(
           current,
           metadataAsPayload(metadata),
           matchOptions,
+          'confirm_409_probe',
         );
       }
     }
     tagPhase(error, 'confirm');
   }
-  return assertRecordingMatchesMetadataPayload(confirmed, metadataAsPayload(metadata), matchOptions);
+  return assertRecordingMatchesMetadataPayload(
+    confirmed,
+    metadataAsPayload(metadata),
+    matchOptions,
+    'confirm',
+  );
 }
 
 async function invokePreparedCallback(
@@ -1223,6 +1222,7 @@ async function executeResilientUpload(
             recovery.recording,
             metadataAsPayload(metadata),
             metadataMatchOptions,
+            'recovery_restart',
           );
         }
         prepared = {
@@ -1463,6 +1463,7 @@ async function executeResilientUpload(
         recovery.recording,
         metadataAsPayload(metadata),
         metadataMatchOptions,
+        'recovery_inspect',
       );
     }
     if (recovery.outcome === 'restart_available' || recovery.outcome === 'unresolved') {
@@ -1670,12 +1671,22 @@ export const recordingsApi = {
           tagPhase(probeError, 'confirm');
         }
         if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
-          return assertRecordingMatchesMetadataPayload(current, metadataPayload, metadataMatchOptions);
+          return assertRecordingMatchesMetadataPayload(
+            current,
+            metadataPayload,
+            metadataMatchOptions,
+            'confirm_api_409_probe',
+          );
         }
       }
       tagPhase(error, 'confirm');
     }
-    return assertRecordingMatchesMetadataPayload(recording, metadataPayload, metadataMatchOptions);
+    return assertRecordingMatchesMetadataPayload(
+      recording,
+      metadataPayload,
+      metadataMatchOptions,
+      'confirm_api',
+    );
   },
 
   async prepareUpload(

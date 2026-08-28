@@ -55,6 +55,15 @@ export const UPLOAD_PREFLIGHT_TIMEOUT_COPY = {
 export const STALE_RECORDING_UPLOAD_COPY =
   "We couldn't finish the upload. The recording is still saved on this device. Check your connection and try again.";
 
+/**
+ * Raised when a server recording's metadata does not match the snapshot the
+ * client submitted. Wording is load-bearing: five assertions in
+ * tests/stale-recording-upload-behavior.test.mjs match it. Change the copy and
+ * those tests must change with it.
+ */
+export const METADATA_SYNC_FAILURE_COPY =
+  'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.';
+
 export const SILENT_CHECK_COPY = {
   title: 'Recording sounds silent',
   body:

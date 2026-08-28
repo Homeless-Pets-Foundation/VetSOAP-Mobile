@@ -28,7 +28,29 @@ export type UploadPhase =
   | 'create_draft'
   | 'unknown';
 
-export type TaggedError = Error & { uploadPhase?: UploadPhase; httpStatus?: number };
+export type TaggedError = Error & {
+  uploadPhase?: UploadPhase;
+  httpStatus?: number;
+  /**
+   * Server-style UPPER_SNAKE code. record.tsx's errorCode derivation reads
+   * `.code` and only accepts /^[A-Z][A-Z0-9_]{2,}$/, so a throw site that sets
+   * this stops collapsing to the bare phase name in telemetry.
+   */
+  code?: string;
+  /**
+   * PHI-free telemetry-only detail.
+   *
+   * MUST NOT be folded into `message`: record.tsx sets the USER-VISIBLE error
+   * copy from `error.message` for any phase-tagged error, so appending
+   * diagnostics there would print `fields=templateId:differs` to the vet.
+   */
+  diagnostic?: string;
+  /**
+   * Throw-site verdict on whether this failure is genuinely recovered.
+   * `undefined` means "no opinion" and callers keep their existing default.
+   */
+  recoverableHint?: boolean;
+};
 
 export function tagPhase(error: unknown, phase: UploadPhase): never {
   if (error instanceof Error) {
@@ -48,6 +70,30 @@ export function phaseError(phase: UploadPhase, message: string, httpStatus?: num
   throw err;
 }
 
+/**
+ * `phaseError` plus the telemetry detail a failure needs to describe itself.
+ * Kept as a separate function so the ~20 existing positional `phaseError`
+ * callers stay untouched.
+ */
+export function phaseErrorWithDetail(
+  phase: UploadPhase,
+  message: string,
+  detail: {
+    code: string;
+    diagnostic?: string;
+    recoverableHint?: boolean;
+    httpStatus?: number;
+  }
+): never {
+  const err = new Error(message) as TaggedError;
+  err.uploadPhase = phase;
+  err.code = detail.code;
+  if (detail.diagnostic !== undefined) err.diagnostic = detail.diagnostic;
+  if (detail.recoverableHint !== undefined) err.recoverableHint = detail.recoverableHint;
+  if (detail.httpStatus !== undefined) err.httpStatus = detail.httpStatus;
+  throw err;
+}
+
 export function getUploadPhase(error: unknown): UploadPhase {
   if (error instanceof Error && (error as TaggedError).uploadPhase) {
     return (error as TaggedError).uploadPhase!;
@@ -57,6 +103,16 @@ export function getUploadPhase(error: unknown): UploadPhase {
 
 export function getUploadHttpStatus(error: unknown): number | undefined {
   if (error instanceof Error) return (error as TaggedError).httpStatus;
+  return undefined;
+}
+
+export function getUploadDiagnostic(error: unknown): string | undefined {
+  if (error instanceof Error) return (error as TaggedError).diagnostic;
+  return undefined;
+}
+
+export function getUploadRecoverableHint(error: unknown): boolean | undefined {
+  if (error instanceof Error) return (error as TaggedError).recoverableHint;
   return undefined;
 }
 

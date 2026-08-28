@@ -113,7 +113,10 @@ test('recoverable submit failures (expected + server 5xx + transient + abort) ar
 
   const severityIndex = src.indexOf('const isRecoverable = isRecoverableSubmitFailure(error);');
   assert.ok(severityIndex > -1, 'uploadSlot telemetry severity branch must be findable');
-  const telemetryBody = src.slice(severityIndex, severityIndex + 2200);
+  // The window must span the whole telemetry block through captureException.
+  // It is deliberately generous: too tight and the doesNotMatch fence below
+  // silently stops covering the captureException call it exists to guard.
+  const telemetryBody = src.slice(severityIndex, severityIndex + 3400);
   // reportClientError telemetry must still fire for every failure (server-500
   // visibility), only captureException is gated on isRecoverable.
   assert.match(telemetryBody, /reportClientError\(\{/);
@@ -122,6 +125,42 @@ test('recoverable submit failures (expected + server 5xx + transient + abort) ar
     /if \(!isRecoverable\) \{[\s\S]*?captureException\(new Error\(`recording_submit_failed:\$\{phase\}:\$\{errorCode\}`\),/
   );
   assert.doesNotMatch(telemetryBody, /captureException\(error,/);
+});
+
+test('patch_draft recoverability is decided at the throw site, not by phase', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+
+  // A post-confirm metadata mismatch fires AFTER confirm-upload returned 2xx:
+  // the audio is in R2 and processing is enqueued, so the submit dead-ends and
+  // no retry converges. That must page. Idempotent replay origins, and any
+  // patch_draft error carrying no hint, keep PR #92's warning classification.
+  assert.match(
+    src,
+    /if \(getUploadPhase\(error\) === 'patch_draft'\) return getUploadRecoverableHint\(error\) \?\? true;/
+  );
+  assert.doesNotMatch(src, /getUploadPhase\(error\) === 'patch_draft'\) return true;/);
+});
+
+test('submit failure telemetry reads network state at failure time and carries the throw-site diagnostic', async () => {
+  const src = await read('app/(app)/(tabs)/record.tsx');
+
+  // netInfo was read once before the upload started, behind uploadSlot's pinned
+  // dep array, so a multi-minute upload reported the transport it BEGAN on.
+  assert.match(src, /const netInfoRef = useRef\(netInfo\);/);
+  assert.match(src, /netInfoRef\.current = netInfo;/);
+
+  const severityIndex = src.indexOf('const isRecoverable = isRecoverableSubmitFailure(error);');
+  const telemetryBody = src.slice(severityIndex, severityIndex + 3400);
+  assert.match(telemetryBody, /const netStateAtFailure = networkStateForTelemetry\(\);/);
+  assert.match(telemetryBody, /const diagnostic = getUploadDiagnostic\(error\);/);
+  assert.match(telemetryBody, /networkState: netStateAtFailure,/);
+  assert.doesNotMatch(telemetryBody, /networkState: netState,/);
+  // The diagnostic rides the wire message, which the client owns; it must never
+  // reach the user-visible copy, which is set from error.message.
+  assert.match(
+    telemetryBody,
+    /message: diagnostic\s*\?\s*`Recording submission failed during \$\{phase\}\. \$\{diagnostic\}`/
+  );
 });
 
 test('default-template SecureStore key uses an expo-secure-store-legal separator', async () => {

@@ -45,6 +45,7 @@ async function loadHarness({
   const preparation = await loadPure('src/api/uploadPreparation.ts');
   const pending = await loadPure('src/lib/pendingConfirm.ts');
   const retry = await loadPure('src/api/uploadRetry.ts');
+  const metadataMismatch = await loadPure('src/api/metadataMismatch.ts');
   const pimsPatientIdIntent = await loadPure('src/lib/pimsPatientIdIntent.ts');
   const nativePreflight = await loadTsModule(
     'src/lib/nativePreflight.ts',
@@ -94,9 +95,14 @@ async function loadHarness({
       '../lib/analytics': { trackEvent: () => {} },
       '../lib/monitoring': { breadcrumb: () => {} },
       '../lib/networkWait': { waitForNetworkOnline: async () => {} },
-      '../constants/strings': { STALE_RECORDING_UPLOAD_COPY: 'saved locally' },
+      '../constants/strings': {
+        STALE_RECORDING_UPLOAD_COPY: 'saved locally',
+        METADATA_SYNC_FAILURE_COPY:
+          'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.',
+      },
       './uploadPreparation': preparation,
       './uploadRetry': retry,
+      './metadataMismatch': metadataMismatch,
       '../lib/pimsPatientIdIntent': pimsPatientIdIntent,
       './draftPresenceContract': {
         draftPresenceRequestSchema: { parse: (value) => value },
@@ -464,6 +470,97 @@ test('fresh confirmation rejects a server Patient ID after the user explicitly c
       /Could not sync the latest patient details/.test(error.message),
   );
   assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('a post-confirm metadata mismatch names its origin and field and is not recoverable', async () => {
+  // This runs on the HAPPY path: prepare + PUT + confirm all succeeded, the
+  // bytes are in R2, and the server has enqueued processing. The client throws
+  // anyway, so the user is told a successful submit failed and no retry
+  // converges. That is the failure this diagnostic exists to make visible.
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) {
+        return { ...recording, templateId: '99999999-9999-4999-8999-999999999999' };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent-confirm-template-mismatch',
+    }),
+    (error) => {
+      assert.equal(error.uploadPhase, 'patch_draft');
+      assert.equal(error.code, 'PATCH_DRAFT_METADATA_MISMATCH');
+      assert.match(error.diagnostic, /origin=confirm\b/);
+      assert.match(error.diagnostic, /templateId:differs/);
+      // The two dead-end origins must page rather than stay warnings.
+      assert.equal(error.recoverableHint, false);
+      // The template id is a value, not a field name — it must not leak.
+      assert.ok(!error.diagnostic.includes('99999999'));
+      return true;
+    },
+  );
+  assert.deepEqual(harness.events.map((event) => event[0]), ['post', 'put', 'post']);
+});
+
+test('a confirm response missing a key reports absent, not differs', async () => {
+  // The server emits the flat pimsPatientId alias only when the Prisma
+  // `patient` relation was loaded, so a route that omits it returns no key.
+  const withoutPims = { ...recording };
+  delete withoutPims.pimsPatientId;
+
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) return prepared(1);
+      if (path.endsWith('/confirm-upload')) return withoutPims;
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent-confirm-absent-pims',
+    }),
+    (error) => {
+      assert.match(error.diagnostic, /pimsPatientId:absent/);
+      return true;
+    },
+  );
+});
+
+test('an already-uploaded replay mismatch stays recoverable and names the replay origin', async () => {
+  const harness = await loadHarness({
+    getInfoAsync: async () => ({ exists: true, size: 128 }),
+    post: async (path) => {
+      if (path.endsWith('/prepare-upload')) {
+        return {
+          outcome: 'already_uploaded',
+          recording: { ...recording, templateId: '99999999-9999-4999-8999-999999999999' },
+          replacedMissingRecordingId: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    },
+  });
+
+  await assert.rejects(
+    harness.recordingsApi.createWithFile(metadata, 'file:///one.m4a', 'audio/x-m4a', {
+      idempotencyKey: 'intent-replay-template-mismatch',
+    }),
+    (error) => {
+      assert.match(error.diagnostic, /origin=prepare_already_uploaded/);
+      // An idempotent replay is genuinely recovered — it keeps PR #92's
+      // warning classification and must NOT start paging.
+      assert.equal(error.recoverableHint, true);
+      return true;
+    },
+  );
 });
 
 test('a complete confirmation hint resumes without reading a missing local file', async () => {

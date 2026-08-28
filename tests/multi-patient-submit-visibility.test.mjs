@@ -9,9 +9,16 @@ test('dirty server draft metadata is applied through strict preparation and conf
   const api = await read('src/api/recordings.ts');
   const retry = await read('src/lib/retryableCleanup.ts');
   const uploadRetry = await read('src/api/uploadRetry.ts');
+  const mismatch = await read('src/api/metadataMismatch.ts');
 
   assert.match(uploadRetry, /\| 'patch_draft'/);
-  assert.match(record, /if \(getUploadPhase\(error\) === 'patch_draft'\) return true/);
+  // patch_draft is no longer blanket-recoverable. The throw site decides, so a
+  // post-confirm mismatch (which dead-ends the user on a submit that actually
+  // succeeded) pages, while idempotent replays keep PR #92's warning.
+  assert.match(
+    record,
+    /if \(getUploadPhase\(error\) === 'patch_draft'\) return getUploadRecoverableHint\(error\) \?\? true;/
+  );
   assert.doesNotMatch(record, /draftMetadataSyncBlockedError/);
 
   assert.match(record, /metadataDirty: !!slot\.draftMetadataDirty/g);
@@ -22,11 +29,20 @@ test('dirty server draft metadata is applied through strict preparation and conf
   assert.match(api, /metadata: PendingConfirmMetadata/);
   assert.match(api, /metadata,\s*files/);
   assert.match(api, /postConfirm\(hint\.recordingId, hint, metadata, metadataMatchOptions\)/);
-  assert.match(api, /const SERVER_ENRICHABLE_BLANK_METADATA_FIELDS = new Set/);
-  assert.match(api, /function assertRecordingMatchesMetadataPayload\([\s\S]*allowServerEnrichedBlankFields/);
-  assert.match(api, /!\(key === 'pimsPatientId' && opts\.pimsPatientIdExplicitlyCleared\)/);
-  assert.match(api, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
-  assert.match(api, /assertRecordingMatchesMetadataPayload\(value\.recording, metadataAsPayload\(metadata\)/);
+  // The comparison itself now lives in ./metadataMismatch so it is executable
+  // under the vm test loader; the enrichment escape hatch and the
+  // absent-key/differing-value split must both survive the extraction.
+  assert.match(mismatch, /export const SERVER_ENRICHABLE_BLANK_METADATA_FIELDS/);
+  assert.match(mismatch, /allowServerEnrichedBlankFields/);
+  assert.match(mismatch, /!\(key === 'pimsPatientId' && opts\.pimsPatientIdExplicitlyCleared\)/);
+  assert.match(mismatch, /Object\.prototype\.hasOwnProperty\.call\(recordingData, key\)/);
+  // Every assertion site must name its origin, so no patch_draft failure can
+  // reach telemetry anonymously again.
+  assert.match(api, /function assertRecordingMatchesMetadataPayload\([\s\S]*origin: MetadataAssertionOrigin/);
+  assert.match(
+    api,
+    /assertRecordingMatchesMetadataPayload\(\s*value\.recording,\s*metadataAsPayload\(metadata\),\s*matchOptions,\s*'prepare_already_uploaded',/
+  );
   assert.doesNotMatch(api, /isAlreadyConfirmedOrProcessing/);
 
   const syncDraft = record.slice(

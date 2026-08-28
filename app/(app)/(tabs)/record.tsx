@@ -77,10 +77,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   recordingsApi,
   getUploadPhase,
+  getUploadDiagnostic,
+  getUploadRecoverableHint,
   isTransientUploadError,
   UploadIntentConflictError,
   type RecordingDeleteReason,
 } from '../../../src/api/recordings';
+import { networkStateFromNetInfo } from '../../../src/lib/networkState';
 import {
   getDraftPresenceSnapshot,
   linkedServerDraftIds,
@@ -292,7 +295,14 @@ function isRecoverableSubmitFailure(error: unknown): boolean {
   if (isExpectedSubmitApiFailure(error)) return true;
   if (isTransientUploadError(error)) return true;
   if (getUploadPhase(error) === 'silent_check') return true;
-  if (getUploadPhase(error) === 'patch_draft') return true;
+  // patch_draft is recoverable ONLY when the throw site says so. The
+  // post-confirm metadata assertion (recordings.ts postConfirm / confirmUpload)
+  // fires AFTER a successful confirm-upload: the bytes are in R2 and the server
+  // has already enqueued processing, so the user's submit dead-ends and no
+  // retry converges. Idempotent replay origins (409 probe / already_uploaded /
+  // recovery) keep PR #92's warning classification, as does any patch_draft
+  // error carrying no hint (the legacy draft-metadata PATCH).
+  if (getUploadPhase(error) === 'patch_draft') return getUploadRecoverableHint(error) ?? true;
   const e = error as { status?: number; name?: string; message?: string } | null;
   if (typeof e?.status === 'number' && e.status >= 500) return true;
   if (e?.name === 'AbortError' || /\bAborted\b/i.test(e?.message ?? '')) return true;
@@ -811,15 +821,18 @@ function RecordingSession() {
   const hidePauseToast = useCallback(() => setPauseToast(null), []);
   const netInfo = useNetInfo();
   const isConnected = netInfo.isConnected;
+  // uploadSlot's dep array is pinned and excludes netInfo, so a closure over
+  // `netInfo` reports the transport as it was when the callback was created —
+  // which for a multi-minute upload is not the transport it died on. Mirror it
+  // into a ref (same pattern as sessionRef above) so the catch block can read
+  // the CURRENT value. A ref, not `await NetInfo.fetch()`: the catch must
+  // neither throw nor hang.
+  const netInfoRef = useRef(netInfo);
+  netInfoRef.current = netInfo;
   // Derives a coarse connection descriptor for telemetry. Don't leak SSIDs or
   // carrier names — only the type bucket.
-  const networkStateForTelemetry = (): NetworkState => {
-    if (netInfo.isConnected === false) return 'none';
-    if (netInfo.type === 'wifi') return 'wifi';
-    if (netInfo.type === 'cellular') return 'cellular';
-    if (netInfo.isConnected === true) return 'unknown';
-    return 'unknown';
-  };
+  const networkStateForTelemetry = (): NetworkState =>
+    networkStateFromNetInfo(netInfoRef.current);
   // Per-slot retry counter — increments each time uploadSlot runs. Drives the
   // `attempt_number` field on submit events and client-error telemetry so we
   // can see recordings that fail multiple attempts vs one-shot failures.
@@ -3265,6 +3278,14 @@ function RecordingSession() {
           (errorObj?.status ? `HTTP_${errorObj.status}` : phase.toUpperCase());
         const isRecoverable = isRecoverableSubmitFailure(error);
         const telemetrySeverity = isRecoverable ? 'warning' : 'error';
+        // Read the transport as of the FAILURE, not the attempt start. A
+        // multi-minute upload that died because the radio dropped previously
+        // still reported the transport it began on.
+        const netStateAtFailure = networkStateForTelemetry();
+        // PHI-free throw-site detail (field names + origin only). Rides on its
+        // own property, never on error.message — the user-visible copy is set
+        // from error.message just above.
+        const diagnostic = getUploadDiagnostic(error);
         const failureSubmitDiagnostics =
           phase === 'patch_draft'
             ? slotSubmitDiagnostics(slot, slotCount, {
@@ -3283,7 +3304,8 @@ function RecordingSession() {
             attempt_number: attemptNumber,
             error_phase: phase,
             error_code: errorCode,
-            network_state: netState,
+            network_state: netStateAtFailure,
+            network_state_at_start: netState,
             latency_ms: latencyMs,
             ...failureSubmitDiagnostics,
           },
@@ -3292,13 +3314,15 @@ function RecordingSession() {
           phase,
           severity: telemetrySeverity,
           errorCode,
-          message: `Recording submission failed during ${phase}.`,
+          message: diagnostic
+            ? `Recording submission failed during ${phase}. ${diagnostic}`
+            : `Recording submission failed during ${phase}.`,
           recordingId: slot.serverDraftId ?? slot.serverRecordingId ?? undefined,
           slotIndex,
           segmentCount,
           durationSeconds,
           fileSizeBytes: uploadSizeBytes || undefined,
-          networkState: netState,
+          networkState: netStateAtFailure,
           attemptNumber,
           submitContext: failureSubmitDiagnostics,
         });
@@ -3310,7 +3334,7 @@ function RecordingSession() {
             tags: {
               phase,
               error_code: errorCode,
-              network_state: netState,
+              network_state: netStateAtFailure,
               has_existing_draft: String(!!slot.serverDraftId),
               draft_metadata_dirty: String(!!slot.draftMetadataDirty),
               stale_draft_promotion_blocked: String(phase === 'patch_draft'),
@@ -3325,6 +3349,7 @@ function RecordingSession() {
               latency_ms: latencyMs,
               recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
               submit_context: failureSubmitDiagnostics,
+              diagnostic: diagnostic ?? null,
             },
           });
         }
@@ -3367,7 +3392,10 @@ function RecordingSession() {
         if (splitTempDir) safeDeleteDirectory(splitTempDir);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- netInfo read via networkStateForTelemetry closure; derivation is pure
+    // The exhaustive-deps suppression that used to sit here existed because
+    // networkStateForTelemetry closed over `netInfo` directly — which is exactly
+    // why the reported transport was the one the upload STARTED on. It now reads
+    // netInfoRef, so the dep list is genuinely complete and the rule is silent.
     [setUploadStatus, dispatch, user?.id, user?.role]
   );
 

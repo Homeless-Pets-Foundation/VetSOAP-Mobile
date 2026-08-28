@@ -700,10 +700,16 @@ test('durable-only stash failure surfaces the Save Failed alert', async () => {
 
 test('post-upload deleteDraft is verified + retried; loadDraft blocks a tombstoned durable resume', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  // deleteDraft swallows its own storage errors, so success is VERIFIED via
-  // getDraft (not a try/catch) and confirmDraftGone is retried once.
+  // deleteDraft swallows its own storage errors, so success is VERIFIED by a
+  // read-back (not a try/catch) and confirmDraftGone is retried once. The
+  // read-back must be the STRICT one: getDraft collapses a Keystore/chunk-read
+  // failure to null, so the lenient form let an unreadable store license the
+  // purge that follows.
   assert.match(rec, /const confirmDraftGone = async \(\): Promise<boolean>/);
-  assert.match(rec, /const still = await draftStorage\.getDraft\(slot\.id\)\.catch\(\(\) => null\);\n\s*return still === null;/);
+  assert.match(
+    rec,
+    /const still = await draftStorage\n\s*\.draftMetadataExistsStrict\(slot\.id\)\n\s*\.catch\(\(\) => 'unknown' as const\);\n\s*return still === 'missing';/
+  );
   assert.match(rec, /let draftDeleted = await confirmDraftGone\(\);\n\s*if \(!draftDeleted\) draftDeleted = await confirmDraftGone\(\);/);
   // loadDraft refuses to resume an already-uploaded (tombstoned) durable draft.
   const iLoad = rec.indexOf('const loadDraft = useCallback(');

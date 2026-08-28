@@ -443,8 +443,21 @@ test('submitting separately converts a confirmed durable manifest instead of res
   assert.ok(copyAt > -1 && sizeAt > copyAt, 'the copy must be size-verified');
   assert.ok(tombstoneAt > sizeAt, 'nothing may be destroyed before the copy is verified');
   assert.ok(purgeAt > tombstoneAt, 'the tombstone must be persisted before the purge');
+  assert.ok(purgeAt > copyAt);
   assert.match(convert, /recoveredAudioUri: copyUri/);
   assert.match(convert, /type: 'SET_DURABLE_RECORDING'/);
+  // The purge is the point of no return, so the pointer to the copy must be
+  // persisted AND read back first: a crash in between would otherwise leave the
+  // stored draft aimed at a manifest that no longer exists while the copy sits
+  // unreferenced. The tombstone is required, not best-effort — without it a
+  // later orphan sweep can delete the confirmed server row.
+  const saveAt = convert.indexOf('draftStorage.saveDraft(converted)');
+  const readBackAt = convert.indexOf('readBack?.durable?.recoveredAudioUri !== copyUri');
+  const tombstonedAt = convert.indexOf('const tombstoned = await durableTombstone.add');
+  assert.ok(saveAt > sizeAt, 'the draft pointer must be persisted after the copy is verified');
+  assert.ok(readBackAt > saveAt, 'the persisted pointer must be read back');
+  assert.ok(tombstonedAt > readBackAt && tombstonedAt < purgeAt);
+  assert.match(convert, /if \(!tombstoned\) return null;/);
 
   const resubmit = record.slice(
     record.indexOf('const handleResubmitAsNew = useCallback'),
@@ -454,4 +467,41 @@ test('submitting separately converts a confirmed durable manifest instead of res
   assert.match(resubmit, /persistControlledUploadRestart\(converted \?\? slot\)/);
   // A failed separate submission must say so — silence reads as "done".
   assert.match(resubmit, /METADATA_DIVERGENCE_COPY\.resubmitAsNewFailedTitle/);
+});
+
+test('destructive cleanup requires PROVEN draft absence, never a lenient null', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const drafts = await read('src/lib/draftStorage.ts');
+
+  // getDraft collapses a Keystore/chunk-read failure to null, which is
+  // indistinguishable from deletion. Every site that purges durable audio or
+  // deletes segments on the strength of that answer must use the strict read.
+  assert.match(drafts, /async draftMetadataExistsStrict\(slotId: string\): Promise<StrictExistence>/);
+  assert.match(drafts, /if \(!userId\) return 'unknown';/);
+  assert.match(drafts, /return legacyRaw === null \? 'missing' : 'present';/);
+  assert.match(drafts, /return \(await draftMetaExistence\(userId, slotId\)\) === 'missing';/);
+
+  assert.doesNotMatch(
+    record,
+    /draftStorage\.getDraft\(slot\.id\)\.catch\(\(\) => null\)\) === null/,
+    'no destructive path may treat a lenient getDraft null as proof of deletion'
+  );
+  assert.equal(
+    (record.match(/draftMetadataExistsStrict\(slot\.id\)/g) ?? []).length,
+    3,
+    'all three confirmDraftGone sites must use the strict read'
+  );
+});
+
+test('only an actionable identity divergence holds the session open after success', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // Processing/descriptive notices are informational and have no dismissal, so
+  // blocking completion on them stranded the vet on the Record screen forever.
+  assert.equal(
+    (record.match(/s\.metadataDivergence\?\.tier === 'identity'/g) ?? []).length,
+    2,
+    'both the single-submit and Submit All guards must be tier-scoped'
+  );
+  assert.doesNotMatch(record, /\(s\) => s\.metadataDivergence !== null/);
 });

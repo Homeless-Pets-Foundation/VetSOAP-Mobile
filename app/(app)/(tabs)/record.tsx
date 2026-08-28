@@ -2596,7 +2596,14 @@ function RecordingSession() {
                 } catch {
                   return false;
                 }
-                return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
+                // getDraft is LENIENT: an unreadable Keystore also yields null,
+                // which would read as proof of deletion and license the purge
+                // below. Only PROVEN absence counts.
+                return (
+                  (await draftStorage
+                    .draftMetadataExistsStrict(slot.id)
+                    .catch(() => 'unknown' as const)) === 'missing'
+                );
               };
               // Only the destructive half is held back.
               if (!holdDurableLocalCopy) {
@@ -2890,8 +2897,12 @@ function RecordingSession() {
             } catch {
               return false;
             }
-            const still = await draftStorage.getDraft(slot.id).catch(() => null);
-            return still === null;
+            // Proven absence only — getDraft collapses a Keystore/chunk-read
+            // failure to null, and the caller purges audio on this answer.
+            const still = await draftStorage
+              .draftMetadataExistsStrict(slot.id)
+              .catch(() => 'unknown' as const);
+            return still === 'missing';
           };
           // An identity-tier divergence means the server row may describe a
           // different visit. markUploaded above still ran (it is what stops
@@ -4493,8 +4504,12 @@ function RecordingSession() {
             // copy back. Resetting and navigating away here would discard the
             // reconcile card before the vet ever sees it, and the retained
             // draft would reappear later with no explanation of why.
+            // Identity is the only tier that holds a local copy back and offers
+            // reconciliation actions. Processing/descriptive notices are purely
+            // informational and have no dismissal, so blocking on them stranded
+            // the vet on the Record screen with no way to satisfy the guard.
             const hasUnresolvedDivergence = sessionRef.current.slots.some(
-              (s) => s.metadataDivergence !== null
+              (s) => s.metadataDivergence?.tier === 'identity'
             );
 
             if (otherSlotsWithRecordings || hasUnresolvedDivergence) {
@@ -4589,7 +4604,14 @@ function RecordingSession() {
                   } catch {
                     return false;
                   }
-                  return (await draftStorage.getDraft(slot.id).catch(() => null)) === null;
+                  // getDraft is LENIENT: an unreadable Keystore also yields null,
+                // which would read as proof of deletion and license the purge
+                // below. Only PROVEN absence counts.
+                return (
+                  (await draftStorage
+                    .draftMetadataExistsStrict(slot.id)
+                    .catch(() => 'unknown' as const)) === 'missing'
+                );
                 };
                 let draftDeleted = await confirmDraftGone();
                 if (!draftDeleted) draftDeleted = await confirmDraftGone();
@@ -4689,18 +4711,59 @@ function RecordingSession() {
         return null;
       }
 
-      // Only now is the native copy expendable. Tombstone first: it is what
-      // stops cleanupOrphaned from deleting the confirmed server row, and it
-      // has to outlive a purge that succeeds while anything after it does not.
-      await durableTombstone.add(durable.recordingId).catch(() => {});
+      const looseDurable = { ...durable, recoveredAudioUri: copyUri };
+      const converted: PatientSlot = { ...slot, durable: looseDurable };
+
+      // PERSIST THE POINTER BEFORE PURGING. The purge is the point of no
+      // return, and everything that records where the audio went happens after
+      // it — the dispatch, and the draft write inside the restart transaction.
+      // Die in that window and the stored draft still points at a manifest that
+      // no longer exists while the copy sits unreferenced on disk: audio the
+      // vet can no longer reach. So write the draft first and read it back;
+      // saveDraft is metadata-only for a durable slot, so this is cheap.
+      let persistedDraftSlotId: string | null = null;
+      try {
+        const saved = await draftStorage.saveDraft(converted);
+        persistedDraftSlotId = saved.draftSlotId;
+      } catch {
+        safeDeleteFile(copyUri);
+        return null;
+      }
+      const readBack = await draftStorage.getDraft(persistedDraftSlotId).catch(() => null);
+      if (readBack?.durable?.recoveredAudioUri !== copyUri) {
+        // KEEP the copy here, unlike the throw above. The write may have landed
+        // and only the read failed, in which case a stored draft now points at
+        // copyUri; deleting it would turn an unreferenced file into a dangling
+        // pointer. Nothing was purged, so the native manifest is still the
+        // preferred source either way and the stray file is at worst wasted
+        // disk that the draft's own deletion reclaims.
+        return null;
+      }
+
+      // The tombstone is REQUIRED, not best-effort: it is the only thing that
+      // stops a later orphan sweep from deleting the server row this recording
+      // legitimately confirmed to. add() returns false when the write did not
+      // land, so a failure means keeping the native manifest — which is
+      // recoverable — rather than purging without the guard.
+      const tombstoned = await durableTombstone.add(durable.recordingId).catch(() => false);
+      if (!tombstoned) return null;
+
       await durableRecorder
         .purgeAfterUpload({ userId, recordingId: durable.recordingId })
         .catch(() => {});
       durableRecoveryStore.remove(durable.recordingId);
 
-      const looseDurable = { ...durable, recoveredAudioUri: copyUri };
       dispatch({ type: 'SET_DURABLE_RECORDING', slotId: slot.id, durable: looseDurable });
-      return { ...slot, durable: looseDurable };
+      if (persistedDraftSlotId && persistedDraftSlotId !== slot.draftSlotId) {
+        dispatch({
+          type: 'SET_DRAFT_IDS',
+          slotId: slot.id,
+          draftSlotId: persistedDraftSlotId,
+          serverDraftId: slot.serverDraftId,
+          preserveDirty: true,
+        });
+      }
+      return { ...converted, draftSlotId: persistedDraftSlotId ?? slot.draftSlotId };
     },
     [dispatch, user?.id]
   );
@@ -4973,8 +5036,10 @@ function RecordingSession() {
         // Same reason as runSingleSubmit: an unresolved divergence means a local
         // copy is being held back on purpose, and resetting would discard the
         // card explaining why before it is ever seen.
+        // Same tier rule as runSingleSubmit: only an identity conflict, which
+        // retains a local copy and offers actions, may hold the session open.
         const hasUnresolvedDivergence = sessionRef.current.slots.some(
-          (s) => s.metadataDivergence !== null
+          (s) => s.metadataDivergence?.tier === 'identity'
         );
 
         if (allSuccess && hasUnresolvedDivergence) {

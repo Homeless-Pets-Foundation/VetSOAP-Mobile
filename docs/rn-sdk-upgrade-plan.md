@@ -110,9 +110,18 @@ zipalign -c -P 16 -v 4 android/app/build/outputs/apk/release/app-release.apk
 # ELF: every LOAD segment aligned to 0x4000 (16 KB), not 0x1000.
 APK=android/app/build/outputs/apk/release/app-release.apk
 unzip -o -q "$APK" 'lib/*/*.so' -d /tmp/apk-libs   # every packaged ABI, not just arm64
+bad=0
 for so in /tmp/apk-libs/lib/*/*.so; do
-  echo "== $so"; llvm-readelf -l "$so" | awk '/LOAD/ {print $NF}' | sort -u
+  for align in $(llvm-readelf -l "$so" | awk '/LOAD/ {print $NF}' | sort -u); do
+    # Must be >= 0x4000. Printing the value is not a gate: a 0x1000 library
+    # would sail through with sort's exit status and fail only on real 16 KB
+    # hardware, or at Play review.
+    if [ "$((align))" -lt 16384 ]; then
+      echo "FAIL 16 KB alignment: $so has LOAD align $align"; bad=1
+    fi
+  done
 done
+[ "$bad" -eq 0 ] || exit 1
 ```
 
 Then run the recording and editor checks on a 16 KB-page device or emulator image.
@@ -158,17 +167,19 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 - **Process death BETWEEN the R2 PUT and the confirm.** The capture-time kill above and the upgrade-in-place case (which only reads a `pendingConfirm` the OLD binary wrote) both leave this untested: neither proves the CANDIDATE persists the post-PUT proof before it calls confirm. If the upgraded SecureStore, FileSystem, or durable bridge loses or delays that write, a kill or a dropped network after the PUT strands uploaded bytes in R2 with a recording that cannot resume safely — while every successful upload passes. Block or cut the network at the confirm request, kill the app, relaunch, and confirm the recording resumes to a confirm-only completion rather than re-uploading or dead-ending.
 - **Resume → Continue on a recovered capture**, which is the only thing that exercises the native `resume()` entry point: `useAudioRecorder.resumeDurable()` reloads the manifest, reattaches ownership and timing state, and appends new ADTS frames to the existing `audio.aac`. Recovering and submitting as-is does not touch it, so this path can fail — or desynchronize the recovered duration — while process-death recovery and fresh recordings both pass. Kill a capture, recover it, continue recording, then verify the final duration and that BOTH halves are audible.
 - **A timed capture through backgrounding AND screen lock, on both platforms — run TWICE, with durable capture forced on and forced off** (`EXPO_PUBLIC_FORCE_DURABLE_CAPTURE`, and with the server flag off). **The forced build is test-only and must never leave the bench:** that flag bypasses the server-driven safety gate permanently, so if the artifact were later shipped while ADTS acceptance is not deployed, uploads confirm and purge locally before server validation fails — stranding recordings in R2 (see `durableFlag.ts`'s cross-repo invariant). Point it at a backend that accepts ADTS, label it, delete it afterwards, and rebuild the releasable candidate WITHOUT the flag. `useAudioRecorder.start()` falls back to expo-audio whenever the flag is off or the native module is unavailable, and that fallback's own background-audio implementation is moving in this migration — so it can stop capturing under lock while the durable run and the iOS interruption test both pass. — start recording, background the app, lock the device, wait a measured interval, return, finish, and verify the resulting file's duration and audible content match the wall-clock time. This depends on the Android microphone foreground service plus its notification/wake-lock permissions and on iOS background audio / `AVAudioSession`, all of which move between SDK majors. A regression here loses audio during an ordinary appointment without crashing and without failing crash-recovery, so nothing else on this list catches it.
+> **Which BACKEND is active decides what these interruption tests prove.** With durable capture on, `DurableRecorderEngine` owns its own `AudioManager` focus listener and `record.tsx` ignores `captivet-audio-focus`'s events entirely; with it off, expo-audio's `stop()`/`pause()`/`record()` cleanup is what runs. So each case below has to be run in the mode that actually reaches the code it names — a pass in the other mode says nothing.
+
 - **Input route lost mid-capture on iOS** — unplug a wired mic or power off a Bluetooth one while recording. This is a SEPARATE native path from a call or alarm: `DurableRecorderEngine.handleRouteChange()` observes `AVAudioSession.routeChangeNotification` and treats `.oldDeviceUnavailable` as fatal, flushing the writer, persisting `route_change`, and notifying JS. If that observer or its bridge regresses during the native rebuild, the UI can sit in `recording` with no input and silently lose the rest of the appointment while every call/alarm test passes.
 - **A native durable `start()` REJECTION with the flag on.** The flag-off run exercises expo-audio as the chosen backend; it does not exercise the exception path, where the module loads but `start()` fails (foreground-service promotion, audio-session setup) and `useAudioRecorder` must fall back to expo-audio mid-attempt. Both listed runs can pass while every affected production device simply cannot begin an appointment. Inject the failure with the flag on and confirm recording still starts.
 - **iOS media-services reset.** `RecordingStatus.mediaServicesDidReset` takes its own branch ahead of the ordinary `hasError` flow, because the recorder handle is permanently invalid — nothing else on this list produces that signal. Induce a media-services reset mid-capture (or simulate the status) and confirm the partial audio is kept and the hook recovers rather than sticking.
-- Audio focus interruption (call / alarm / other voice app) on **Android**, via `modules/captivet-audio-focus`
+- Audio focus interruption (call / alarm / other voice app) on **Android — in BOTH capture modes.** Flag OFF exercises `modules/captivet-audio-focus` feeding `triggerInterruption()`; flag ON exercises the durable engine's OWN focus listener, which `record.tsx` defers to. Passing the fallback case says nothing about whether the rebuilt durable module still hears a call, and a deaf durable listener silently loses the rest of the appointment.
 - **The same interruption on iOS**, where that module is a deliberate no-op and recovery depends entirely on expo-audio surfacing the `AVAudioSession` interruption as `hasError` — an SDK-sensitive path that neither the process-death test nor the background/lock test triggers. **The two capture modes have different contracts, so assert them separately:**
   - *Durable capture:* `audio.aac` is already saved and marked interrupted natively, and v1 deliberately does NOT auto-resume-append. The correct behaviour is a silent finalize into a submittable durable draft, with the interruption notice shown — `interruptionPendingResume` is never armed and the iOS engine emits no gain event. Verify the draft exists, carries the full pre-interruption audio, and submits.
   - *expo-audio fallback:* the partial segment is committed via `CONTINUE_RECORDING`, `interruptionPendingResume` is armed, and the AppState `'active'` handler resumes. Verify the resume happens and the segments concatenate.
   - Requiring "resumes on gain" of the durable path would reject correct behaviour, or worse, invite an unsafe auto-resume.
 - Recorder start latency — the `expo-audio` patch exists to keep it low; `measurePhase` warns above `NATIVE_RECORDER_PHASE_WARNING_MS` (1000 ms)
 - Playback seeking on durable ADTS AAC files
-- **Microphone permission revoked mid-capture**, on both platforms: start recording, revoke access in system settings, return to the app. `useAudioRecorder` is required to survive this (CLAUDE.md rule 6) — `stop()` swallows and cleans up, `pause()`/`resume()` clean up and rethrow — and no other check on this list produces a native op failing under the recorder. Verify the partial audio is retained, the hook is not left stuck in `recording`, then re-grant access and start a fresh recording in the same session.
+- **Microphone permission revoked mid-capture**, on both platforms, **with durable capture forced OFF** — the durable backend's pause/resume/stop branches return before touching expo-audio, so with the flag on this never reaches the `recorder.stop()` / `pause()` / `record()` cleanup the rule is about. Start recording, revoke access in system settings, return to the app. `useAudioRecorder` is required to survive this (CLAUDE.md rule 6) — `stop()` swallows and cleans up, `pause()`/`resume()` clean up and rethrow — and no other check on this list produces a native op failing under the recorder. Verify the partial audio is retained, the hook is not left stuck in `recording`, then re-grant access and start a fresh recording in the same session.
 - **Multi-patient recorder ownership, with at least two slots.** Every other check here uses one patient, but this migration moves the scrolling/ref APIs and Reanimated/worklets that the pageable patient cards are built on, and the single-recorder handoff is timing-dependent (`recorderBoundToSlotId`, the `pendingStartSlotRef` queue, auto-pause on swipe-away). The Node tests only read that control flow as source. A regression here attaches one patient's exam audio to another patient's slot — a clinical-correctness failure, not a UX one. Start capture on patient A, switch to B while the pause/stop is still in flight, record B, and confirm each segment and each upload lands only on its intended slot.
 
 **Offline → online, without restarting the flow** — an SDK bump rebuilds `@react-native-community/netinfo` against the new RN. Every other check here runs online, and an offline Finish stays `pendingSync` until `usePendingDraftSync` sees reachability, so a bridge that stops emitting usable events compiles, passes every fresh-online submit, and leaves drafts permanently unsynced. Finish a recording in airplane mode, re-enable the network WITHOUT restarting the app or the workflow, and confirm the existing draft SYNCS — `usePendingDraftSync` creates the server row with `isDraft: true` and clears `pendingSync`, and that is all it should do. The card must still read **Not Submitted**, and the upload and promotion must still require the vet's own Submit. "Submits on its own" would be the wrong gate to write down: it fails correct behaviour and invites an automatic clinical submission nobody reviewed.
@@ -264,14 +275,15 @@ Then check IDENTITY, not just content: `clearMonitoringUser()` has to reach the 
      # artifact this step is trying not to produce.
      test -f ./.env || { echo 'no ./.env — refusing to build'; exit 1; }
      set -a; . ./.env; set +a
-     # NON-EMPTY IS NOT ENOUGH. A stale or staging .env passes this loop, and
-     # `requireProductionR2BuildConfig()` returns early for a local prebuild
-     # (it only enforces on an EAS production build), so nothing else catches
-     # it — the auth and upload checks would then run against the wrong
-     # services, or send test recordings into an unintended bucket. Compare the
-     # values to the canonical ones first: the Supabase URL and project ref in
-     # CLAUDE.md > Shared Infrastructure, the prod API host, and the R2 host in
-     # contracts/r2-production-destination-v1.json.
+     # NON-EMPTY IS NOT ENOUGH, so compare against the canonical values —
+     # requireProductionR2BuildConfig() returns early for a local prebuild, so
+     # nothing else will catch a stale or staging .env, and the auth and upload
+     # gates would then "pass" against the wrong services or send test
+     # recordings into an unintended bucket.
+     R2_HOST=$(node -p "require('./contracts/r2-production-destination-v1.json').environments.production.virtualHost")
+     [ "$EXPO_PUBLIC_API_URL" = "https://api.captivet.com" ] || { echo "API URL is not production"; exit 1; }
+     [ "$EXPO_PUBLIC_SUPABASE_URL" = "https://shdzitupjltfyembqowp.supabase.co" ] || { echo "Supabase is not the shared project"; exit 1; }
+     [ "$EXPO_PUBLIC_R2_BUCKET_HOSTNAME" = "$R2_HOST" ] || { echo "R2 host does not match the production contract"; exit 1; }
      #
      # EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID is required too, not optional:
      # isGoogleSignInConfiguredForCurrentPlatform() disables Android Google

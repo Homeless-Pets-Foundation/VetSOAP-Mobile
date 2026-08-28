@@ -99,6 +99,8 @@ So both platforms need a real build: `npx expo prebuild --platform ios` + `pod i
 
 Gradle or CocoaPods changes across an SDK major can break either. Neither is exercised by CI — both need a real build.
 
+**Verify 16 KB page alignment in the ARTIFACT, not just that it built.** `app.config.ts` sets `useLegacyPackaging: false` specifically for 16 KB memory-page alignment (Android 15+), and the self-hosted FFmpeg AAR is a custom 16 KB build for the same reason. An SDK major replaces the AGP/NDK packaging stack, and losing either property produces an APK that builds, installs, and passes every check on an ordinary 4 KB-page device while failing to load on 16 KB-page hardware — and Play can reject it. After building, inspect the artifact: confirm the native libraries are stored uncompressed and page-aligned in the ZIP (`zipalign -c -P 16 -v`) and that each `.so`'s ELF load segments carry a 16 KB alignment (`llvm-readelf -l`), then run the recording and editor checks on a 16 KB-page device or emulator image.
+
 **A build is not the FFmpeg gate; the editor is.** Nothing in §6 invokes `src/lib/ffmpeg.ts`, and `app/(app)/audio-editor.tsx` depends on that bridge for waveform peak extraction and trim/concat. A bridge signature or codec incompatibility compiles, links, and passes the playback-seeking check while making editing fail on device. Add to the hardware list: open a recording in the editor, confirm the waveform renders, apply a trim, and play back the result — on both platforms.
 
 ### 4b. Verify the GENERATED manifests, not just that they build
@@ -151,7 +153,7 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 - Device registration: confirm `X-Device-Id` is present on requests and that `getDeviceId()` still returns a stable UUID (Rule 21 — Hermes has no `globalThis.crypto` on iOS)
 - Device TYPE, not just the id (Rule 23): `registerDevice()` reads `Device.deviceType` on Android and `Platform.isPad` on iOS, and an unavailable or renamed Android enum silently falls back to `android_tablet`. Register a representative phone and tablet on each platform and confirm the server and the Devices screen show `ios_phone` / `ios_tablet` / `android_phone` / `android_tablet` correctly — a mislabelled device is what an admin revokes by
 - Biometric unlock through `AppLockGuard`, including a cancelled prompt
-- Email/password sign-in plus Google (Android) and Apple (iOS) sign-in
+- Email/password sign-in, plus Google on **both** platforms and Apple on iOS. iOS Google is a real path — `socialAuth.ts` requires both Google client IDs and `app.config.ts` installs the iOS URL-scheme plugin — and it is the one most exposed here, since the migration moves the GoogleSignIn pods and the AppCheckCore graph behind `with-ios-modular-headers.js`. A green pod build and a working Apple login say nothing about the iOS OAuth redirect or the ID-token exchange.
 - **An enforced-MFA account end to end**: sign in, land on `MFA_REQUIRED`, complete the challenge, and confirm the profile loads. The MFA path derives its access and refresh tokens from the Supabase session and only finishes after verification, so an ordinary sign-in can pass while every enforced-MFA user is locked out.
 
 **Gates that fail OPEN** — three checks deliberately allow the operation when their native bridge returns nothing, which is right for resilience and means an SDK incompatibility disables them silently, with CI and both builds green:
@@ -203,6 +205,15 @@ Switch accounts on a real device WHILE a restore or a cleanup is still pending, 
      # artifact this step is trying not to produce.
      test -f ./.env || { echo 'no ./.env — refusing to build'; exit 1; }
      set -a; . ./.env; set +a
+     # NON-EMPTY IS NOT ENOUGH. A stale or staging .env passes this loop, and
+     # `requireProductionR2BuildConfig()` returns early for a local prebuild
+     # (it only enforces on an EAS production build), so nothing else catches
+     # it — the auth and upload checks would then run against the wrong
+     # services, or send test recordings into an unintended bucket. Compare the
+     # values to the canonical ones first: the Supabase URL and project ref in
+     # CLAUDE.md > Shared Infrastructure, the prod API host, and the R2 host in
+     # contracts/r2-production-destination-v1.json.
+     #
      # EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID is required too, not optional:
      # isGoogleSignInConfiguredForCurrentPlatform() disables Android Google
      # sign-in when it is empty, and .env.example ships it blank — so without

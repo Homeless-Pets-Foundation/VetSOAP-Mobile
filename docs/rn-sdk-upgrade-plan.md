@@ -178,7 +178,16 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
    - **Three JS-only bumps still need runtime checks.** `@supabase/supabase-js` owns `SIGNED_OUT` semantics, refresh, and token rotation — the exact behaviour rules 16, 17 and 22 work around — and `tests/auth-*.test.mjs` assert source patterns against storage doubles, never a real GoTrue session; run the §6 auth checks INCLUDING the enforced-MFA one. The TanStack persistence packages own cross-user cache isolation on shared tablets; run the isolation check. `@sentry/react-native` is JS *and* native; run the crash-reporting check. Each applies regardless of what the rest of the bump set touches.
    - **Otherwise CI is a sufficient gate only for a JS-ONLY bump set.** Sentry, Supabase and TanStack move JS; `expo-*` packages generally do not. `expo-secure-store`, `expo-local-authentication`, `expo-file-system`, `expo-audio`, `expo-device`, `expo-crypto` and `@sentry/react-native` all ship native code, and none of it is compiled anywhere in `npm run ci` — so green CI says nothing about whether either generated native project still builds. **If the bump set touches ANY native package, require a production Android build and a production-parity iOS build (§3) before shipping**, plus the runtime checks in §6 for the subsystems that moved.
    - **If `expo-audio` moves specifically, its fence is weaker than it looks.** `tests/legacy-android-recorder-latency.test.mjs` is a *source-text* test: it regex-matches the patched Kotlin in `node_modules` and asserts statement ordering. A regenerated patch can satisfy it and still fail to compile, or compile and regress the behaviour it exists to protect. Add the recorder-start-latency, ADTS-seeking, and audio-focus-interruption checks from §6 on a physical Android device.
-   - The Android production build is `npx expo prebuild --platform android` first — `android/` is not committed — then `cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true ./gradlew :app:assembleRelease`.
+   - The Android production build needs a prebuild first (`android/` is not committed), and **the prebuild is where the production environment matters**: `expo prebuild` evaluates `app.config.ts` to generate the native project, so `APP_VARIANT` and the Google variables must be set on THAT command, not only on Gradle. Setting them for Gradle alone cannot regenerate a native project that was emitted without the conditional Google Sign-In plugin — the APK then builds green while the shipping plugin and pod/dependency graph go untested.
+
+     ```bash
+     APP_VARIANT=production EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME=<production value> \
+       npx expo prebuild --platform android --clean
+     cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true \
+       ./gradlew :app:assembleRelease
+     ```
+
+     The same rule applies to the iOS prebuild above. A production-parity `eas build --local` is the alternative on either platform, and is the safer choice if the environment is hard to reproduce by hand.
    - §6's device checks are scoped to Option B only because Option A is *usually* JS-only. Any native bump removes that exemption.
 2. Only then attempt Option B, on a separate branch, one concern at a time: resolve versions → patches → native modules → FFmpeg → typecheck → device test.
 3. Bump the marketing version in `package.json` **and** `package-lock.json` before any store build (`app.config.ts` reads `MARKETING_VERSION` from `package.json` and carries no literal semver).

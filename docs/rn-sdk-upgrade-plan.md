@@ -203,8 +203,16 @@ Switch accounts on a real device WHILE a restore or a cleanup is still pending, 
      # artifact this step is trying not to produce.
      test -f ./.env || { echo 'no ./.env — refusing to build'; exit 1; }
      set -a; . ./.env; set +a
+     # EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID is required too, not optional:
+     # isGoogleSignInConfiguredForCurrentPlatform() disables Android Google
+     # sign-in when it is empty, and .env.example ships it blank — so without
+     # it the "production-parity" APK cannot run the Google auth check §6 asks
+     # for. The iOS build additionally needs EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID
+     # and EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME — the latter is what gates the
+     # Google plugin and with-ios-modular-headers.js into app.config.ts at all.
      for v in EXPO_PUBLIC_API_URL EXPO_PUBLIC_SUPABASE_URL \
-              EXPO_PUBLIC_SUPABASE_ANON_KEY EXPO_PUBLIC_R2_BUCKET_HOSTNAME; do
+              EXPO_PUBLIC_SUPABASE_ANON_KEY EXPO_PUBLIC_R2_BUCKET_HOSTNAME \
+              EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID; do
        [ -n "${!v}" ] || { echo "$v is empty — refusing to build"; exit 1; }
      done
      APP_VARIANT=production npx expo prebuild --platform android --clean

@@ -860,14 +860,9 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   // what makes the manifest self-heal eligible, so a hold written after it
   // leaves a crash window and an ignored failure leaves none at all.
   assert.equal(
-    (record.match(/durableReconcileHold\.add\(durable\.recordingId\)/g) ?? []).length,
-    2
-  );
-  assert.equal(
-    (record.match(/\? await durableReconcileHold\.add\(durable\.recordingId\)\.catch\(\(\) => false\)/g) ?? [])
-      .length,
+    (record.match(/\? await addReconcileHoldForUser\(uid, durable\.recordingId\)/g) ?? []).length,
     2,
-    'the write result must be honoured, not discarded'
+    'both paths must persist the hold, and honour the result'
   );
   assert.match(record, /if \(nativeManifest && \(!holdDurableLocalCopy \|\| holdPersisted\)\) \{/);
   assert.match(record, /if \(hasNativeManifest && \(!holdIdentityCopy \|\| identityHoldPersisted\)\) \{/);
@@ -877,10 +872,11 @@ test('a held durable copy survives a restart, and the hold is released on resolu
     'a failed hold write must be reported, not silent'
   );
   // ...and released by every resolution: the release action (only after the
-  // delete it authorizes succeeded), the conversion, and a dismissal.
+  // delete it authorizes succeeded), the conversion, and a dismissal — plus the
+  // scope-rollback inside addReconcileHoldForUser.
   assert.equal(
     (record.match(/durableReconcileHold\.remove\(/g) ?? []).length,
-    3
+    4
   );
   const releaseBlock = record.slice(
     record.indexOf('const handleReleaseLocalCopy = useCallback'),
@@ -962,4 +958,27 @@ test('an omitted non-blank field is reported in its own tier, not swallowed', as
   // A field already promoted to identity must not also be listed under its
   // declared tier.
   assert.match(identity, /identityFields\.push\(key\);\s*continue;\s*\}/);
+});
+
+test('the hold is written for the initiating user, not whoever is scoped later', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // durableReconcileHold keys off its own mutable current user, which the
+  // AuthProvider re-points on sign-in. An upload completing across a rapid
+  // sign-out/sign-in would write the departing user's id into the ARRIVING
+  // user's list and then mark the departing user's manifest uploaded — so the
+  // original owner returns to a confirmed manifest with no hold.
+  assert.match(record, /const addReconcileHoldForUser = useCallback\(/);
+  assert.match(record, /if \(durableReconcileHold\.getUserId\(\) !== userId\) return false;/);
+  assert.match(
+    record,
+    /if \(durableReconcileHold\.getUserId\(\) !== userId\) \{[\s\S]{0,400}?await durableReconcileHold\.remove\(recordingId\)\.catch\(\(\) => \{\}\);\s*return false;/
+  );
+  // Both durable paths go through it, and neither calls add() directly.
+  assert.equal(
+    (record.match(/await addReconcileHoldForUser\(uid, durable\.recordingId\)/g) ?? []).length,
+    2
+  );
+  // The only direct add() is inside that helper.
+  assert.equal((record.match(/durableReconcileHold\.add\(/g) ?? []).length, 1);
 });

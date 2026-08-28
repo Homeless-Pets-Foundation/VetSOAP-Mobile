@@ -2420,6 +2420,38 @@ function RecordingSession() {
 
   // -- Upload handlers --
 
+  /**
+   * Write a reconciliation hold for a SPECIFIC user.
+   *
+   * `durableReconcileHold` keys off its own mutable current user, which the
+   * AuthProvider re-points on every sign-in. An upload that completes across a
+   * rapid sign-out/sign-in would otherwise write the departing user's recording
+   * id into the ARRIVING user's list and then mark the departing user's
+   * manifest uploaded — so the original owner comes back to a confirmed
+   * manifest with no hold (startup self-heal purges the retained copy) while
+   * the new user inherits a hold for a recording that is not theirs.
+   *
+   * Verified on both sides of the await, and a mismatch afterwards tries to
+   * take the stray entry back out of whichever list is now scoped. Returns
+   * false unless the hold is known to have landed in the right one — the
+   * callers treat that as "do not terminalize the manifest".
+   */
+  const addReconcileHoldForUser = useCallback(
+    async (userId: string, recordingId: string): Promise<boolean> => {
+      if (durableReconcileHold.getUserId() !== userId) return false;
+      const persisted = await durableReconcileHold.add(recordingId).catch(() => false);
+      if (durableReconcileHold.getUserId() !== userId) {
+        // The scope moved under the write. If the entry landed in the list that
+        // is scoped now, this removes it; if it landed correctly in the old
+        // user's list, this is a no-op against a list that never had it.
+        await durableReconcileHold.remove(recordingId).catch(() => {});
+        return false;
+      }
+      return persisted;
+    },
+    []
+  );
+
   const uploadSlot = useCallback(
     async (slotArg: PatientSlot): Promise<string | null> => {
       // Re-read the latest slot from state. A stale closure (e.g. held by a
@@ -2645,7 +2677,7 @@ function RecordingSession() {
             // promised to keep.
             const holdPersisted =
               holdDurableLocalCopy && durable && uid
-                ? await durableReconcileHold.add(durable.recordingId).catch(() => false)
+                ? await addReconcileHoldForUser(uid, durable.recordingId)
                 : false;
             if (holdDurableLocalCopy && !holdPersisted) {
               captureMessage('durable_identity_hold_not_persisted', 'warning', {
@@ -2979,7 +3011,7 @@ function RecordingSession() {
             (metadataDivergence as MetadataDivergenceReport | null)?.tier === 'identity';
           const identityHoldPersisted =
             holdIdentityCopy && durable && uid
-              ? await durableReconcileHold.add(durable.recordingId).catch(() => false)
+              ? await addReconcileHoldForUser(uid, durable.recordingId)
               : false;
           if (holdIdentityCopy && !identityHoldPersisted) {
             // The hold could not be persisted. Do NOT terminalize the manifest:
@@ -3616,7 +3648,7 @@ function RecordingSession() {
     // networkStateForTelemetry closed over `netInfo` directly — which is exactly
     // why the reported transport was the one the upload STARTED on. It now reads
     // netInfoRef, so the dep list is genuinely complete and the rule is silent.
-    [setUploadStatus, dispatch, user?.id, user?.role]
+    [addReconcileHoldForUser, setUploadStatus, dispatch, user?.id, user?.role]
   );
 
   // Phase 2 of autoSaveDraft — the network half. Patches an existing draft in

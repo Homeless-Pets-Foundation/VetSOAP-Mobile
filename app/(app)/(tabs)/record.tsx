@@ -3530,17 +3530,28 @@ function RecordingSession() {
         // a path that was about to release the local audio. Never delete
         // anything here: surface a reconcile card and let the vet decide.
         if (error instanceof RecordingMetadataConflictError) {
+          const conflictTier = error.source === 'client_adopt_guard' ? 'identity' : 'unknown';
           dispatch({
             type: 'SET_METADATA_DIVERGENCE',
             slotId: slot.id,
             divergence: {
               // Only our own adopt guard ran the tiered comparison and knows
               // the fields. A server 409 reports no tier at all.
-              tier: error.source === 'client_adopt_guard' ? 'identity' : 'unknown',
+              tier: conflictTier,
               fields: [...error.divergentFields],
               recordingId: error.recordingId,
             },
           });
+          // ...and PERSIST it, exactly as the successful-upload branches do.
+          // This state dies with the process while the manifest can still carry
+          // serverRecordingId — so on the next launch scanDurableRecoveries()
+          // verifies that row as uploaded, marks the manifest uploaded, finds no
+          // hold, and self-heals: the audio behind an unresolved conflict is
+          // deleted without anyone deciding.
+          if (conflictTier === 'identity' && user?.id) {
+            const conflictHoldKey = slot.durable?.recordingId ?? slot.draftSlotId ?? slot.id;
+            await addReconcileHoldForUser(user.id, conflictHoldKey);
+          }
         }
 
         // Errors crafted at our own tagged throw sites (silent_check, presign,
@@ -4865,6 +4876,7 @@ function RecordingSession() {
               // user just chose to keep.
               if (!claimReconcileLock(slot.id)) return;
               const releaseGeneration = ++reconcileGenerationRef.current;
+              let releaseWatchdog: ReturnType<typeof setTimeout> | null = null;
               void (async () => {
                 const durable = slot.durable;
                 const userId = user?.id;
@@ -4994,7 +5006,15 @@ function RecordingSession() {
                   divergence: null,
                 });
                 runDeferredSuccessTransition(slot.id);
-              })().finally(() => releaseReconcileLock());
+              })()
+                .finally(() => releaseReconcileLock())
+                // Settled in time: cancel the watchdog, or it fires at the
+                // deadline anyway — emitting a false warning, bumping the
+                // generation, and telling the vet cleanup failed after the copy
+                // was already removed and the screen navigated away.
+                .finally(() => {
+                  if (releaseWatchdog) clearTimeout(releaseWatchdog);
+                });
               // The task above can HANG (SecureStore, Keystore, a native purge),
               // and a promise that never settles never reaches that finally —
               // leaving this slot mutation-locked and every reconciliation
@@ -5002,7 +5022,7 @@ function RecordingSession() {
               // generation makes each remaining step a no-op (scopeIsCurrent
               // reads it), so releasing the gate is safe rather than a licence
               // for late destructive work.
-              setTimeout(() => {
+              releaseWatchdog = setTimeout(() => {
                 if (reconcileGenerationRef.current !== releaseGeneration) return;
                 reconcileGenerationRef.current += 1;
                 captureMessage('release_local_copy_watchdog_fired', 'warning', {

@@ -339,7 +339,7 @@ test('a server-reported conflict is never rendered as a wrong-visit conflict', a
   // the duplicate this change exists to prevent.
   assert.match(
     record,
-    /tier: error\.source === 'client_adopt_guard' \? 'identity' : 'unknown',/
+    /const conflictTier = error\.source === 'client_adopt_guard' \? 'identity' : 'unknown';[\s\S]{0,400}?tier: conflictTier,/
   );
   // The unknown tier gets the non-destructive affordance only, and only when
   // there is actually a recording to open.
@@ -1122,4 +1122,37 @@ test('a held copy survives background autosave and freezes its audio controls', 
     card,
     /const isUploading = slot\.uploadStatus === 'uploading' \|\| identityReconciliationPending;/
   );
+});
+
+test('an adopt-path conflict persists its hold, and the watchdog is cancelled', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // The divergence state dies with the process while the manifest can still
+  // carry serverRecordingId — so the next scan verifies that row as uploaded,
+  // finds no hold, and self-heals the audio behind an unresolved conflict.
+  assert.match(
+    record,
+    /if \(conflictTier === 'identity' && user\?\.id\) \{\s*const conflictHoldKey = slot\.durable\?\.recordingId \?\? slot\.draftSlotId \?\? slot\.id;\s*await addReconcileHoldForUser\(user\.id, conflictHoldKey\);/
+  );
+  // A watchdog that is not cancelled fires anyway: false warning, bumped
+  // generation, and a cleanup-failed alert after a successful removal.
+  assert.match(record, /let releaseWatchdog: ReturnType<typeof setTimeout> \| null = null;/);
+  assert.match(record, /releaseWatchdog = setTimeout\(\(\) => \{/);
+  assert.match(record, /if \(releaseWatchdog\) clearTimeout\(releaseWatchdog\);/);
+});
+
+test('a held orphan restores with its conflict, not as a blank adoptable draft', async () => {
+  const recovery = await read('app/(app)/durable-recovery.tsx');
+
+  // Restoring blank is the worst resolution: on a record-first account the vet
+  // can submit at once, the adopt comparison reads the server's populated
+  // values as enrichment of our blanks, accepts that row, and purges the audio.
+  assert.match(recovery, /function manifestToDurableSlot\(m: DurableRecordingManifest, held = false\): PatientSlot/);
+  assert.match(
+    recovery,
+    /metadataDivergence: held\s*\? \{ tier: 'identity', fields: \[\], recordingId: m\.serverRecordingId \?\? '' \}\s*: null,/
+  );
+  // The anchor is dropped so a submit cannot re-adopt the disputed row.
+  assert.match(recovery, /serverDraftId: held \? null : \(m\.serverRecordingId \?\? null\),/);
+  assert.match(recovery, /const held = await durableReconcileHold\.has\(m\.recordingId\)\.catch\(\(\) => false\);/);
 });

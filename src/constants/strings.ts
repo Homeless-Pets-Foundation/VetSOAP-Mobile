@@ -85,6 +85,9 @@ export const METADATA_DIVERGENCE_COPY = {
   resubmitAsNewConfirmBody:
     'This keeps the audio on this device and submits it again as a separate recording. The existing recording on the server is left alone.',
   resubmitAsNewConfirm: 'Submit separately',
+  resubmitAsNewFailedTitle: 'Could not start a separate submission',
+  resubmitAsNewFailedBody:
+    'The recording on this device was not changed and is still saved here. Try again, or open the existing recording to compare the details.',
   /** Field labels for the "Differs on:" list — never show raw schema keys. */
   fieldLabels: {
     patientName: 'Patient name',

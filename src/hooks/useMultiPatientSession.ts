@@ -211,7 +211,17 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
           formData: { ...slot.formData, [field]: value },
           pimsPatientIdExplicitlyCleared,
           uploadRecovery: null,
-          metadataDivergence: null,
+          // Clearing on edit is the edit-to-retry affordance for a FAILED
+          // conflict. On a SUCCEEDED upload the divergence is not a retry hint:
+          // it is the only handle on a server row that may describe a different
+          // visit, and its local copy is being deliberately retained for it.
+          // `clientName` runs this for every slot, so without the guard editing
+          // one patient silently discards another patient's wrong-visit
+          // conflict — after which the submit guard stops retaining the session
+          // and no reconciliation action remains. Only an explicit
+          // reconciliation action may clear a successful divergence.
+          metadataDivergence:
+            slot.uploadStatus === 'success' ? slot.metadataDivergence : null,
         });
       };
 

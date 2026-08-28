@@ -58,11 +58,17 @@ export interface DurableSlotRef {
   bitrate: 32000 | 48000;
   durationMs: number; // frame-derived authoritative recovered/upload duration
   peakDb: number;     // PCM running peak for the synthetic silent-audio guard
-  // Set ONLY on a support-staff cross-user vault restore: a local file:// copy of
-  // audio.aac in a neutral, current-user-readable dir. The native durable root is
-  // user-scoped, so a recording captured under the departing support_staff user
-  // has no manifest under the restoring owner's scope — the submit path uploads
-  // this copied file directly. Must stay a local URI (Rule 15).
+  // A local file:// copy of audio.aac in a neutral, current-user-readable dir,
+  // uploaded directly by the submit path because no usable native manifest
+  // backs the slot. Two producers set it:
+  //   1. A support-staff cross-user vault restore — the native durable root is
+  //      user-scoped, so a recording captured under the departing support_staff
+  //      user has no manifest under the restoring owner's scope.
+  //   2. The post-confirm "not this visit — submit separately" action: the
+  //      manifest is already confirmed-uploaded, and native refuses to restart
+  //      a confirmed upload, so the bytes are copied out before that manifest
+  //      is tombstoned and purged.
+  // Must stay a local URI (Rule 15).
   recoveredAudioUri?: string | null;
 }
 

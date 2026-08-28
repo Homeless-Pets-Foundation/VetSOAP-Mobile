@@ -11,6 +11,16 @@
  */
 
 export const DURABLE_DIR_NAME = 'durable-recordings';
+/**
+ * Home for LOOSE durable copies: an `audio.aac` lifted out of the native,
+ * user-scoped durable root into a plain document-directory file that a slot
+ * carries as `durable.recoveredAudioUri` and the submit path uploads directly.
+ * Two producers write here — a support-staff vault restore, and the
+ * post-confirm "submit separately" reconciliation — so the name lives here
+ * rather than in either of them. (Only the name: this module stays expo-free,
+ * so each consumer joins it to `Paths.document.uri` itself.)
+ */
+export const RECOVERED_DURABLE_DIR_NAME = 'recovered-durable';
 export const AUDIO_FILENAME = 'audio.aac';
 export const MANIFEST_FILENAME = 'manifest.json';
 

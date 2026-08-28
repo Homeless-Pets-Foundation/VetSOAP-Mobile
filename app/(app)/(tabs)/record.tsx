@@ -19,7 +19,7 @@ import { usePreventRemove } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Mic } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { safeDeleteFile, safeDeleteDirectory, fileExists, writeFilePrefix } from '../../../src/lib/fileOps';
+import { safeDeleteFile, safeDeleteDirectory, fileExists, writeFilePrefix, ensureDirectory, safeCopyFile } from '../../../src/lib/fileOps';
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { Paths } from 'expo-file-system';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
@@ -56,7 +56,7 @@ import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/free
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
-import { isValidDurableId } from '../../../src/lib/durableAudio/paths';
+import { isValidDurableId, RECOVERED_DURABLE_DIR_NAME } from '../../../src/lib/durableAudio/paths';
 import { durableRecoveryStore } from '../../../src/lib/durableAudio/recoveryState';
 import { validatePendingConfirm } from '../../../src/lib/pendingConfirm';
 import { getSecureRandomHex } from '../../../src/lib/random';
@@ -4638,6 +4638,73 @@ function RecordingSession() {
     [dispatch, setUploadStatus, user?.id]
   );
 
+  /**
+   * "Not this visit — submit separately" for a durable capture whose manifest is
+   * ALREADY confirmed-uploaded.
+   *
+   * The commit path calls `markUploaded()` before holding the local copy back
+   * (it is what stops launch recovery re-offering an uploaded capture), so by
+   * the time this card appears the manifest is in state `uploaded`. Both native
+   * engines reject `resetUploadAttempt` in that state — "confirmed upload
+   * cannot be restarted" (DurableRecorderEngine.kt / .swift) — so routing this
+   * action straight into `persistControlledUploadRestart` made it a silent
+   * no-op: the promised separate submission never happened.
+   *
+   * A confirmed manifest cannot be rotated, so lift the bytes out instead. The
+   * result is the shape the submit path already supports for a vault restore:
+   * a slot whose `durable.recoveredAudioUri` is a plain local .aac with no
+   * native manifest behind it. The standard restart transaction then runs on
+   * that shape and only touches SecureStore.
+   *
+   * Ordering is load-bearing and mirrors the release path: nothing destructive
+   * happens until a NON-EMPTY copy is verified on disk, and the tombstone is
+   * written before the purge so an offline self-heal can never delete the
+   * server row this recording legitimately confirmed to.
+   */
+  const persistPostConfirmSeparateSubmission = useCallback(
+    async (slot: PatientSlot): Promise<PatientSlot | null> => {
+      const durable = slot.durable;
+      const userId = user?.id;
+      // No durable manifest to be blocked by: the standard restart already works.
+      if (!durable || !userId || durable.recoveredAudioUri) return null;
+      const manifest = await durableRecorder
+        .getManifest({ userId, recordingId: durable.recordingId })
+        .catch(() => null);
+      if (!manifest) return null;
+      const confirmed = manifest.state === 'uploaded' || !!manifest.confirmedUploadAt;
+      if (!confirmed) return null;
+      const sourceUri = manifest.audioFile?.uri;
+      if (!sourceUri) return null;
+
+      const dir = `${Paths.document.uri}${RECOVERED_DURABLE_DIR_NAME}/${userId}/`;
+      if (!ensureDirectory(dir)) return null;
+      const copyUri = `${dir}${durable.recordingId}-separate.aac`;
+      if (!(await safeCopyFile(sourceUri, copyUri))) {
+        safeDeleteFile(copyUri);
+        return null;
+      }
+      const info = await getInfoAsync(copyUri).catch(() => null);
+      if (!info?.exists || !((info.size ?? 0) > 0)) {
+        safeDeleteFile(copyUri);
+        return null;
+      }
+
+      // Only now is the native copy expendable. Tombstone first: it is what
+      // stops cleanupOrphaned from deleting the confirmed server row, and it
+      // has to outlive a purge that succeeds while anything after it does not.
+      await durableTombstone.add(durable.recordingId).catch(() => {});
+      await durableRecorder
+        .purgeAfterUpload({ userId, recordingId: durable.recordingId })
+        .catch(() => {});
+      durableRecoveryStore.remove(durable.recordingId);
+
+      const looseDurable = { ...durable, recoveredAudioUri: copyUri };
+      dispatch({ type: 'SET_DURABLE_RECORDING', slotId: slot.id, durable: looseDurable });
+      return { ...slot, durable: looseDurable };
+    },
+    [dispatch, user?.id]
+  );
+
   const handleResubmitAsNew = useCallback(
     (slotId: string) => {
       const slot = sessionRef.current.slots.find((candidate) => candidate.id === slotId);
@@ -4651,23 +4718,39 @@ function RecordingSession() {
             text: METADATA_DIVERGENCE_COPY.resubmitAsNewConfirm,
             onPress: () => {
               // Rotates the upload intent so the server creates a separate row,
-              // and preserves the local audio throughout.
-              persistControlledUploadRestart(slot)
-                .then((restarted) => {
-                  if (!restarted) return;
-                  dispatch({
-                    type: 'SET_METADATA_DIVERGENCE',
-                    slotId: slot.id,
-                    divergence: null,
-                  });
-                })
-                .catch(() => {});
+              // and preserves the local audio throughout. A durable capture
+              // whose manifest is already confirmed-uploaded cannot be rotated
+              // at all, so it is converted to a loose local copy first — see
+              // persistPostConfirmSeparateSubmission.
+              void (async () => {
+                const converted = await persistPostConfirmSeparateSubmission(slot).catch(
+                  () => null
+                );
+                const restarted = await persistControlledUploadRestart(converted ?? slot).catch(
+                  () => null
+                );
+                if (!restarted) {
+                  // Never fail silently here: the vet asked for a second
+                  // recording and the local copy is still the only one they
+                  // control. Saying nothing reads as "done".
+                  Alert.alert(
+                    METADATA_DIVERGENCE_COPY.resubmitAsNewFailedTitle,
+                    METADATA_DIVERGENCE_COPY.resubmitAsNewFailedBody
+                  );
+                  return;
+                }
+                dispatch({
+                  type: 'SET_METADATA_DIVERGENCE',
+                  slotId: slot.id,
+                  divergence: null,
+                });
+              })();
             },
           },
         ]
       );
     },
-    [dispatch, persistControlledUploadRestart]
+    [dispatch, persistControlledUploadRestart, persistPostConfirmSeparateSubmission]
   );
 
   const handleSubmitSingle = useCallback(

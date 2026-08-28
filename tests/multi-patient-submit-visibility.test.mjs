@@ -374,3 +374,84 @@ test('releasing the local copy verifies the draft is gone before destroying evid
   assert.match(releaseBlock, /setUploadStatus\(slot\.id, 'success', \{/);
   assert.match(releaseBlock, /type: 'REPLACE_ALL_SEGMENTS', slotId: slot\.id, segments: \[\]/);
 });
+
+test('the divergence notice renders outside the submit card, which excludes succeeded slots', async () => {
+  const card = await read('src/components/PatientSlotCard.tsx');
+
+  // showSubmitCard is false once the upload succeeds — and a commit-path
+  // divergence lands exactly there (success + local copy held back). Nesting
+  // the notice inside it left the vet with "Uploaded Successfully" and no way
+  // to reach any of the three reconciliation actions.
+  assert.match(
+    card,
+    /const showSubmitCard = .*slot\.uploadStatus !== 'success';/,
+    'showSubmitCard must still exclude succeeded slots'
+  );
+  const submitCardAt = card.indexOf('{showSubmitCard && (');
+  const noticeAt = card.indexOf('{slot.metadataDivergence && (');
+  assert.ok(noticeAt > -1 && submitCardAt > -1);
+  assert.ok(
+    noticeAt < submitCardAt,
+    'the divergence notice must render before/outside the submit card, not nested inside it'
+  );
+});
+
+test('a successful divergence survives form edits, including cross-slot clientName edits', async () => {
+  const session = await read('src/hooks/useMultiPatientSession.ts');
+
+  // clientName runs applyFormUpdate for EVERY slot, so an unconditional clear
+  // let editing one patient discard another patient's wrong-visit conflict —
+  // the submit guard then stops retaining the session and no reconciliation
+  // action remains. Edit-to-retry stays for a failed conflict.
+  assert.match(
+    session,
+    /metadataDivergence:\s*slot\.uploadStatus === 'success' \? slot\.metadataDivergence : null,/
+  );
+  assert.doesNotMatch(
+    session,
+    /uploadRecovery: null,\s*\n\s*metadataDivergence: null,\s*\n\s*\}\);/,
+    'applyFormUpdate must not clear metadataDivergence unconditionally'
+  );
+});
+
+test('submitting separately converts a confirmed durable manifest instead of restarting it', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const engineKt = await read(
+    'modules/captivet-durable-recorder/android/src/main/java/expo/modules/captivetdurablerecorder/DurableRecorderEngine.kt'
+  );
+  const engineSwift = await read('modules/captivet-durable-recorder/ios/DurableRecorderEngine.swift');
+
+  // The native guard this works around. If either engine ever allows a
+  // post-confirm rotation, revisit the conversion — do not delete it silently.
+  assert.match(engineKt, /confirmed upload cannot be restarted/);
+  assert.match(engineSwift, /confirmed upload cannot be restarted/);
+
+  const convert = record.slice(
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback'),
+    record.indexOf('const handleResubmitAsNew = useCallback')
+  );
+  assert.ok(convert.length > 0, 'the post-confirm conversion must exist');
+  // Only a confirmed manifest takes this path; anything else keeps the
+  // ordinary rotation, which is cheaper and leaves the native copy in place.
+  assert.match(convert, /manifest\.state === 'uploaded' \|\| !!manifest\.confirmedUploadAt/);
+  assert.match(convert, /if \(!confirmed\) return null;/);
+  // Nothing destructive until a NON-EMPTY copy is verified on disk.
+  const copyAt = convert.indexOf('safeCopyFile(sourceUri, copyUri)');
+  const sizeAt = convert.indexOf('info.size ?? 0) > 0');
+  const tombstoneAt = convert.indexOf('durableTombstone.add');
+  const purgeAt = convert.indexOf('purgeAfterUpload');
+  assert.ok(copyAt > -1 && sizeAt > copyAt, 'the copy must be size-verified');
+  assert.ok(tombstoneAt > sizeAt, 'nothing may be destroyed before the copy is verified');
+  assert.ok(purgeAt > tombstoneAt, 'the tombstone must be persisted before the purge');
+  assert.match(convert, /recoveredAudioUri: copyUri/);
+  assert.match(convert, /type: 'SET_DURABLE_RECORDING'/);
+
+  const resubmit = record.slice(
+    record.indexOf('const handleResubmitAsNew = useCallback'),
+    record.indexOf('const handleSubmitSingle = useCallback')
+  );
+  assert.match(resubmit, /await persistPostConfirmSeparateSubmission\(slot\)/);
+  assert.match(resubmit, /persistControlledUploadRestart\(converted \?\? slot\)/);
+  // A failed separate submission must say so — silence reads as "done".
+  assert.match(resubmit, /METADATA_DIVERGENCE_COPY\.resubmitAsNewFailedTitle/);
+});

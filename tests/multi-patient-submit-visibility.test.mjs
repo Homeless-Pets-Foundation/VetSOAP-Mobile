@@ -367,7 +367,7 @@ test('releasing the local copy verifies the draft is gone before destroying evid
   const purgeAt = releaseBlock.indexOf('purgeAfterUpload');
   assert.ok(tombstoneAt > -1 && purgeAt > -1 && tombstoneAt < purgeAt,
     'the tombstone must be persisted before the audio is purged');
-  assert.match(releaseBlock, /if \(draftDeleted\) \{\s*await durableRecorder/);
+  assert.match(releaseBlock, /if \(draftDeleted\) \{\s*purgeInFlight = true;\s*try \{\s*await durableRecorder/);
 
   // The slot must not be left in the adopt-path error state offering Retry
   // Upload against files that were just deleted.
@@ -761,10 +761,24 @@ test('reconciliation actions are serialized and inert while one runs', async () 
     2,
     'both reconciliation actions must claim the lock'
   );
+  // Both release it on every exit — but only when they still OWN it: the
+  // watchdog may have freed it already and another slot may have claimed it,
+  // and releasing again would re-enable mutations underneath a newer
+  // transaction that is mid-delete.
+  // Two owner-checked exits (release + conversion) plus the watchdog's own,
+  // which fires only when no native purge is outstanding.
   assert.equal(
-    (record.match(/\.finally\(\(\) => releaseReconcileLock\(\)\)/g) ?? []).length,
-    2,
-    'both must release it on every exit'
+    (record.match(/releaseReconcileLock\(\);/g) ?? []).length,
+    3,
+    'both transactions release on exit, and the watchdog can too'
+  );
+  assert.match(
+    record,
+    /reconcilingSlotIdRef\.current === slot\.id &&\s*reconcileGenerationRef\.current === releaseGeneration/
+  );
+  assert.match(
+    record,
+    /reconcilingSlotIdRef\.current === slot\.id &&\s*reconcileGenerationRef\.current === generation/
   );
   // The ref is the synchronous gate; the state drives the disabled UI.
   assert.match(record, /divergenceActionsBusy=\{reconcilingSlotId !== null\}/);
@@ -1091,7 +1105,13 @@ test('the release transaction is bounded and cannot strand the slot', async () =
   assert.match(record, /const releaseGeneration = \+\+reconcileGenerationRef\.current;/);
   assert.match(record, /reconcileGenerationRef\.current === releaseGeneration &&/);
   assert.match(record, /release_local_copy_watchdog_fired/);
-  assert.match(record, /if \(reconcilingSlotIdRef\.current === slot\.id\) releaseReconcileLock\(\);/);
+  // The watchdog refuses to free the slot while a non-cancellable native purge
+  // is outstanding — a generation bump cannot recall it.
+  assert.match(record, /let purgeInFlight = false;/);
+  assert.match(
+    record,
+    /if \(!purgeInFlight && reconcilingSlotIdRef\.current === slot\.id\) \{\s*releaseReconcileLock\(\);/
+  );
 });
 
 test('tombstone mutations are serialized like the holds', async () => {
@@ -1155,4 +1175,22 @@ test('a held orphan restores with its conflict, not as a blank adoptable draft',
   // The anchor is dropped so a submit cannot re-adopt the disputed row.
   assert.match(recovery, /serverDraftId: held \? null : \(m\.serverRecordingId \?\? null\),/);
   assert.match(recovery, /const held = await durableReconcileHold\.has\(m\.recordingId\)\.catch\(\(\) => false\);/);
+});
+
+test('a restored draft rebuilds its conflict from the persisted hold', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const recovery = await read('app/(app)/durable-recovery.tsx');
+
+  // DraftMetadata has no divergence field, so a restored draft came back with
+  // the conflict erased — and the deterministic durable key means the next
+  // submit can re-adopt the disputed row and purge the audio, card unseen.
+  assert.match(record, /const heldConflictKey = draft\.durable\?\.recordingId \?\? draft\.slotId;/);
+  assert.match(record, /const conflictHeld = await durableReconcileHold\s*\.has\(heldConflictKey\)/);
+  assert.match(
+    record,
+    /metadataDivergence: conflictHeld\s*\? \{\s*tier: 'identity',/
+  );
+  // Discarding a held orphan must release its hold: nothing else can, and the
+  // cap is hard.
+  assert.match(recovery, /await durableReconcileHold\.remove\(m\.recordingId\)\.catch\(\(\) => \{\}\);/);
 });

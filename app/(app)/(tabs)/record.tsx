@@ -4877,6 +4877,9 @@ function RecordingSession() {
               if (!claimReconcileLock(slot.id)) return;
               const releaseGeneration = ++reconcileGenerationRef.current;
               let releaseWatchdog: ReturnType<typeof setTimeout> | null = null;
+              // Set for exactly as long as a non-cancellable native purge is
+              // outstanding; the watchdog refuses to free the slot while it is.
+              let purgeInFlight = false;
               void (async () => {
                 const durable = slot.durable;
                 const userId = user?.id;
@@ -4960,9 +4963,14 @@ function RecordingSession() {
                     return;
                   }
                   if (draftDeleted) {
-                    await durableRecorder
-                      .purgeAfterUpload({ userId, recordingId: durable.recordingId })
-                      .catch(() => {});
+                    purgeInFlight = true;
+                    try {
+                      await durableRecorder
+                        .purgeAfterUpload({ userId, recordingId: durable.recordingId })
+                        .catch(() => {});
+                    } finally {
+                      purgeInFlight = false;
+                    }
                     if (durable.recoveredAudioUri) safeDeleteFile(durable.recoveredAudioUri);
                     // Only now: the hold is what keeps recovery off this
                     // recording, so it must outlive every step it protects.
@@ -5007,7 +5015,18 @@ function RecordingSession() {
                 });
                 runDeferredSuccessTransition(slot.id);
               })()
-                .finally(() => releaseReconcileLock())
+                .finally(() => {
+                  // Only if this task still OWNS the lock. The watchdog may have
+                  // released it already and another slot may have claimed it —
+                  // releasing again would re-enable mutations underneath a newer
+                  // transaction that is mid-delete.
+                  if (
+                    reconcilingSlotIdRef.current === slot.id &&
+                    reconcileGenerationRef.current === releaseGeneration
+                  ) {
+                    releaseReconcileLock();
+                  }
+                })
                 // Settled in time: cancel the watchdog, or it fires at the
                 // deadline anyway — emitting a false warning, bumping the
                 // generation, and telling the vet cleanup failed after the copy
@@ -5026,9 +5045,17 @@ function RecordingSession() {
                 if (reconcileGenerationRef.current !== releaseGeneration) return;
                 reconcileGenerationRef.current += 1;
                 captureMessage('release_local_copy_watchdog_fired', 'warning', {
-                  tags: { phase: 'upload_recovery' },
+                  tags: { phase: 'upload_recovery', purge_in_flight: String(purgeInFlight) },
                 });
-                if (reconcilingSlotIdRef.current === slot.id) releaseReconcileLock();
+                // A generation bump stops the remaining STEPS; it cannot recall a
+                // native purge that has already started. Freeing the slot then
+                // would let "Submit separately" begin copying from a manifest
+                // the old purge is about to delete — so while that call is
+                // outstanding the slot stays locked and the task's own finally
+                // is what releases it.
+                if (!purgeInFlight && reconcilingSlotIdRef.current === slot.id) {
+                  releaseReconcileLock();
+                }
                 Alert.alert(
                   METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedTitle,
                   METADATA_DIVERGENCE_COPY.releaseLocalCopyFailedBody
@@ -5372,7 +5399,16 @@ function RecordingSession() {
                 // The confirmation promised a submission, so perform it rather
                 // than leaving a pending slot the vet has to submit again.
                 runSingleSubmit(restarted);
-              })().finally(() => releaseReconcileLock());
+              })().finally(() => {
+                // Same ownership rule as the release path: never hand the lock
+                // back on behalf of a transaction that no longer holds it.
+                if (
+                  reconcilingSlotIdRef.current === slot.id &&
+                  reconcileGenerationRef.current === generation
+                ) {
+                  releaseReconcileLock();
+                }
+              });
             },
           },
         ]
@@ -5954,6 +5990,18 @@ function RecordingSession() {
             return;
           }
         }
+        // DraftMetadata has no divergence field, so a restored draft would come
+        // back with the conflict erased — and for a durable recording the
+        // deterministic recording-id key means the very next submit can re-adopt
+        // the disputed server row and purge the retained audio, never showing
+        // the card. The persisted HOLD is the record that survives, so rebuild
+        // the conflict from it. Fields are unknown here; the card renders
+        // without the "Differs on:" line and still offers all three choices.
+        const heldConflictKey = draft.durable?.recordingId ?? draft.slotId;
+        const conflictHeld = await durableReconcileHold
+          .has(heldConflictKey)
+          .catch(() => false);
+
         // Local files are present or R2 proof is sufficient — restore session.
         const restoredSlot: PatientSlot = {
           id: draft.slotId,
@@ -5962,7 +6010,13 @@ function RecordingSession() {
           supersededUploadKey:
             nativeManifest?.supersededUploadKey ?? draft.supersededUploadKey,
           uploadRecovery: null,
-          metadataDivergence: null,
+          metadataDivergence: conflictHeld
+            ? {
+                tier: 'identity',
+                fields: [],
+                recordingId: draft.serverDraftId ?? '',
+              }
+            : null,
           formData: draft.formData,
           pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
             draft.formData.pimsPatientId,

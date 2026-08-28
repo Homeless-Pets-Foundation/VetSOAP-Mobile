@@ -155,6 +155,12 @@ export default function DurableRecoveryScreen() {
                 setBusyId(m.recordingId);
                 try {
                   await durableRecorder.discard({ userId: user.id, recordingId: m.recordingId }).catch(() => {});
+                  // A HELD orphan is discardable from this screen too, and
+                  // once its manifest and audio are gone nothing remains that
+                  // any reconciliation action could release the hold from.
+                  // Left behind, repeated discards walk the hard 50-entry cap
+                  // until a future conflict cannot persist its protection.
+                  await durableReconcileHold.remove(m.recordingId).catch(() => {});
                   await durableActiveStore.clearActive(m.recordingId).catch(() => {});
                   await durableTombstone.remove(m.recordingId).catch(() => {});
                   durableRecoveryStore.remove(m.recordingId);

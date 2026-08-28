@@ -159,16 +159,24 @@ echo "OK: ${#sos[@]} libraries inspected, every LOAD segment >= 16 KB aligned"
 **Both commands above inspect the APK, which is NOT what Play distributes.** The `production` profile builds an **AAB**; Play regenerates per-ABI split APKs from it, and the packaging that produces those splits is exactly what an AGP or NDK migration changes. A locally assembled APK can therefore pass both gates while the artifact users install is 4 KB-aligned. Build the bundle too and inspect what comes out of it:
 
 ```bash
-cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true ./gradlew :app:bundleRelease
+# Subshell: `cd android` in the current shell would make every repo-relative
+# path below resolve under android/android/ and bundletool would find nothing.
+(cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true ./gradlew :app:bundleRelease)
 AAB=android/app/build/outputs/bundle/release/app-release.aab
+[ -f "$AAB" ] || { echo "FAIL: no bundle at $AAB"; exit 1; }
 
-# Generate the split APKs Play would generate, for EVERY ABI (not just this
-# device's), then re-run the two checks above against each extracted split.
-bundletool build-apks --bundle="$AAB" --output=/tmp/app.apks --mode=universal
+# Generate the SPLIT set Play distributes -- bundletool's DEFAULT mode. Do NOT
+# pass --mode=universal: that emits one fat APK carrying every ABI, which no
+# device ever installs, so a split-packaging alignment regression passes a gate
+# that never looked at a split.
+rm -rf /tmp/app.apks /tmp/apks
+bundletool build-apks --bundle="$AAB" --output=/tmp/app.apks
 unzip -o -q /tmp/app.apks -d /tmp/apks
+mapfile -t splits < <(find /tmp/apks/splits -type f -name '*.apk')
+[ "${#splits[@]}" -gt 0 ] || { echo "FAIL: no split APKs generated from $AAB"; exit 1; }
 ```
 
-Re-run both the `zipalign -c -P 16 -v 4` check and the ELF loop against each APK under `/tmp/apks`. Approve 16 KB compatibility only once the BUNDLE-derived artifacts pass; the standalone APK passing is necessary, not sufficient.
+Re-run both the `zipalign -c -P 16 -v 4` check and the ELF loop against every APK in `${splits[@]}` — the per-ABI splits are where the `.so` entries live, so an inspection that skips them inspects nothing that matters. Approve 16 KB compatibility only once the BUNDLE-derived splits pass; the standalone APK passing is necessary, not sufficient.
 
 Then run the recording and editor checks on a 16 KB-page device or emulator image.
 

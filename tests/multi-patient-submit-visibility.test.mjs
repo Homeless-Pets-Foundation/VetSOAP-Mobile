@@ -264,6 +264,16 @@ test('a metadata divergence never deletes local work, and identity tier holds th
   // or the fix converts loud false failures into silence.
   assert.match(record, /errorCode: METADATA_MISMATCH_ERROR_CODE,/);
 
+  // Releasing the local copy must mirror the cleanup the divergence held back,
+  // durable half included, or the manifest and its audio linger in recovery.
+  const releaseBlock = record.slice(
+    record.indexOf('const handleReleaseLocalCopy = useCallback'),
+    record.indexOf('const handleResubmitAsNew = useCallback')
+  );
+  assert.match(releaseBlock, /durableRecorder\s*\.purgeAfterUpload\(/);
+  assert.match(releaseBlock, /durableTombstone\.add\(durable\.recordingId\)/);
+  assert.match(releaseBlock, /durableRecoveryStore\.remove\(durable\.recordingId\)/);
+
   // Every reconcile action is behind an explicit confirmation.
   assert.match(record, /METADATA_DIVERGENCE_COPY\.releaseLocalCopyConfirmTitle/);
   assert.match(record, /METADATA_DIVERGENCE_COPY\.resubmitAsNewConfirmTitle/);

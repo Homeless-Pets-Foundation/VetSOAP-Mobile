@@ -4538,11 +4538,26 @@ function RecordingSession() {
               // The server copy is already proven durable (committed keys with
               // a passing R2 HEAD), so releasing the local copy is safe. Only a
               // human can decide it is the same visit, which is what this is.
+              // This mirrors the post-upload cleanup the divergence held back,
+              // including the durable half — otherwise the native manifest and
+              // its audio would linger and keep surfacing in recovery.
+              const durable = slot.durable;
+              const userId = user?.id;
               slot.segments.forEach((seg) => {
                 safeDeleteFile(seg.uri);
               });
               draftStorage.deleteDraft(slot.id).catch(() => {});
               recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
+              if (durable && userId) {
+                durableRecorder
+                  .purgeAfterUpload({ userId, recordingId: durable.recordingId })
+                  .catch(() => {});
+                if (durable.recoveredAudioUri) safeDeleteFile(durable.recoveredAudioUri);
+                // The tombstone is what stops an offline self-heal from
+                // deleting the server row we just kept.
+                durableTombstone.add(durable.recordingId).catch(() => {});
+                durableRecoveryStore.remove(durable.recordingId);
+              }
               dispatch({
                 type: 'SET_METADATA_DIVERGENCE',
                 slotId: slot.id,
@@ -4553,7 +4568,7 @@ function RecordingSession() {
         ]
       );
     },
-    [dispatch]
+    [dispatch, user?.id]
   );
 
   const handleResubmitAsNew = useCallback(

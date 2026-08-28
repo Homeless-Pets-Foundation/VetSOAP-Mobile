@@ -2362,6 +2362,18 @@ function RecordingSession() {
         showUploadInProgressAlert();
         return;
       }
+      // Removing the patient discards the durable manifest or local draft AND
+      // the card with it, while uploadStatus 'success' keeps the possibly-wrong
+      // server recording — the persistent hold then protects nothing and can
+      // never be released. Resolve the conflict first, exactly as stashing and
+      // Submit All now require.
+      if (slot.metadataDivergence?.tier === 'identity') {
+        Alert.alert(
+          METADATA_DIVERGENCE_COPY.removeBlockedTitle,
+          METADATA_DIVERGENCE_COPY.removeBlockedBody
+        );
+        return;
+      }
 
       const hasRecording = slotHasRecoverableAudio(slot) || isSlotActivelyRecording(slot);
 
@@ -3550,7 +3562,25 @@ function RecordingSession() {
           // deleted without anyone deciding.
           if (conflictTier === 'identity' && user?.id) {
             const conflictHoldKey = slot.durable?.recordingId ?? slot.draftSlotId ?? slot.id;
-            await addReconcileHoldForUser(user.id, conflictHoldKey);
+            let conflictHeldPersisted = await addReconcileHoldForUser(user.id, conflictHoldKey);
+            if (!conflictHeldPersisted) {
+              conflictHeldPersisted = await addReconcileHoldForUser(user.id, conflictHoldKey);
+            }
+            if (!conflictHeldPersisted) {
+              // Honour the result. Without the hold this conflict exists only in
+              // memory: for a durable retry whose manifest still carries the
+              // server id, the next recovery scan verifies that row as uploaded,
+              // marks the manifest uploaded, finds nothing protecting it, and
+              // self-heals the audio away. Say so rather than implying the copy
+              // is safe until the vet gets back to it.
+              captureMessage('adopt_conflict_hold_not_persisted', 'warning', {
+                tags: { phase: 'upload_recovery', mode: slot.durable ? 'durable' : 'standard' },
+              });
+              Alert.alert(
+                METADATA_DIVERGENCE_COPY.holdUnprotectedTitle,
+                METADATA_DIVERGENCE_COPY.holdUnprotectedBody
+              );
+            }
           }
         }
 
@@ -5015,6 +5045,12 @@ function RecordingSession() {
                 });
                 runDeferredSuccessTransition(slot.id);
               })()
+                // .finally() PRESERVES a rejection, and this task is
+                // fire-and-forget from an Alert callback — so anything throwing
+                // outside the individually-handled calls becomes an unhandled
+                // rejection, which Hermes turns into a release-build crash
+                // (rule 4). The finalizers below still run either way.
+                .catch(() => {})
                 .finally(() => {
                   // Only if this task still OWNS the lock. The watchdog may have
                   // released it already and another slot may have claimed it —
@@ -5521,6 +5557,28 @@ function RecordingSession() {
     ],
   );
 
+  /**
+   * A slot holding a local copy for an unresolved identity divergence cannot be
+   * stashed: `stashSession()` skips every succeeded slot, yet the stash's
+   * cleanup deletes the local draft for EVERY slot in the session and then
+   * resets it. The held audio would be destroyed — and for a durable capture
+   * `markUploaded()` has already removed it from recovery, so nothing would be
+   * left pointing at it. Fail closed the same way in-flight upload work does;
+   * the three reconciliation actions are all quick.
+   */
+  const hasUnresolvedHeldCopy = useCallback(
+    () =>
+      sessionRef.current.slots.some(
+        // Not just the succeeded ones. An ADOPT-path conflict leaves the slot in
+        // 'error', and the stash payload does not carry metadataDivergence —
+        // `useStashedSessions` restores it as null — so Save Session then Resume
+        // silently strips all three reconciliation actions while the persisted
+        // hold keeps protecting audio nothing can now resolve.
+        (s) => s.metadataDivergence?.tier === 'identity',
+      ),
+    [],
+  );
+
   const handleSubmitAll = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
       showRecordPermissionAlert();
@@ -5537,6 +5595,17 @@ function RecordingSession() {
       Alert.alert(
         'Finish Active Recordings',
         'Finish or discard all active recording segments before submitting all patients.'
+      );
+      return;
+    }
+    // An adopt-path conflict sits in uploadStatus 'error', so the batch would
+    // otherwise pick it up as an ordinary retry — and uploadSlot() clears
+    // metadataDivergence at the start, silently re-submitting the disputed
+    // intent without the explicit choice the per-slot card insists on.
+    if (hasUnresolvedHeldCopy()) {
+      Alert.alert(
+        METADATA_DIVERGENCE_COPY.submitAllBlockedTitle,
+        METADATA_DIVERGENCE_COPY.submitAllBlockedBody
       );
       return;
     }
@@ -5699,7 +5768,7 @@ function RecordingSession() {
       try { netUnsub(); } catch { /* noop */ }
       setSessionActivity('idle');
     });
-  }, [clearSubmitIntent, finishingDraftSlotId, markSubmitIntent, recordFirstEnabled, recordSelectedSlotUploadNull, setActiveIndex, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
+  }, [clearSubmitIntent, finishingDraftSlotId, hasUnresolvedHeldCopy, markSubmitIntent, recordFirstEnabled, recordSelectedSlotUploadNull, setActiveIndex, slotHasLiveRecorder, uploadSlot, queryClient, router, resetSession, releaseResumedStashIfAny, tryAutoStashOnNetworkDeath, user?.role]);
 
   const handleAddPatient = useCallback(() => {
     // Frozen during Submit All — a new patient created mid-batch would be wiped
@@ -5729,28 +5798,6 @@ function RecordingSession() {
   }, [addSlot, recordFirstEnabled]);
 
   // -- Stash handlers --
-
-  /**
-   * A slot holding a local copy for an unresolved identity divergence cannot be
-   * stashed: `stashSession()` skips every succeeded slot, yet the stash's
-   * cleanup deletes the local draft for EVERY slot in the session and then
-   * resets it. The held audio would be destroyed — and for a durable capture
-   * `markUploaded()` has already removed it from recovery, so nothing would be
-   * left pointing at it. Fail closed the same way in-flight upload work does;
-   * the three reconciliation actions are all quick.
-   */
-  const hasUnresolvedHeldCopy = useCallback(
-    () =>
-      sessionRef.current.slots.some(
-        // Not just the succeeded ones. An ADOPT-path conflict leaves the slot in
-        // 'error', and the stash payload does not carry metadataDivergence —
-        // `useStashedSessions` restores it as null — so Save Session then Resume
-        // silently strips all three reconciliation actions while the persisted
-        // hold keeps protecting audio nothing can now resolve.
-        (s) => s.metadataDivergence?.tier === 'identity',
-      ),
-    [],
-  );
 
   const executeStash = useCallback(() => {
     if (hasBlockingUploadWork()) {
@@ -6013,7 +6060,20 @@ function RecordingSession() {
         const holdState = await durableReconcileHold
           .hasStrict(heldConflictKey)
           .catch(() => 'unknown' as const);
-        const conflictHeld = holdState !== 'not_held';
+        if (holdState === 'unknown') {
+          // Neither answer is safe to invent here. Restoring WITHOUT the card
+          // lets the next submit re-adopt a disputed row; restoring WITH one
+          // fabricates a conflict on an ordinary unsubmitted draft, telling the
+          // vet it is already on the server and offering to delete their only
+          // copy. So do not restore at all — nothing is lost by asking again
+          // once storage recovers.
+          Alert.alert(
+            METADATA_DIVERGENCE_COPY.draftUnavailableTitle,
+            METADATA_DIVERGENCE_COPY.draftUnavailableBody
+          );
+          return;
+        }
+        const conflictHeld = holdState === 'held';
 
         // Local files are present or R2 proof is sufficient — restore session.
         const restoredSlot: PatientSlot = {

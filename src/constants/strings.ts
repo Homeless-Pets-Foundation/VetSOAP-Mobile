@@ -84,6 +84,15 @@ export const METADATA_DIVERGENCE_COPY = {
   releaseLocalCopyFailedBody:
     'The recording is still saved on this device and the options above are still available. Try again in a moment.',
   dismissNotice: 'Got it',
+  draftUnavailableTitle: 'Could not open this recording',
+  draftUnavailableBody:
+    'This device could not read everything it needs to open this recording safely. Nothing has been changed — please try again in a moment.',
+  removeBlockedTitle: 'Check this visit first',
+  removeBlockedBody:
+    'This recording uploaded to a visit whose details do not match, and this device’s copy is being kept until you decide. Choose one of the options on it before removing this patient.',
+  submitAllBlockedTitle: 'Check one recording first',
+  submitAllBlockedBody:
+    'One recording uploaded to a visit whose details do not match. Choose an option on that recording, then submit the rest.',
   holdUnprotectedTitle: 'Choose now — this copy is not protected',
   holdUnprotectedBody:
     'The recording is still on this device, but this device could not save the note that keeps it. Pick one of the options on the recording before closing the app.',

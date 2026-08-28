@@ -830,11 +830,18 @@ test('stashing cannot destroy a held conflict copy', async () => {
   // stash payload does not carry metadataDivergence — resume restores it null,
   // stripping every reconciliation action while the hold still protects audio.
   assert.match(record, /\(s\) => s\.metadataDivergence\?\.tier === 'identity',/);
+  // Stash: before starting AND after the draft-flush await. Submit All: before
+  // the batch selects slots, since an adopt-path conflict sits in 'error' and
+  // uploadSlot() clears the divergence at the start.
   assert.equal(
     (record.match(/if \(hasUnresolvedHeldCopy\(\)\) \{/g) ?? []).length,
-    2,
-    'checked before starting AND after the draft flush await'
+    3,
+    'stash (twice) and Submit All must all refuse'
   );
+  assert.match(record, /METADATA_DIVERGENCE_COPY\.submitAllBlockedTitle/);
+  // Removing the patient would discard the manifest/draft and the card while
+  // leaving the possibly-wrong server recording and an unreleasable hold.
+  assert.match(record, /METADATA_DIVERGENCE_COPY\.removeBlockedTitle/);
   assert.match(record, /METADATA_DIVERGENCE_COPY\.stashBlockedTitle/);
 });
 
@@ -1058,11 +1065,13 @@ test('hold mutations are serialized, and the slot is frozen during reconciliatio
   // add() calls read the same list and the second write drops the first — while
   // BOTH report success, so both callers mark their manifests uploaded and the
   // dropped one is purged by the next startup scan.
-  assert.match(hold, /let mutationChain: Promise<unknown> = Promise\.resolve\(\);/);
-  assert.match(hold, /function serialize<T>\(op: \(\) => Promise<T>\): Promise<T>/);
-  assert.equal((hold.match(/return serialize\(async \(\) => \{/g) ?? []).length, 2);
+  // PER USER: a global chain lets a hung read for user A block every mutation
+  // for user B behind a promise that never settles.
+  assert.match(hold, /const mutationChains = new Map<string, Promise<unknown>>\(\);/);
+  assert.match(hold, /function serialize<T>\(userId: string, op: \(\) => Promise<T>\): Promise<T>/);
+  assert.equal((hold.match(/return serialize\(userId, async \(\) => \{/g) ?? []).length, 2);
   // Re-read inside the lock, or the queued call still writes a stale list.
-  assert.match(hold, /return serialize\(async \(\) => \{\s*(\/\/[^\n]*\n\s*)*const loaded = await loadList\(userId\);/);
+  assert.match(hold, /return serialize\(userId, async \(\) => \{\s*(\/\/[^\n]*\n\s*)*const loaded = await loadList\(userId\);/);
 
   // The transaction owns the slot's draft, files, and manifest for seconds:
   // locking only the card's buttons left "Delete & Start Over" live.
@@ -1121,8 +1130,8 @@ test('tombstone mutations are serialized like the holds', async () => {
   // add(); interleaved, the second whole-list write drops the first — and a
   // dropped tombstone is a confirmed-uploaded recording whose server row
   // cleanupOrphaned can then delete.
-  assert.match(tomb, /let mutationChain: Promise<unknown> = Promise\.resolve\(\);/);
-  assert.equal((tomb.match(/return serialize\(async \(\) => \{/g) ?? []).length, 3);
+  assert.match(tomb, /const mutationChains = new Map<string, Promise<unknown>>\(\);/);
+  assert.equal((tomb.match(/return serialize\(userId, async \(\) => \{/g) ?? []).length, 3);
 });
 
 test('a held copy survives background autosave and freezes its audio controls', async () => {
@@ -1150,10 +1159,10 @@ test('an adopt-path conflict persists its hold, and the watchdog is cancelled', 
   // The divergence state dies with the process while the manifest can still
   // carry serverRecordingId — so the next scan verifies that row as uploaded,
   // finds no hold, and self-heals the audio behind an unresolved conflict.
-  assert.match(
-    record,
-    /if \(conflictTier === 'identity' && user\?\.id\) \{\s*const conflictHoldKey = slot\.durable\?\.recordingId \?\? slot\.draftSlotId \?\? slot\.id;\s*await addReconcileHoldForUser\(user\.id, conflictHoldKey\);/
-  );
+  // The write result is honoured here too: without the hold the conflict lives
+  // only in memory, and the next scan self-heals the audio away.
+  assert.match(record, /let conflictHeldPersisted = await addReconcileHoldForUser\(user\.id, conflictHoldKey\);/);
+  assert.match(record, /adopt_conflict_hold_not_persisted/);
   // A watchdog that is not cancelled fires anyway: false warning, bumped
   // generation, and a cleanup-failed alert after a successful removal.
   assert.match(record, /let releaseWatchdog: ReturnType<typeof setTimeout> \| null = null;/);
@@ -1188,7 +1197,12 @@ test('a restored draft rebuilds its conflict from the persisted hold', async () 
   // Fail CLOSED: a transient Keystore failure must not restore the draft with
   // no card while it still carries the disputed identity.
   assert.match(record, /const holdState = await durableReconcileHold\s*\.hasStrict\(heldConflictKey\)/);
-  assert.match(record, /const conflictHeld = holdState !== 'not_held';/);
+  // 'unknown' invents nothing: restoring without the card lets the next submit
+  // re-adopt a disputed row, and restoring WITH one fabricates a conflict on an
+  // ordinary draft and offers to delete the vet's only copy. Refuse to open.
+  assert.match(record, /if \(holdState === 'unknown'\) \{/);
+  assert.match(record, /METADATA_DIVERGENCE_COPY\.draftUnavailableTitle/);
+  assert.match(record, /const conflictHeld = holdState === 'held';/);
   assert.match(
     record,
     /metadataDivergence: conflictHeld\s*\? \{\s*tier: 'identity',/

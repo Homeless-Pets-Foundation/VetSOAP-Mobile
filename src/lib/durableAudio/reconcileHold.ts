@@ -106,14 +106,24 @@ async function readList(userId: string): Promise<string[]> {
  * through this module, and the operations are short — so ordering them removes
  * the interleave entirely rather than trying to detect it.
  */
-let mutationChain: Promise<unknown> = Promise.resolve();
+/**
+ * PER USER, not global. A hung SecureStore call for user A would otherwise
+ * block every later mutation for user B behind a promise that never settles —
+ * on a shared clinic tablet that means B's next divergent upload waits forever
+ * for a hold that can never be written.
+ */
+const mutationChains = new Map<string, Promise<unknown>>();
 
-function serialize<T>(op: () => Promise<T>): Promise<T> {
-  const run = mutationChain.then(op, op);
+function serialize<T>(userId: string, op: () => Promise<T>): Promise<T> {
+  const previous = mutationChains.get(userId) ?? Promise.resolve();
+  const run = previous.then(op, op);
   // Keep the chain alive regardless of outcome; each caller sees its own result.
-  mutationChain = run.then(
-    () => undefined,
-    () => undefined,
+  mutationChains.set(
+    userId,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
   );
   return run;
 }
@@ -141,7 +151,7 @@ export const durableReconcileHold = {
   async add(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId || !isValidDurableId(recordingId)) return false;
-    return serialize(async () => {
+    return serialize(userId, async () => {
       // Re-read INSIDE the lock: a concurrent add may have landed since this
       // call was queued, and the cached list it saw before is now stale.
       const loaded = await loadList(userId);
@@ -180,7 +190,7 @@ export const durableReconcileHold = {
   async remove(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId) return false;
-    return serialize(async () => {
+    return serialize(userId, async () => {
       const loaded = await loadList(userId);
       if (!loaded.known) return false;
       const next = loaded.list.filter((id) => id !== recordingId);

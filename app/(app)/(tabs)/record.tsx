@@ -949,6 +949,13 @@ function RecordingSession() {
     // on a queued slot makes the loop upload stale audio or files the UI just
     // deleted (Codex P1, PR #143).
     if (submitIntentSlotIdsRef.current.has(slotId)) return true;
+    // A reconciliation transaction owns this slot's draft, audio files, and
+    // durable manifest for seconds at a time. Locking only the divergence
+    // buttons left the ordinary controls live, so "Delete & Start Over" could
+    // begin replacement work mid-cleanup — after which the old transaction
+    // resumes, marks the slot successful, and runs the deferred reset over the
+    // new audio.
+    if (reconcilingSlotIdRef.current === slotId) return true;
     return sessionRef.current.slots.some(
       (slot) => slot.id === slotId && slot.uploadStatus === 'uploading',
     );
@@ -5124,6 +5131,13 @@ function RecordingSession() {
       await durableReconcileHold.remove(durable.recordingId).catch(() => {});
       await durableReconcileHold.remove(slot.draftSlotId ?? slot.id).catch(() => {});
 
+      // Last check before the point of no return. The timeout can fire while
+      // either removal above is awaiting storage, after which the gates are
+      // released and a retry may already be copying to the SAME loose-copy URI
+      // — so an abandoned transaction that walked straight into the purge could
+      // destroy the source under it, and a failed retry would then delete the
+      // shared destination too, leaving the draft with no audio at all.
+      if (!scopeIsCurrent()) return null;
       await durableRecorder
         .purgeAfterUpload({ userId, recordingId: durable.recordingId })
         .catch(() => {});
@@ -5266,6 +5280,18 @@ function RecordingSession() {
                     slotId: slot.id,
                     segments: restarted.segments,
                   });
+                }
+                // A STANDARD slot skips the conversion helper, and with it the
+                // only place that drops the slot-key hold. The replacement
+                // identity is durably persisted by the restart transaction that
+                // just returned, so the old hold now protects nothing — and
+                // leaving it there walks the bounded 50-entry list toward the
+                // cap, after which a future conflict cannot persist its
+                // protection at all.
+                if (!converted) {
+                  await durableReconcileHold
+                    .remove(slot.draftSlotId ?? slot.id)
+                    .catch(() => {});
                 }
                 // This submit will produce its own transition; drop the one the
                 // previous submit deferred so it cannot fire against a session

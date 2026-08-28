@@ -94,6 +94,30 @@ async function readList(userId: string): Promise<string[]> {
   return loaded.known ? loaded.list : [];
 }
 
+/**
+ * Serializes read-modify-write. Two slots in one session can finish
+ * identity-divergent uploads at the same time; interleaved, both `add()` calls
+ * read the same list, append different ids, and the second write silently drops
+ * the first — while BOTH report success, so both callers go on to mark their
+ * manifests uploaded. The dropped one is then purged by the next startup scan:
+ * a lost recording produced by two conflicts happening at once.
+ *
+ * A promise chain is enough here. There is one JS context, every mutation goes
+ * through this module, and the operations are short — so ordering them removes
+ * the interleave entirely rather than trying to detect it.
+ */
+let mutationChain: Promise<unknown> = Promise.resolve();
+
+function serialize<T>(op: () => Promise<T>): Promise<T> {
+  const run = mutationChain.then(op, op);
+  // Keep the chain alive regardless of outcome; each caller sees its own result.
+  mutationChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 async function writeList(userId: string, list: string[]): Promise<boolean> {
   invalidateCache();
   const persisted = await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
@@ -117,15 +141,19 @@ export const durableReconcileHold = {
   async add(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId || !isValidDurableId(recordingId)) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const list = loaded.list;
-    if (list.includes(recordingId)) return true;
-    // Refuse rather than evict: dropping the oldest hold would hand a retained
-    // recording to the next self-heal without anyone deciding.
-    if (list.length >= MAX_RECONCILE_HOLDS) return false;
-    list.push(recordingId);
-    return writeList(userId, list);
+    return serialize(async () => {
+      // Re-read INSIDE the lock: a concurrent add may have landed since this
+      // call was queued, and the cached list it saw before is now stale.
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const list = loaded.list;
+      if (list.includes(recordingId)) return true;
+      // Refuse rather than evict: dropping the oldest hold would hand a
+      // retained recording to the next self-heal without anyone deciding.
+      if (list.length >= MAX_RECONCILE_HOLDS) return false;
+      list.push(recordingId);
+      return writeList(userId, list);
+    });
   },
 
   async has(recordingId: string): Promise<boolean> {
@@ -152,11 +180,13 @@ export const durableReconcileHold = {
   async remove(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const next = loaded.list.filter((id) => id !== recordingId);
-    if (next.length === loaded.list.length) return true;
-    return writeList(userId, next);
+    return serialize(async () => {
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const next = loaded.list.filter((id) => id !== recordingId);
+      if (next.length === loaded.list.length) return true;
+      return writeList(userId, next);
+    });
   },
 
   async list(): Promise<string[]> {

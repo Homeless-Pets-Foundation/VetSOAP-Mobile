@@ -878,7 +878,7 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   // addReconcileHoldForUser.
   assert.equal(
     (record.match(/durableReconcileHold\s*\.remove\(/g) ?? []).length,
-    7
+    8
   );
   // A STANDARD held copy needs the marker too: DraftMetadata carries no
   // divergence field, so evictExpired() would otherwise delete it silently at
@@ -1028,4 +1028,49 @@ test('a server 409 has a way out, not just a dismissal', async () => {
     card.indexOf("{slot.metadataDivergence.tier === 'identity' && (")
   );
   assert.match(unknownBlock, /onResubmitAsNew\?\.\(slot\.id\)/);
+});
+
+test('hold mutations are serialized, and the slot is frozen during reconciliation', async () => {
+  const hold = await read('src/lib/durableAudio/reconcileHold.ts');
+  const record = await read('app/(app)/(tabs)/record.tsx');
+
+  // Two slots can finish identity-divergent uploads at once. Interleaved, both
+  // add() calls read the same list and the second write drops the first — while
+  // BOTH report success, so both callers mark their manifests uploaded and the
+  // dropped one is purged by the next startup scan.
+  assert.match(hold, /let mutationChain: Promise<unknown> = Promise\.resolve\(\);/);
+  assert.match(hold, /function serialize<T>\(op: \(\) => Promise<T>\): Promise<T>/);
+  assert.equal((hold.match(/return serialize\(async \(\) => \{/g) ?? []).length, 2);
+  // Re-read inside the lock, or the queued call still writes a stale list.
+  assert.match(hold, /return serialize\(async \(\) => \{\s*(\/\/[^\n]*\n\s*)*const loaded = await loadList\(userId\);/);
+
+  // The transaction owns the slot's draft, files, and manifest for seconds:
+  // locking only the card's buttons left "Delete & Start Over" live.
+  assert.match(record, /if \(reconcilingSlotIdRef\.current === slotId\) return true;/);
+  const activeAt = record.indexOf('const isSlotUploadActive = useCallback');
+  const lockAt = record.indexOf('if (reconcilingSlotIdRef.current === slotId) return true;');
+  assert.ok(activeAt > -1 && lockAt > activeAt);
+});
+
+test('an abandoned conversion rechecks before the purge, and standard holds are released', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const convert = record.slice(
+    record.indexOf('const persistPostConfirmSeparateSubmission = useCallback'),
+    record.indexOf('const handleDismissDivergence = useCallback')
+  );
+
+  // The timeout can fire while a hold removal awaits storage; a retry may then
+  // be copying to the same URI that this purge is about to destroy.
+  const lastRemoveAt = convert.lastIndexOf('durableReconcileHold.remove(');
+  const recheckAt = convert.indexOf('if (!scopeIsCurrent()) return null;', lastRemoveAt);
+  const purgeAt = convert.indexOf('purgeAfterUpload', lastRemoveAt);
+  assert.ok(recheckAt > lastRemoveAt && purgeAt > recheckAt, 'recheck must sit between the removals and the purge');
+
+  // A standard slot skips the conversion, and with it the only hold removal —
+  // walking the bounded list toward the cap on every repeat.
+  const resubmit = record.slice(
+    record.indexOf('const handleResubmitAsNew = useCallback'),
+    record.indexOf('const handleSubmitSingle = useCallback')
+  );
+  assert.match(resubmit, /if \(!converted\) \{\s*await durableReconcileHold\s*\.remove\(slot\.draftSlotId \?\? slot\.id\)/);
 });

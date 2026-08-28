@@ -141,10 +141,15 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 - **Microphone permission revoked mid-capture**, on both platforms: start recording, revoke access in system settings, return to the app. `useAudioRecorder` is required to survive this (CLAUDE.md rule 6) — `stop()` swallows and cleans up, `pause()`/`resume()` clean up and rethrow — and no other check on this list produces a native op failing under the recorder. Verify the partial audio is retained, the hook is not left stuck in `recording`, then re-grant access and start a fresh recording in the same session.
 - **Multi-patient recorder ownership, with at least two slots.** Every other check here uses one patient, but this migration moves the scrolling/ref APIs and Reanimated/worklets that the pageable patient cards are built on, and the single-recorder handoff is timing-dependent (`recorderBoundToSlotId`, the `pendingStartSlotRef` queue, auto-pause on swipe-away). The Node tests only read that control flow as source. A regression here attaches one patient's exam audio to another patient's slot — a clinical-correctness failure, not a UX one. Start capture on patient A, switch to B while the pause/stop is still in flight, record B, and confirm each segment and each upload lands only on its intended slot.
 
+**Offline → online, without restarting the flow** — an SDK bump rebuilds `@react-native-community/netinfo` against the new RN. Every other check here runs online, and an offline Finish stays `pendingSync` until `usePendingDraftSync` sees reachability, so a bridge that stops emitting usable events compiles, passes every fresh-online submit, and leaves drafts permanently unsynced. Finish a recording in airplane mode, re-enable the network WITHOUT restarting the app or the workflow, and confirm the existing draft syncs and submits on its own.
+
+**Upload wake-lock past the screen timeout** — `acquireKeepAwakeLease()` deliberately swallows native activation failures, and `expo-keep-awake` moves transitively with Expo. A short emulator upload passes with the screen on, while a clinic-sized upload dies once the normal Android screen timeout lets Doze reap the socket. Run an Android upload longer than the device's configured screen timeout, confirm the screen stays awake and the upload completes, then confirm normal timeout behaviour returns afterwards.
+
 **Auth, storage and device identity** — the Node tests mock every one of these bridges, and compiling proves nothing about them. An SDK major moves `expo-secure-store`, `expo-crypto`, `expo-local-authentication`, and the social-auth modules underneath:
 
 - Cold-start session restoration after a real app kill (SecureStore round-trip, including the read-back verification in `src/auth/supabase.ts`)
 - Device registration: confirm `X-Device-Id` is present on requests and that `getDeviceId()` still returns a stable UUID (Rule 21 — Hermes has no `globalThis.crypto` on iOS)
+- Device TYPE, not just the id (Rule 23): `registerDevice()` reads `Device.deviceType` on Android and `Platform.isPad` on iOS, and an unavailable or renamed Android enum silently falls back to `android_tablet`. Register a representative phone and tablet on each platform and confirm the server and the Devices screen show `ios_phone` / `ios_tablet` / `android_phone` / `android_tablet` correctly — a mislabelled device is what an admin revokes by
 - Biometric unlock through `AppLockGuard`, including a cancelled prompt
 - Email/password sign-in plus Google (Android) and Apple (iOS) sign-in
 - **An enforced-MFA account end to end**: sign in, land on `MFA_REQUIRED`, complete the challenge, and confirm the profile loads. The MFA path derives its access and refresh tokens from the Supabase session and only finishes after verification, so an ordinary sign-in can pass while every enforced-MFA user is locked out.
@@ -181,13 +186,16 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
    - The Android production build needs a prebuild first (`android/` is not committed), and **the prebuild is where the production environment matters**: `expo prebuild` evaluates `app.config.ts` to generate the native project, so `APP_VARIANT` and the Google variables must be set on THAT command, not only on Gradle. Setting them for Gradle alone cannot regenerate a native project that was emitted without the conditional Google Sign-In plugin — the APK then builds green while the shipping plugin and pod/dependency graph go untested.
 
      ```bash
-     APP_VARIANT=production EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME=<production value> \
-       npx expo prebuild --platform android --clean
+     # Load the FULL production environment for BOTH commands, not just the two
+     # variables the plugins branch on: Gradle runs Metro, which inlines every
+     # EXPO_PUBLIC_* at bundle time (CLAUDE.md > EAS Build Notes).
+     set -a; . ./.env.production; set +a
+     APP_VARIANT=production npx expo prebuild --platform android --clean
      cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true \
        ./gradlew :app:assembleRelease
      ```
 
-     The same rule applies to the iOS prebuild above. A production-parity `eas build --local` is the alternative on either platform, and is the safer choice if the environment is hard to reproduce by hand.
+     Without the full set the APK embeds empty Supabase, R2, and Google configuration, so it cannot run the auth or upload checks §6 requires and the JS bundle it ships is not the one users get. The same rule applies to the iOS prebuild above. A production-parity `eas build --local` is the alternative on either platform, and is the safer choice if the environment is hard to reproduce by hand.
    - §6's device checks are scoped to Option B only because Option A is *usually* JS-only. Any native bump removes that exemption.
 2. Only then attempt Option B, on a separate branch, one concern at a time: resolve versions → patches → native modules → FFmpeg → typecheck → device test.
 3. Bump the marketing version in `package.json` **and** `package-lock.json` before any store build (`app.config.ts` reads `MARKETING_VERSION` from `package.json` and carries no literal semver).

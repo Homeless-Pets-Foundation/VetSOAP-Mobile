@@ -161,13 +161,20 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
 - **SOAP PDF export** (`src/lib/share.ts`, `expo-print` + `expo-sharing`): `tests/soap-pdf.test.mjs` only confirms the modules are lazy-required, and compiling proves nothing about `printToFileAsync()` or `shareAsync()` at runtime. Both packages move with the `expo-*` patch bumps Option A advertises. Generate a SOAP PDF and share it on both platforms whenever either package changes.
 - **Sensitive clipboard** (`src/lib/secureClipboard.ts`, `expo-clipboard`): `copyWithAutoClear()` / `clearClipboard()` hold MFA enrolment secrets, SOAP notes, transcripts, and client data, and the tests only confirm callers reference the helper. On a changed or unavailable bridge that content can outlive its 30-second timeout on a shared clinic tablet. Copy sensitive text and verify the timeout, backgrounding, and sign-out triggers each clear it, on both platforms.
 
-**Cross-user cache isolation** — `queryClient.clear()` on sign-out is the PHI-isolation guarantee, and `queryPersistence.ts` depends on the installed `persistQueryClient` tuple, its restore timing, and throttled writes. `tests/query-persistence-guard.test.mjs` only reads source. If the TanStack packages move, switch users on a real device while a restore or a throttled write is still pending and confirm no outgoing-user query hydrates into the incoming session and nothing of theirs remains stored.
+**Cross-user isolation — the query cache AND every local recording store.** Two separate mechanisms, and the migration touches both:
+
+- `queryClient.clear()` on sign-out is the PHI-isolation guarantee for server data, and `queryPersistence.ts` depends on the installed `persistQueryClient` tuple, its restore timing, and throttled writes. `tests/query-persistence-guard.test.mjs` only reads source.
+- Drafts, stashes, recovery intents, durable manifests and their audio are isolated by per-user SCOPING, not by wiping (rule 8), and every one of those stores is armed asynchronously from `AuthProvider.fetchUser()` via `setUserId`. SecureStore, FileSystem, and Supabase restoration timing all move in this migration, and the upgrade-in-place test below only ever exercises ONE user — so a store still holding user A's scope when user B signs in would go unnoticed, and on a shared clinic tablet that means B seeing, submitting, or deleting A's clinical audio.
+
+Switch accounts on a real device WHILE a restore or a cleanup is still pending, and confirm: no outgoing-user query hydrates into the incoming session, nothing of theirs remains stored, and B's Record tab, draft list, saved sessions, and recovery screen show none of A's work — then sign back in as A and confirm A's work is all still there.
 
 **Upgrade-in-place, with pre-existing work** — every check above creates its data under the new build, but real users install over SDK 55 with drafts, stashes, recovery intents, and durable manifests already on disk. The migration moves both `expo-secure-store` and `expo-file-system`, so a path, accessibility-class, or serialization change can make that work vanish while fresh recordings and crash recovery both pass:
 
 1. On the **released SDK-55 binary**, seed one of each: an un-sent draft, a saved session (stash), a durable capture killed mid-recording, and a draft with a `pendingConfirm`.
 2. Install the candidate build **over it, without clearing app data**.
 3. Verify every item reappears, still carries its metadata, and is still submittable.
+
+**Password-recovery deep link** — `app/_layout.tsx` parses the reset tokens out of a query string OR a fragment, calls `setSession()`, and routes on `PASSWORD_RECOVERY`; it moves with Expo Linking, Expo Router, AND Supabase, so both an Option A Supabase bump and an Option B alignment can break it while ordinary sign-in and the representative deep link both pass. Open a real emailed reset link on a cold start (`getInitialURL`) and again with the app already running (`addEventListener`), then change the password and sign in with the new one.
 
 **Navigation** — an SDK major moves Expo Router, `react-native-screens`, and React Navigation together, and a routing regression compiles cleanly while leaving a list unreachable. This app has already been bitten once: the attention screen had to move inside the `(tabs)` group because `router.back()` follows the ROOT history and stranded the Recordings tab on a detail with its list gone. Walk every tab, open and exit a recording detail and the attention screen, exercise Android hardware back from each, and restore a representative deep link.
 
@@ -189,7 +196,17 @@ After prebuild, read the generated `android/app/src/main/AndroidManifest.xml` an
      # Load the FULL production environment for BOTH commands, not just the two
      # variables the plugins branch on: Gradle runs Metro, which inlines every
      # EXPO_PUBLIC_* at bundle time (CLAUDE.md > EAS Build Notes).
-     set -a; . ./.env.production; set +a
+     #
+     # `.env` is the established file here (`.env.production` does not exist and
+     # is not gitignored as a pattern). Fail CLOSED: sourcing a missing file
+     # leaves the shell running, and a silently unconfigured APK is exactly the
+     # artifact this step is trying not to produce.
+     test -f ./.env || { echo 'no ./.env — refusing to build'; exit 1; }
+     set -a; . ./.env; set +a
+     for v in EXPO_PUBLIC_API_URL EXPO_PUBLIC_SUPABASE_URL \
+              EXPO_PUBLIC_SUPABASE_ANON_KEY EXPO_PUBLIC_R2_BUCKET_HOSTNAME; do
+       [ -n "${!v}" ] || { echo "$v is empty — refusing to build"; exit 1; }
+     done
      APP_VARIANT=production npx expo prebuild --platform android --clean
      cd android && APP_VARIANT=production SENTRY_DISABLE_AUTO_UPLOAD=true \
        ./gradlew :app:assembleRelease

@@ -23,6 +23,16 @@ export interface RecoverySelectionInput {
    * already confirmed. Route these to self-heal (purge), never offer.
    */
   tombstonedRecordingIds?: ReadonlySet<string>;
+  /**
+   * Durable recordingIds confirmed-uploaded but deliberately RETAINED because
+   * the server row's identity metadata diverged and a human has not yet said
+   * which visit it belongs to. The confirmed-uploaded branch below runs before
+   * draft suppression, so without this the next launch would self-heal exactly
+   * the copy the reconciliation card promised to keep — for a vet who merely
+   * closed the app before deciding. Suppress instead: neither offered (the
+   * draft still owns it) nor purged.
+   */
+  heldRecordingIds?: ReadonlySet<string>;
 }
 
 export interface RecoverySelection {
@@ -69,7 +79,35 @@ export function selectRecoverableSessions(input: RecoverySelectionInput): Recove
   const suppressed: DurableRecordingManifest[] = [];
 
   const tombstoned = input.tombstonedRecordingIds ?? new Set<string>();
+  const held = input.heldRecordingIds ?? new Set<string>();
   for (const manifest of input.manifests) {
+    // Checked BEFORE both terminal branches: a held recording is uploaded, and
+    // may also be tombstoned by a later action, but until the conflict is
+    // resolved its local footprint must survive.
+    if (held.has(manifest.recordingId)) {
+      const ownedLocally =
+        input.draftRecordingIds.has(manifest.recordingId) ||
+        input.stashRecordingIds.has(manifest.recordingId);
+      if (ownedLocally) {
+        // A draft or stash owns it, so the reconciliation card is reachable
+        // through that. Neither offer it (two surfaces on one file) nor purge.
+        suppressed.push(manifest);
+      } else if (manifest.adtsFrameCount > 0) {
+        // Nothing owns it — the draft save failed, or the process died before
+        // background persistence ran. Suppressing here too would leave the
+        // audio on disk and permanently unreachable: the hold is surfaced
+        // nowhere else. OFFER it instead, which is the vet's only route back to
+        // a recording we promised to keep. `shouldOfferRecovery` would refuse
+        // (it excludes confirmed-uploaded manifests), and that exclusion is
+        // right for every case except this one — a re-submit is safe here
+        // anyway, since the deterministic `durable-${recordingId}` key promotes
+        // the same server row rather than creating a second.
+        offer.push(manifest);
+      } else {
+        suppressed.push(manifest); // zero frames: nothing to recover
+      }
+      continue;
+    }
     if (isConfirmedUploaded(manifest)) {
       // Still on disk after a confirmed upload -> self-heal (purge), never offer.
       selfHeal.push(manifest);

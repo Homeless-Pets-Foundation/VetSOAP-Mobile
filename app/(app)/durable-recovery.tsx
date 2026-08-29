@@ -9,6 +9,7 @@ import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { useDurableRecoveries } from '../../src/hooks/useDurableRecoveries';
 import { durableRecoveryStore } from '../../src/lib/durableAudio/recoveryState';
 import { durableTombstone } from '../../src/lib/durableAudio/tombstone';
+import { durableReconcileHold } from '../../src/lib/durableAudio/reconcileHold';
 import { durableActiveStore } from '../../src/lib/durableAudio/activeStore';
 import { draftStorage } from '../../src/lib/draftStorage';
 import * as durableRecorder from '../../modules/captivet-durable-recorder';
@@ -55,7 +56,7 @@ function isEditNotApplied(m: DurableRecordingManifest): boolean {
   return m.edited === true && m.anchorsPending === true;
 }
 
-function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
+function manifestToDurableSlot(m: DurableRecordingManifest, held = false): PatientSlot {
   // Derive the draft/slot id from the (unique) recordingId, NOT manifest.slotId:
   // Android synthesizes orphan manifests with a constant slotId ("recovered"), so
   // reusing it would make two recovered orphans collide on the same draft key and
@@ -68,6 +69,18 @@ function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
     uploadKeyOverride: m.uploadKeyOverride ?? null,
     supersededUploadKey: m.supersededUploadKey ?? null,
     uploadRecovery: null,
+    // A HELD manifest reaches this screen only because its upload confirmed
+    // against a server row whose identity metadata diverged, and no draft or
+    // stash was left owning it. Restoring it blank would be the worst possible
+    // resolution: on a record-first account the vet can submit immediately,
+    // the adopt comparison reads the server's populated values as enrichment
+    // of our blanks, accepts that row, and purges the audio — silently making
+    // the choice the conflict existed to put in front of a human. So the
+    // conflict is carried through instead, and the anchor is dropped so a
+    // submit CANNOT re-adopt the disputed row.
+    metadataDivergence: held
+      ? { tier: 'identity', fields: [], recordingId: m.serverRecordingId ?? '' }
+      : null,
     formData: { ...BLANK_FORM },
     pimsPatientIdExplicitlyCleared: false,
     audioState: 'stopped',
@@ -87,7 +100,7 @@ function manifestToDurableSlot(m: DurableRecordingManifest): PatientSlot {
     uploadError: null,
     serverRecordingId: null,
     draftSlotId: slotId,
-    serverDraftId: m.serverRecordingId ?? null,
+    serverDraftId: held ? null : (m.serverRecordingId ?? null),
     draftMetadataDirty: false,
     pendingConfirm: null,
   };
@@ -113,7 +126,8 @@ export default function DurableRecoveryScreen() {
         // Synthesize a durable draft, then reuse the existing draft-resume path.
         // The draft/slot id is derived from recordingId (see manifestToDurableSlot)
         // so the resume param must match — never the possibly-non-unique slotId.
-        await draftStorage.saveDraft(manifestToDurableSlot(m));
+        const held = await durableReconcileHold.has(m.recordingId).catch(() => false);
+        await draftStorage.saveDraft(manifestToDurableSlot(m, held));
         durableRecoveryStore.remove(m.recordingId);
         trackEvent({ name: 'durable_recovery_restored', props: { mode: 'review' } });
         router.replace({ pathname: '/(tabs)/record', params: { draftSlotId: m.recordingId } } as never);
@@ -141,6 +155,12 @@ export default function DurableRecoveryScreen() {
                 setBusyId(m.recordingId);
                 try {
                   await durableRecorder.discard({ userId: user.id, recordingId: m.recordingId }).catch(() => {});
+                  // A HELD orphan is discardable from this screen too, and
+                  // once its manifest and audio are gone nothing remains that
+                  // any reconciliation action could release the hold from.
+                  // Left behind, repeated discards walk the hard 50-entry cap
+                  // until a future conflict cannot persist its protection.
+                  await durableReconcileHold.remove(m.recordingId).catch(() => {});
                   await durableActiveStore.clearActive(m.recordingId).catch(() => {});
                   await durableTombstone.remove(m.recordingId).catch(() => {});
                   durableRecoveryStore.remove(m.recordingId);

@@ -106,7 +106,7 @@ export type AnalyticsEvent =
   // Submit
   | { name: 'submit_attempted'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; network_state: NetworkState } & SubmitDiagnosticsProps }
   | { name: 'submit_succeeded'; props: { slot_index: number; segment_count: number; duration_s: number; size_bytes: number; recording_id: string; attempt_number: number; latency_ms: number } & SubmitDiagnosticsProps }
-  | { name: 'submit_failed'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; error_phase: ErrorPhase; error_code: string; network_state: NetworkState; latency_ms: number } & SubmitDiagnosticsProps }
+  | { name: 'submit_failed'; props: { slot_index: number; segment_count: number; duration_s: number; recording_id?: string; attempt_number: number; error_phase: ErrorPhase; error_code: string; /** Transport as of the FAILURE. */ network_state: NetworkState; /** Transport when the attempt began — a difference means the radio changed mid-upload. */ network_state_at_start?: NetworkState; latency_ms: number } & SubmitDiagnosticsProps }
   | { name: 'upload_stale_recording_recovery'; props: { stage: string; outcome: string; attempt: 1; segment_count: number; mode: 'durable' | 'standard' } }
   | { name: 'submit_all_attempted'; props: { slot_count: number } }
   | { name: 'submit_all_completed'; props: { slot_count: number; success_count: number; failure_count: number } }

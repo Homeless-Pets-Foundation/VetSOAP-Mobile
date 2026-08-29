@@ -16,7 +16,7 @@ import { captureMessage } from './monitoring';
 import type { CreateRecording, User } from '../types';
 import type { StashedSession, StashedSlot } from '../types/stash';
 import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '../types/multiPatient';
-import { isValidDurableId } from './durableAudio/paths';
+import { isValidDurableId, RECOVERED_DURABLE_DIR_NAME } from './durableAudio/paths';
 import { normalizeUploadIntentId } from './uploadIntent';
 import { clonePendingConfirm } from './pendingConfirm';
 import { isPimsPatientIdExplicitlyCleared } from './pimsPatientIdIntent';
@@ -28,7 +28,7 @@ const BASE_RECOVERY_DIR = `${Paths.document.uri}support-staff-recovery/`;
 // item's copy lives under recoveryDir(itemId), which restore deletes — a durable
 // draft only stores the pointer (saveDraft never copies durable bytes), so the
 // bytes must be moved here first or the restored draft points at a deleted file.
-const RESTORED_DURABLE_DIR = `${Paths.document.uri}recovered-durable/`;
+const RESTORED_DURABLE_DIR = `${Paths.document.uri}${RECOVERED_DURABLE_DIR_NAME}/`;
 const ACTIVE_KEY = 'captivet_support_staff_recovery_active';
 
 type Generation = 'a' | 'b';
@@ -967,6 +967,7 @@ function makeRestoredSlot(
     uploadKeyOverride: reuseSourceUpload ? (slot.uploadKeyOverride ?? null) : null,
     supersededUploadKey: reuseSourceUpload ? (slot.supersededUploadKey ?? null) : null,
     uploadRecovery: null,
+    metadataDivergence: null,
     formData,
     pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
       formData.pimsPatientId,

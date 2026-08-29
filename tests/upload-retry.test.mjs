@@ -179,12 +179,79 @@ test('getUploadPhase defaults to "unknown" for untagged or non-Error inputs', as
   assert.equal(getUploadPhase(undefined), 'unknown');
 });
 
+test('phaseErrorWithDetail attaches an UPPER_SNAKE code, a diagnostic, and a recoverable hint', async () => {
+  const { phaseErrorWithDetail, getUploadPhase, getUploadDiagnostic, getUploadRecoverableHint } =
+    await loadTsModule('src/api/uploadRetry.ts');
+
+  const thrown = (() => {
+    try {
+      phaseErrorWithDetail('patch_draft', 'user visible copy', {
+        code: 'PATCH_DRAFT_METADATA_MISMATCH',
+        diagnostic: 'metadata_mismatch origin=confirm fields=templateId:differs',
+        recoverableHint: false,
+      });
+    } catch (error) {
+      return error;
+    }
+    throw new Error('phaseErrorWithDetail must throw');
+  })();
+
+  assert.equal(getUploadPhase(thrown), 'patch_draft');
+  assert.equal(thrown.code, 'PATCH_DRAFT_METADATA_MISMATCH');
+  assert.equal(getUploadRecoverableHint(thrown), false);
+  assert.match(getUploadDiagnostic(thrown), /origin=confirm/);
+});
+
+test('the throw-site diagnostic never appears on the user-visible message', async () => {
+  const { phaseErrorWithDetail } = await loadTsModule('src/api/uploadRetry.ts');
+
+  // record.tsx sets the error copy the vet reads from error.message for any
+  // phase-tagged error. Folding diagnostics in there would print
+  // "fields=templateId:differs" into the UI.
+  const thrown = (() => {
+    try {
+      phaseErrorWithDetail('patch_draft', 'Could not sync the latest patient details.', {
+        code: 'PATCH_DRAFT_METADATA_MISMATCH',
+        diagnostic: 'metadata_mismatch origin=confirm fields=templateId:differs',
+      });
+    } catch (error) {
+      return error;
+    }
+    throw new Error('phaseErrorWithDetail must throw');
+  })();
+
+  assert.equal(thrown.message, 'Could not sync the latest patient details.');
+  assert.ok(!thrown.message.includes('metadata_mismatch'));
+  assert.ok(!thrown.message.includes('fields='));
+});
+
+test('a plain phaseError carries no recoverable hint, so callers keep their default', async () => {
+  const { phaseError, getUploadRecoverableHint, getUploadDiagnostic } = await loadTsModule(
+    'src/api/uploadRetry.ts'
+  );
+
+  // record.tsx reads `getUploadRecoverableHint(error) ?? true`, so an
+  // un-hinted patch_draft (the legacy draft-metadata PATCH) must stay
+  // classified exactly as PR #92 left it.
+  const thrown = (() => {
+    try {
+      phaseError('patch_draft', 'legacy failure');
+    } catch (error) {
+      return error;
+    }
+    throw new Error('phaseError must throw');
+  })();
+
+  assert.equal(getUploadRecoverableHint(thrown), undefined);
+  assert.equal(getUploadDiagnostic(thrown), undefined);
+});
+
 test('recordings.ts still re-exports the public surface for back-compat', async () => {
   const src = await read('src/api/recordings.ts');
 
   assert.match(
     src,
-    /export \{\s*isTransientUploadError,\s*isStalePresignError,\s*getUploadPhase,\s*getUploadHttpStatus,\s*\} from '\.\/uploadRetry';/
+    /export \{\s*isTransientUploadError,\s*isStalePresignError,\s*getUploadPhase,\s*getUploadHttpStatus,\s*getUploadDiagnostic,\s*getUploadRecoverableHint,\s*\} from '\.\/uploadRetry';/
   );
   assert.match(src, /export type \{ UploadPhase, TaggedError \} from '\.\/uploadRetry';/);
 });

@@ -16,6 +16,7 @@ import type { PatientSlot, AudioSegment, DurableSlotRef, PendingConfirm } from '
 import type { CreateRecording } from '../types/index';
 import { isValidDurableId } from './durableAudio/paths';
 import { durableTombstone } from './durableAudio/tombstone';
+import { durableReconcileHold } from './durableAudio/reconcileHold';
 import { clonePendingConfirm } from './pendingConfirm';
 import {
   effectiveUploadIdempotencyKey,
@@ -584,18 +585,22 @@ async function readDraftChunks(
  * because callers delete the server row on that result; anything less
  * certain must take the non-deleting path.
  */
-async function draftMetaKeysAbsent(userId: string, slotId: string): Promise<boolean> {
+async function draftMetaExistence(userId: string, slotId: string): Promise<StrictExistence> {
   try {
     const metaRaw = await SecureStore.getItemAsync(draftMetaKeyForUser(userId, slotId));
-    if (metaRaw !== null) return false;
+    if (metaRaw !== null) return 'present';
     const legacyRaw = await SecureStore.getItemAsync(
       legacyDraftMetadataKeyForUser(userId, slotId),
     );
-    return legacyRaw === null;
+    return legacyRaw === null ? 'missing' : 'present';
   } catch {
-    // Read failure — absence cannot be proven.
-    return false;
+    // Read failure — neither presence nor absence is proven.
+    return 'unknown';
   }
+}
+
+async function draftMetaKeysAbsent(userId: string, slotId: string): Promise<boolean> {
+  return (await draftMetaExistence(userId, slotId)) === 'missing';
 }
 
 function normalizeDraftMetadata(raw: unknown): DraftMetadata | null {
@@ -1819,6 +1824,30 @@ export const draftStorage = {
    * Retrieve draft metadata for a specific slot.
    * Returns null if the draft doesn't exist.
    */
+  /**
+   * Strict per-draft metadata existence — the destructive-path counterpart to
+   * `getDraft`.
+   *
+   * `getDraft` is LENIENT by design: a Keystore failure, a torn chunk, and
+   * corrupt JSON all read back as `null`, indistinguishable from "this draft is
+   * gone". That is fine for rendering, and wrong for anything that DESTROYS on
+   * the strength of the absence — purging durable audio, deleting segment
+   * files, clearing a reconciliation card — because a temporarily unreadable
+   * store then reads as proof of deletion and the evidence goes with it.
+   * Only a proven-absent key returns 'missing'; an unreadable store is
+   * 'unknown', which every such caller must treat as "not deleted".
+   */
+  async draftMetadataExistsStrict(slotId: string): Promise<StrictExistence> {
+    const userId = currentUserId;
+    if (!userId) return 'unknown';
+    try {
+      validateSlotId(slotId);
+    } catch {
+      return 'unknown';
+    }
+    return draftMetaExistence(userId, slotId);
+  },
+
   async getDraft(slotId: string): Promise<DraftMetadata | null> {
     const userId = currentUserId;
     if (!userId) return null;
@@ -2087,6 +2116,29 @@ export const draftStorage = {
         }
 
         if (uploadedConfirmed) {
+          // A RETAINED conflict copy is server-confirmed by definition — the
+          // upload succeeded and the row's identity metadata is what diverged —
+          // so it lands here looking like ordinary redundant local data. It is
+          // not: the vet was promised this copy until they choose which visit
+          // the row belongs to, and nothing in DraftMetadata records that. The
+          // hold does, keyed by draft slot id for a standard recording and by
+          // durable recordingId for a durable one, so consult it before any
+          // silent delete.
+          // STRICT: `has()` maps an unreadable list to "not held", and this
+          // branch DELETES on the answer — one transient Keystore failure would
+          // destroy a retained copy whose hold is on disk. Anything but a proven
+          // "not_held" defers to a later sweep, exactly as the recovery scan does.
+          const slotHold = await durableReconcileHold
+            .hasStrict(draft.slotId)
+            .catch(() => 'unknown' as const);
+          if (slotHold !== 'not_held') continue;
+          if (draft.durable && isValidDurableId(draft.durable.recordingId)) {
+            const durableHold = await durableReconcileHold
+              .hasStrict(draft.durable.recordingId)
+              .catch(() => 'unknown' as const);
+            if (durableHold !== 'not_held') continue;
+          }
+          if (!isScopeValid()) return { expired: [], expiring: [] };
           // Never silently delete a non-purged durable recording: its audio.aac
           // is the only local copy until purgeAfterUpload runs. Defer to the
           // launch self-heal, which purges only after confirmed upload.

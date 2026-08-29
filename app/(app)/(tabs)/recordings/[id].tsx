@@ -793,14 +793,22 @@ export default function RecordingDetailScreen() {
     },
     onError: (error: Error) => {
       if (id) {
+        // The destructive non-draft path needs to stay distinguishable from
+        // ordinary draft cleanup. It used to claim its own `delete_recording`
+        // phase — but that value exists only in the mobile ErrorPhase union;
+        // the server's PHASES enum and the Prisma ClientTelemetryPhase enum
+        // carry only `delete_draft`. Every non-draft delete report was
+        // therefore a 400 swallowed by reportClientError's empty .catch(), so
+        // the split that was meant to make regressions visible made them
+        // invisible instead. Send an accepted phase and carry the distinction
+        // in errorCode until the server enum + migration lands.
+        const isDraftDelete = recording?.status === 'draft';
+        const deleteErrorCode =
+          error instanceof ApiError ? error.code ?? String(error.status) : 'unknown';
         reportClientError({
-          // The destructive non-draft path gets its OWN phase: sharing
-          // `delete_draft` made a regression in it indistinguishable from
-          // ordinary draft cleanup in both the rate-limit key and the
-          // dashboards.
-          phase: recording?.status === 'draft' ? 'delete_draft' : 'delete_recording',
+          phase: 'delete_draft',
           severity: 'error',
-          errorCode: error instanceof ApiError ? error.code ?? String(error.status) : 'unknown',
+          errorCode: `${isDraftDelete ? 'DRAFT' : 'RECORDING'}_DELETE_${deleteErrorCode}`.slice(0, 64),
           message: error instanceof Error ? error.message : 'Recording delete failed',
           recordingId: id,
         });

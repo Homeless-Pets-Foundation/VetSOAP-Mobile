@@ -33,6 +33,7 @@ import {
   LONG_RECORDING_WARNING_COPY,
   LONG_RECORDING_WARNING_THRESHOLD_SEC,
   MULTI_PATIENT_RECORD_FIRST_COPY,
+  METADATA_DIVERGENCE_COPY,
 } from '../constants/strings';
 import { CLIP_SAFE, clipSafe } from './ui/styles';
 
@@ -77,6 +78,14 @@ interface PatientSlotCardProps {
   onEditRecording: (slotId: string) => void;
   submitBlockedByLiveRecording: boolean;
   recordFirstEnabled?: boolean;
+  // Reconcile actions for a metadata divergence. Only the identity tier offers
+  // them; the other tiers render an informational notice.
+  onOpenDivergentRecording?: (slotId: string) => void;
+  onReleaseLocalCopy?: (slotId: string) => void;
+  onResubmitAsNew?: (slotId: string) => void;
+  onDismissDivergence?: (slotId: string) => void;
+  /** A reconciliation transaction is running: every action must be inert. */
+  divergenceActionsBusy?: boolean;
 }
 
 function PulsingDot() {
@@ -134,6 +143,11 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   onEditRecording,
   submitBlockedByLiveRecording,
   recordFirstEnabled = false,
+  onOpenDivergentRecording,
+  onReleaseLocalCopy,
+  onResubmitAsNew,
+  onDismissDivergence,
+  divergenceActionsBusy = false,
 }: PatientSlotCardProps) {
   const { scale } = useResponsive();
   const colors = useThemeColors();
@@ -219,7 +233,28 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const isRecording = audioState === 'recording';
   const isPaused = audioState === 'paused';
   const isStopped = audioState === 'stopped';
-  const isUploading = slot.uploadStatus === 'uploading';
+  const identityReconciliationPending = slot.metadataDivergence?.tier === 'identity';
+  // ANY unresolved divergence owns this slot's submit decision, not just the
+  // identity tier. A server `409 RECORDING_METADATA_CONFLICT` we cannot
+  // classify lands as tier 'unknown' with uploadStatus 'error', and gating on
+  // identity alone left the ordinary "Retry Upload" card rendering directly
+  // beneath the conflict card — the familiar, more prominent of the two.
+  // Pressing it re-enters uploadSlot(), which clears metadataDivergence and
+  // reuses the same stable upload intent, so it earns the identical 409 and
+  // loops there indefinitely while "Submit separately" — the actual way out —
+  // sits unused above it. Every tier is reachable from here: 'processing' and
+  // 'descriptive' resolve through "Got it", which clears the divergence and
+  // brings this card straight back, so nothing is stranded.
+  const reconciliationPending = !!slot.metadataDivergence;
+  // An unresolved identity conflict owns this slot's audio: the vet is deciding
+  // whether the SERVER row is the same visit, and every one of the three
+  // reconciliation actions acts on the bytes that exist right now. Continue
+  // Recording is the sharp edge — it flips the slot back to pending while
+  // leaving `metadataDivergence` intact, so freshly recorded audio can be
+  // appended and then deleted by "This is the right visit", which was answering
+  // a question about a different recording. Freeze the audio controls with the
+  // same switch that already hides the submit card.
+  const isUploading = slot.uploadStatus === 'uploading' || identityReconciliationPending;
   const hasSegments = slot.segments.length > 0;
   // A durable recording has empty `segments` (audio lives in audio.aac), so any
   // submit/upload gate must treat a durable ref as captured audio too — else a
@@ -259,7 +294,18 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
   // Allow recording when idle (even with existing segments — for continuation)
   const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !isUploading && !recorder.isStarting && !isFinishSaving;
-  const showSubmitCard = (recordFirstEnabled || hasRequiredFields) && hasCapturedAudio && slot.uploadStatus !== 'success';
+  // An unresolved IDENTITY conflict must be settled through the reconciliation
+  // card's three explicit choices. The slot is still in 'error' from the adopt
+  // guard, so the submit card would otherwise render underneath offering
+  // "Retry Upload" — which bypasses the choice entirely: uploadSlot() clears
+  // metadataDivergence and re-runs the same adopt path, looping on the conflict
+  // at best, and resuming automatic local deletion if the canonical response
+  // shifts between attempts.
+  const showSubmitCard =
+    (recordFirstEnabled || hasRequiredFields) &&
+    hasCapturedAudio &&
+    slot.uploadStatus !== 'success' &&
+    !reconciliationPending;
   const canSubmitSingle = showSubmitCard && !submitBlockedByLiveRecording && slot.uploadStatus !== 'uploading' && !isFinishSaving;
   const patientForm = (
     <PatientForm
@@ -699,6 +745,157 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
       {recordFirstEnabled && !preferPatientDetailsFirst && formCard}
       {recordFirstEnabled && !preferPatientDetailsFirst && foreignLanguageCard}
+
+      {/* Metadata divergence notice — rendered OUTSIDE the submit card on
+          purpose. `showSubmitCard` excludes a succeeded slot, and the
+          commit-path divergence lands precisely there: uploadStatus is
+          'success' while the local copy is held back for reconciliation. Nest
+          this inside the submit card and the vet sees only "Uploaded
+          Successfully" with no way to reach any of the three actions. */}
+      {slot.metadataDivergence && (
+        <View
+          className={`mb-4 p-3 rounded-lg ${
+            slot.metadataDivergence.tier === 'identity'
+              ? 'bg-status-warning'
+              : 'bg-surface-sunken'
+          }`}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+        >
+          {/* One row per line, each a single flex-1 Text — never a
+              flex-wrap bag of unconstrained <Text> (CLAUDE.md > UI
+              Gotchas). Height may grow; width must not be tight. */}
+          <Text className="text-body-sm font-semibold text-content-body w-full">
+            {slot.metadataDivergence.tier === 'identity'
+              ? METADATA_DIVERGENCE_COPY.identityTitle
+              : slot.metadataDivergence.tier === 'unknown'
+                ? METADATA_DIVERGENCE_COPY.unknownTitle
+                : slot.metadataDivergence.tier === 'processing'
+                  ? METADATA_DIVERGENCE_COPY.processingTitle
+                  : METADATA_DIVERGENCE_COPY.descriptiveTitle}
+          </Text>
+          <Text className="text-body-sm text-content-body w-full mt-1">
+            {slot.metadataDivergence.tier === 'identity'
+              ? METADATA_DIVERGENCE_COPY.identityBody
+              : slot.metadataDivergence.tier === 'unknown'
+                ? METADATA_DIVERGENCE_COPY.unknownBody
+                : slot.metadataDivergence.tier === 'processing'
+                  ? METADATA_DIVERGENCE_COPY.processingBody
+                  : METADATA_DIVERGENCE_COPY.descriptiveBody}
+          </Text>
+          {slot.metadataDivergence.fields.length > 0 && (
+            <Text className="text-caption text-content-tertiary w-full mt-2">
+              {`${METADATA_DIVERGENCE_COPY.fieldsPrefix} ${slot.metadataDivergence.fields
+                .map((field) => METADATA_DIVERGENCE_COPY.fieldLabels[field] ?? field)
+                .join(', ')}`}
+            </Text>
+          )}
+
+          {/* An unknown tier gets the non-destructive affordance only:
+              we do not know whether this is a wrong visit or a template
+              mismatch, and "submit separately" on the latter would create
+              a duplicate recording. */}
+          {/* A server 409 dead-ends without this: the recording id is often
+              empty (a fresh prepare conflict has no canonical row to point at),
+              dismissing only hides the notice, and Retry reuses the same upload
+              intent to collect the same 409 forever. Rotating the intent is the
+              only exit, behind the same explicit confirmation the identity tier
+              uses — which is what keeps the earlier objection answered: it is a
+              deliberate choice, never an automatic one. */}
+          {slot.metadataDivergence.tier === 'unknown' && (
+            <View className="mt-3">
+              <Button
+                variant="secondary"
+                size="md"
+                onPress={() => onResubmitAsNew?.(slot.id)}
+                disabled={divergenceActionsBusy}
+                accessibilityLabel={METADATA_DIVERGENCE_COPY.resubmitAsNew}
+              >
+                {METADATA_DIVERGENCE_COPY.resubmitAsNew}
+              </Button>
+            </View>
+          )}
+
+          {slot.metadataDivergence.tier === 'unknown' &&
+            slot.metadataDivergence.recordingId.length > 0 && (
+              <View className="mt-3">
+                <Button
+                  variant="secondary"
+                  size="md"
+                  onPress={() => onOpenDivergentRecording?.(slot.id)}
+                  disabled={divergenceActionsBusy}
+                  accessibilityLabel={METADATA_DIVERGENCE_COPY.openRecording}
+                >
+                  {METADATA_DIVERGENCE_COPY.openRecording}
+                </Button>
+              </View>
+            )}
+
+          {/* Processing and descriptive notices report a difference the vet
+              can fix on the recording itself; nothing is held back for them.
+              They still need an explicit acknowledgement, because the submit
+              guard keeps the session mounted until the notice is cleared —
+              without a button the vet would be stranded on this screen, and
+              without the guard the notice would flash past unread. */}
+          {/* 'unknown' joins them: it is either a server 409 whose tier we
+              cannot know, or an identity conflict on a recording whose local
+              copy is already gone. Neither can offer a retained-copy action, so
+              acknowledgement is the only way off this screen. */}
+          {(slot.metadataDivergence.tier === 'processing' ||
+            slot.metadataDivergence.tier === 'descriptive' ||
+            slot.metadataDivergence.tier === 'unknown') && (
+            <View className="mt-3">
+              <Button
+                variant="secondary"
+                size="md"
+                onPress={() => onDismissDivergence?.(slot.id)}
+                disabled={divergenceActionsBusy}
+                accessibilityLabel={METADATA_DIVERGENCE_COPY.dismissNotice}
+              >
+                {METADATA_DIVERGENCE_COPY.dismissNotice}
+              </Button>
+            </View>
+          )}
+
+          {slot.metadataDivergence.tier === 'identity' && (
+            <View className="mt-3">
+              <Button
+                variant="secondary"
+                size="md"
+                onPress={() => onOpenDivergentRecording?.(slot.id)}
+                disabled={divergenceActionsBusy}
+                accessibilityLabel={METADATA_DIVERGENCE_COPY.openRecording}
+              >
+                {METADATA_DIVERGENCE_COPY.openRecording}
+              </Button>
+              <View className="mt-2">
+                <Button
+                  variant="secondary"
+                  size="md"
+                  onPress={() => onReleaseLocalCopy?.(slot.id)}
+                  disabled={divergenceActionsBusy}
+                  accessibilityLabel={METADATA_DIVERGENCE_COPY.releaseLocalCopy}
+                >
+                  {METADATA_DIVERGENCE_COPY.releaseLocalCopy}
+                </Button>
+              </View>
+              {/* Listed last on purpose: it is the only action that
+                  legitimately creates a second server recording. */}
+              <View className="mt-2">
+                <Button
+                  variant="ghost"
+                  size="md"
+                  onPress={() => onResubmitAsNew?.(slot.id)}
+                  disabled={divergenceActionsBusy}
+                  accessibilityLabel={METADATA_DIVERGENCE_COPY.resubmitAsNew}
+                >
+                  {METADATA_DIVERGENCE_COPY.resubmitAsNew}
+                </Button>
+              </View>
+            </View>
+          )}
+        </View>
+      )}
 
       {/* Per-patient Submit */}
       {showSubmitCard && (

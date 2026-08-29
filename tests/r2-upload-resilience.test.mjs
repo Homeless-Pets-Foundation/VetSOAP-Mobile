@@ -22,7 +22,7 @@ test('recordings.ts re-exports the upload-retry helpers for back-compat', async 
 
   assert.match(
     src,
-    /export \{\s*isTransientUploadError,\s*isStalePresignError,\s*getUploadPhase,\s*getUploadHttpStatus,\s*\} from '\.\/uploadRetry';/
+    /export \{\s*isTransientUploadError,\s*isStalePresignError,\s*getUploadPhase,\s*getUploadHttpStatus,\s*getUploadDiagnostic,\s*getUploadRecoverableHint,\s*\} from '\.\/uploadRetry';/
   );
   assert.match(src, /export type \{ UploadPhase, TaggedError \} from '\.\/uploadRetry';/);
 });
@@ -40,9 +40,11 @@ test('isStalePresignError returns true only for 401 and 403 httpStatus', async (
 test('phaseError accepts httpStatus and TaggedError carries it', async () => {
   const src = await read('src/api/uploadRetry.ts');
 
+  // TaggedError gained code/diagnostic/recoverableHint so a throw site can
+  // describe itself; uploadPhase + httpStatus must still be the first two.
   assert.match(
     src,
-    /export type TaggedError = Error & \{ uploadPhase\?: UploadPhase; httpStatus\?: number \}/
+    /export type TaggedError = Error & \{\s*uploadPhase\?: UploadPhase;\s*httpStatus\?: number;/
   );
   assert.match(
     src,

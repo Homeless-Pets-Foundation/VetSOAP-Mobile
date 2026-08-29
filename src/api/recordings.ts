@@ -30,7 +30,7 @@ import { validatePendingConfirm } from '../lib/pendingConfirm';
 import { trackEvent } from '../lib/analytics';
 import { breadcrumb } from '../lib/monitoring';
 import { waitForNetworkOnline } from '../lib/networkWait';
-import { STALE_RECORDING_UPLOAD_COPY } from '../constants/strings';
+import { STALE_RECORDING_UPLOAD_COPY, METADATA_SYNC_FAILURE_COPY } from '../constants/strings';
 import {
   validatePreparedUploadEnvelope,
   validateUploadIntentConflictDetails,
@@ -42,12 +42,28 @@ import {
 import {
   tagPhase,
   phaseError,
+  phaseErrorWithDetail,
   isTransientUploadError,
   isStalePresignError,
   uploadTimeoutMs,
   runWithConcurrency,
   type TaggedError,
 } from './uploadRetry';
+import {
+  findMetadataMismatches,
+  formatMetadataMismatchDiagnostic,
+  type MetadataAssertionOrigin,
+  type MetadataMatchOptions,
+  type RecordingPayload,
+} from './metadataMismatch';
+import {
+  buildDivergenceReport,
+  compareRecordingMetadata,
+  hasIdentityDivergence,
+  isAdoptMetadataOrigin,
+  RecordingMetadataConflictError,
+  type MetadataDivergenceReport,
+} from './metadataIdentity';
 import { isPimsPatientIdExplicitlyCleared } from '../lib/pimsPatientIdIntent';
 import {
   draftPresenceRequestSchema,
@@ -139,6 +155,8 @@ export {
   isStalePresignError,
   getUploadPhase,
   getUploadHttpStatus,
+  getUploadDiagnostic,
+  getUploadRecoverableHint,
 } from './uploadRetry';
 export type { UploadPhase, TaggedError } from './uploadRetry';
 
@@ -308,17 +326,7 @@ export interface EmailDraftResult {
   body: string;
 }
 
-type RecordingPayload = Record<string, string | boolean | null>;
-
 const createRecordingPartialSchema = createRecordingSchema.partial();
-const SERVER_ENRICHABLE_BLANK_METADATA_FIELDS = new Set([
-  'patientName',
-  'clientName',
-  'species',
-  'breed',
-  'appointmentType',
-  'pimsPatientId',
-]);
 const DRAFT_NULLABLE_FIELDS = new Set<keyof CreateRecording>([
   'pimsPatientId',
   'clientName',
@@ -387,45 +395,115 @@ export function normalizeDraftMetadataPayload(data: Partial<CreateRecording>): R
   });
 }
 
-interface MetadataMatchOptions {
-  allowServerEnrichedBlankFields?: boolean;
-  pimsPatientIdExplicitlyCleared?: boolean;
+/**
+ * The divergence sink rides in the options object so the assertion's callers
+ * (postConfirm, validatePreparationResponse, the recovery paths) keep their
+ * existing arities.
+ */
+/**
+ * The server runs its own equivalent of this comparison
+ * (`metadataMateriallyMatches`) and answers 409 RECORDING_METADATA_CONFLICT.
+ * That previously fell through to a generic `prepare`-phase failure, so fixing
+ * only the client-side guard would still dead-end the retry. Both entrances
+ * must reach the same reconcile surface.
+ */
+function typedMetadataConflict(
+  error: unknown,
+  recordingId: string | undefined,
+): RecordingMetadataConflictError | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.status !== 409 || error.code !== 'RECORDING_METADATA_CONFLICT') return null;
+  const conflict = new RecordingMetadataConflictError(
+    recordingId ?? '',
+    [],
+    'server_conflict',
+    METADATA_SYNC_FAILURE_COPY,
+  ) as RecordingMetadataConflictError & TaggedError;
+  conflict.diagnostic = 'metadata_mismatch origin=server_conflict fields=';
+  conflict.recoverableHint = true;
+  return conflict;
 }
 
-function recordingMatchesMetadataPayload(
-  recording: Recording,
-  payload: RecordingPayload,
-  opts: MetadataMatchOptions = {}
-): boolean {
-  const recordingData = recording as unknown as Record<string, unknown>;
-  for (const [key, value] of Object.entries(payload)) {
-    if (!Object.prototype.hasOwnProperty.call(recordingData, key)) return false;
-    const recordingValue = recordingData[key] ?? null;
-    if (
-      opts.allowServerEnrichedBlankFields &&
-      SERVER_ENRICHABLE_BLANK_METADATA_FIELDS.has(key) &&
-      !(key === 'pimsPatientId' && opts.pimsPatientIdExplicitlyCleared) &&
-      (value === null || value === '') &&
-      recordingValue !== null &&
-      recordingValue !== ''
-    ) {
-      continue;
-    }
-    if (recordingValue !== value) return false;
-  }
-  return true;
-}
+type MetadataAssertionOptions = MetadataMatchOptions & {
+  onDivergence?: (report: MetadataDivergenceReport) => void;
+};
 
+/**
+ * `origin` is REQUIRED so the compiler enumerates every call site: a missed one
+ * would silently reintroduce an anonymous `patch_draft` failure, which is the
+ * exact defect this parameter exists to end.
+ *
+ * Whether a divergence BLOCKS depends on the call site, not just the field:
+ *
+ *  - COMMIT origins (`confirm`, `confirm_api`) run after confirm-upload
+ *    returned 2xx. The recording id was in the request URL, and the server
+ *    independently verified object-key grammar, the private upload manifest,
+ *    and an R2 HEAD before committing — all strictly stronger identity proof
+ *    than metadata equality. It has also already enqueued processing, so the
+ *    client can no longer change the outcome. Throwing here prevents nothing
+ *    and strands a completed recording as an unsubmittable local draft.
+ *
+ *  - ADOPT origins (`already_uploaded` / `already_processed` / recovery) are
+ *    the local-deletion gate: the client uploaded nothing this attempt and is
+ *    about to delete its only copy. Identity divergence still fails closed.
+ */
 function assertRecordingMatchesMetadataPayload(
   recording: Recording,
-  payload?: RecordingPayload,
-  opts: MetadataMatchOptions = {}
+  payload: RecordingPayload | undefined,
+  opts: MetadataAssertionOptions,
+  origin: MetadataAssertionOrigin
 ): Recording {
-  if (payload && Object.keys(payload).length > 0 && !recordingMatchesMetadataPayload(recording, payload, opts)) {
-    phaseError(
-      'patch_draft',
-      'Could not sync the latest patient details. Your recording is still saved on this device. Please try submitting again.'
-    );
+  if (!payload || Object.keys(payload).length === 0) return recording;
+  const recordingData = recording as unknown as Record<string, unknown>;
+  const comparison = compareRecordingMetadata(recordingData, payload, {
+    ...opts,
+    // Adopt origins are the local-deletion gate, so species/breed get to
+    // block when nothing stronger can tell two same-named charts apart.
+    adoptDeletionGate: isAdoptMetadataOrigin(origin),
+  });
+  const report = buildDivergenceReport(comparison);
+  if (!report) return recording;
+
+  if (isAdoptMetadataOrigin(origin) && hasIdentityDivergence(comparison)) {
+    // Keep the phase-tagged shape so telemetry, phase routing, and the
+    // diagnostic all keep working, and attach the typed conflict details the
+    // reconcile UI needs.
+    const mismatches = findMetadataMismatches(recordingData, payload, opts);
+    const conflict = new RecordingMetadataConflictError(
+      recording.id,
+      comparison.identityFields,
+      'client_adopt_guard',
+      METADATA_SYNC_FAILURE_COPY
+    ) as RecordingMetadataConflictError & TaggedError;
+    conflict.diagnostic = formatMetadataMismatchDiagnostic(origin, mismatches);
+    // Not "recovered": the submit is blocked until a human reconciles it. We
+    // want to see these, and the volume is bounded by how often an adopt path
+    // meets a genuine identity disagreement.
+    conflict.recoverableHint = false;
+    throw conflict;
+  }
+
+  // Not blocking: surface it so the caller can show a notice and, for identity
+  // tier on the commit path, hold the local copy back from cleanup.
+  opts.onDivergence?.(report);
+  return recording;
+}
+
+/**
+ * The commit path's identity proof. Strictly stronger than the metadata
+ * equality it replaces: the returned row must be the row we asked for.
+ */
+function assertCommittedRecordingIdentity(
+  requestedRecordingId: string,
+  recording: Recording,
+  origin: MetadataAssertionOrigin
+): Recording {
+  if (recording.id !== requestedRecordingId) {
+    phaseErrorWithDetail('confirm', METADATA_SYNC_FAILURE_COPY, {
+      code: 'CONFIRM_RECORDING_ID_MISMATCH',
+      diagnostic: `confirmed_recording_id_mismatch origin=${origin}`,
+      recoverableHint: false,
+    });
   }
   return recording;
 }
@@ -454,6 +532,12 @@ interface ResilientUploadOptions {
   audioDurationSeconds?: number;
   slotIndex?: number;
   mode?: 'durable' | 'standard';
+  /**
+   * Non-blocking notice that the server's copy of the metadata differs from the
+   * snapshot we submitted. Fires instead of failing the submit for everything
+   * except an identity divergence on the adopt path.
+   */
+  onMetadataDivergence?: (report: MetadataDivergenceReport) => void;
 }
 
 export class UploadIntentConflictError extends Error {
@@ -559,7 +643,7 @@ function validatePreparationResponse(
   raw: unknown,
   expectedFileCount: number,
   metadata: PendingConfirmMetadata,
-  matchOptions: MetadataMatchOptions,
+  matchOptions: MetadataAssertionOptions,
 ): PrepareUploadResponse {
   let value: PrepareUploadResponse;
   try {
@@ -568,7 +652,12 @@ function validatePreparationResponse(
     tagPhase(error, 'prepare');
   }
   if (value.outcome !== 'prepared') {
-    assertRecordingMatchesMetadataPayload(value.recording, metadataAsPayload(metadata), matchOptions);
+    assertRecordingMatchesMetadataPayload(
+      value.recording,
+      metadataAsPayload(metadata),
+      matchOptions,
+      'prepare_already_uploaded',
+    );
     return value;
   }
   for (const upload of value.uploads!) {
@@ -624,7 +713,7 @@ async function requestPreparation(
   idempotencyKey: string,
   metadata: PendingConfirmMetadata,
   files: PendingConfirmFile[],
-  matchOptions: MetadataMatchOptions,
+  matchOptions: MetadataAssertionOptions,
 ): Promise<PrepareUploadResponse> {
   let raw: unknown;
   try {
@@ -636,6 +725,8 @@ async function requestPreparation(
   } catch (error) {
     const conflict = typedUploadIntentConflict(error, 'prepare');
     if (conflict) throw conflict;
+    const metadataConflict = typedMetadataConflict(error, existingRecordingId);
+    if (metadataConflict) throw metadataConflict;
     tagPhase(error, 'prepare');
   }
   return validatePreparationResponse(raw, files.length, metadata, matchOptions);
@@ -722,7 +813,7 @@ async function postConfirm(
   recordingId: string,
   hint: Pick<PendingConfirm, 'fileKey' | 'segmentKeys' | 'segmentCount'>,
   metadata: PendingConfirmMetadata,
-  matchOptions: MetadataMatchOptions,
+  matchOptions: MetadataAssertionOptions,
 ): Promise<Recording> {
   recordingIdSchema.parse(recordingId);
   let confirmed: Recording;
@@ -735,6 +826,8 @@ async function postConfirm(
   } catch (error) {
     const conflict = typedUploadIntentConflict(error, 'confirm');
     if (conflict) throw conflict;
+    const metadataConflict = typedMetadataConflict(error, recordingId);
+    if (metadataConflict) throw metadataConflict;
     // Rolling deployments and older API versions can commit the upload and
     // still return an untyped 409. Retain the proven-completed GET fallback;
     // typed conflicts use the stricter recovery endpoint below.
@@ -750,16 +843,29 @@ async function postConfirm(
         current.status !== 'uploading' &&
         current.status !== 'failed'
       ) {
+        // The probe is a plain GET by id, so the row it returns must still be
+        // PROVEN to be the row we asked for — the normal confirm path asserts
+        // this and the fallback did not. Metadata equality is not a substitute:
+        // two same-named patients can match on every compared field, and this
+        // result authorizes deleting the local audio.
+        assertCommittedRecordingIdentity(recordingId, current, 'confirm_409_probe');
         return assertRecordingMatchesMetadataPayload(
           current,
           metadataAsPayload(metadata),
           matchOptions,
+          'confirm_409_probe',
         );
       }
     }
     tagPhase(error, 'confirm');
   }
-  return assertRecordingMatchesMetadataPayload(confirmed, metadataAsPayload(metadata), matchOptions);
+  assertCommittedRecordingIdentity(recordingId, confirmed, 'confirm');
+  return assertRecordingMatchesMetadataPayload(
+    confirmed,
+    metadataAsPayload(metadata),
+    matchOptions,
+    'confirm',
+  );
 }
 
 async function invokePreparedCallback(
@@ -1137,12 +1243,13 @@ async function executeResilientUpload(
     );
   }
   const metadata = completeUploadMetadata(data);
-  const metadataMatchOptions: MetadataMatchOptions = {
+  const metadataMatchOptions: MetadataAssertionOptions = {
     allowServerEnrichedBlankFields: true,
     pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
       data.pimsPatientId,
       options.pimsPatientIdExplicitlyCleared,
     ),
+    onDivergence: options.onMetadataDivergence,
   };
   const mode = options.mode ?? 'standard';
   const validResume = options.resume ? validatePendingConfirm(options.resume) : null;
@@ -1223,6 +1330,7 @@ async function executeResilientUpload(
             recovery.recording,
             metadataAsPayload(metadata),
             metadataMatchOptions,
+            'recovery_restart',
           );
         }
         prepared = {
@@ -1463,6 +1571,7 @@ async function executeResilientUpload(
         recovery.recording,
         metadataAsPayload(metadata),
         metadataMatchOptions,
+        'recovery_inspect',
       );
     }
     if (recovery.outcome === 'restart_available' || recovery.outcome === 'unresolved') {
@@ -1647,7 +1756,7 @@ export const recordingsApi = {
     // as INVALID_CONFIRM_UPLOAD.
     const metadata = opts?.metadata ? completeUploadMetadata(opts.metadata) : undefined;
     const metadataPayload = metadata ? metadataAsPayload(metadata) : undefined;
-    const metadataMatchOptions: MetadataMatchOptions = {
+    const metadataMatchOptions: MetadataAssertionOptions = {
       allowServerEnrichedBlankFields: true,
       pimsPatientIdExplicitlyCleared: isPimsPatientIdExplicitlyCleared(
         opts?.metadata?.pimsPatientId,
@@ -1670,12 +1779,27 @@ export const recordingsApi = {
           tagPhase(probeError, 'confirm');
         }
         if (current.status !== 'draft' && current.status !== 'uploading' && current.status !== 'failed') {
-          return assertRecordingMatchesMetadataPayload(current, metadataPayload, metadataMatchOptions);
+          // Same identity proof as the typed path: a GET by id can be served a
+          // different completed row by a serializer, cache, or routing
+          // regression, and matching metadata would not reveal it.
+          assertCommittedRecordingIdentity(recordingId, current, 'confirm_api_409_probe');
+          return assertRecordingMatchesMetadataPayload(
+            current,
+            metadataPayload,
+            metadataMatchOptions,
+            'confirm_api_409_probe',
+          );
         }
       }
       tagPhase(error, 'confirm');
     }
-    return assertRecordingMatchesMetadataPayload(recording, metadataPayload, metadataMatchOptions);
+    assertCommittedRecordingIdentity(recordingId, recording, 'confirm_api');
+    return assertRecordingMatchesMetadataPayload(
+      recording,
+      metadataPayload,
+      metadataMatchOptions,
+      'confirm_api',
+    );
   },
 
   async prepareUpload(

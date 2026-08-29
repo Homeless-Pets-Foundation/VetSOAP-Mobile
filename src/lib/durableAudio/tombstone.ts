@@ -39,9 +39,37 @@ let currentUserId: string | null = null;
 let cachedListUserId: string | null = null;
 let cachedList: string[] | null = null;
 
+/**
+ * Bumped by every invalidation and every publish. Same hazard as the
+ * reconciliation hold: the mutation chain orders WRITES, but `has()` and
+ * `list()` fill this cache from OUTSIDE it. A cold read that captured the
+ * pre-write value can finish after an `add()` has written and cached the new
+ * list, publish its stale snapshot over the top, and the next serialized
+ * mutation then persists a list with the new tombstone missing.
+ *
+ * A dropped tombstone is not cosmetic here: it is the record that a durable
+ * recording was confirmed-uploaded and purged, so losing it lets
+ * `cleanupOrphaned` and the offline self-heal act on a stale draft as if its
+ * local audio were still there — a phantom recoverable draft that cannot be
+ * submitted, and in the worst case a delete aimed at a real server row.
+ *
+ * A read publishes only if nothing invalidated or published while it awaited.
+ * Its own RETURN value being a moment stale is fine; the snapshot outliving the
+ * read into the shared cache is not.
+ */
+let cacheGeneration = 0;
+
 function invalidateCache(): void {
   cachedListUserId = null;
   cachedList = null;
+  cacheGeneration++;
+}
+
+/** Publish to the cache, invalidating any read still in flight. */
+function publishCache(userId: string, list: string[]): void {
+  cachedListUserId = userId;
+  cachedList = list.slice();
+  cacheGeneration++;
 }
 
 function prefixFor(userId: string): string {
@@ -72,14 +100,16 @@ async function loadList(userId: string): Promise<TombstoneLoad> {
     return { known: true, list: cachedList.slice() };
   }
 
+  // Captured BEFORE the await; see cacheGeneration.
+  const generation = cacheGeneration;
   const read = await readChunkedValueStrict(prefixFor(userId));
+  const publishable = (): boolean => cacheGeneration === generation;
   if (read.status === 'unavailable') return { known: false };
 
   if (read.status === 'absent') {
     // No count pointer at all: proven empty, so this IS safe to cache and safe
     // to build a write on top of.
-    cachedListUserId = userId;
-    cachedList = [];
+    if (publishable()) publishCache(userId, []);
     return { known: true, list: [] };
   }
 
@@ -93,8 +123,7 @@ async function loadList(userId: string): Promise<TombstoneLoad> {
     return { known: false };
   }
 
-  cachedListUserId = userId;
-  cachedList = list.slice();
+  if (publishable()) publishCache(userId, list);
   return { known: true, list };
 }
 
@@ -122,14 +151,46 @@ async function readList(userId: string): Promise<string[]> {
  * the cache stays invalidated (storage still holds the previous value, which is
  * what the next read must see) and the caller is told the mutation did not land.
  */
+/**
+ * Serializes read-modify-write. Every mutation here is a whole-list rewrite, so
+ * two concurrent callers — a reconciliation action and another slot's upload
+ * cleanup, say — can read the same list, append different ids, and have the
+ * second write silently drop the first while both report success. A dropped
+ * tombstone is a confirmed-uploaded recording that `cleanupOrphaned` can then
+ * delete the server row for, which is the exact loss this store exists to
+ * prevent. One JS context and short operations, so ordering them is enough.
+ */
+/**
+ * PER USER, not global. A hung SecureStore call for user A would otherwise
+ * block every later mutation for user B behind a promise that never settles —
+ * on a shared clinic tablet that means B's next divergent upload waits forever
+ * for a hold that can never be written.
+ */
+const mutationChains = new Map<string, Promise<unknown>>();
+
+function serialize<T>(userId: string, op: () => Promise<T>): Promise<T> {
+  const previous = mutationChains.get(userId) ?? Promise.resolve();
+  const run = previous.then(op, op);
+  mutationChains.set(
+    userId,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
+
 async function writeList(userId: string, list: string[]): Promise<boolean> {
   // Drop the mirror first: if the write fails, the next read must go to storage
   // rather than serve a value that was never persisted.
   invalidateCache();
   const persisted = await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
   if (!persisted) return false;
-  cachedListUserId = userId;
-  cachedList = list.slice();
+  // publishCache, not a bare assignment: a read that began between the
+  // invalidate above and this line saw pre-write storage and must not be
+  // allowed to overwrite what we just persisted.
+  publishCache(userId, list);
   return true;
 }
 
@@ -158,13 +219,17 @@ export const durableTombstone = {
   async add(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId || !isValidDurableId(recordingId)) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const list = loaded.list;
-    if (list.includes(recordingId)) return true;
-    list.push(recordingId);
-    while (list.length > MAX_TOMBSTONES) list.shift(); // drop oldest
-    return writeList(userId, list);
+    return serialize(userId, async () => {
+      // Re-read inside the lock: a concurrent mutation may have landed while
+      // this call was queued.
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const list = loaded.list;
+      if (list.includes(recordingId)) return true;
+      list.push(recordingId);
+      while (list.length > MAX_TOMBSTONES) list.shift(); // drop oldest
+      return writeList(userId, list);
+    });
   },
 
   async has(recordingId: string): Promise<boolean> {
@@ -182,11 +247,13 @@ export const durableTombstone = {
   async remove(recordingId: string): Promise<boolean> {
     const userId = currentUserId;
     if (!userId) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const next = loaded.list.filter((id) => id !== recordingId);
-    if (next.length === loaded.list.length) return true; // nothing to remove
-    return writeList(userId, next);
+    return serialize(userId, async () => {
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const next = loaded.list.filter((id) => id !== recordingId);
+      if (next.length === loaded.list.length) return true; // nothing to remove
+      return writeList(userId, next);
+    });
   },
 
   async list(): Promise<string[]> {
@@ -203,14 +270,16 @@ export const durableTombstone = {
   async prune(stillReferenced: (recordingId: string) => Promise<boolean>): Promise<boolean> {
     const userId = currentUserId;
     if (!userId) return false;
-    const loaded = await loadList(userId);
-    if (!loaded.known) return false;
-    const keep: string[] = [];
-    for (const id of loaded.list) {
-      if (await stillReferenced(id)) keep.push(id);
-    }
-    if (keep.length === loaded.list.length) return true; // nothing to prune
-    return writeList(userId, keep);
+    return serialize(userId, async () => {
+      const loaded = await loadList(userId);
+      if (!loaded.known) return false;
+      const keep: string[] = [];
+      for (const id of loaded.list) {
+        if (await stillReferenced(id)) keep.push(id);
+      }
+      if (keep.length === loaded.list.length) return true; // nothing to prune
+      return writeList(userId, keep);
+    });
   },
 
   async clearForUser(userId: string): Promise<void> {

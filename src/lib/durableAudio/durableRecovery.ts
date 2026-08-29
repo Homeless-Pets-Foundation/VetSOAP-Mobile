@@ -19,6 +19,7 @@ import type { DurableRecordingManifest } from './manifest';
 import { selectRecoverableSessions, needsServerReconcile } from './recoveryLogic';
 import { isValidDurableId } from './paths';
 import { durableTombstone } from './tombstone';
+import { durableReconcileHold } from './reconcileHold';
 import { durableActiveStore } from './activeStore';
 import { draftStorage } from '../draftStorage';
 import { stashStorage } from '../stashStorage';
@@ -131,6 +132,7 @@ export async function scanDurableRecoveries(
 ): Promise<DurableRecordingManifest[]> {
   if (!isValidDurableId(userId)) return [];
   durableTombstone.setUserId(userId);
+  durableReconcileHold.setUserId(userId);
   durableActiveStore.setUserId(userId);
 
   let manifests: DurableRecordingManifest[];
@@ -208,16 +210,35 @@ export async function scanDurableRecoveries(
     }
   }
 
+  // FAIL CLOSED on an unreadable hold list. Self-heal DELETES a draft and
+  // purges audio, and an empty set would say "nothing is held" — so one
+  // transient Keystore failure would destroy every retained copy at once. When
+  // membership is unknown, skip the destructive half entirely and let a later
+  // scan do it; the offers below are unaffected, and nothing is lost by waiting.
+  const heldRead = await durableReconcileHold
+    .listStrict()
+    .catch(() => ({ known: false }) as const);
+  const holdsKnown = heldRead.known;
+  const heldRecordingIds = new Set(holdsKnown ? heldRead.list : []);
+
   const { offer, selfHeal: toHeal } = selectRecoverableSessions({
     manifests,
     draftRecordingIds,
     stashRecordingIds,
     tombstonedRecordingIds,
+    heldRecordingIds,
   });
 
-  for (const m of toHeal) {
-    if (isCancelled()) return [];
-    await selfHeal(userId, m);
+  if (holdsKnown) {
+    for (const m of toHeal) {
+      if (isCancelled()) return [];
+      await selfHeal(userId, m);
+    }
+  } else if (toHeal.length > 0) {
+    breadcrumb('record', 'durable_recovery_selfheal_deferred', {
+      count: toHeal.length,
+      reason: 'reconcile_holds_unreadable',
+    });
   }
 
   if (toHeal.length > 0 || offer.length > 0) {

@@ -28,6 +28,7 @@ import { recoveryIntent } from '../lib/recoveryIntent';
 import { clonePendingConfirm } from '../lib/pendingConfirm';
 import { isValidDurableId } from '../lib/durableAudio/paths';
 import { durableTombstone } from '../lib/durableAudio/tombstone';
+import { durableReconcileHold } from '../lib/durableAudio/reconcileHold';
 import { durableActiveStore } from '../lib/durableAudio/activeStore';
 import { runDurableRecoveryScan, invalidateDurableRecoveries } from '../lib/durableAudio/durableRecovery';
 import { hydrateMinVersionFloor } from '../lib/minVersion';
@@ -814,6 +815,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Durable recorder stores are user-scoped too (Rule 13): set before any
     // durable read/write (tombstone consult, recovery scan).
     durableTombstone.setUserId(scopedUserId);
+    durableReconcileHold.setUserId(scopedUserId);
     durableActiveStore.setUserId(scopedUserId);
     // One-shot per user: only scan on the first authenticated load (cold-start
     // session restore or fresh sign-in). Subsequent re-fetches of the same user
@@ -1557,6 +1559,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Reset durable scope (data is PRESERVED across logout, Rule 8 — this only
     // clears the in-memory scope pointer + offer list; re-scans on re-sign-in).
     durableTombstone.setUserId(null);
+    durableReconcileHold.setUserId(null);
     durableActiveStore.setUserId(null);
     // Invalidate first so an in-flight launch scan that resolves after this
     // sign-out cannot repopulate the offer list for the next signed-in user.
@@ -1847,6 +1850,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setStashUserId(null);
             draftStorage.setUserId(null);
             durableTombstone.setUserId(null);
+            durableReconcileHold.setUserId(null);
             durableActiveStore.setUserId(null);
             invalidateDurableRecoveries();
             durableRecoveryStore.clear();

@@ -114,13 +114,12 @@ test('draft detail screen gates delete and reports delete telemetry per status',
   assert.match(detail, /useRecordingPermissions\(recording\)/);
   assert.match(detail, /recordingPermissions\.canDelete/);
   assert.match(detail, /reportClientError\(\{/);
-  // A draft still reports `delete_draft`; the destructive non-draft path has its
-  // own phase so the two are distinguishable in telemetry (Codex round 4).
-  assert.match(
-    detail,
-    /phase: recording\?\.status === 'draft' \? 'delete_draft' : 'delete_recording',/
-  );
-  assert.match(detail, /errorCode: error instanceof ApiError/);
+  // Both paths report the `delete_draft` phase because that is the only value
+  // the server's PHASES/Prisma enums accept; the draft-vs-recording distinction
+  // rides errorCode instead. See attention-detail-integration for the why.
+  assert.match(detail, /phase: 'delete_draft',/);
+  assert.match(detail, /const isDraftDelete = recording\?\.status === 'draft';/);
+  assert.match(detail, /const deleteErrorCode =\s*error instanceof ApiError/);
 });
 
 test('metadata review/add/edit cards are gated on edit permission (no 403 "Save Failed")', async () => {

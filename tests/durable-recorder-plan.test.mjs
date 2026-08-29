@@ -92,7 +92,10 @@ test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone',
   assert.match(src, /setServerRecordingId\(\{ userId: uid, recordingId: durable\.recordingId/);
   // markUploaded appears before deleteDraft which appears before purgeAfterUpload.
   const iMark = src.indexOf('.markUploaded({ userId: uid, recordingId: durable.recordingId, confirmedUploadAt');
-  const iDelete = src.indexOf('await draftStorage.deleteDraft(slot.id);', iMark);
+  // Keyed by the draft's OWNER (draftSlotId), not slot.id — a stash-resumed
+  // slot's draft lives under a different key, and proving THAT key missing is
+  // what licenses the purge below.
+  const iDelete = src.indexOf('await draftStorage.deleteDraft(ownedDraftSlotId);', iMark);
   const iPurge = src.indexOf('.purgeAfterUpload({ userId: uid, recordingId: durable.recordingId })', iDelete);
   assert.ok(iMark > 0 && iDelete > iMark && iPurge > iDelete, 'durable post-upload order must hold');
   assert.match(src, /durableTombstone\.add\(durable\.recordingId\)/);
@@ -344,7 +347,10 @@ test('durable-only slots are submit-reachable (per-patient + Submit All)', async
   // PatientSlotCard: the Submit card must show for a durable slot with empty segments.
   const card = await read('src/components/PatientSlotCard.tsx');
   assert.match(card, /const hasCapturedAudio = slotHasRecoverableAudio\(slot\)/);
-  assert.match(card, /showSubmitCard = \(recordFirstEnabled \|\| hasRequiredFields\) && hasCapturedAudio/);
+  assert.match(
+    card,
+    /showSubmitCard =\s*\(recordFirstEnabled \|\| hasRequiredFields\) &&\s*hasCapturedAudio/
+  );
   // SubmitPanel already counts all recoverable audio.
   const panel = await read('src/components/SubmitPanel.tsx');
   assert.match(panel, /const hasAudio = \(s: PatientSlot\) => slotHasRecoverableAudio\(s\)/);
@@ -700,10 +706,16 @@ test('durable-only stash failure surfaces the Save Failed alert', async () => {
 
 test('post-upload deleteDraft is verified + retried; loadDraft blocks a tombstoned durable resume', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  // deleteDraft swallows its own storage errors, so success is VERIFIED via
-  // getDraft (not a try/catch) and confirmDraftGone is retried once.
+  // deleteDraft swallows its own storage errors, so success is VERIFIED by a
+  // read-back (not a try/catch) and confirmDraftGone is retried once. The
+  // read-back must be the STRICT one: getDraft collapses a Keystore/chunk-read
+  // failure to null, so the lenient form let an unreadable store license the
+  // purge that follows.
   assert.match(rec, /const confirmDraftGone = async \(\): Promise<boolean>/);
-  assert.match(rec, /const still = await draftStorage\.getDraft\(slot\.id\)\.catch\(\(\) => null\);\n\s*return still === null;/);
+  assert.match(
+    rec,
+    /const still = await draftStorage\n\s*\.draftMetadataExistsStrict\(ownedDraftSlotId\)\n\s*\.catch\(\(\) => 'unknown' as const\);\n\s*return still === 'missing';/
+  );
   assert.match(rec, /let draftDeleted = await confirmDraftGone\(\);\n\s*if \(!draftDeleted\) draftDeleted = await confirmDraftGone\(\);/);
   // loadDraft refuses to resume an already-uploaded (tombstoned) durable draft.
   const iLoad = rec.indexOf('const loadDraft = useCallback(');
@@ -912,8 +924,16 @@ test('iOS resume closes the previous writer before replacing it', async () => {
 test('background persister includes finished durable slots', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
   const iPersist = rec.indexOf('const slotsToPersist = sessionRef.current.slots.filter(');
-  const body = rec.slice(iPersist, iPersist + 200);
-  assert.match(body, /slotHasRecoverableAudio\(slot\) && slot\.uploadStatus !== 'success'/);
+  const body = rec.slice(iPersist, iPersist + 320);
+  // Finished durable slots (empty segments, audio in audio.aac) must persist,
+  // and so must a SUCCEEDED slot still holding a retained copy for an
+  // unresolved identity divergence — that copy is exactly what a kill would
+  // take, and every guard keyed on "not success" would otherwise skip it.
+  assert.match(body, /slotHasRecoverableAudio\(slot\) &&/);
+  assert.match(
+    body,
+    /\(slot\.uploadStatus !== 'success' \|\|\s*slot\.metadataDivergence\?\.tier === 'identity'\)/
+  );
 });
 
 test('detail-page durable delete spares stash-shared audio and fails CLOSED', async () => {

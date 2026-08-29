@@ -356,14 +356,23 @@ test('the destructive confirmation states the cascade and the cross-device limit
   assert.match(DETAIL, /DELETE_RECORDING_COPY\.colleagueSuffix/);
 });
 
-test('the destructive non-draft delete is tagged with its OWN telemetry phase', async () => {
-  // Codex round 4: sharing `delete_draft` made a regression in this new
-  // destructive path indistinguishable from ordinary draft cleanup in both the
-  // rate-limit key and the dashboards.
+test('the destructive non-draft delete stays distinguishable in telemetry the server accepts', async () => {
+  // Codex round 4 gave this destructive path its own `delete_recording` phase so
+  // a regression in it stayed distinguishable from ordinary draft cleanup. But
+  // that value exists only in the mobile ErrorPhase union — the server's PHASES
+  // enum and the Prisma ClientTelemetryPhase enum carry only `delete_draft`, so
+  // every report 400'd and was swallowed by reportClientError's empty .catch().
+  // The split meant to make regressions visible made them invisible. Keep the
+  // distinction, but carry it somewhere the server actually persists.
+  assert.match(DETAIL, /phase: 'delete_draft',/);
+  assert.match(DETAIL, /const isDraftDelete = recording\?\.status === 'draft';/);
   assert.match(
     DETAIL,
-    /phase: recording\?\.status === 'draft' \? 'delete_draft' : 'delete_recording',/
+    /errorCode: `\$\{isDraftDelete \? 'DRAFT' : 'RECORDING'\}_DELETE_\$\{deleteErrorCode\}`/
   );
+  assert.doesNotMatch(DETAIL, /phase: recording\?\.status === 'draft' \? 'delete_draft' : 'delete_recording',/);
+  // The PostHog-side union keeps the richer value; only the server telemetry
+  // call is constrained by the Prisma enum.
   const analytics = await read('src/lib/analytics.ts');
   assert.match(analytics, /\| 'delete_recording'/);
 });

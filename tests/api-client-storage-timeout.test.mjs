@@ -20,6 +20,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { loadTsModule } from './helpers/loadTs.mjs';
 
 const root = new URL('../', import.meta.url);
 const read = (rel) => readFile(new URL(rel, root), 'utf8');
@@ -90,6 +91,29 @@ test('the bound is armed before the reads it protects', async () => {
   // now bounded, so preceding it is no longer unbounded exposure.
   assert.ok(deviceRead < controller, 'device-id read moved after the controller');
   assert.ok(tokenRead < deviceRead, 'header order changed unexpectedly');
+});
+
+test('the coarse watchdog reports the deadline that actually fired', async () => {
+  // Codex P2 on PR #194: decideCoarseWatchdog reused the TACTICAL telemetry, so
+  // a 12s coarse fire reported timeout_ms 7000 (init) or 60000 (resume) — which
+  // points an on-call engineer at the wrong layer.
+  const { decideCoarseWatchdog, APPLOCK_INIT_WATCHDOG_MS, APPLOCK_RESUME_WATCHDOG_MS } =
+    await loadTsModule('src/lib/appLockPolicy.ts');
+  assert.equal(decideCoarseWatchdog('init').telemetry.timeoutMs, APPLOCK_INIT_WATCHDOG_MS);
+  assert.equal(decideCoarseWatchdog('resume').telemetry.timeoutMs, APPLOCK_RESUME_WATCHDOG_MS);
+});
+
+test('the release checklist names a failpoint that can actually arm', async () => {
+  // isLockFailpoint requires `<path>:<stage>`; a bare 'resume' returns false, so
+  // the documented step would silently no-op and "verify the hang" would test
+  // nothing. Assert every documented failpoint is well-formed.
+  const doc = await read('docs/rn-sdk-upgrade-plan.md');
+  const { isLockFailpoint } = await loadTsModule('src/lib/appLockPolicy.ts');
+  const armed = [...doc.matchAll(/armAppLockHang\('([^']*)'\)/g)].map((m) => m[1]);
+  assert.ok(armed.length > 0, 'the upgrade plan no longer names a failpoint');
+  for (const value of armed) {
+    assert.equal(isLockFailpoint(value), true, `documented failpoint '${value}' cannot arm`);
+  }
 });
 
 test('AuthProvider bounds its own pre-controller storage reads', async () => {

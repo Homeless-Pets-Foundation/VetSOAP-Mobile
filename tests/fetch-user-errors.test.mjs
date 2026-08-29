@@ -48,6 +48,20 @@ test('a timeout is classified by TYPE, not by its message', async () => {
   );
 });
 
+test('a storage deadline is RETRYABLE — it must still reach the profile cache', async () => {
+  // Regression guard (Codex P1 on PR #194): bounding the pre-fetch Keystore
+  // reads introduced a NEW error type into the very path this module fixes. If
+  // StorageUnavailableError is terminal, a hung Keystore skips the cached
+  // profile and strands the vet exactly as the timeout used to.
+  const { isRetryableFetchUserError, fetchUserErrorMessage } = await load();
+  const { StorageUnavailableError } = await loadTsModule('src/api/apiErrors.ts');
+  const err = new StorageUnavailableError('get_device_id');
+  assert.equal(isRetryableFetchUserError(err), true);
+  // And it must not be described as a network problem — the network is fine.
+  assert.doesNotMatch(fetchUserErrorMessage(err), /internet|connection/i);
+  assert.match(fetchUserErrorMessage(err), /storage/i);
+});
+
 test('network TypeErrors stay retryable', async () => {
   const { isRetryableFetchUserError } = await load();
   assert.equal(isRetryableFetchUserError(new TypeError('Network request failed')), true);

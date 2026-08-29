@@ -680,6 +680,9 @@ export const ACCOUNT_LOAD_ERROR_COPY = {
   /** Our own request deadline fired. Retryable, so the profile cache is tried first. */
   timeout:
     'Captivet is taking too long to respond. Your recordings are safe on this device.',
+  /** A bounded SecureStore read timed out — Keystore is degraded, not the network. */
+  storage:
+    'This device\u2019s secure storage is not responding. Restart the app and try again.',
   /** RN surfaces a dropped connection as a TypeError mentioning 'network'. */
   offline: 'No internet connection. Check your network and try again.',
 } as const;

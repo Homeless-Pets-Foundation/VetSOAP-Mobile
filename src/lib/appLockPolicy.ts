@@ -224,7 +224,10 @@ export function decideCoarseWatchdog(path: 'init' | 'resume'): {
       locked: false,
       ready: true,
       hint: null,
-      telemetry: INIT_WATCHDOG,
+      // The COARSE deadline, not the tactical one. Reusing INIT_WATCHDOG
+      // verbatim reported timeout_ms 7000 for an event that fired at 12000,
+      // which would send an on-call engineer looking at the wrong layer.
+      telemetry: { ...INIT_WATCHDOG, timeoutMs: APPLOCK_INIT_WATCHDOG_MS },
     };
   }
   return {
@@ -234,7 +237,7 @@ export function decideCoarseWatchdog(path: 'init' | 'resume'): {
     locked: null,
     ready: true,
     hint: APP_LOCK_COPY.sensorUnavailable,
-    telemetry: RESUME_WATCHDOG,
+    telemetry: { ...RESUME_WATCHDOG, timeoutMs: APPLOCK_RESUME_WATCHDOG_MS },
   };
 }
 

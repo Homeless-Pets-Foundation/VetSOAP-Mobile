@@ -339,7 +339,7 @@ test('a server-reported conflict is never rendered as a wrong-visit conflict', a
   // the duplicate this change exists to prevent.
   assert.match(
     record,
-    /const conflictTier = error\.source === 'client_adopt_guard' \? 'identity' : 'unknown';[\s\S]{0,400}?tier: conflictTier,/
+    /const conflictTier =\s*error\.source === 'client_adopt_guard' && localAudioAvailableForRestart\s*\? 'identity'\s*: 'unknown';[\s\S]{0,400}?tier: conflictTier,/
   );
   // The unknown tier gets the non-destructive affordance only, and only when
   // there is actually a recording to open.
@@ -731,6 +731,24 @@ test('an identity divergence with no local bytes becomes a server-only conflict'
   );
   // ...and that tier must be acknowledgeable, or the guard strands the vet.
   assert.match(card, /slot\.metadataDivergence\.tier === 'unknown'\) && \(/);
+
+  // The THROWING adopt path needs the same test. A confirmation-only recovery
+  // whose comparison throws lands in the catch, not on the success path above,
+  // and tiering on `error.source` alone made every one of them 'identity' —
+  // claiming a device copy that does not exist and persisting a hold that
+  // suppresses the uploaded manifest from ordinary recovery cleanup for good.
+  assert.match(
+    record,
+    /const conflictTier =\s*error\.source === 'client_adopt_guard' && localAudioAvailableForRestart\s*\? 'identity'\s*: 'unknown';/
+  );
+  assert.doesNotMatch(
+    record,
+    /const conflictTier = error\.source === 'client_adopt_guard' \? 'identity' : 'unknown';/,
+    'the catch path must not tier on the error source alone'
+  );
+  // ...and with no bytes there is nothing to hold, so the hold write stays
+  // behind the identity tier.
+  assert.match(record, /if \(conflictTier === 'identity' && user\?\.id\) \{/);
 });
 
 test('species and breed block adoption when no stronger anchor can disambiguate', async () => {

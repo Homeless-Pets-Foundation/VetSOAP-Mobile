@@ -3602,7 +3602,20 @@ function RecordingSession() {
         // a path that was about to release the local audio. Never delete
         // anything here: surface a reconcile card and let the vet decide.
         if (error instanceof RecordingMetadataConflictError) {
-          const conflictTier = error.source === 'client_adopt_guard' ? 'identity' : 'unknown';
+          // The identity tier is a promise about THIS DEVICE: it says a local
+          // copy is being retained and offers actions that act on those bytes.
+          // A confirmation-only durable recovery has no readable local audio,
+          // and if its adopt comparison THROWS it lands here rather than on the
+          // success path — which already re-tiers exactly this case at the
+          // `localAudioAvailableForRestart` check above. Without the same test
+          // the card claims a device copy that does not exist, and the hold it
+          // persists suppresses the uploaded manifest from ordinary recovery
+          // cleanup for good. With no bytes the conflict is server-only, which
+          // is what the 'unknown' tier means.
+          const conflictTier =
+            error.source === 'client_adopt_guard' && localAudioAvailableForRestart
+              ? 'identity'
+              : 'unknown';
           dispatch({
             type: 'SET_METADATA_DIVERGENCE',
             slotId: slot.id,

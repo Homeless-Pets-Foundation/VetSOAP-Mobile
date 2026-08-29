@@ -4,8 +4,43 @@ import { validateRequestUrl } from '../lib/sslPinning';
 import { getIdempotencyUuid } from '../lib/random';
 import { setMinVersionFloor, UPGRADE_REQUIRED_CODE } from '../lib/minVersion';
 import { setDurableCaptureFlag } from '../lib/durableFlag';
+import { withPromiseTimeout } from '../lib/promiseTimeout';
+import { ApiError, RequestTimeoutError, StorageUnavailableError } from './apiErrors';
 
 const REQUEST_TIMEOUT_MS = 30000;
+
+/**
+ * Deadline for the SecureStore reads that happen BEFORE a request's
+ * AbortController exists (rule 24).
+ *
+ * The 30s request budget is armed only once we reach `fetch()`, so a Keystore
+ * that hangs — post-OS-update rebuild, Direct Boot, low storage, or a
+ * screen-lock change (rule 3) — used to strand `doFetch` forever: no error was
+ * ever thrown and the user sat on the "Still Loading Account" screen
+ * indefinitely. Generous against a healthy read (milliseconds), well inside the
+ * request budget, and matched to NATIVE_PREFLIGHT_TIMEOUT_MS.
+ */
+const API_STORAGE_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * Bound a SecureStore read that runs before the request's AbortController
+ * exists. Fails CLOSED: a timeout throws StorageUnavailableError rather than
+ * letting the request proceed without the header it was fetching.
+ */
+async function readStorageBounded<T>(
+  read: () => Promise<T>,
+  operation: string,
+): Promise<T> {
+  // Only a TIMEOUT becomes StorageUnavailableError. A genuine absence still
+  // resolves normally, so a device that has no id yet keeps its existing
+  // behaviour — the unpersisted-id path below.
+  return withPromiseTimeout(
+    read(),
+    API_STORAGE_READ_TIMEOUT_MS,
+    `api_storage_read_timeout:${operation}`,
+    () => new StorageUnavailableError(operation),
+  );
+}
 
 function throwIfRequestAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -68,21 +103,11 @@ function emitApiBreadcrumb(
   }
 }
 
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-    public isRetryable: boolean = false,
-    public details?: { field?: string; message: string }[],
-    /** Server-supplied error code (e.g. DEVICE_LIMIT_REACHED) for branching. */
-    public code?: string,
-    /** Remaining error-body fields (e.g. capacity, existingDevices). */
-    public data?: Record<string, unknown>
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
+export {
+  ApiError,
+  RequestTimeoutError,
+  StorageUnavailableError,
+} from './apiErrors';
 
 export interface MfaRequiredRequest {
   path: string;
@@ -174,7 +199,10 @@ export class ApiClient {
     // actually stop authenticated requests.
     const token = this.tokenInitialized
       ? this.currentToken
-      : (await secureStorage.getToken());
+      : await readStorageBounded(
+          () => secureStorage.getToken(),
+          'get_token',
+        );
     if (!token) return {};
     return { Authorization: `Bearer ${token}` };
   }
@@ -236,7 +264,10 @@ export class ApiClient {
     // Don't cache null — Keystore may be transiently unavailable (e.g. Android direct boot).
     let deviceId = this.cachedDeviceId ?? null;
     if (this.cachedDeviceId === undefined) {
-      const { id, persisted } = await secureStorage.getDeviceIdWithProvenance();
+      const { id, persisted } = await readStorageBounded(
+        () => secureStorage.getDeviceIdWithProvenance(),
+        'get_device_id',
+      );
       deviceId = id;
       // Send an unpersisted ID (rule 21 — omitting the header means a 401
       // DEVICE_ID_REQUIRED and a forced sign-out loop) but do NOT cache it.
@@ -283,7 +314,7 @@ export class ApiClient {
       // timeout from a user cancel). Rethrow with an explicit timeout message
       // so isTransientUploadError matches and the upload flow auto-retries.
       if (timedOut) {
-        throw new Error(`Request timeout after ${timeoutMs}ms`, { cause: error });
+        throw new RequestTimeoutError(`Request timeout after ${timeoutMs}ms`, { cause: error });
       }
       throw error;
     } finally {

@@ -182,7 +182,13 @@ test('the api client never pins a device id that storage has not accepted', asyn
   // ApiClient keeps its OWN device-id cache. Caching an unpersisted id there
   // stops every later request from re-entering getDeviceId, so secureStorage's
   // retry never runs and the next launch registers a second identity.
-  assert.match(client, /const \{ id, persisted \} = await secureStorage\.getDeviceIdWithProvenance\(\);/);
+  // The read is now BOUNDED (rule 24) — it used to sit unbounded ahead of the
+  // request's AbortController, so a hung Keystore stranded doFetch forever.
+  // Still the provenance-aware call, still destructured the same way.
+  assert.match(
+    client,
+    /const \{ id, persisted \} = await readStorageBounded\(\s*\(\) => secureStorage\.getDeviceIdWithProvenance\(\),/,
+  );
   assert.match(client, /if \(id && persisted\) this\.cachedDeviceId = id;/);
   // The header is still sent from the unpersisted value (rule 21).
   assert.match(client, /deviceId = id;/);

@@ -677,6 +677,11 @@ export const ACCOUNT_LOAD_ERROR_COPY = {
   retry: 'Retry',
   detailsPrefix: 'Details: ',
   signOut: 'Sign out',
+  /** Our own request deadline fired. Retryable, so the profile cache is tried first. */
+  timeout:
+    'Captivet is taking too long to respond. Your recordings are safe on this device.',
+  /** RN surfaces a dropped connection as a TypeError mentioning 'network'. */
+  offline: 'No internet connection. Check your network and try again.',
 } as const;
 
 export const DEVICE_REGISTRATION_BANNER_COPY = {

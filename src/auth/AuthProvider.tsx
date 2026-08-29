@@ -19,7 +19,12 @@ import {
   type AuthResult,
 } from './socialAuth';
 import { secureStorage } from '../lib/secureStorage';
-import { apiClient, ApiError } from '../api/client';
+import { apiClient, ApiError, StorageUnavailableError } from '../api/client';
+import { withPromiseTimeout } from '../lib/promiseTimeout';
+import {
+  isRetryableFetchUserError,
+  fetchUserErrorMessage,
+} from './fetchUserErrors';
 import type { DeviceCapacity, DeviceSession } from '../api/devices';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
@@ -429,6 +434,45 @@ function clearTelemetryIdentity(): void {
  * sees as a blank loading screen because `isLoading` never flips back to
  * false. `withTimeout` ensures the chain always advances to `setUser(null)`.
  */
+/**
+ * Bound for SecureStore reads that run before a request's AbortController
+ * exists (rule 24). Mirrors API_STORAGE_READ_TIMEOUT_MS in api/client.ts.
+ */
+const AUTH_STORAGE_READ_TIMEOUT_MS = 10_000;
+
+/** Bounded Keystore read that yields null instead of hanging the caller. */
+async function readStorageOrNull<T>(
+  read: () => Promise<T>,
+  operation: string,
+): Promise<T | null> {
+  try {
+    return await withPromiseTimeout(
+      read(),
+      AUTH_STORAGE_READ_TIMEOUT_MS,
+      `auth_storage_read_timeout:${operation}`,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bounded Keystore read that FAILS CLOSED on timeout while still passing a
+ * genuine absence through. The distinction matters: a device that simply has
+ * no id yet must keep its existing behaviour, only a HANG is an error.
+ */
+async function readStorageOrThrow<T>(
+  read: () => Promise<T>,
+  operation: string,
+): Promise<T> {
+  return withPromiseTimeout(
+    read(),
+    AUTH_STORAGE_READ_TIMEOUT_MS,
+    `auth_storage_read_timeout:${operation}`,
+    () => new StorageUnavailableError(operation),
+  );
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const safeguard = new Promise<null>((resolve) => {
@@ -604,32 +648,6 @@ function withOrganizationName(body: AuthMeBody): User | null {
   const raw = body.organization?.name;
   const name = typeof raw === 'string' ? raw.trim().slice(0, MAX_ORGANIZATION_NAME_LENGTH) : '';
   return name ? { ...user, organizationName: name } : user;
-}
-
-/**
- * Transient-looking errors from /auth/me that deserve a retry. Deliberately
- * narrow: a 401 is already handled by apiClient's refresh flow, a 403 /
- * 404 / 422 shouldn't be retried, and anything not matching here lands
- * directly in the error state.
- */
-function isRetryableFetchUserError(error: unknown): boolean {
-  if (error instanceof TypeError && /network/i.test(error.message)) return true;
-  if (error instanceof ApiError) {
-    // 5xx and network-layer 0 both warrant a retry.
-    return error.status === 0 || error.status >= 500;
-  }
-  return false;
-}
-
-function fetchUserErrorMessage(error: unknown): string {
-  if (error instanceof TypeError && /network/i.test(error.message)) {
-    return 'No internet connection. Check your network and try again.';
-  }
-  if (error instanceof ApiError) {
-    return error.message || `Server error (HTTP ${error.status}).`;
-  }
-  if (error instanceof Error) return error.message;
-  return 'Failed to load your account.';
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -905,7 +923,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const isCurrentAccount = () => authGenerationRef.current === generation;
     const promise = measurePhase('registerDevice', { platform: Platform.OS }, async (): Promise<boolean> => {
       try {
-        const deviceId = await secureStorage.getDeviceId();
+        // Bounded (rule 24): a hung Keystore used to strand registration
+        // forever. null lands in the setDeviceRegistrationPending path below,
+        // which already exists for an unreadable device id.
+        const deviceId = await readStorageOrNull(
+          () => secureStorage.getDeviceId(),
+          'register_device',
+        );
         if (!isCurrentAccount()) return false;
         if (!deviceId) {
           setDeviceRegistrationPending(true);
@@ -1263,7 +1287,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         includeRefreshToken?: boolean;
       } = {}
     ): Promise<MfaApiResponse> => {
-      const token = session?.access_token ?? (await secureStorage.getToken());
+      const token =
+        session?.access_token ??
+        (await readStorageOrNull(() => secureStorage.getToken(), 'mfa_token'));
       if (!token) {
         throw new ApiError('Authentication required.', 401, false, undefined, 'AUTH_REQUIRED');
       }
@@ -1272,7 +1298,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       };
-      const deviceId = await secureStorage.getDeviceId();
+      // Rule 25: MFA bearer routes must not route around device binding, so a
+      // storage timeout FAILS CLOSED here rather than silently omitting the
+      // header and letting the server answer 401 DEVICE_ID_REQUIRED.
+      const deviceId = await readStorageOrThrow(
+        () => secureStorage.getDeviceId(),
+        'mfa_device_id',
+      );
       if (deviceId) {
         headers['X-Device-Id'] = deviceId;
       }

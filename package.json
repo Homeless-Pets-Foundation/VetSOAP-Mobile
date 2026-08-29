@@ -13,7 +13,7 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
     "@config-plugins/ffmpeg-kit-react-native": "^9.0.0",

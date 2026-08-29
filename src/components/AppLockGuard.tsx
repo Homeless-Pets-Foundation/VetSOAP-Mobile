@@ -7,11 +7,83 @@ import { AuthContext } from '../auth/AuthProvider';
 import { captureMessage } from '../lib/monitoring';
 import { Button } from './ui/Button';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { withPromiseTimeout } from '../lib/promiseTimeout';
+import { APP_LOCK_COPY } from '../constants/strings';
+import {
+  APPLOCK_INIT_WATCHDOG_MS,
+  APPLOCK_PROBE_TIMEOUT_MS,
+  APPLOCK_PROMPT_TIMEOUT_MS,
+  APPLOCK_RESUME_WATCHDOG_MS,
+  consumeAppLockHang,
+  decideAfterProbe,
+  decideAfterPrompt,
+  decideCoarseWatchdog,
+} from '../lib/appLockPolicy';
+import type {
+  AppLockTelemetry,
+  BgLockState,
+  LockPath,
+  ProbeOutcome,
+  PromptOutcome,
+} from '../lib/appLockPolicy';
 
 const BACKGROUND_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
 
 interface AppLockGuardProps {
   children: React.ReactNode;
+}
+
+function emit(telemetry: AppLockTelemetry | null): void {
+  if (!telemetry) return;
+  captureMessage(telemetry.message, 'warning', {
+    tags: { phase: telemetry.phase, op: telemetry.op },
+    extra: { timeout_ms: telemetry.timeoutMs },
+  });
+}
+
+/** A Promise that never settles — the `__DEV__` hang injector (see appLockPolicy). */
+function neverSettles<T>(): Promise<T> {
+  return new Promise<T>(() => {});
+}
+
+/**
+ * Bounded availability probe. `biometrics.*` never rejects, so the only
+ * outcome this has to add is "it never answered".
+ */
+async function probeGate(path: LockPath): Promise<ProbeOutcome> {
+  try {
+    const source = consumeAppLockHang(`${path}:probe`)
+      ? neverSettles<[boolean, boolean]>()
+      : Promise.all([biometrics.isAvailable(), biometrics.isEnabled()]);
+    const [available, enabled] = await withPromiseTimeout(
+      source,
+      APPLOCK_PROBE_TIMEOUT_MS,
+      'applock_probe_timeout',
+    );
+    return { kind: 'resolved', available, enabled };
+  } catch {
+    return { kind: 'timeout' };
+  }
+}
+
+/**
+ * Bounded biometric prompt. Keeps `timeout` distinct from `rejected` — a
+ * cancel and a dead bridge are different failures with different copy.
+ */
+async function runPrompt(hang: boolean): Promise<PromptOutcome> {
+  try {
+    const source = hang
+      ? neverSettles<boolean>()
+      : biometrics.authenticate('Verify your identity to continue');
+    const success = await withPromiseTimeout(
+      source,
+      APPLOCK_PROMPT_TIMEOUT_MS,
+      'applock_prompt_timeout',
+    );
+    return success ? 'success' : 'rejected';
+  } catch {
+    return 'timeout';
+  }
 }
 
 /**
@@ -33,7 +105,11 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   // Cached "biometric lock is active" state. Drives the bg-resume path so we can
   // call setIsLocked(true) synchronously — before awaiting biometrics.isAvailable() /
   // isEnabled() — to prevent PHI from flashing on the screen during the async check.
-  const shouldLockOnBgRef = useRef(false);
+  //
+  // Tri-state, not a boolean: a cold-start watchdog that fires before the probe
+  // resolves must leave this 'unknown', not 'off'. While it was a boolean, that
+  // case silently disarmed the background lock for the whole session.
+  const bgLockRef = useRef<BgLockState>('unknown');
 
   const handleLockScreenSignOut = useCallback(() => {
     Alert.alert(
@@ -61,15 +137,14 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     isAuthenticatingRef.current = true;
     setIsAuthenticating(true);
     try {
-      const success = await biometrics.authenticate('Verify your identity to continue');
-      if (success) {
-        setIsLocked(false);
-        setUnlockHint(null);
-      } else {
-        // Cancelled or failed — without this the lock screen gives no
-        // feedback at all, just the same Unlock button.
-        setUnlockHint('Authentication cancelled — try again.');
-      }
+      // Bounded: an unbounded authenticate() that hangs here never reaches the
+      // `finally`, which pinned the ref true and made every later retry a
+      // no-op — the Unlock button stayed spinning with Sign Out the only exit.
+      const outcome = await runPrompt(consumeAppLockHang('manual:prompt'));
+      const decision = decideAfterPrompt('manual', outcome);
+      setIsLocked(decision.locked);
+      setUnlockHint(decision.hint);
+      emit(decision.telemetry);
     } catch (error) {
       if (__DEV__) console.error('[AppLockGuard] attemptUnlock failed:', error);
     } finally {
@@ -81,72 +156,80 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   // Cold-start biometric check: on mount, check if biometric lock is enabled.
   // If so, require authentication before showing content.
   //
-  // Hung-bridge defense (CLAUDE.md rule 29): if `biometrics.isAvailable()` /
+  // Hung-bridge defense (CLAUDE.md rule 24): if `biometrics.isAvailable()` /
   // `isEnabled()` / `authenticate()` hang silently (post-update Keystore
-  // rebuild, OS biometric service stall) the user sees the blank
-  // `bg-surface` screen at line 174 forever. The 12s watchdog flips
-  // `isReady=true, isLocked=false` so the user lands on the app content
-  // (or the explicit Lock UI with an Unlock button) instead of nothing.
+  // rebuild, OS biometric service stall) the user would see the blank
+  // `bg-surface` splash forever. Two layers: `withPromiseTimeout` inside
+  // probeGate/runPrompt, and the coarse watchdog below.
+  //
+  // The coarse watchdog covers the PROBE ONLY and is cleared the moment the
+  // probe settles. It used to be cleared in the outer `.finally()`, which waits
+  // on the prompt — so a user who hesitated more than 12s at the OS prompt had
+  // the app unlock itself behind a live biometric prompt.
   useEffect(() => {
+    let cancelled = false;
     const watchdog = setTimeout(() => {
-      captureMessage('applock_init_watchdog_fired', 'warning', {
-        tags: { phase: 'init_watchdog', op: 'applock_init' },
-        extra: { timeout_ms: 12_000 },
-      });
+      if (cancelled) return;
+      const decision = decideCoarseWatchdog('init');
+      emit(decision.telemetry);
       isAuthenticatingRef.current = false;
       setIsAuthenticating(false);
-      setIsLocked(false);
-      setIsReady(true);
-    }, 12_000);
+      if (decision.locked !== null) setIsLocked(decision.locked);
+      setIsReady(decision.ready);
+    }, APPLOCK_INIT_WATCHDOG_MS);
 
     (async () => {
+      let probe: ProbeOutcome;
       try {
-        const [available, enabled] = await Promise.all([
-          biometrics.isAvailable(),
-          biometrics.isEnabled(),
-        ]);
-
-        shouldLockOnBgRef.current = available && enabled;
-        if (available && enabled) {
-          // Keep locked and trigger biometric prompt
-          setIsReady(true);
-          isAuthenticatingRef.current = true;
-          setIsAuthenticating(true);
-          try {
-            const success = await biometrics.authenticate(
-              'Verify your identity to continue'
-            );
-            if (success) {
-              setIsLocked(false);
-            }
-          } finally {
-            isAuthenticatingRef.current = false;
-            setIsAuthenticating(false);
-          }
-        } else {
-          // Biometric not available or not enabled — unlock immediately
-          setIsLocked(false);
-          setIsReady(true);
-        }
-      } catch {
-        // On error, unlock to avoid permanently locking user out
-        setIsLocked(false);
-        setIsReady(true);
-      }
-    })()
-      .catch(() => {
-        setIsLocked(false);
-        setIsReady(true);
-      })
-      .finally(() => {
+        probe = await probeGate('init');
+      } finally {
         clearTimeout(watchdog);
-      });
+      }
+      if (cancelled) return;
 
-    return () => clearTimeout(watchdog);
+      const decision = decideAfterProbe('init', bgLockRef.current, probe);
+      bgLockRef.current = decision.bgLock;
+      emit(decision.telemetry);
+
+      if (decision.action === 'settle') {
+        setIsLocked(decision.locked);
+        setIsReady(decision.ready);
+        return;
+      }
+
+      // Keep locked and trigger biometric prompt.
+      setIsReady(true);
+      isAuthenticatingRef.current = true;
+      setIsAuthenticating(true);
+      try {
+        const outcome = await runPrompt(consumeAppLockHang('init:prompt'));
+        if (cancelled) return;
+        const promptDecision = decideAfterPrompt('init', outcome);
+        setIsLocked(promptDecision.locked);
+        setUnlockHint(promptDecision.hint);
+        emit(promptDecision.telemetry);
+      } finally {
+        isAuthenticatingRef.current = false;
+        setIsAuthenticating(false);
+      }
+    })().catch(() => {
+      // Defensive: nothing above rethrows, but a throw must never leave the
+      // user on the blank splash.
+      if (cancelled) return;
+      setIsLocked(false);
+      setIsReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(watchdog);
+    };
   }, []);
 
   // Background/foreground lock handler
   useEffect(() => {
+    let disposed = false;
+
     const handleAppStateChange = (nextState: AppStateStatus) => {
       (async () => {
         try {
@@ -162,7 +245,9 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
 
             if (
               elapsed >= BACKGROUND_LOCK_THRESHOLD_MS &&
-              shouldLockOnBgRef.current &&
+              // 'unknown' arms the check too — it re-probes and resolves safely.
+              // Only a PROVEN 'off' skips it.
+              bgLockRef.current !== 'off' &&
               !isAuthenticatingRef.current
             ) {
               // Lock synchronously before any await — keeps PHI off the screen
@@ -171,25 +256,49 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
               isAuthenticatingRef.current = true;
               setIsLocked(true);
               setIsAuthenticating(true);
-              try {
-                const [available, enabled] = await Promise.all([
-                  biometrics.isAvailable(),
-                  biometrics.isEnabled(),
-                ]);
-                shouldLockOnBgRef.current = available && enabled;
 
-                if (!available || !enabled) {
-                  // Cached value was stale — unlock without prompting.
-                  setIsLocked(false);
-                } else {
-                  const success = await biometrics.authenticate(
-                    'Verify your identity to continue'
-                  );
-                  if (success) {
-                    setIsLocked(false);
-                  }
+              // Coarse outer watchdog — the layer this path never had. It
+              // releases the spinner and the re-entrancy ref so Unlock works
+              // again, and deliberately does NOT unlock: a hung sensor must
+              // never reveal a PHI screen on a timer.
+              let watchdogFired = false;
+              const watchdog = setTimeout(() => {
+                if (disposed) return;
+                watchdogFired = true;
+                const coarse = decideCoarseWatchdog('resume');
+                emit(coarse.telemetry);
+                isAuthenticatingRef.current = false;
+                setIsAuthenticating(false);
+                if (coarse.locked !== null) setIsLocked(coarse.locked);
+                setUnlockHint(coarse.hint);
+              }, APPLOCK_RESUME_WATCHDOG_MS);
+
+              try {
+                let probe: ProbeOutcome;
+                try {
+                  probe = await probeGate('resume');
+                } finally {
+                  clearTimeout(watchdog);
                 }
+                if (disposed || watchdogFired) return;
+
+                const decision = decideAfterProbe('resume', bgLockRef.current, probe);
+                bgLockRef.current = decision.bgLock;
+                emit(decision.telemetry);
+
+                if (decision.action === 'settle') {
+                  setIsLocked(decision.locked);
+                  return;
+                }
+
+                const outcome = await runPrompt(consumeAppLockHang('resume:prompt'));
+                if (disposed) return;
+                const promptDecision = decideAfterPrompt('resume', outcome);
+                setIsLocked(promptDecision.locked);
+                setUnlockHint(promptDecision.hint);
+                emit(promptDecision.telemetry);
               } finally {
+                clearTimeout(watchdog);
                 isAuthenticatingRef.current = false;
                 setIsAuthenticating(false);
               }
@@ -204,12 +313,15 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     };
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
+    return () => {
+      disposed = true;
+      subscription.remove();
+    };
   }, []);
 
   // While checking biometric state on cold start, show branding + a spinner
-  // (no PHI). A fully blank view read as a frozen app for up to the 12s
-  // watchdog when the biometric bridge stalled.
+  // (no PHI). A fully blank view read as a frozen app for up to the watchdog
+  // window when the biometric bridge stalled.
   if (!isReady && isLocked) {
     return (
       <View className="flex-1 justify-center items-center bg-surface">
@@ -236,10 +348,10 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
           className="mb-4"
         />
         <Text className="text-body-lg font-bold text-content-primary mb-2">
-          Captivet Locked
+          {APP_LOCK_COPY.title}
         </Text>
         <Text className="text-body-sm text-content-tertiary text-center mb-6">
-          Authenticate to continue using the app.
+          {APP_LOCK_COPY.subtitle}
         </Text>
         {unlockHint && (
           <Text

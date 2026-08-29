@@ -262,6 +262,18 @@ export function isLockFailpoint(value: unknown): value is LockFailpoint {
 
 let nextDevelopmentHang: LockFailpoint | null = null;
 
+// Metro inlines EXPO_PUBLIC_* at build time, so a restart with a different
+// value is the whole arming mechanism — no rebuild, and nothing reaches a
+// release bundle because the branch is __DEV__-only. Without this the
+// failpoint has no caller and the hang paths cannot be exercised on a device
+// at all: cancelling a prompt produces a REJECTION, never a hang.
+if (__DEV__) {
+  const armed = process.env.EXPO_PUBLIC_APPLOCK_HANG;
+  if (isLockFailpoint(armed)) {
+    nextDevelopmentHang = armed;
+  }
+}
+
 /**
  * One-shot development diagnostic, mirroring `armNativePreflightHang` in
  * `src/lib/nativePreflight.ts`. The `__DEV__` branch is removed from release

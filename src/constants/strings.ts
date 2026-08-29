@@ -329,6 +329,20 @@ export const AUDIO_PLAYER_COPY = {
   speed: (rate: number): string => `${rate}x`,
 } as const;
 
+export const APP_LOCK_COPY = {
+  title: 'Captivet Locked',
+  subtitle: 'Authenticate to continue using the app.',
+  /** Prompt returned a negative result — the user cancelled or failed the check. */
+  cancelled: 'Authentication cancelled — try again.',
+  /**
+   * The biometric bridge never settled. Distinct from `cancelled`: nothing was
+   * asked of the user, so 'try again' alone would read as blaming them for a
+   * prompt they never saw.
+   */
+  sensorUnavailable:
+    'Could not reach the biometric sensor. Try again, or sign out — saved recordings are kept.',
+} as const;
+
 export const RECORDER_TRANSITION_COPY = {
   /** Toast + screen-reader announcement when swiping away auto-pauses a live recording. */
   autoPaused: (patientLabel: string): string => `Recording for ${patientLabel} paused`,

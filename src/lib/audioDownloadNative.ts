@@ -1,6 +1,6 @@
-import { Directory, type FileHandle } from 'expo-file-system';
+import { Directory, File, type FileHandle } from 'expo-file-system';
 import { fetch as expoFetch } from 'expo/fetch';
-import { safeDeleteFile, tryDeleteFile } from './fileOps';
+import { tryDeleteFile } from './fileOps';
 import type {
   AudioDownloadDestination,
   AudioDownloadResponse,
@@ -9,21 +9,52 @@ import type {
 
 class NativeWritableDownloadFile implements AudioDownloadWritableFile {
   private closed = false;
+  private committed = false;
+  private promotionUncertain = false;
+  private handle: FileHandle | null = null;
+  private readonly stagingUri: string;
+  private readonly finalFile: File;
 
   constructor(
-    private readonly uri: string,
-    private readonly handle: FileHandle
-  ) {}
+    private readonly stagingFile: File,
+    directory: Directory,
+    finalFilename: string
+  ) {
+    this.stagingUri = stagingFile.uri;
+    this.finalFile = new File(directory, finalFilename);
+  }
 
   write(bytes: Uint8Array): void {
     if (this.closed) throw new Error('Download file is closed');
+    // Open lazily. The engine has already registered this staging file for
+    // rollback, so an open failure cannot escape cleanup accounting.
+    this.handle ??= this.stagingFile.open();
     this.handle.writeBytes(bytes);
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.handle.close();
+    this.handle?.close();
+    this.handle = null;
+  }
+
+  commit(): void {
+    if (this.committed) return;
+    this.close();
+    // Refuse a provider race instead of overwriting a file that was not part
+    // of this attempt.
+    if (this.finalFile.exists) throw new Error('Download destination already exists');
+    try {
+      this.stagingFile.move(this.finalFile);
+      this.committed = true;
+    } catch (error) {
+      // Some document providers can report failure after creating the target.
+      // Do not risk deleting a raced pre-existing file; surface incomplete
+      // rollback instead so the user can inspect the folder.
+      this.promotionUncertain = this.finalFile.exists;
+      throw error;
+    }
   }
 
   remove(): boolean {
@@ -32,7 +63,8 @@ class NativeWritableDownloadFile implements AudioDownloadWritableFile {
     } catch {
       // A failed close must not skip the provider delete attempt.
     }
-    return tryDeleteFile(this.uri);
+    const removed = tryDeleteFile(this.committed ? this.finalFile.uri : this.stagingUri);
+    return removed && !this.promotionUncertain;
   }
 }
 
@@ -43,14 +75,13 @@ class NativeAudioDownloadDestination implements AudioDownloadDestination {
     return this.directory.list().map((entry) => entry.name);
   }
 
-  create(filename: string, mimeType: string): AudioDownloadWritableFile {
-    const file = this.directory.createFile(filename, mimeType);
-    try {
-      return new NativeWritableDownloadFile(file.uri, file.open());
-    } catch {
-      safeDeleteFile(file.uri);
-      throw new Error('Could not create download file');
-    }
+  create(
+    stagingFilename: string,
+    finalFilename: string,
+    mimeType: string
+  ): AudioDownloadWritableFile {
+    const file = this.directory.createFile(stagingFilename, mimeType);
+    return new NativeWritableDownloadFile(file, this.directory, finalFilename);
   }
 }
 

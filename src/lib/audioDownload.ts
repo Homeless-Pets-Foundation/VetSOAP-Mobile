@@ -5,7 +5,9 @@ import {
 } from '../api/downloadManifest';
 
 export const AUDIO_DOWNLOAD_PART_TIMEOUT_MS = 30 * 60 * 1000;
-const MANIFEST_REFRESH_MARGIN_MS = 60_000;
+// The server guarantees at least 17 minutes of URL lifetime when it returns a
+// manifest. Refresh from elapsed time since receipt, not the device wall clock.
+export const AUDIO_DOWNLOAD_MANIFEST_REFRESH_AFTER_MS = 16 * 60 * 1000;
 
 export type AudioDownloadErrorCode =
   | 'cancelled'
@@ -36,12 +38,18 @@ export class AudioDownloadError extends Error {
 export interface AudioDownloadWritableFile {
   write(bytes: Uint8Array): void;
   close(): void;
+  /** Promote the verified staging file to its final user-visible filename. */
+  commit(): void;
   remove(): boolean;
 }
 
 export interface AudioDownloadDestination {
   listNames(): string[];
-  create(filename: string, mimeType: string): AudioDownloadWritableFile;
+  create(
+    stagingFilename: string,
+    finalFilename: string,
+    mimeType: string
+  ): AudioDownloadWritableFile;
 }
 
 export interface AudioDownloadResponse {
@@ -66,7 +74,11 @@ interface DownloadAudioOptions {
   fetchPart: (url: string, signal: AbortSignal) => Promise<AudioDownloadResponse>;
   signal: AbortSignal;
   onProgress?: (progress: AudioDownloadProgress) => void;
+  /** Wall-clock time used only for PHI-free collision suffixes. */
   now?: () => number;
+  /** Monotonic elapsed time used for manifest refresh scheduling. */
+  elapsedNow?: () => number;
+  manifestRefreshAfterMs?: number;
   partTimeoutMs?: number;
 }
 
@@ -75,8 +87,17 @@ export interface AudioDownloadResult {
   partCount: number;
 }
 
+interface PartGuard {
+  deadline: Promise<never>;
+  dispose(): void;
+}
+
 function closedError(code: AudioDownloadErrorCode): AudioDownloadError {
   return new AudioDownloadError(code);
+}
+
+function monotonicNow(): number {
+  return globalThis.performance?.now?.() ?? Date.now();
 }
 
 function suffixTimestamp(timestampMs: number): string {
@@ -101,15 +122,35 @@ export function resolveBatchDownloadFilenames(
   const originals = files.map((file) => file.filename);
   if (originals.every((filename) => !existing.has(filename))) return originals;
 
-  // Millisecond precision makes a clash vanishingly unlikely. The bounded
-  // increment preserves a timestamp-only suffix even if a provider already
-  // contains a file created at the same millisecond.
   for (let offset = 0; offset < 1000; offset += 1) {
     const suffix = suffixTimestamp(nowMs + offset);
     const candidates = originals.map((filename) => withSuffix(filename, suffix));
-    if (new Set(candidates).size === candidates.length && candidates.every((name) => !existing.has(name))) {
+    if (
+      new Set(candidates).size === candidates.length &&
+      candidates.every((name) => !existing.has(name))
+    ) {
       return candidates;
     }
+  }
+  throw closedError('destination_unavailable');
+}
+
+function resolveStagingFilenames(
+  count: number,
+  existingNames: Iterable<string>,
+  finalNames: Iterable<string>,
+  nowMs: number
+): string[] {
+  const unavailable = new Set([...existingNames, ...finalNames]);
+  const width = Math.max(2, String(count).length);
+  for (let offset = 0; offset < 1000; offset += 1) {
+    const batch = suffixTimestamp(nowMs + offset);
+    const candidates = Array.from(
+      { length: count },
+      (_, index) =>
+        `Captivet-audio-download-${batch}-part-${String(index + 1).padStart(width, '0')}.partial`
+    );
+    if (candidates.every((name) => !unavailable.has(name))) return candidates;
   }
   throw closedError('destination_unavailable');
 }
@@ -148,24 +189,58 @@ async function refreshUnchangedManifest(
   return refreshed;
 }
 
-function manifestNeedsRefresh(manifest: DownloadManifest, nowMs: number): boolean {
-  const expiresAtMs = Date.parse(manifest.expiresAt);
-  return !Number.isFinite(expiresAtMs) || expiresAtMs - nowMs <= MANIFEST_REFRESH_MARGIN_MS;
+function createPartGuard(
+  sourceSignal: AbortSignal,
+  targetController: AbortController,
+  timeoutMs: number
+): PartGuard {
+  let active = true;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  let rejectDeadline!: (error: AudioDownloadError) => void;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject;
+  });
+  // A successful part disposes the guard before it rejects. This handler also
+  // keeps an immediate/late guard rejection observed outside Promise.race.
+  void deadline.catch(() => {});
+
+  const stop = (code: 'cancelled' | 'part_timeout') => {
+    if (!active) return;
+    active = false;
+    targetController.abort();
+    rejectDeadline(closedError(code));
+  };
+  const onAbort = () => stop('cancelled');
+  sourceSignal.addEventListener('abort', onAbort, { once: true });
+  if (sourceSignal.aborted) {
+    onAbort();
+  } else {
+    timeout = setTimeout(() => stop('part_timeout'), Math.max(0, timeoutMs));
+  }
+
+  return {
+    deadline,
+    dispose() {
+      active = false;
+      if (timeout !== null) clearTimeout(timeout);
+      sourceSignal.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
-function linkAbortSignal(source: AbortSignal, target: AbortController): () => void {
-  const abort = () => target.abort();
-  source.addEventListener('abort', abort);
-  if (source.aborted) target.abort();
-  return () => source.removeEventListener('abort', abort);
+function settleBeforeGuard<T>(operation: Promise<T>, guard: PartGuard): Promise<T> {
+  // The operation may be an uncancellable native bridge call. Observe its late
+  // rejection after the guard has already returned control to the UI.
+  void operation.catch(() => {});
+  return Promise.race([operation, guard.deadline]);
 }
 
-function safeClose(file: AudioDownloadWritableFile | null): void {
-  if (!file) return;
+function observeIteratorReturn(iterator: AsyncIterator<Uint8Array>): void {
   try {
-    file.close();
+    const returned = iterator.return?.();
+    if (returned) void Promise.resolve(returned).catch(() => {});
   } catch {
-    // The rollback path still attempts removal.
+    // The response controller is aborted separately.
   }
 }
 
@@ -173,9 +248,13 @@ export async function downloadAudioManifest(
   options: DownloadAudioOptions
 ): Promise<AudioDownloadResult> {
   const now = options.now ?? Date.now;
+  const elapsedNow = options.elapsedNow ?? monotonicNow;
+  const refreshAfterMs =
+    options.manifestRefreshAfterMs ?? AUDIO_DOWNLOAD_MANIFEST_REFRESH_AFTER_MS;
   const partTimeoutMs = options.partTimeoutMs ?? AUDIO_DOWNLOAD_PART_TIMEOUT_MS;
   const created: AudioDownloadWritableFile[] = [];
   let manifest = options.manifest;
+  let manifestReceivedAtMs = elapsedNow();
   let bytesWritten = 0;
   let expiryResponseRefreshUsed = false;
 
@@ -185,13 +264,25 @@ export async function downloadAudioManifest(
   } catch {
     throw closedError('destination_unavailable');
   }
-  const destinationNames = resolveBatchDownloadFilenames(manifest.files, existingNames, now());
+  const batchTimestamp = now();
+  const destinationNames = resolveBatchDownloadFilenames(
+    manifest.files,
+    existingNames,
+    batchTimestamp
+  );
+  const stagingNames = resolveStagingFilenames(
+    manifest.files.length,
+    existingNames,
+    destinationNames,
+    batchTimestamp
+  );
 
   try {
     for (let index = 0; index < manifest.files.length; index += 1) {
       if (options.signal.aborted) throw closedError('cancelled');
-      if (manifestNeedsRefresh(manifest, now())) {
+      if (elapsedNow() - manifestReceivedAtMs >= refreshAfterMs) {
         manifest = await refreshUnchangedManifest(options.manifest, options.refreshManifest);
+        manifestReceivedAtMs = elapsedNow();
       }
 
       let shouldRetryAfterExpiry = true;
@@ -199,21 +290,19 @@ export async function downloadAudioManifest(
         shouldRetryAfterExpiry = false;
         const descriptor = manifest.files[index]!;
         const controller = new AbortController();
-        const unlinkAbort = linkAbortSignal(options.signal, controller);
-        let timedOut = false;
-        const timeout = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, partTimeoutMs);
+        const guard = createPartGuard(options.signal, controller, partTimeoutMs);
         let target: AudioDownloadWritableFile | null = null;
+        let iterator: AsyncIterator<Uint8Array> | null = null;
 
         try {
           let response: AudioDownloadResponse;
           try {
-            response = await options.fetchPart(descriptor.url, controller.signal);
-          } catch {
-            if (options.signal.aborted) throw closedError('cancelled');
-            if (timedOut) throw closedError('part_timeout');
+            response = await settleBeforeGuard(
+              options.fetchPart(descriptor.url, controller.signal),
+              guard
+            );
+          } catch (error) {
+            if (error instanceof AudioDownloadError) throw error;
             throw closedError('network_failed');
           }
 
@@ -230,6 +319,7 @@ export async function downloadAudioManifest(
             !expiryResponseRefreshUsed
           ) {
             manifest = await refreshUnchangedManifest(options.manifest, options.refreshManifest);
+            manifestReceivedAtMs = elapsedNow();
             expiryResponseRefreshUsed = true;
             shouldRetryAfterExpiry = true;
             continue;
@@ -243,17 +333,25 @@ export async function downloadAudioManifest(
           }
 
           try {
-            target = options.destination.create(destinationNames[index]!, descriptor.mimeType);
+            target = options.destination.create(
+              stagingNames[index]!,
+              destinationNames[index]!,
+              descriptor.mimeType
+            );
+            // Register the staging file before its first open/write so that an
+            // open failure is included in verified rollback reporting.
             created.push(target);
           } catch {
             throw closedError('file_create_failed');
           }
 
           let partBytes = 0;
+          iterator = response.chunks[Symbol.asyncIterator]();
           try {
-            for await (const chunk of response.chunks) {
-              if (options.signal.aborted) throw closedError('cancelled');
-              if (timedOut) throw closedError('part_timeout');
+            while (true) {
+              const next = await settleBeforeGuard(Promise.resolve(iterator.next()), guard);
+              if (next.done) break;
+              const chunk = next.value;
               if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) continue;
               partBytes += chunk.byteLength;
               if (partBytes > descriptor.sizeBytes) throw closedError('size_exceeded');
@@ -268,8 +366,6 @@ export async function downloadAudioManifest(
             }
           } catch (error) {
             if (error instanceof AudioDownloadError) throw error;
-            if (options.signal.aborted) throw closedError('cancelled');
-            if (timedOut) throw closedError('part_timeout');
             throw closedError('write_failed');
           }
           if (partBytes !== descriptor.sizeBytes) throw closedError('size_mismatch');
@@ -279,17 +375,30 @@ export async function downloadAudioManifest(
             throw closedError('write_failed');
           }
           target = null;
+          iterator = null;
         } finally {
-          // Also cancel unconsumed redirect/error/oversize bodies. Aborting an
-          // already-finished successful response is harmless.
           controller.abort();
-          clearTimeout(timeout);
-          unlinkAbort();
-          safeClose(target);
+          guard.dispose();
+          if (iterator) observeIteratorReturn(iterator);
+          try {
+            target?.close();
+          } catch {
+            // The outer rollback still attempts provider deletion.
+          }
         }
       }
     }
 
+    // No final filename becomes visible until every part has passed its exact
+    // byte-count check. A crash can therefore leave only unmistakable partials,
+    // never a truncated file that looks like a completed original.
+    for (const file of created) {
+      try {
+        file.commit();
+      } catch {
+        throw closedError('write_failed');
+      }
+    }
     return { bytesWritten, partCount: manifest.files.length };
   } catch (error) {
     const normalized =

@@ -55,7 +55,6 @@ function parse(value) {
     recordingId: RECORDING_ID,
     organizationId: ORG_ID,
     configuredVirtualHost: HOST,
-    nowMs: NOW,
   });
 }
 
@@ -142,7 +141,7 @@ test('rejects a wrong R2 host, tenant path, recording path, or duplicate object'
   assert.equal(reasonOf(() => parse(duplicateObject)), 'duplicate_object_path');
 });
 
-test('rejects malformed signatures, non-30-minute URLs, stale expiry, and attachment mismatch', () => {
+test('rejects malformed signatures, non-30-minute URLs, invalid expiry, and attachment mismatch', () => {
   const signature = singleManifest();
   signature.files[0].url = signedUrl({ signature: 'not-a-signature' });
   assert.equal(reasonOf(() => parse(signature)), 'invalid_signature');
@@ -155,12 +154,29 @@ test('rejects malformed signatures, non-30-minute URLs, stale expiry, and attach
   ttl.files[0].url = signedUrl({ expires: '900' });
   assert.equal(reasonOf(() => parse(ttl)), 'invalid_expires');
 
-  const stale = singleManifest({ expiresAt: new Date(NOW + 10_000).toISOString() });
-  assert.equal(reasonOf(() => parse(stale)), 'manifest_expired');
+  const beforeSignature = singleManifest({ expiresAt: new Date(NOW - 10_000).toISOString() });
+  assert.equal(reasonOf(() => parse(beforeSignature)), 'invalid_manifest_expiry');
+
+  const beyondSignedUrl = singleManifest({ expiresAt: new Date(NOW + 31 * 60 * 1000).toISOString() });
+  assert.equal(reasonOf(() => parse(beyondSignedUrl)), 'url_expires_before_manifest');
 
   const attachment = singleManifest();
   attachment.files[0].url = signedUrl({ filename: 'Captivet-recording-2026-09-01-wrong.m4a' });
   assert.equal(reasonOf(() => parse(attachment)), 'invalid_attachment_filename');
+});
+
+test('does not reject a valid signed manifest because the device wall clock is skewed', () => {
+  const value = singleManifest();
+  const parseWithDeprecatedClockHint = (nowMs) =>
+    validator.parseDownloadManifest(value, {
+      recordingId: RECORDING_ID,
+      organizationId: ORG_ID,
+      configuredVirtualHost: HOST,
+      nowMs,
+    });
+
+  assert.deepEqual(parseWithDeprecatedClockHint(NOW - 365 * 24 * 60 * 60 * 1000), value);
+  assert.deepEqual(parseWithDeprecatedClockHint(NOW + 365 * 24 * 60 * 60 * 1000), value);
 });
 
 test('rejects unsupported MIME values and MIME/filename extension mismatches', () => {

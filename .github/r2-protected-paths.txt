@@ -14,6 +14,7 @@ src/components/RecordingAudioDownload.tsx
 src/lib/audioDownload.ts
 src/lib/audioDownloadNative.ts
 tests/audio-download-manifest.test.mjs
+tests/audio-download-native.test.mjs
 tests/audio-download.test.mjs
 tests/r2-presigned-upload-contract.test.mjs
 tests/helpers/loadTs.mjs

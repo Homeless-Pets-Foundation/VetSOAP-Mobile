@@ -21,8 +21,10 @@ import {
 import { acquireKeepAwakeLease, type KeepAwakeLease } from '../lib/keepAwakeLease';
 import { trackEvent } from '../lib/analytics';
 import { AUDIO_DOWNLOAD_COPY } from '../constants/strings';
+import { withPromiseTimeout } from '../lib/promiseTimeout';
 
 type DownloadPhase = 'idle' | 'selecting' | 'preparing' | 'downloading';
+const AUDIO_DOWNLOAD_PICKER_TIMEOUT_MS = 2 * 60 * 1000;
 
 interface RecordingAudioDownloadProps {
   recordingId: string;
@@ -113,7 +115,12 @@ export function RecordingAudioDownload({
     try {
       let destination;
       try {
-        destination = await pickAudioDownloadDestination();
+        destination = await withPromiseTimeout(
+          pickAudioDownloadDestination(),
+          AUDIO_DOWNLOAD_PICKER_TIMEOUT_MS,
+          'Audio download folder selection timed out',
+          () => new AudioDownloadError('destination_unavailable')
+        );
       } catch (error) {
         if (isDirectoryPickerCancellation(error)) return;
         trackEvent({
@@ -195,6 +202,13 @@ export function RecordingAudioDownload({
             name: 'audio_download_cancelled',
             props: { recording_id: recordingId, part_count: partCount, bytes },
           });
+        }
+        if (
+          mountedRef.current &&
+          error instanceof AudioDownloadError &&
+          error.rollbackIncomplete
+        ) {
+          Alert.alert(AUDIO_DOWNLOAD_COPY.failedTitle, AUDIO_DOWNLOAD_COPY.rollbackIncompleteBody);
         }
       } else {
         trackEvent({

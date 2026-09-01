@@ -4,8 +4,6 @@ import { parseR2BucketConfig } from '../lib/r2UploadUrl';
 const MAX_DOWNLOAD_PARTS = 20;
 const MAX_DOWNLOAD_PART_BYTES = 250 * 1024 * 1024;
 const DOWNLOAD_URL_TTL_SECONDS = 1800;
-const MIN_USABLE_MANIFEST_LIFETIME_MS = 30_000;
-const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const ENCODED_SEPARATOR_RE = /%(?:2f|5c)/i;
 const AUDIO_FILENAME_EXTENSION_RE = /\.(?:aac|flac|m4a|mp3|mp4|mpeg|ogg|wav|webm)$/;
 const AUDIO_EXTENSIONS_BY_MIME_TYPE: Readonly<Record<string, readonly string[]>> = {
@@ -151,7 +149,6 @@ function validateAttachmentUrl(input: {
   recordingId: string;
   configuredVirtualHost: string;
   manifestExpiresAtMs: number;
-  nowMs: number;
 }): string {
   const config = parseR2BucketConfig(input.configuredVirtualHost);
   if (!config) reject('r2_hostname_unconfigured');
@@ -218,11 +215,8 @@ function validateAttachmentUrl(input: {
   }
 
   const signedExpiresAtMs = signedAtMs + DOWNLOAD_URL_TTL_SECONDS * 1000;
-  if (signedAtMs > input.nowMs + MAX_CLOCK_SKEW_MS) reject('signature_from_future');
+  if (input.manifestExpiresAtMs <= signedAtMs) reject('invalid_manifest_expiry');
   if (signedExpiresAtMs < input.manifestExpiresAtMs) reject('url_expires_before_manifest');
-  if (signedExpiresAtMs <= input.nowMs + MIN_USABLE_MANIFEST_LIFETIME_MS) {
-    reject('url_expired');
-  }
   return rawPath;
 }
 
@@ -258,17 +252,18 @@ export function parseDownloadManifest(
     recordingId: string;
     organizationId: string;
     configuredVirtualHost: string;
-    nowMs?: number;
   }
 ): DownloadManifest {
   const parsed = DownloadManifestSchema.safeParse(value);
   if (!parsed.success) reject('invalid_response_shape');
   const manifest = parsed.data;
-  const nowMs = input.nowMs ?? Date.now();
   const manifestExpiresAtMs = Date.parse(manifest.expiresAt);
-  if (!Number.isFinite(manifestExpiresAtMs)) reject('invalid_manifest_expiry');
-  if (manifestExpiresAtMs <= nowMs + MIN_USABLE_MANIFEST_LIFETIME_MS) {
-    reject('manifest_expired');
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(manifest.expiresAt) ||
+    !Number.isFinite(manifestExpiresAtMs) ||
+    new Date(manifestExpiresAtMs).toISOString() !== manifest.expiresAt
+  ) {
+    reject('invalid_manifest_expiry');
   }
 
   const total = manifest.files.reduce((sum, file) => sum + file.sizeBytes, 0);
@@ -304,7 +299,6 @@ export function parseDownloadManifest(
       recordingId: input.recordingId,
       configuredVirtualHost: input.configuredVirtualHost,
       manifestExpiresAtMs,
-      nowMs,
     });
     if (objectPaths.has(objectPath)) reject('duplicate_object_path');
     objectPaths.add(objectPath);

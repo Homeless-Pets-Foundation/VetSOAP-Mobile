@@ -9,6 +9,12 @@ src/config.ts
 src/lib/r2UploadUrl.ts
 src/lib/sslPinning.ts
 src/api/recordings.ts
+src/api/downloadManifest.ts
+src/components/RecordingAudioDownload.tsx
+src/lib/audioDownload.ts
+src/lib/audioDownloadNative.ts
+tests/audio-download-manifest.test.mjs
+tests/audio-download.test.mjs
 tests/r2-presigned-upload-contract.test.mjs
 tests/helpers/loadTs.mjs
 .github/CODEOWNERS

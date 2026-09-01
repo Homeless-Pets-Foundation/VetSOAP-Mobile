@@ -16,6 +16,21 @@ export function safeDeleteFile(uri: string): void {
 }
 
 /**
+ * Best-effort delete with a verifiable result. Used when the caller must tell
+ * the user that a document-provider permission prevented complete rollback.
+ */
+export function tryDeleteFile(uri: string): boolean {
+  try {
+    const file = new File(uri);
+    if (!file.exists) return true;
+    file.delete();
+    return !file.exists;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Delete a directory recursively if it exists. Silently succeeds if the
  * directory is missing or deletion fails.
  */

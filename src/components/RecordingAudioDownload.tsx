@@ -10,6 +10,7 @@ import { DownloadManifestValidationError } from '../api/downloadManifest';
 import {
   AudioDownloadError,
   downloadAudioManifest,
+  waitForAudioDownloadManifest,
   type AudioDownloadErrorCode,
   type AudioDownloadProgress,
 } from '../lib/audioDownload';
@@ -145,7 +146,12 @@ export function RecordingAudioDownload({
       if (mountedRef.current) setPhase('preparing');
       const controller = new AbortController();
       abortRef.current = controller;
-      const manifest = await recordingsApi.getDownloadManifest(recordingId, organizationId);
+      const requestManifest = () =>
+        waitForAudioDownloadManifest(
+          recordingsApi.getDownloadManifest(recordingId, organizationId),
+          controller.signal
+        );
+      const manifest = await requestManifest();
       if (controller.signal.aborted || !mountedRef.current) {
         throw new AudioDownloadError('cancelled');
       }
@@ -175,7 +181,7 @@ export function RecordingAudioDownload({
       const result = await downloadAudioManifest({
         manifest,
         destination,
-        refreshManifest: () => recordingsApi.getDownloadManifest(recordingId, organizationId),
+        refreshManifest: requestManifest,
         fetchPart: fetchAudioDownloadPart,
         signal: controller.signal,
         onProgress: (next) => {

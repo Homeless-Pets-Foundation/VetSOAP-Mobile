@@ -107,6 +107,39 @@ async function rejectionCode(promise) {
   assert.fail('Expected audio download to reject');
 }
 
+test('manifest requests have an absolute deadline even when auth refresh hangs', async () => {
+  const error = await rejectionCode(
+    download.waitForAudioDownloadManifest(
+      new Promise(() => {}),
+      new AbortController().signal,
+      5
+    )
+  );
+  assert.equal(error.code, 'manifest_fetch_failed');
+});
+
+test('cancellation settles a hanging manifest refresh and observes its late rejection', async () => {
+  const controller = new AbortController();
+  let rejectSource;
+  const source = new Promise((_resolve, reject) => {
+    rejectSource = reject;
+  });
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const pending = download.waitForAudioDownloadManifest(source, controller.signal, 50);
+    controller.abort();
+    const error = await rejectionCode(pending);
+    assert.equal(error.code, 'cancelled');
+    rejectSource(new Error('late auth refresh rejection'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('streams parts sequentially and reports byte progress through exact completion', async () => {
   const source = manifest();
   const destination = makeDestination();
@@ -529,6 +562,8 @@ test('download UI prevents double taps, resets state in finally, and aborts on u
   assert.match(source, /return \(\) => \{[\s\S]*abortRef\.current\?\.abort\(\);/);
   assert.match(source, /pickAudioDownloadDestination\(\)[\s\S]*getDownloadManifest/);
   assert.match(source, /withPromiseTimeout\([\s\S]*pickAudioDownloadDestination\(\)/);
+  assert.match(source, /const manifest = await requestManifest\(\)/);
+  assert.match(source, /refreshManifest: requestManifest/);
   assert.match(source, /code === 'cancelled'[\s\S]*error\.rollbackIncomplete/);
   assert.doesNotMatch(source, /console\.(?:log|warn|error)/);
 });

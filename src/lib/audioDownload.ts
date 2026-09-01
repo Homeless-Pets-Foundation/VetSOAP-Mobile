@@ -3,8 +3,13 @@ import {
   type DownloadManifest,
   type DownloadManifestFile,
 } from '../api/downloadManifest';
+import { withPromiseTimeout } from './promiseTimeout';
 
 export const AUDIO_DOWNLOAD_PART_TIMEOUT_MS = 30 * 60 * 1000;
+// ApiClient's fetch deadline ends before its async 401 refresh callback. Keep
+// the complete manifest operation bounded even if that callback/native auth
+// bridge never settles.
+export const AUDIO_DOWNLOAD_MANIFEST_REQUEST_TIMEOUT_MS = 45 * 1000;
 // The server guarantees at least 17 minutes of URL lifetime when it returns a
 // manifest. Refresh from elapsed time since receipt, not the device wall clock.
 export const AUDIO_DOWNLOAD_MANIFEST_REFRESH_AFTER_MS = 16 * 60 * 1000;
@@ -94,6 +99,43 @@ interface PartGuard {
 
 function closedError(code: AudioDownloadErrorCode): AudioDownloadError {
   return new AudioDownloadError(code);
+}
+
+/**
+ * Bound the complete API/auth operation and let download cancellation win the
+ * race. Both settlement handlers remain attached after cancellation or timeout
+ * so a late auth-refresh rejection cannot become an unhandled Hermes error.
+ */
+export function waitForAudioDownloadManifest(
+  request: Promise<DownloadManifest>,
+  signal: AbortSignal,
+  timeoutMs = AUDIO_DOWNLOAD_MANIFEST_REQUEST_TIMEOUT_MS
+): Promise<DownloadManifest> {
+  const bounded = withPromiseTimeout(
+    request,
+    timeoutMs,
+    'Audio download manifest request timed out',
+    () => closedError('manifest_fetch_failed')
+  );
+
+  return new Promise<DownloadManifest>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(closedError('cancelled')));
+
+    // Observe both branches before checking an already-aborted signal.
+    bounded.then(
+      (manifest) => finish(() => resolve(manifest)),
+      (error) => finish(() => reject(error))
+    );
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
 }
 
 function monotonicNow(): number {

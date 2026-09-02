@@ -10,8 +10,9 @@ import { SUGGESTED_TASKS_COPY } from '../constants/strings';
 import { trackEvent } from '../lib/analytics';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
+import { Collapsible } from './ui/Collapsible';
 import { useThemeColors } from '../hooks/useThemeColors';
-import { groupRecordingTasks } from '../lib/recordingTasks';
+import { countSuggestedTasks, groupRecordingTasks } from '../lib/recordingTasks';
 import type { RecordingTask, RecordingTaskType } from '../types';
 import { CLIP_SAFE, clipSafe } from './ui/styles';
 
@@ -32,12 +33,17 @@ interface SuggestedTasksCardProps {
   recordingId: string;
   tasks: RecordingTask[];
   canManage: boolean;
+  /** Controlled by the detail screen so the choice survives refetches (detail reorder, 2026-09-02). */
+  expanded: boolean;
+  onToggle: () => void;
 }
 
-export function SuggestedTasksCard({ recordingId, tasks, canManage }: SuggestedTasksCardProps) {
+export function SuggestedTasksCard({ recordingId, tasks, canManage, expanded, onToggle }: SuggestedTasksCardProps) {
   const colors = useThemeColors();
   const queryClient = useQueryClient();
 
+  // Declared above the early return so accept/dismiss state survives a collapse
+  // (the Collapsible unmounts only its body, never this component).
   const mutation = useMutation({
     mutationFn: (vars: { taskId: string; status: 'accepted' | 'dismissed'; type: RecordingTaskType }) =>
       recordingsApi.updateRecordingTaskStatus(recordingId, vars.taskId, vars.status),
@@ -74,88 +80,86 @@ export function SuggestedTasksCard({ recordingId, tasks, canManage }: SuggestedT
 
   return (
     <Card className="mx-5 mb-4">
-      <View className="flex-row items-start mb-3">
-        <Sparkles color={colors.brand500} size={18} />
-        <View className="flex-1 ml-2">
-          <Text className="text-body-lg font-semibold text-content-primary">
-            {SUGGESTED_TASKS_COPY.title}
-          </Text>
-          <Text className="text-body-sm text-content-tertiary mt-0.5">
-            {SUGGESTED_TASKS_COPY.subtitle}
-          </Text>
-        </View>
-      </View>
-
-      {groups.map((group) => (
-        <View key={group.type} className="mt-1">
-          <Text className="text-caption font-semibold text-content-tertiary uppercase mb-1">
-            {groupHeading(group.type)}
-          </Text>
-          <View className="border border-border-default rounded-input overflow-hidden">
-            {group.tasks.map((task) => {
-              const resolved = resolvedLabel(task.status);
-              const showActions = canManage && task.status === 'suggested';
-              return (
-                <View
-                  key={task.id}
-                  className="p-3 border-b border-border-default last:border-b-0"
-                >
-                  <View className="flex-row items-start justify-between">
-                    <Text
-                      className={`text-body-sm font-semibold flex-1 pr-2 ${
-                        resolved ? 'text-content-tertiary' : 'text-content-primary'
-                      }`}
-                    >
-                      {task.title}
-                    </Text>
-                    {showActions ? (
-                      <View className="flex-row gap-2">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          loading={isBusy(task.id) && mutation.variables?.status === 'dismissed'}
-                          disabled={mutation.isPending}
-                          onPress={() => resolve(task, 'dismissed')}
-                        >
-                          {SUGGESTED_TASKS_COPY.dismiss}
-                        </Button>
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          loading={isBusy(task.id) && mutation.variables?.status === 'accepted'}
-                          disabled={mutation.isPending}
-                          onPress={() => resolve(task, 'accepted')}
-                        >
-                          {SUGGESTED_TASKS_COPY.accept}
-                        </Button>
-                      </View>
-                    ) : resolved ? (
+      <Collapsible
+        leading={<Sparkles color={colors.brand500} size={18} />}
+        title={SUGGESTED_TASKS_COPY.title}
+        subtitle={SUGGESTED_TASKS_COPY.subtitle}
+        badge={SUGGESTED_TASKS_COPY.pendingCount(countSuggestedTasks(tasks))}
+        expanded={expanded}
+        onToggle={onToggle}
+        bodyClassName="mt-2"
+      >
+        {groups.map((group) => (
+          <View key={group.type} className="mt-1">
+            <Text className="text-caption font-semibold text-content-tertiary uppercase mb-1">
+              {groupHeading(group.type)}
+            </Text>
+            <View className="border border-border-default rounded-input overflow-hidden">
+              {group.tasks.map((task) => {
+                const resolved = resolvedLabel(task.status);
+                const showActions = canManage && task.status === 'suggested';
+                return (
+                  <View
+                    key={task.id}
+                    className="p-3 border-b border-border-default last:border-b-0"
+                  >
+                    <View className="flex-row items-start justify-between">
                       <Text
-                        className="text-caption text-content-tertiary ml-2"
-                        // Headroom for the Android "Bold text" overrun beside a flex-1
-                        // title. Single-token labels ("Accepted"/"Dismissed"), so no
-                        // numberOfLines (CLAUDE.md > UI Gotchas).
-                        style={CLIP_SAFE}
+                        className={`text-body-sm font-semibold flex-1 pr-2 ${
+                          resolved ? 'text-content-tertiary' : 'text-content-primary'
+                        }`}
                       >
-                        {clipSafe(resolved)}
+                        {task.title}
+                      </Text>
+                      {showActions ? (
+                        <View className="flex-row gap-2">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            loading={isBusy(task.id) && mutation.variables?.status === 'dismissed'}
+                            disabled={mutation.isPending}
+                            onPress={() => resolve(task, 'dismissed')}
+                          >
+                            {SUGGESTED_TASKS_COPY.dismiss}
+                          </Button>
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            loading={isBusy(task.id) && mutation.variables?.status === 'accepted'}
+                            disabled={mutation.isPending}
+                            onPress={() => resolve(task, 'accepted')}
+                          >
+                            {SUGGESTED_TASKS_COPY.accept}
+                          </Button>
+                        </View>
+                      ) : resolved ? (
+                        <Text
+                          className="text-caption text-content-tertiary ml-2"
+                          // Headroom for the Android "Bold text" overrun beside a flex-1
+                          // title. Single-token labels ("Accepted"/"Dismissed"), so no
+                          // numberOfLines (CLAUDE.md > UI Gotchas).
+                          style={CLIP_SAFE}
+                        >
+                          {clipSafe(resolved)}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {task.detail ? (
+                      <Text
+                        className={`text-body-sm mt-1 ${
+                          resolved ? 'text-content-tertiary' : 'text-content-body'
+                        }`}
+                      >
+                        {task.detail}
                       </Text>
                     ) : null}
                   </View>
-                  {task.detail ? (
-                    <Text
-                      className={`text-body-sm mt-1 ${
-                        resolved ? 'text-content-tertiary' : 'text-content-body'
-                      }`}
-                    >
-                      {task.detail}
-                    </Text>
-                  ) : null}
-                </View>
-              );
-            })}
+                );
+              })}
+            </View>
           </View>
-        </View>
-      ))}
+        ))}
+      </Collapsible>
     </Card>
   );
 }

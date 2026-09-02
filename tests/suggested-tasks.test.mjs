@@ -59,6 +59,21 @@ test('groupRecordingTasks puts billing first and drops empty groups', async () =
   assert.equal(groups[1].tasks.length, 2);
 });
 
+test('countSuggestedTasks counts only still-suggested tasks', async () => {
+  const { countSuggestedTasks } = await loadTsModule('src/lib/recordingTasks.ts');
+  assert.equal(
+    countSuggestedTasks([
+      task('a', 'billing'),
+      task('b', 'todo', 'accepted'),
+      task('c', 'todo', 'dismissed'),
+      task('d', 'todo', 'done'),
+      task('e', 'todo'),
+    ]),
+    2
+  );
+  assert.equal(countSuggestedTasks([]), 0);
+});
+
 test('groupRecordingTasks drops a group with no items', async () => {
   const { groupRecordingTasks } = await loadTsModule('src/lib/recordingTasks.ts');
 

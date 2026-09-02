@@ -423,6 +423,26 @@ export const SUGGESTED_TASKS_COPY = {
   done: 'Done',
   acceptFailed: 'Could not accept this task. Please try again.',
   dismissFailed: 'Could not dismiss this task. Please try again.',
+  /** Collapsed-header badge (detail reorder, 2026-09-02): what is still waiting on the vet. */
+  pendingCount: (count: number): string =>
+    count === 0 ? 'All reviewed' : count === 1 ? '1 suggestion' : `${count} suggestions`,
+} as const;
+
+/**
+ * On-demand tool chips at the bottom of the recording detail (2026-09-02).
+ * Email / Translate / Reprocess reveal their cards below the row; Consult AI
+ * opens the web app directly.
+ */
+export const RECORDING_TOOLS_COPY = {
+  heading: 'Tools',
+  email: 'Email',
+  translate: 'Translate',
+  consult: 'Consult AI',
+  reprocess: 'Reprocess',
+  emailHint: 'Shows client email options below',
+  translateHint: 'Shows translation options below',
+  reprocessHint: 'Shows reprocessing options below',
+  consultHint: 'Opens Consult AI in the Captivet web app',
 } as const;
 
 export const QUALITY_ANALYTICS_COPY = {
@@ -719,8 +739,8 @@ export const LONG_RECORDING_WARNING_COPY = {
 
 export const CONSULT_COPY = {
   title: 'Consult AI',
-  body: 'Open the Consult AI assistant in the Captivet web app.',
-  open: 'Open',
+  openFailedTitle: 'Could Not Open Link',
+  openFailedBody: 'Please try again in a moment.',
 } as const;
 
 // Non-blocking warning appears when cumulative slot duration crosses this threshold.

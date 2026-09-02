@@ -13,7 +13,6 @@ import { MarkdownText } from './MarkdownText';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { Toast } from './Toast';
-import { SegmentedControl } from './ui/SegmentedControl';
 import { Select } from './ui/Select';
 import { useThemeColors } from '../hooks/useThemeColors';
 
@@ -38,17 +37,10 @@ const TRANSLATION_LANGUAGE_OPTIONS = [
 ] as const;
 
 type TranslationLanguageCode = (typeof TRANSLATION_LANGUAGE_OPTIONS)[number]['value'];
-type QuickTranslationLanguageCode = 'es' | 'fr' | 'pt-BR';
 
-const QUICK_LANGUAGE_OPTIONS = [
-  { label: 'Spanish', value: 'es' },
-  { label: 'French', value: 'fr' },
-  { label: 'Portuguese', value: 'pt-BR' },
-] as const;
-
-function isQuickLanguage(value: TranslationLanguageCode): value is QuickTranslationLanguageCode {
-  return value === 'es' || value === 'fr' || value === 'pt-BR';
-}
+// The quick-language chips (Spanish / French / Portuguese) were removed in the
+// detail reorder (2026-09-02): the Select already lists all three, and picking
+// any other language left every chip unselected, which read as "nothing chosen".
 
 function analyticsLanguage(value: TranslationLanguageCode): TranslationTargetLanguage {
   if (value === 'es') return 'Spanish';
@@ -76,7 +68,6 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
   // Success feedback = transient toast (audit theme D); errors stay inline.
   const [toast, setToast] = useState<string | null>(null);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
-  const quickLanguageValue = isQuickLanguage(languageValue) ? languageValue : null;
 
   const translate = useCallback(async () => {
     setLoading(true);
@@ -127,18 +118,7 @@ export function TranslationCard({ recordingId }: { recordingId: string }) {
         </Button>
       </View>
 
-      <SegmentedControl
-        options={QUICK_LANGUAGE_OPTIONS}
-        value={quickLanguageValue}
-        onValueChange={(value) => {
-          if (value) setLanguageValue(value);
-        }}
-        columns={3}
-        accessibilityLabel="Quick translation language"
-      />
-
       <Select
-        className="mt-1"
         label={TRANSLATION_COPY.languagePicker}
         options={TRANSLATION_LANGUAGE_OPTIONS}
         value={languageValue}

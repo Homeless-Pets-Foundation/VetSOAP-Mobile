@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { Alert, View, Pressable, Image } from 'react-native';
+import { Alert, View, Pressable, Image, type ScrollView } from 'react-native';
 import { Text } from '../../../src/components/ui/Text';
 import Animated, {
   useAnimatedStyle,
@@ -8,7 +8,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { useIsFocused, useFocusEffect } from '@react-navigation/native';
+import { useIsFocused, useFocusEffect, useScrollToTop } from '@react-navigation/native';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Mic, ChevronRight, FileText, LifeBuoy, Settings, ShieldAlert, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
@@ -28,7 +28,8 @@ import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
 import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
 import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
-import { ERROR_COPY, SUPPORT_RECOVERY_BANNER_COPY } from '../../../src/constants/strings';
+import { ERROR_COPY, HOME_COPY, SUPPORT_RECOVERY_BANNER_COPY } from '../../../src/constants/strings';
+import { deriveRecentStatusPill } from '../../../src/lib/homeRecordingStatus';
 import { CLIP_SAFE, clipSafe, HIT_SLOP } from '../../../src/components/ui/styles';
 import {
   canRecordAppointments,
@@ -41,6 +42,7 @@ import { SkeletonCard } from '../../../src/components/ui/Skeleton';
 import { Card } from '../../../src/components/ui/Card';
 import { Button } from '../../../src/components/ui/Button';
 import { Banner } from '../../../src/components/ui/Banner';
+import { Badge } from '../../../src/components/ui/Badge';
 import { ProviderIssueBannerContent, useActiveProviderIssue } from '../../../src/components/ProviderIssueBanner';
 import { useDurableRecoveries } from '../../../src/hooks/useDurableRecoveries';
 import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
@@ -68,6 +70,10 @@ export default function HomeScreen() {
   const colors = useThemeColors();
   const { scale, iconMd, iconLg } = useResponsive();
   const ctaScale = useSharedValue(1);
+  // Re-pressing the focused Home tab scrolls back to the top. The tab layout's
+  // own `tabPress` listener only fires haptics and never preventDefaults Home.
+  const scrollRef = useRef<ScrollView>(null);
+  useScrollToTop(scrollRef);
   const isTabFocused = useIsFocused();
   const { capacity } = useDeviceCapacity();
   const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
@@ -289,13 +295,23 @@ export default function HomeScreen() {
   }, [recentPatientId]);
 
   const totalRecordings = data?.pagination?.total ?? 0;
-  const processingCount = recordings.filter(
-    (r) => !['completed', 'failed'].includes(r.status)
-  ).length;
-  // "All Complete" must not show while un-submitted drafts exist (audit
-  // defect: ✓ next to a "Not Submitted" list reads as a contradiction).
   // Server total can exceed the merged 5-item list; show the larger count.
   const draftCount = Math.max(drafts.length, draftData?.pagination?.total ?? 0);
+  // One worst-first pill in the Recent Recordings header replaces the two stat
+  // tiles: "✓ All Complete" never counted `failed`, so it rendered beside failed
+  // rows, and "Total Recordings" was a vanity number (home layout reorg, 2026-09-02).
+  const statusPill = useMemo(
+    () => deriveRecentStatusPill({ recordings, draftCount }),
+    [recordings, draftCount]
+  );
+  const statusPillLabel =
+    statusPill.kind === 'failed'
+      ? HOME_COPY.statusPill.failed(statusPill.count)
+      : statusPill.kind === 'processing'
+        ? HOME_COPY.statusPill.processing(statusPill.count)
+        : statusPill.kind === 'not_submitted'
+          ? HOME_COPY.statusPill.notSubmitted(statusPill.count)
+          : HOME_COPY.statusPill.allComplete;
 
   const ctaAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: ctaScale.value }],
@@ -379,18 +395,29 @@ export default function HomeScreen() {
   useFocusEffect(handleFocusRefresh);
 
   return (
-    <ScreenContainer refreshing={isRefetching} onRefresh={handleRefresh}>
-      {/* Header */}
-      <View className="mb-6">
-        <View className="mb-3 flex-row items-center justify-between">
+    <ScreenContainer ref={scrollRef} refreshing={isRefetching} onRefresh={handleRefresh}>
+      {/* Header — one row (wordmark · greeting · gear) plus a caption. The old
+          three-line stack spent ~12% of the first viewport before any content
+          (home layout reorg, 2026-09-02). */}
+      <View className="mb-4">
+        <View className="flex-row items-center">
           <Image
             source={require('../../../assets/logo-wordmark.png')}
-            style={{ width: Math.min(scale(132), 168), aspectRatio: 600 / 139 }}
+            style={{ width: Math.min(scale(104), 132), aspectRatio: 600 / 139, flexShrink: 0 }}
             resizeMode="contain"
             accessible
             accessibilityRole="image"
             accessibilityLabel="Captivet"
           />
+          {/* flex-1 — a row child; without real width Android "Bold text" drops
+              the name after "Welcome," (CLAUDE.md > UI Gotchas). */}
+          <Text
+            className="text-heading font-bold text-content-primary flex-1 ml-3"
+            numberOfLines={1}
+            accessibilityRole="header"
+          >
+            Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
+          </Text>
           <Pressable
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -404,15 +431,9 @@ export default function HomeScreen() {
             <Settings color={colors.contentTertiary} size={iconMd} />
           </Pressable>
         </View>
-        <Text
-          className="text-display font-bold text-content-primary"
-          accessibilityRole="header"
-        >
-          Welcome{user?.fullName ? `, ${user.fullName.split(' ')[0]}` : ''}
-        </Text>
         {/* The practice name is the tenant confirmation on a shared clinic
             tablet; the static tagline is the fallback until /auth/me lands. */}
-        <Text className="text-body text-content-tertiary mt-1" numberOfLines={1}>
+        <Text className="text-caption text-content-tertiary mt-1" numberOfLines={1}>
           {user?.organizationName || 'Record appointments and generate SOAP notes'}
         </Text>
       </View>
@@ -494,14 +515,6 @@ export default function HomeScreen() {
         </Pressable>
       )}
 
-      {/* NEEDS ATTENTION — above the Record CTA because fixing yesterday's bad
-          data should be seen before starting today's recording; below the banner
-          stack because those banners are about the app being broken (data loss,
-          device blocked), which outranks data hygiene. Never gates Home: it
-          renders its own bounded state and Home stays usable if its queries or
-          a native local read hang (rule 24). */}
-      {showAttentionSection ? <AttentionFeedSection feed={attentionFeed} /> : null}
-
       {/* Quick Action — hero CTA. Gradient + glow for premium depth; the
           gradient takes raw color values (not Tailwind classes) so stops pull
           from useThemeColors (dark-mode aware, dodges the color guard). */}
@@ -539,82 +552,14 @@ export default function HomeScreen() {
         </LinearGradient>
       </AnimatedPressable>
 
-      {showRecentPatientSummary ? (
-        <View className="mb-6">
-          <Card className="border-brand-100 dark:border-border-default">
-            <View className="flex-row items-start">
-              <View className="w-10 h-10 rounded-full bg-brand-50 dark:bg-surface-sunken justify-center items-center mr-3">
-                <Sparkles color={colors.brand500} size={iconMd} />
-              </View>
-              <View className="flex-1">
-                <Text className="text-caption text-brand-600 font-semibold uppercase">
-                  Recent patient
-                </Text>
-                <Text className="text-body-lg font-semibold text-content-primary mt-0.5" numberOfLines={1}>
-                  {recentPatient?.name ?? recentPatientRecording?.patientName ?? 'Patient'}
-                </Text>
-                <Text
-                  className="text-body-sm text-content-secondary mt-2"
-                  numberOfLines={summaryExpanded ? undefined : 2}
-                >
-                  {recentPatientSummary}
-                </Text>
-                {recentPatientSummary.length > 120 ? (
-                  <Pressable
-                    onPress={() => {
-                      Haptics.selectionAsync().catch(() => {});
-                      setSummaryExpanded((expanded) => !expanded);
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel={summaryExpanded ? 'Collapse recent patient summary' : 'Read recent patient summary'}
-                    className="self-start mt-2"
-                    hitSlop={8}
-                  >
-                    <Text className="text-body-sm text-brand-600 font-semibold">
-                      {summaryExpanded ? 'Show less' : 'Read more'}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            </View>
-          </Card>
-        </View>
-      ) : null}
-
-      {/* Stats */}
-      <View className="flex-row gap-3 mb-6">
-        <Card className="flex-1" accessibilityLabel={`${totalRecordings} total recordings`}>
-          <Text className="text-display font-bold text-brand-500">
-            {totalRecordings}
-          </Text>
-          <Text className="text-caption text-content-tertiary mt-0.5">Total Recordings</Text>
-        </Card>
-        <Card
-          className="flex-1"
-          accessibilityLabel={
-            processingCount > 0
-              ? `${processingCount} processing`
-              : draftCount > 0
-                ? `${draftCount} not submitted`
-                : 'All complete'
-          }
-        >
-          <Text
-            className={`text-display font-bold ${
-              processingCount > 0
-                ? 'text-status-warning'
-                : draftCount > 0
-                  ? 'text-status-warning'
-                  : 'text-status-success'
-            }`}
-          >
-            {processingCount > 0 ? processingCount : draftCount > 0 ? draftCount : '\u2713'}
-          </Text>
-          <Text className="text-caption text-content-tertiary mt-0.5">
-            {processingCount > 0 ? 'Processing' : draftCount > 0 ? 'Not Submitted' : 'All Complete'}
-          </Text>
-        </Card>
-      </View>
+      {/* NEEDS ATTENTION \u2014 directly under the Record CTA: the CTA is the one
+          thing every visit starts with, so it stays inside the first viewport
+          (the section used to push it to the fold \u2014 home layout reorg,
+          2026-09-02); below the banner stack because those banners are about the
+          app being broken (data loss, device blocked), which outranks data
+          hygiene. Never gates Home: it renders its own bounded state and Home
+          stays usable if its queries or a native local read hang (rule 24). */}
+      {showAttentionSection ? <AttentionFeedSection feed={attentionFeed} /> : null}
 
       {/* Recent Recordings */}
       {drafts.length > 0 ? (
@@ -634,24 +579,37 @@ export default function HomeScreen() {
       ) : null}
 
       <View className="mb-8">
-        <View className="flex-row justify-between items-center mb-3">
-          {/* flex-1 — the "View All" sibling already carries headroom; this header did
-              not, so Bold text dropped "Recordings" (CLAUDE.md > UI Gotchas). */}
-          <Text className="section-title flex-1 mr-2" numberOfLines={1}>Recent Recordings</Text>
-          {totalRecordings > 5 && (
-            <Pressable
-              onPress={() => router.push('/recordings')}
-              accessibilityRole="link"
-              accessibilityLabel="View all recordings"
-              hitSlop={HIT_SLOP}
-              style={{ minHeight: 32, justifyContent: 'center' }}
-            >
-              {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
-              <Text className="text-body-sm text-brand-500 font-medium" style={CLIP_SAFE}>
-                {clipSafe('View All')}
-              </Text>
-            </Pressable>
-          )}
+        <View className="mb-3">
+          <View className="flex-row justify-between items-center">
+            {/* flex-1 — the "View All" sibling already carries headroom; this header did
+                not, so Bold text dropped "Recordings" (CLAUDE.md > UI Gotchas). */}
+            <Text className="section-title flex-1 mr-2" numberOfLines={1}>Recent Recordings</Text>
+            {totalRecordings > 5 && (
+              <Pressable
+                onPress={() => router.push('/recordings')}
+                accessibilityRole="link"
+                accessibilityLabel="View all recordings"
+                hitSlop={HIT_SLOP}
+                style={{ minHeight: 32, justifyContent: 'center' }}
+              >
+                {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
+                <Text className="text-body-sm text-brand-500 font-medium" style={CLIP_SAFE}>
+                  {clipSafe('View All')}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+          {/* Status pill on its own row: beside the title it squeezed "Recent
+              Recordings" into "Recent Recordi…" at 1.3× font scale. The flex-row
+              wrapper keeps the Badge shrink-wrapped (it bakes in clipSafe +
+              CLIP_SAFE + numberOfLines={1}) instead of stretching full width. */}
+          {!isLoading ? (
+            <View className="flex-row mt-1.5">
+              <Badge variant={statusPill.variant} accessibilityLabel={statusPillLabel}>
+                {statusPillLabel}
+              </Badge>
+            </View>
+          ) : null}
         </View>
 
         {isLoading ? (
@@ -709,11 +667,59 @@ export default function HomeScreen() {
         ) : (
           recordings.map((recording) => (
             <View key={recording.id}>
-              <RecordingCard recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+              <RecordingCard
+                recording={recording}
+                localDraftSlotId={draftResumeMap[recording.id]}
+                hideStatusBadge={recording.status === 'completed'}
+              />
             </View>
           ))
         )}
       </View>
+
+      {/* Recent patient — an AI history summary is context, not work, so it sits
+          below the recordings it was derived from (home layout reorg, 2026-09-02). */}
+      {showRecentPatientSummary ? (
+        <View className="mb-6">
+          <Card className="border-brand-100 dark:border-border-default">
+            <View className="flex-row items-start">
+              <View className="w-10 h-10 rounded-full bg-brand-50 dark:bg-surface-sunken justify-center items-center mr-3">
+                <Sparkles color={colors.brand500} size={iconMd} />
+              </View>
+              <View className="flex-1">
+                <Text className="text-caption text-brand-600 font-semibold uppercase">
+                  Recent patient
+                </Text>
+                <Text className="text-body-lg font-semibold text-content-primary mt-0.5" numberOfLines={1}>
+                  {recentPatient?.name ?? recentPatientRecording?.patientName ?? 'Patient'}
+                </Text>
+                <Text
+                  className="text-body-sm text-content-secondary mt-2"
+                  numberOfLines={summaryExpanded ? undefined : 2}
+                >
+                  {recentPatientSummary}
+                </Text>
+                {recentPatientSummary.length > 120 ? (
+                  <Pressable
+                    onPress={() => {
+                      Haptics.selectionAsync().catch(() => {});
+                      setSummaryExpanded((expanded) => !expanded);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={summaryExpanded ? 'Collapse recent patient summary' : 'Read recent patient summary'}
+                    className="self-start mt-2"
+                    hitSlop={8}
+                  >
+                    <Text className="text-body-sm text-brand-600 font-semibold">
+                      {summaryExpanded ? 'Show less' : 'Read more'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          </Card>
+        </View>
+      ) : null}
 
       {canFetchQualityAnalytics ? (
         <View className="mb-8">
@@ -722,6 +728,7 @@ export default function HomeScreen() {
             isLoading={isQualityLoading}
             isError={isQualityError}
             refetch={runQualityRefetch}
+            role={user?.role}
           />
         </View>
       ) : null}

@@ -103,6 +103,38 @@ export function hasActivity(summary: QualitySummary): boolean {
 }
 
 /**
+ * One-line summary for the COLLAPSED Clinic Quality header (home layout reorg,
+ * 2026-09-02). Structured rather than copy so this module never imports the
+ * strings catalog — the test harness stubs only `./client`.
+ */
+export interface QualityHeadline {
+  completed: number;
+  missingDetailsPct: number | null;
+  p90Seconds: number | null;
+}
+
+export function qualityHeadline(quality: DashboardQuality): QualityHeadline | null {
+  const source = quality.org ?? quality.me;
+  if (!hasActivity(source)) return null;
+  return {
+    completed: source.completedRecordings,
+    missingDetailsPct:
+      source.missingMetadataRate === null ? null : Math.round(source.missingMetadataRate * 100),
+    p90Seconds: source.processingLatencyP90Seconds,
+  };
+}
+
+/**
+ * The Models breakdown names AI model ids (`glm-5.2`, …) — an implementation
+ * detail a veterinarian cannot act on. Owner/admin only (owner decision,
+ * 2026-09-02). Lives here, not in `recordingPermissions.ts`, because that file
+ * mirrors Connect's recording-action matrix and this is not a recording action.
+ */
+export function showsModelBreakdown(role: string | null | undefined): boolean {
+  return role === 'owner' || role === 'admin';
+}
+
+/**
  * Count-based problems a breakdown row can actually DISPLAY, each with its own
  * metric tile. Retention keys off this rather than `hasActivity` because a row
  * is only worth rendering if it can say something true about the group.

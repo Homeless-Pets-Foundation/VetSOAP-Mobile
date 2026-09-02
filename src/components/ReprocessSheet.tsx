@@ -24,6 +24,10 @@ interface ReprocessSheetProps {
   currentSoapModel?: string | null; // costBreakdown.modelUsed
   recordingForeignLanguage?: boolean; // hides transcription picker, pins 'nova-3' (Connect item 3 edge)
   onReprocessStarted?: () => void; // parent resets pollingStartedAtRef
+  /** Open straight into the pickers (the detail Tools row already asked). */
+  defaultExpanded?: boolean;
+  /** Fires whenever the sheet closes itself (success or Cancel) so a parent can deselect its chip. */
+  onDismiss?: () => void;
 }
 
 // Inline-expandable Card (mirrors ExportSheet.tsx) — NOT a modal (house pattern, no sheet lib).
@@ -35,10 +39,12 @@ export function ReprocessSheet({
   currentSoapModel,
   recordingForeignLanguage,
   onReprocessStarted,
+  defaultExpanded,
+  onDismiss,
 }: ReprocessSheetProps) {
   const colors = useThemeColors();
   const queryClient = useQueryClient();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded ?? false);
 
   // Defaults = org defaults (not the current* display-only props). Foreign-language recordings pin
   // transcription to 'nova-3' (backend runs Deepgram language='multi', which rejects nova-3-medical).
@@ -86,6 +92,7 @@ export function ReprocessSheet({
       queryClient.invalidateQueries({ queryKey: ['recording', recordingId] }).catch(() => {});
       invalidateRecordingCaches(queryClient, 'soap_regenerated');
       setExpanded(false);
+      onDismiss?.();
       trackEvent({
         name: 'recording_reprocessed',
         props: {
@@ -196,7 +203,10 @@ export function ReprocessSheet({
           variant="ghost"
           size="sm"
           disabled={mutation.isPending}
-          onPress={() => setExpanded(false)}
+          onPress={() => {
+            setExpanded(false);
+            onDismiss?.();
+          }}
         >
           {REPROCESS_MODELS_COPY.cancel}
         </Button>

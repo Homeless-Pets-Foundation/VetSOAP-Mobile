@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Alert, ScrollView, Linking } from 'react-native';
+import { View, Alert, ScrollView, Linking, Pressable } from 'react-native';
 import { Text } from '../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -18,7 +18,6 @@ import {
   Smartphone,
   Trash2,
   User,
-  UserRound,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuthActions, useAuthUser } from '../../src/hooks/useAuth';
@@ -38,7 +37,7 @@ import { Toggle } from '../../src/components/ui/Toggle';
 import { SegmentedControl } from '../../src/components/ui/SegmentedControl';
 import { countUnsentRecordings } from '../../src/lib/localRecordings';
 import { trackEvent } from '../../src/lib/analytics';
-import { THEME_COPY } from '../../src/constants/strings';
+import { SETTINGS_COPY, THEME_COPY } from '../../src/constants/strings';
 import { ProviderIssueBanner } from '../../src/components/ProviderIssueBanner';
 import {
   HELP_CENTER_URL,
@@ -304,7 +303,18 @@ export default function SettingsScreen() {
         >
           <ProviderIssueBanner location="settings" />
 
-          <Card className="p-5 mb-5">
+          {/* The header card IS the entry point to /profile now; a separate
+              "Edit Profile" row below it was a second door to the same screen
+              (layout tier 3, 2026-09-02). */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Edit profile"
+            onPress={() => {
+              Haptics.selectionAsync().catch(() => {});
+              router.push('/profile' as never);
+            }}
+          >
+            <Card className="p-5 mb-5">
             <View className="flex-row items-center">
               <View className="w-12 h-12 rounded-full bg-brand-500 justify-center items-center mr-3.5">
                 <User color={colors.contentOnBrand} size={iconMd} />
@@ -327,24 +337,16 @@ export default function SettingsScreen() {
                   </Text>
                 ) : null}
               </View>
+              <ChevronRight color={colors.contentTertiary} size={iconSm} />
             </View>
-          </Card>
+            </Card>
+          </Pressable>
 
           <SectionHeading>ACCOUNT</SectionHeading>
           {/* The section-closing margin lives on this wrapper (not the
               conditional Subscription row) so non-admin users get the same
               gap before APP. */}
           <View className="mb-5">
-            <ListItem
-              onPress={() => {
-                router.push('/profile' as never);
-              }}
-              accessibilityLabel="Edit profile"
-              title="Edit Profile"
-              subtitle="Name and password"
-              leading={<UserRound color={colors.brand500} size={iconSm} />}
-              trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
-            />
             {canViewBilling ? (
               <ListItem
                 onPress={() => {
@@ -357,6 +359,17 @@ export default function SettingsScreen() {
                 trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
               />
             ) : null}
+            {/* Signing out is routine — it sat in DANGER ZONE beside account
+                deletion, which is not. It stays LAST here, which also keeps
+                ACCOUNT non-empty for roles without billing access. */}
+            <ListItem
+              onPress={handleSignOut}
+              accessibilityLabel="Sign out of your account"
+              title="Sign Out"
+              leading={<LogOut color={colors.contentSecondary} size={iconSm} />}
+              disabled={isSigningOut}
+              haptic={false}
+            />
           </View>
 
           <SectionHeading>APP</SectionHeading>
@@ -388,14 +401,14 @@ export default function SettingsScreen() {
           <SectionHeading>SECURITY</SectionHeading>
           {biometricAvailable ? (
             <ListItem
-              title={`${biometricType} Lock`}
-              subtitle={`Require ${biometricType.toLowerCase()} when returning to the app`}
+              title={SETTINGS_COPY.biometricTitle(biometricType)}
+              subtitle={SETTINGS_COPY.biometricSubtitle(biometricType)}
               leading={<Shield color={colors.brand500} size={iconSm} />}
               trailing={
                 <Toggle
                   value={biometricEnabled}
                   onValueChange={toggleBiometric}
-                  accessibilityLabel={`Toggle ${biometricType} lock`}
+                  accessibilityLabel={SETTINGS_COPY.biometricToggleLabel(biometricType)}
                 />
               }
             />
@@ -525,15 +538,6 @@ export default function SettingsScreen() {
             leading={<Trash2 color={colors.danger600} size={iconSm} />}
             trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
             className="mb-5 border border-status-danger"
-          />
-
-          <ListItem
-            onPress={handleSignOut}
-            accessibilityLabel="Sign out of your account"
-            title={<Text className="text-body font-medium text-status-danger">Sign Out</Text>}
-            leading={<LogOut color={colors.danger500} size={iconSm} />}
-            disabled={isSigningOut}
-            haptic={false}
           />
 
           <Text className="text-caption text-content-tertiary text-center mt-8">

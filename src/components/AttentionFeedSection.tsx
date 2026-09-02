@@ -48,8 +48,10 @@ function metaLineFor(item: AttentionFeedItem): string {
   const parts: string[] = [];
   if (item.extraIssueCount > 0) parts.push(ATTENTION_FEED_COPY.moreIssues(item.extraIssueCount));
   if (item.warningCount > 1) parts.push(ATTENTION_FEED_COPY.moreWarnings(item.warningCount - 1));
+  // The read-only note used to be appended here, repeating on every
+  // across-practice row; it is now said once in that group's header. Screen
+  // readers still get it: the lib puts it in each row's accessibilityLabel.
   if (item.ctaLabel) parts.push(item.ctaLabel);
-  else parts.push(ATTENTION_FEED_COPY.readOnlyNote);
   return parts.join(' · ');
 }
 
@@ -84,6 +86,7 @@ export function AttentionItemRow({ item, surface }: AttentionItemRowProps) {
       title={item.title}
       subtitle={item.body}
       meta={metaLineFor(item)}
+      subtitleNumberOfLines={3}
       metaClassName={item.actionable ? 'text-brand-500 font-medium' : undefined}
       badge={
         dateLabel ? (

@@ -12,6 +12,7 @@ import { CONTENT_MAX_WIDTH } from '../../../../src/components/ui/ScreenContainer
 import { PatientRow } from '../../../../src/components/PatientRow';
 import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { EmptyState } from '../../../../src/components/ui/EmptyState';
+import { PATIENT_LIST_COPY } from '../../../../src/constants/strings';
 
 const PAGE_SIZE = 20;
 const FLATLIST_CONTENT_STYLE = { paddingHorizontal: 20, paddingBottom: 20 } as const;
@@ -103,9 +104,9 @@ export default function PatientListScreen() {
               onChangeText={setSearch}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
-              placeholder="Search by patient name..."
+              placeholder={PATIENT_LIST_COPY.searchPlaceholder}
               placeholderTextColor={colors.contentTertiary}
-              accessibilityLabel="Search patients by name"
+              accessibilityLabel={PATIENT_LIST_COPY.searchAccessibilityLabel}
               className="flex-1 p-3 text-body text-content-primary"
             />
           </View>

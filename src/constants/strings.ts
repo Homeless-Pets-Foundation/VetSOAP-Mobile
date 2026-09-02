@@ -295,8 +295,37 @@ export const RECORDING_DETAIL_COPY = {
 } as const;
 
 export const RECORDINGS_LIST_COPY = {
-  searchPlaceholder: 'Search patient or client…',
+  searchPlaceholder: 'Search patients or clients',
   searchAccessibilityLabel: 'Search recordings by patient or client name',
+  // Date group headers (layout tier 3, 2026-09-02). "This week" is a rolling
+  // seven days, so it never claims a locale-specific week start.
+  dateGroupToday: 'Today',
+  dateGroupYesterday: 'Yesterday',
+  dateGroupThisWeek: 'This week',
+  dateGroupEarlier: 'Earlier',
+} as const;
+
+export const PATIENT_LIST_COPY = {
+  searchPlaceholder: 'Search patients or clients',
+  searchAccessibilityLabel: 'Search patients by patient or client name',
+  lastVisit: (date: string): string => `Last visit ${date}`,
+  visitCount: (count: number): string => `${count} ${count === 1 ? 'visit' : 'visits'}`,
+  pimsIdPrefix: (id: string): string => `ID: ${id}`,
+} as const;
+
+export const PATIENT_DETAIL_COPY = {
+  visitsHeading: (count: number | null): string => (count === null ? 'Visits' : `Visits (${count})`),
+} as const;
+
+export const SETTINGS_COPY = {
+  // "Face Unlock Lock" read as a typo. The type name comes from
+  // `biometrics.getType()`, so the generic fallback needs its own wording.
+  biometricTitle: (type: string): string =>
+    type === 'Biometric' ? 'Require biometric unlock' : `Require ${type}`,
+  biometricSubtitle: (type: string): string =>
+    `Ask for ${type === 'Biometric' ? 'biometric unlock' : type.toLowerCase()} when you return to the app`,
+  biometricToggleLabel: (type: string): string =>
+    type === 'Biometric' ? 'Require biometric unlock' : `Require ${type}`,
 } as const;
 
 export const SUBMITTED_BANNER_COPY = {
@@ -532,7 +561,7 @@ export const PROFILE_COPY = {
   passwordUpdateFailedTitle: 'Password Update Failed',
   goBack: 'Go back',
   title: 'Profile',
-  accountName: 'Account Name',
+  accountSection: 'Account',
   fullName: 'Full name',
   saveProfile: 'Save Profile',
   password: 'Password',

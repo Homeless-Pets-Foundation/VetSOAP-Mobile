@@ -457,6 +457,16 @@ export const QUALITY_ANALYTICS_COPY = {
     missingDetailsCount: 'Awaiting details',
     p90Processing: '90% done by',
   },
+  // Collapsed-card headline (home layout reorg, 2026-09-02). A separate block
+  // from `issues` on purpose — that placeholder set is pinned to count/pct.
+  headline: {
+    completed: (count: number): string => `${count} completed`,
+    missingDetails: (pct: number): string => `${pct}% missing details`,
+    // Non-breaking spaces: the headline wraps to two lines on a 411 dp phone,
+    // and a plain space here left "90%" orphaned on line 2.
+    p90: (duration: string): string => `${duration.replace(/ /g, '\u00A0')}\u00A0to\u00A090%`,
+  },
+  alertCount: (count: number): string => `${count} alert${count === 1 ? '' : 's'}`,
   // Breakdown-row alerts. Each is its own wrapping line, so the reprocess
   // templates are capitalized — a line opening on a lowercase word reads as a
   // rendering fault. The other two open on a digit.
@@ -735,6 +745,18 @@ export const METADATA_FIELD_LABELS = {
  * ONE bounded page of the org's most recently updated recordings, so it is a
  * recent snapshot and never an authoritative backlog.
  */
+/** Home tab copy (home layout reorg, 2026-09-02). */
+export const HOME_COPY = {
+  // The one status pill in the Recent Recordings header. Worst-first so it can
+  // never claim a clean state beside a failed row; see deriveRecentStatusPill.
+  statusPill: {
+    failed: (count: number): string => `${count} failed`,
+    processing: (count: number): string => `${count} processing`,
+    notSubmitted: (count: number): string => `${count} not submitted`,
+    allComplete: 'All complete',
+  },
+} as const;
+
 export const ATTENTION_FEED_COPY = {
   sectionTitle: 'Needs Attention',
   openScreenAccessibilityLabel: 'Open Needs Attention',
@@ -743,6 +765,16 @@ export const ATTENTION_FEED_COPY = {
   acrossPracticeSummary: (count: number): string =>
     `${count} across the practice`,
   acrossPracticeExpandHint: 'Read-only items for other clinicians',
+  needsYouSummary: (count: number): string => `${count} need${count === 1 ? 's' : ''} you`,
+  // Home's one-line summary row ("2 need you · 3 across the practice"); it opens
+  // the full screen and never implies a deeper fetch than the bounded page.
+  homeSummary: (needsYou: number, across: number): string =>
+    [
+      needsYou > 0 ? `${needsYou} need${needsYou === 1 ? 's' : ''} you` : null,
+      across > 0 ? `${across} across the practice` : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
   viewRecent: 'View recent attention',
   loading: 'Checking recent recordings…',
 

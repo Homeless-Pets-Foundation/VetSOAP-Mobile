@@ -14,6 +14,13 @@ interface RecordingCardProps {
   recording: Recording;
   localDraftSlotId?: string;
   highlighted?: boolean;
+  /**
+   * List contexts pass `recording.status === 'completed'`: a green "Completed"
+   * badge on every row carries no information when it is the default state.
+   * The a11y label keeps `status …` regardless, and the detail header renders
+   * its own StatusBadge (home layout reorg, 2026-09-02).
+   */
+  hideStatusBadge?: boolean;
 }
 
 function DraftLocationChip({ isOnDevice }: { isOnDevice: boolean }) {
@@ -60,6 +67,7 @@ export const RecordingCard = React.memo(function RecordingCard({
   recording,
   localDraftSlotId,
   highlighted = false,
+  hideStatusBadge = false,
 }: RecordingCardProps) {
   const router = useRouter();
   const colors = useThemeColors();
@@ -187,7 +195,7 @@ export const RecordingCard = React.memo(function RecordingCard({
         </View>
         <View className="flex-row items-center gap-2">
           <View className="items-end gap-1">
-            <StatusBadge status={recording.status} />
+            {hideStatusBadge ? null : <StatusBadge status={recording.status} />}
             {showAiLabeledChip ? <AiLabeledChip /> : null}
             {isDraft ? <DraftLocationChip isOnDevice={hasLocalDraftAudio} /> : null}
           </View>
@@ -214,5 +222,6 @@ export const RecordingCard = React.memo(function RecordingCard({
     (next.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) &&
   prev.recording.needsMetadataReview === next.recording.needsMetadataReview &&
   prev.localDraftSlotId === next.localDraftSlotId &&
+  prev.hideStatusBadge === next.hideStatusBadge &&
   prev.highlighted === next.highlighted
 );

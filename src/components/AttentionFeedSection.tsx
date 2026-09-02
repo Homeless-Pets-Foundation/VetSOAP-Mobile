@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Pressable } from 'react-native';
 import { Text } from './ui/Text';
 import { useRouter } from 'expo-router';
-import { AlertTriangle } from 'lucide-react-native';
+import { AlertTriangle, ChevronRight } from 'lucide-react-native';
 import { ATTENTION_FEED_COPY } from '../constants/strings';
 import { trackEvent, type AttentionSurface } from '../lib/analytics';
 import type { AttentionDestination, AttentionFeedItem } from '../lib/attentionFeed';
@@ -14,8 +14,13 @@ import { Card } from './ui/Card';
 import { ListItem } from './ui/ListItem';
 import { CLIP_SAFE, clipSafe, HIT_SLOP } from './ui/styles';
 
-/** How many actionable rows Home shows before deferring to the full screen. */
-export const HOME_ATTENTION_ROW_LIMIT = 3;
+/**
+ * How many actionable rows Home shows before deferring to the full screen. Two,
+ * not three: the block sits above the Record CTA's old position and every row
+ * it adds pushes Recent Recordings a card further down (home layout reorg,
+ * 2026-09-02). The summary row carries the remaining counts.
+ */
+export const HOME_ATTENTION_ROW_LIMIT = 2;
 
 /**
  * Route for a feed destination. `from=attention` drives the detail screen's
@@ -238,54 +243,43 @@ interface AttentionFeedSectionProps {
 }
 
 /**
- * Home's "Needs Attention" section: at most three ACTIONABLE rows, a collapsed
- * practice-wide summary, and qualified state lines. Deliberately never expands
- * read-only patient rows on the landing screen, and never renders a single
- * authoritative count mixing device-local rows with a truncated server page.
+ * Home's "Needs Attention" section: at most two ACTIONABLE rows, qualified state
+ * lines, and ONE summary row ("2 need you · 3 across the practice ›") that opens
+ * the full screen. Deliberately never expands read-only patient rows on the
+ * landing screen, and never renders a single authoritative count mixing
+ * device-local rows with a truncated server page. The bounded-page qualifier
+ * (`attentionCoverageFooter`) is the full screen's — repeating it here doubled
+ * the block's height for copy the destination already carries (home layout
+ * reorg, 2026-09-02).
  */
 export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
   const router = useRouter();
+  const colors = useThemeColors();
   const notices = attentionStateNotices(feed);
   const visibleRows = feed.groups.needsYou.slice(0, HOME_ATTENTION_ROW_LIMIT);
   const hiddenNeedsYou = feed.groups.needsYou.length - visibleRows.length;
   const acrossPracticeCount = feed.groups.acrossPractice.length;
-  const coverageFooter = attentionCoverageFooter(feed);
 
-  // The link appears when a LOADED row is omitted here, or when the full screen
-  // carries the qualifier/retry detail. It never implies a deeper fetch.
-  const showViewLink =
+  // The summary row appears when a LOADED row is omitted here, or when the full
+  // screen carries the qualifier/retry detail. It never implies a deeper fetch.
+  const showSummaryRow =
     hiddenNeedsYou > 0 ||
     acrossPracticeCount > 0 ||
     feed.isTruncated ||
     feed.coverage === 'unknown' ||
     notices.length > 0;
+  const summaryLabel =
+    feed.items.length > 0
+      ? ATTENTION_FEED_COPY.homeSummary(feed.groups.needsYou.length, acrossPracticeCount)
+      : ATTENTION_FEED_COPY.viewRecent;
 
   return (
     <View className="mb-6">
-      <View className="flex-row justify-between items-center mb-3">
-        {/* flex-1 — row child with a "View all"-style sibling; without it the header
-            shrink-wraps and Bold text drops "Attention" (CLAUDE.md > UI Gotchas). */}
-        <Text className="section-title flex-1 mr-2" accessibilityRole="header" numberOfLines={1}>
-          {ATTENTION_FEED_COPY.sectionTitle}
-        </Text>
-        {showViewLink ? (
-          <Pressable
-            onPress={() => router.push('/recordings/attention' as never)}
-            accessibilityRole="link"
-            accessibilityLabel={ATTENTION_FEED_COPY.viewRecent}
-            hitSlop={HIT_SLOP}
-            style={{ minHeight: 32, justifyContent: 'center' }}
-          >
-            {/* Trailing space + flexShrink:0 — Android under-measures short Text in flex-rows and clips the last glyph; do NOT remove. */}
-            <Text
-              className="text-body-sm text-brand-500 font-medium"
-              style={CLIP_SAFE}
-            >
-              {clipSafe(ATTENTION_FEED_COPY.viewRecent)}
-            </Text>
-          </Pressable>
-        ) : null}
-      </View>
+      {/* w-full — a Text child of a column still shrink-wraps its measured width,
+          and Bold text then drops "Attention" (CLAUDE.md > UI Gotchas). */}
+      <Text className="section-title w-full mb-3" accessibilityRole="header" numberOfLines={1}>
+        {ATTENTION_FEED_COPY.sectionTitle}
+      </Text>
 
       {notices.map((notice) => (
         <AttentionStateNotice
@@ -306,26 +300,22 @@ export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
         <AttentionItemRow key={item.key} item={item} surface="home" />
       ))}
 
-      {acrossPracticeCount > 0 ? (
+      {showSummaryRow ? (
         <Pressable
           onPress={() => router.push('/recordings/attention' as never)}
           accessibilityRole="button"
-          accessibilityLabel={`${ATTENTION_FEED_COPY.acrossPracticeSummary(acrossPracticeCount)}. ${ATTENTION_FEED_COPY.acrossPracticeExpandHint}`}
-          className="rounded-xl border border-border-default bg-surface-raised px-4 py-2.5 items-center mb-2"
+          accessibilityLabel={`${summaryLabel}. ${ATTENTION_FEED_COPY.openScreenAccessibilityLabel}`}
+          className="rounded-xl border border-border-default bg-surface-raised px-4 py-2.5 flex-row items-center mb-2"
           hitSlop={HIT_SLOP}
         >
-          {/* w-full — items-center Pressable, so the label shrink-wraps and Bold text
-              drops the trailing word of "7 across the practice", turning a
-              practice-wide count into a bare number (CLAUDE.md > UI Gotchas).
-              accessibilityLabel above stays unpadded. */}
-          <Text className="text-body-sm font-medium text-content-secondary text-center w-full">
-            {ATTENTION_FEED_COPY.acrossPracticeSummary(acrossPracticeCount)}
+          {/* flex-1 — the row child takes real width, so "2 need you · 3 across the
+              practice" wraps to a second line under Bold text instead of losing its
+              tail (CLAUDE.md > UI Gotchas). accessibilityLabel above stays unpadded. */}
+          <Text className="text-body-sm font-medium text-content-secondary flex-1" numberOfLines={2}>
+            {summaryLabel}
           </Text>
+          <ChevronRight color={colors.contentTertiary} size={18} style={{ flexShrink: 0 }} />
         </Pressable>
-      ) : null}
-
-      {coverageFooter ? (
-        <Text className="text-caption text-content-tertiary mt-1">{coverageFooter}</Text>
       ) : null}
     </View>
   );

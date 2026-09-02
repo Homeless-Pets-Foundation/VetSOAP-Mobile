@@ -2,6 +2,7 @@ export * from './Badge';
 export * from './Banner';
 export * from './Button';
 export * from './Card';
+export * from './Collapsible';
 export * from './EmptyState';
 export * from './FormField';
 export * from './GoogleGlyph';

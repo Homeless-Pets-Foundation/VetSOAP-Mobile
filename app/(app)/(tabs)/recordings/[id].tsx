@@ -1196,7 +1196,7 @@ export default function RecordingDetailScreen() {
           recordingPermissions.canPlayAudio ? (
             <RecordingAudioPlayer
               recordingId={id}
-              organizationId={user?.organizationId ?? ''}
+              organizationId={recording.organizationId}
               canDownloadAudio={recordingPermissions.canDownloadAudio}
               initialDurationSeconds={recording.audioDurationSeconds}
             />

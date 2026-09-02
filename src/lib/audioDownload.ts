@@ -227,7 +227,10 @@ async function refreshUnchangedManifest(
   let refreshed: DownloadManifest;
   try {
     refreshed = await refreshManifest();
-  } catch {
+  } catch (error) {
+    // The user's own cancellation must survive the refresh unchanged so the
+    // caller treats it as a cancellation rather than a refresh failure.
+    if (error instanceof AudioDownloadError && error.code === 'cancelled') throw error;
     throw closedError('manifest_refresh_failed');
   }
   if (!sameDownloadDescriptors(baseline, refreshed)) {
@@ -394,26 +397,33 @@ export async function downloadAudioManifest(
 
           let partBytes = 0;
           iterator = response.chunks[Symbol.asyncIterator]();
-          try {
-            while (true) {
-              const next = await settleBeforeGuard(Promise.resolve(iterator.next()), guard);
-              if (next.done) break;
-              const chunk = next.value;
-              if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) continue;
-              partBytes += chunk.byteLength;
-              if (partBytes > descriptor.sizeBytes) throw closedError('size_exceeded');
-              target.write(chunk);
-              bytesWritten += chunk.byteLength;
-              options.onProgress?.({
-                bytesWritten,
-                totalBytes: manifest.totalSizeBytes,
-                partNumber: descriptor.partNumber,
-                partCount: descriptor.partCount,
-              });
+          while (true) {
+            let next: IteratorResult<Uint8Array>;
+            try {
+              next = await settleBeforeGuard(Promise.resolve(iterator.next()), guard);
+            } catch (error) {
+              // A stream that drops after headers is a transport fault, not a
+              // destination write failure; keep the error-code breakdown honest.
+              if (error instanceof AudioDownloadError) throw error;
+              throw closedError('network_failed');
             }
-          } catch (error) {
-            if (error instanceof AudioDownloadError) throw error;
-            throw closedError('write_failed');
+            if (next.done) break;
+            const chunk = next.value;
+            if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) continue;
+            partBytes += chunk.byteLength;
+            if (partBytes > descriptor.sizeBytes) throw closedError('size_exceeded');
+            try {
+              target.write(chunk);
+            } catch {
+              throw closedError('write_failed');
+            }
+            bytesWritten += chunk.byteLength;
+            options.onProgress?.({
+              bytesWritten,
+              totalBytes: manifest.totalSizeBytes,
+              partNumber: descriptor.partNumber,
+              partCount: descriptor.partCount,
+            });
           }
           if (partBytes !== descriptor.sizeBytes) throw closedError('size_mismatch');
           try {

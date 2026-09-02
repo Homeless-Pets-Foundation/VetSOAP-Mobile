@@ -551,6 +551,79 @@ test('a promotion failure rolls back staged and already-promoted files', async (
   assert.equal(destination.targets.every((target) => target.removed), true);
 });
 
+test('cancellation during an authorization-expiry manifest refresh stays a cancellation', async () => {
+  const initial = manifest({ urls: ['https://r2.test/object?signature=old'], sizes: [3] });
+  const destination = makeDestination();
+  const error = await rejectionCode(
+    download.downloadAudioManifest({
+      manifest: initial,
+      destination: destination.api,
+      refreshManifest: async () => {
+        throw new download.AudioDownloadError('cancelled');
+      },
+      fetchPart: async (url) => response(url, [], { status: 403, contentLength: 0 }),
+      signal: new AbortController().signal,
+      now: () => NOW,
+    })
+  );
+  assert.equal(error.code, 'cancelled');
+  assert.equal(destination.targets.length, 0);
+});
+
+test('a genuine refresh failure is still reported as manifest_refresh_failed', async () => {
+  const initial = manifest({ urls: ['https://r2.test/object?signature=old'], sizes: [3] });
+  const destination = makeDestination();
+  const error = await rejectionCode(
+    download.downloadAudioManifest({
+      manifest: initial,
+      destination: destination.api,
+      refreshManifest: async () => {
+        throw new Error('api unavailable');
+      },
+      fetchPart: async (url) => response(url, [], { status: 403, contentLength: 0 }),
+      signal: new AbortController().signal,
+      now: () => NOW,
+    })
+  );
+  assert.equal(error.code, 'manifest_refresh_failed');
+});
+
+test('a response stream that drops mid-body is a network failure, not a write failure', async () => {
+  const source = manifest({ urls: ['https://r2.test/one'], sizes: [3] });
+  const destination = makeDestination();
+  const error = await rejectionCode(
+    download.downloadAudioManifest({
+      manifest: source,
+      destination: destination.api,
+      refreshManifest: async () => source,
+      fetchPart: async (url) => ({
+        status: 200,
+        redirected: false,
+        finalUrl: url,
+        contentLength: 3,
+        chunks: (async function* () {
+          yield Uint8Array.from([1]);
+          throw new Error('socket hang up');
+        })(),
+      }),
+      signal: new AbortController().signal,
+      now: () => NOW,
+    })
+  );
+  assert.equal(error.code, 'network_failed');
+  assert.deepEqual(destination.targets[0].chunks, [[1]]);
+  assert.equal(destination.targets[0].removed, true);
+});
+
+test('the recording detail screen validates downloads against the recording tenant', async () => {
+  const source = await readFile(
+    new URL('../app/(app)/(tabs)/recordings/[id].tsx', import.meta.url),
+    'utf8'
+  );
+  assert.match(source, /<RecordingAudioPlayer[\s\S]*?organizationId=\{recording\.organizationId\}/);
+  assert.doesNotMatch(source, /organizationId=\{user\?\.organizationId/);
+});
+
 test('download UI prevents double taps, resets state in finally, and aborts on unmount', async () => {
   const source = await readFile(
     new URL('../src/components/RecordingAudioDownload.tsx', import.meta.url),

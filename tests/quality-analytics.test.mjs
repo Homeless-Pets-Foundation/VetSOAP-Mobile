@@ -323,7 +323,11 @@ test('QualityAnalyticsCard uses one Card and shows unavailable retry for missing
   assert.match(source, /isNaN\(date\.getTime\(\)\)/);
   assert.match(source, /quality\.org\s*\?\s*hasActivity\(quality\.org\)\s*:\s*false/);
   assert.match(source, /quality\.byProvider\?\.\s*some\(hasActivity\)\s*\?\?\s*false/);
-  assert.match(source, /\{quality\.org && <SummaryBlock title=\{QUALITY_ANALYTICS_COPY\.org\} summary=\{quality\.org\} \/>\}/);
+  // Practice | You is a SegmentedControl over ONE SummaryBlock, not two stacked
+  // 8-tile grids (home layout reorg, 2026-09-02).
+  assert.match(source, /<SegmentedControl[\s\S]*QUALITY_ANALYTICS_COPY\.org[\s\S]*QUALITY_ANALYTICS_COPY\.you/);
+  assert.equal(source.match(/<SummaryBlock\b/g)?.length, 1);
+  assert.doesNotMatch(source, /<SummaryBlock title=/);
   assert.match(source, /\{quality\.byProvider\?\.length \? \(/);
   assert.doesNotMatch(source, /onPress=\{async/);
 });
@@ -338,6 +342,12 @@ test('QualityAnalyticsCard renders clearer labels and all-user breakdown section
   assert.doesNotMatch(copy, /Reprocess rate|SOAP edit rate|P90 processing/);
   assert.match(copy, /appointmentTypes: 'Appointment types'/);
   assert.match(copy, /models: 'Models'/);
+  // The collapsed headline wraps to two lines on a 411 dp phone, and a plain
+  // space in the last fragment left "90%" orphaned on line 2 ("… · 7 min to" /
+  // "90%", emulator 2026-09-02). Non-breaking spaces keep "7 min to 90%" whole.
+  const p90 = copy.match(/p90: \(duration: string\): string =>[^\n]*/)?.[0] ?? '';
+  assert.match(p90, /\\u00A0to\\u00A090%/, 'p90 headline fragment joins with non-breaking spaces');
+  assert.match(p90, /duration\.replace\(\/ \/g, '\\u00A0'\)/, 'duration ("7 min") must not break either');
   assert.match(source, /function BreakdownRow/);
   assert.match(source, /quality\.byAppointmentType\?\.length/);
   assert.match(source, /quality\.byModel\?\.length/);
@@ -894,4 +904,76 @@ test('QualityAnalyticsCard wires the shared derivation helpers instead of local 
   assert.match(source, /item\.label\.trim\(\) \|\| QUALITY_ANALYTICS_COPY\.unlabeledGroup/);
   assert.doesNotMatch(source, /Clock3/);
   assert.match(source, /quality\.byProvider\.slice\(0, 5\)\.map/);
+});
+
+// ---------------------------------------------------------------------------
+// Home layout reorg (2026-09-02): the card is collapsed by default and its
+// header carries a one-line headline derived here, structured (not copy) so the
+// module stays free of the strings catalog.
+
+test('qualityHeadline prefers the practice summary and reports null rates as null', async () => {
+  const { qualityHeadline } = await loadQualityAnalytics();
+  const headline = qualityHeadline({
+    org: summary({ completedRecordings: 500, missingMetadataRate: 0.29, processingLatencyP90Seconds: 420 }),
+    me: summary({ completedRecordings: 2 }),
+    byAppointmentType: [],
+    byModel: [],
+    byProvider: null,
+  });
+  assert.deepEqual(plain(headline), { completed: 500, missingDetailsPct: 29, p90Seconds: 420 });
+
+  const nullRates = qualityHeadline({
+    org: summary({ completedRecordings: 3, missingMetadataRate: null, processingLatencyP90Seconds: null }),
+    me: summary(),
+    byAppointmentType: [],
+    byModel: [],
+    byProvider: null,
+  });
+  assert.deepEqual(plain(nullRates), { completed: 3, missingDetailsPct: null, p90Seconds: null });
+});
+
+test('qualityHeadline falls back to the personal summary and is null without activity', async () => {
+  const { qualityHeadline } = await loadQualityAnalytics();
+  const mine = qualityHeadline({
+    org: null,
+    me: summary({ completedRecordings: 7, missingMetadataRate: 0.5, processingLatencyP90Seconds: 60 }),
+    byAppointmentType: [],
+    byModel: [],
+    byProvider: null,
+  });
+  assert.deepEqual(plain(mine), { completed: 7, missingDetailsPct: 50, p90Seconds: 60 });
+
+  const quiet = summary({
+    completedRecordings: 0,
+    failedUploadAttempts: 0,
+    silentAudioEvents: 0,
+    reprocessCount: 0,
+    soapEditedCount: 0,
+    missingMetadataCount: 0,
+  });
+  assert.equal(
+    qualityHeadline({ org: null, me: quiet, byAppointmentType: [], byModel: [], byProvider: null }),
+    null
+  );
+});
+
+test('showsModelBreakdown is true only for owner and admin', async () => {
+  const { showsModelBreakdown } = await loadQualityAnalytics();
+  assert.equal(showsModelBreakdown('owner'), true);
+  assert.equal(showsModelBreakdown('admin'), true);
+  assert.equal(showsModelBreakdown('veterinarian'), false);
+  assert.equal(showsModelBreakdown('support_staff'), false);
+  assert.equal(showsModelBreakdown(undefined), false);
+  assert.equal(showsModelBreakdown(null), false);
+});
+
+test('QualityAnalyticsCard is a collapsed-by-default Collapsible with role-gated Models', async () => {
+  const source = await read('src/components/QualityAnalyticsCard.tsx');
+  assert.match(source, /const \[expanded, setExpanded\] = useState\(false\)/);
+  assert.match(source, /<Collapsible\b/);
+  assert.match(source, /showsModelBreakdown\(role\) && quality\.byModel\?\.length/);
+  assert.match(source, /qualityHeadline\(quality\)/);
+  assert.doesNotMatch(source, /LayoutAnimation/);
+  // Persisting "expanded" would defeat the short-Home default on the next cold start.
+  assert.doesNotMatch(source, /AsyncStorage|SecureStore|secureStorage/);
 });

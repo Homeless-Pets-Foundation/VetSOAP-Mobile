@@ -15,7 +15,19 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { ChevronLeft, AlertTriangle, FileText, LifeBuoy, RotateCcw, Sparkles } from 'lucide-react-native';
+import {
+  ChevronLeft,
+  AlertTriangle,
+  ExternalLink,
+  FileText,
+  Languages,
+  LifeBuoy,
+  Lock,
+  Mail,
+  RefreshCw,
+  RotateCcw,
+  Sparkles,
+} from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
@@ -33,7 +45,7 @@ import { ClientEmailCard } from '../../../../src/components/ClientEmailCard';
 import { ExportSheet } from '../../../../src/components/ExportSheet';
 import { ReprocessSheet } from '../../../../src/components/ReprocessSheet';
 import { TranslationCard } from '../../../../src/components/TranslationCard';
-import { ConsultAICard } from '../../../../src/components/ConsultAICard';
+import { openConsultAI } from '../../../../src/lib/consultAi';
 import { SuggestedTasksCard } from '../../../../src/components/SuggestedTasksCard';
 import { MetadataReviewCard } from '../../../../src/components/MetadataReviewCard';
 import { ProcessingStepper } from '../../../../src/components/ProcessingStepper';
@@ -53,6 +65,7 @@ import * as durableRecorder from '../../../../modules/captivet-durable-recorder'
 import {
   AUDIO_PLAYER_COPY,
   ATTENTION_FEED_COPY,
+  RECORDING_TOOLS_COPY,
   DELETE_RECORDING_COPY,
   ERROR_COPY,
   METADATA_REVIEW_COPY,
@@ -153,10 +166,36 @@ export default function RecordingDetailScreen() {
   // P1, PR #143).
   const [accessRevoked, setAccessRevoked] = useState<{ status: number } | null>(null);
   const [retryAudioMissing, setRetryAudioMissing] = useState(false);
+  // Detail reorder (2026-09-02): Suggested Tasks collapse state + the on-demand
+  // Tools row. `openTools` is a Set — MULTI-open on purpose: email drafts and
+  // translations are ~90 s generative calls, so opening a second tool must never
+  // unmount the first one's result.
+  type DetailTool = 'email' | 'translate' | 'reprocess';
+  const [tasksExpanded, setTasksExpanded] = useState(false);
+  const [openTools, setOpenTools] = useState<Set<DetailTool>>(() => new Set());
+  const toggleTool = useCallback((tool: DetailTool) => {
+    Haptics.selectionAsync().catch(() => {});
+    setOpenTools((prev) => {
+      const next = new Set(prev);
+      if (next.has(tool)) next.delete(tool);
+      else next.add(tool);
+      return next;
+    });
+  }, []);
+  const closeTool = useCallback((tool: DetailTool) => {
+    setOpenTools((prev) => {
+      if (!prev.has(tool)) return prev;
+      const next = new Set(prev);
+      next.delete(tool);
+      return next;
+    });
+  }, []);
   useEffect(() => {
     setAccessRevoked(null); // reset when navigating to a different recording
     setRetryAudioMissing(false);
     pollingStartedAtRef.current = null;
+    setOpenTools(new Set());
+    setTasksExpanded(false);
   }, [id]);
 
   // Completion celebration — fired ONCE on the prev !== 'completed' →
@@ -1047,6 +1086,24 @@ export default function RecordingDetailScreen() {
       ? metadataAttentionReasons(recording, { recordFirstEnabled })
       : [];
   const showMetadataReadOnlyNotice = readOnlyMetadataReasons.length > 0;
+  // Non-authors see a one-line lock note under Patient Info instead of a whole
+  // "Audio" card holding one sentence (detail reorder, 2026-09-02).
+  const showAudioForbiddenNote =
+    !!recording.audioFileUrl && recording.status !== 'draft' && !recordingPermissions.canPlayAudio;
+  // Reprocess — re-transcribe + regenerate SOAP with chosen models. Reaches BOTH
+  // completed and failed (with audio); hidden until the backend returns a real,
+  // key/allow-list-filtered model list with a visible actual choice. The 202 body
+  // seeds status='uploaded' → the existing poller + ProcessingStepper take over.
+  const canReprocess = Boolean(
+    id &&
+      (recording.status === 'completed' || recording.status === 'failed') &&
+      !!recording.audioFileUrl &&
+      retryPresentation !== 'audio_unavailable' &&
+      aiModels &&
+      hasVisibleReprocessModelChoice(aiModels, {
+        recordingForeignLanguage: recording.foreignLanguage,
+      })
+  );
   const renderInfoField = (
     field: RecordingMetadataField | null,
     label: string,
@@ -1188,26 +1245,29 @@ export default function RecordingDetailScreen() {
             {renderInfoField('appointmentType', 'Type', recording.appointmentType, 'pl-2')}
           </View>
           <Text className="text-caption text-content-tertiary">{formattedDate}</Text>
+          {showAudioForbiddenNote ? (
+            <View className="flex-row items-center mt-3">
+              <View style={{ flexShrink: 0 }}>
+                <Lock color={colors.contentTertiary} size={14} />
+              </View>
+              {/* Sentence wraps freely — flex-1 gives it the row's width. */}
+              <Text className="flex-1 ml-2 text-caption text-content-tertiary">
+                {AUDIO_PLAYER_COPY.forbidden}
+              </Text>
+            </View>
+          ) : null}
         </Card>
 
         {/* Audio playback — audioFileUrl exists from confirm-upload onward.
-            Drafts are excluded (their audio is local; resume path owns it). */}
+            Drafts are excluded (their audio is local; resume path owns it). The
+            forbidden state is the note inside Patient Info above. */}
         {recording.audioFileUrl && recording.status !== 'draft' && id && (
           recordingPermissions.canPlayAudio ? (
             <RecordingAudioPlayer
               recordingId={id}
               initialDurationSeconds={recording.audioDurationSeconds}
             />
-          ) : (
-            <Card className="mx-5 mb-4">
-              <Text className="text-body-lg font-semibold text-content-primary mb-1">
-                {AUDIO_PLAYER_COPY.title}
-              </Text>
-              <Text className="text-body-sm text-content-tertiary">
-                {AUDIO_PLAYER_COPY.forbidden}
-              </Text>
-            </Card>
-          )
+          ) : null
         )}
 
         {retryPresentation === 'audio_unavailable' && (
@@ -1297,31 +1357,6 @@ export default function RecordingDetailScreen() {
             </Card>
           </View>
         )}
-
-        {/* Reprocess — re-transcribe + regenerate SOAP with chosen models. Own card at top level so
-            BOTH completed and failed (with audio) reach it; hidden until the backend returns a real,
-            key/allow-list-filtered model list with a visible actual choice. The 202 body seeds
-            status='uploaded' → the existing poller + ProcessingStepper take over. */}
-        {id &&
-          (recording.status === 'completed' || recording.status === 'failed') &&
-          !!recording.audioFileUrl &&
-          retryPresentation !== 'audio_unavailable' &&
-          aiModels &&
-          hasVisibleReprocessModelChoice(aiModels, {
-            recordingForeignLanguage: recording.foreignLanguage,
-          }) && (
-            <ReprocessSheet
-              recordingId={id}
-              models={aiModels}
-              canManage={canRecordAppointments(user?.role)}
-              currentTranscriptionModel={recording.costBreakdown?.transcriptionModel}
-              currentSoapModel={recording.costBreakdown?.modelUsed}
-              recordingForeignLanguage={recording.foreignLanguage}
-              onReprocessStarted={() => {
-                pollingStartedAtRef.current = Date.now();
-                              }}
-            />
-          )}
 
         {/* Processing Status */}
         {isProcessing && (
@@ -1572,27 +1607,12 @@ export default function RecordingDetailScreen() {
           </Animated.View>
         )}
 
-        {recording.status === 'completed' && id && recordingTasks && recordingTasks.length > 0 && (
-          <SuggestedTasksCard
-            recordingId={id}
-            tasks={recordingTasks}
-            canManage={canRecordAppointments(user?.role)}
-          />
-        )}
-
-        {recording.status === 'completed' && id && (
-          <>
-            {recordingPermissions.canExport && <ClientEmailCard recordingId={id} />}
-            {recordingPermissions.canCopy && <TranslationCard recordingId={id} />}
-          </>
-        )}
-
-        {/* Consult AI — outbound link to the Captivet web app; not tied to processing state or permissions */}
-        {id && <ConsultAICard />}
-
         {/* SOAP Note */}
+        {/* First thing after the state cards (detail reorder, 2026-09-02): it
+            used to start 2.5 viewports down, under Reprocess, five task rows,
+            and three tool cards. */}
         {recording.status === 'completed' && (
-          <View className="px-5 pb-8">
+          <View className="px-5">
             {recording.errorCode === 'PARTIAL_GENERATION' && (
               <Animated.View entering={FadeInUp.duration(300)} className="mb-4">
                 <Card className="border-status-warning">
@@ -1694,9 +1714,6 @@ export default function RecordingDetailScreen() {
                   recordingId={id ?? undefined}
                   canEdit={recordingPermissions.canEdit}
                 />
-                {recordingPermissions.canExport && (
-                  <ExportSheet soapNote={soapNote} recording={recording} />
-                )}
               </View>
             ) : (
               <View className="py-5 items-center">
@@ -1708,6 +1725,102 @@ export default function RecordingDetailScreen() {
 
           </View>
         )}
+
+        {recording.status === 'completed' && id && recordingTasks && recordingTasks.length > 0 && (
+          <SuggestedTasksCard
+            recordingId={id}
+            tasks={recordingTasks}
+            canManage={canRecordAppointments(user?.role)}
+            expanded={tasksExpanded}
+            onToggle={() => setTasksExpanded((value) => !value)}
+          />
+        )}
+
+        {/* Export — outside the soapNote ternary so it stays available while the
+            Transcript tab is active (it used to vanish with the note). */}
+        {recording.status === 'completed' && soapNote && recordingPermissions.canExport && (
+          <View className="px-5">
+            <ExportSheet soapNote={soapNote} recording={recording} />
+          </View>
+        )}
+
+        {/* Tools */}
+        {id && (
+          <View className="px-5 mb-4">
+            <Text className="text-caption uppercase text-content-tertiary mb-2">
+              {RECORDING_TOOLS_COPY.heading}
+            </Text>
+            <View className="flex-row flex-wrap gap-2">
+              {recording.status === 'completed' && recordingPermissions.canExport && (
+                <Button
+                  size="sm"
+                  variant={openTools.has('email') ? 'primary' : 'secondary'}
+                  onPress={() => toggleTool('email')}
+                  accessibilityHint={RECORDING_TOOLS_COPY.emailHint}
+                  icon={<Mail color={openTools.has('email') ? colors.contentOnBrand : colors.contentBody} size={14} />}
+                >
+                  {RECORDING_TOOLS_COPY.email}
+                </Button>
+              )}
+              {recording.status === 'completed' && recordingPermissions.canCopy && (
+                <Button
+                  size="sm"
+                  variant={openTools.has('translate') ? 'primary' : 'secondary'}
+                  onPress={() => toggleTool('translate')}
+                  accessibilityHint={RECORDING_TOOLS_COPY.translateHint}
+                  icon={<Languages color={openTools.has('translate') ? colors.contentOnBrand : colors.contentBody} size={14} />}
+                >
+                  {RECORDING_TOOLS_COPY.translate}
+                </Button>
+              )}
+              {/* Consult AI — outbound link to the Captivet web app; not tied to
+                  processing state or permissions. Direct open, no card. */}
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={openConsultAI}
+                accessibilityHint={RECORDING_TOOLS_COPY.consultHint}
+                icon={<ExternalLink color={colors.contentBody} size={14} />}
+              >
+                {RECORDING_TOOLS_COPY.consult}
+              </Button>
+              {canReprocess && (
+                <Button
+                  size="sm"
+                  variant={openTools.has('reprocess') ? 'primary' : 'secondary'}
+                  onPress={() => toggleTool('reprocess')}
+                  accessibilityHint={RECORDING_TOOLS_COPY.reprocessHint}
+                  icon={<RefreshCw color={openTools.has('reprocess') ? colors.contentOnBrand : colors.contentBody} size={14} />}
+                >
+                  {RECORDING_TOOLS_COPY.reprocess}
+                </Button>
+              )}
+            </View>
+          </View>
+        )}
+        {id && openTools.has('email') && recording.status === 'completed' && recordingPermissions.canExport && (
+          <ClientEmailCard recordingId={id} />
+        )}
+        {id && openTools.has('translate') && recording.status === 'completed' && recordingPermissions.canCopy && (
+          <TranslationCard recordingId={id} />
+        )}
+        {id && openTools.has('reprocess') && canReprocess && aiModels && (
+          <ReprocessSheet
+            recordingId={id}
+            models={aiModels}
+            canManage={canRecordAppointments(user?.role)}
+            currentTranscriptionModel={recording.costBreakdown?.transcriptionModel}
+            currentSoapModel={recording.costBreakdown?.modelUsed}
+            recordingForeignLanguage={recording.foreignLanguage}
+            defaultExpanded
+            onDismiss={() => closeTool('reprocess')}
+            onReprocessStarted={() => {
+              pollingStartedAtRef.current = Date.now();
+              setOpenTools(new Set());
+            }}
+          />
+        )}
+        <View className="h-4" />
         </View>
       </ScrollView>
       {celebrate && <CelebrationBurst onComplete={() => setCelebrate(false)} />}

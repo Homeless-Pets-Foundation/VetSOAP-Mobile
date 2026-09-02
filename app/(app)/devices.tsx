@@ -4,7 +4,7 @@ import { Text } from '../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
-import { ChevronLeft, Smartphone, Tablet, Monitor, ShieldAlert } from 'lucide-react-native';
+import { ChevronLeft, Smartphone, Tablet, Monitor, ShieldAlert, Trash2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useDeviceCapacity } from '../../src/hooks/useDeviceCapacity';
 import { devicesApi, type DeviceSession } from '../../src/api/devices';
@@ -14,7 +14,6 @@ import { useResponsive } from '../../src/hooks/useResponsive';
 import { CONTENT_MAX_WIDTH } from '../../src/components/ui/ScreenContainer';
 import { Card } from '../../src/components/ui/Card';
 import { SkeletonCard } from '../../src/components/ui/Skeleton';
-import { Button } from '../../src/components/ui/Button';
 import { Badge } from '../../src/components/ui/Badge';
 import { EmptyState } from '../../src/components/ui/EmptyState';
 import { IconButton } from '../../src/components/ui/IconButton';
@@ -22,6 +21,7 @@ import { ListItem } from '../../src/components/ui/ListItem';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { Toast } from '../../src/components/Toast';
 import { friendlyErrorMessage } from '../../src/lib/errorCopy';
+import { formatDeviceTypeLabel, splitDeviceName } from '../../src/lib/deviceDisplay';
 import { CLIP_SAFE, clipSafe } from '../../src/components/ui/styles';
 
 function formatRelativeTime(isoDate: string): string {
@@ -53,24 +53,6 @@ function getDeviceIcon(deviceType: string | null) {
   return Smartphone;
 }
 
-function formatDeviceTypeLabel(deviceType: string | null): string {
-  if (!deviceType) return 'Device';
-  switch (deviceType) {
-    case 'ios_tablet':
-      return 'iPad';
-    case 'android_tablet':
-      return 'Android Tablet';
-    case 'ios_phone':
-      return 'iPhone';
-    case 'android_phone':
-      return 'Android Phone';
-    case 'web':
-      return 'Web Browser';
-    default:
-      return deviceType;
-  }
-}
-
 interface DeviceRowProps {
   device: DeviceSession;
   isCurrent: boolean;
@@ -79,15 +61,20 @@ interface DeviceRowProps {
 }
 
 function DeviceRow({ device, isCurrent, onRevoke, isRevoking }: DeviceRowProps) {
-  const { iconMd } = useResponsive();
+  const { iconMd, iconSm } = useResponsive();
   const colors = useThemeColors();
   const Icon = getDeviceIcon(device.deviceType);
   const typeLabel = formatDeviceTypeLabel(device.deviceType);
+  // "Chrome Extension · Windows · 3f9a2b1c" truncated at "Chrome Extension ·
+  // Window…" — the tail is the half that tells two installs apart, so the
+  // shared prefix moves down to the subtitle.
+  const { title, subtitleHead } = splitDeviceName(device.deviceName, typeLabel);
+  const fullName = device.deviceName || typeLabel;
 
   return (
     <ListItem
-      title={device.deviceName || typeLabel}
-      subtitle={`${typeLabel}${device.appVersion ? ` · v${device.appVersion}` : ''}`}
+      title={title}
+      subtitle={`${subtitleHead}${device.appVersion ? ` · v${device.appVersion}` : ''}`}
       meta={`Last active ${formatRelativeTime(device.lastSeenAt)}`}
       leading={
         <View className="w-10 h-10 rounded-full bg-surface-sunken justify-center items-center">
@@ -97,15 +84,13 @@ function DeviceRow({ device, isCurrent, onRevoke, isRevoking }: DeviceRowProps) 
       badge={isCurrent ? <Badge variant="success">This device</Badge> : undefined}
       trailing={
         !isCurrent ? (
-          <Button
-            variant="dangerGhost"
-            size="sm"
+          <IconButton
+            icon={<Trash2 color={colors.statusDangerFg} size={iconSm} />}
+            label={`Revoke ${fullName}`}
+            variant="ghost"
             loading={isRevoking}
             onPress={onRevoke}
-            accessibilityLabel={`Revoke ${device.deviceName || typeLabel}`}
-          >
-            Revoke
-          </Button>
+          />
         ) : undefined
       }
     />

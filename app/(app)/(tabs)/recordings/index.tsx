@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   Alert,
   View,
-  FlatList,
+  SectionList,
   Platform,
   Pressable,
   RefreshControl,
@@ -36,6 +36,10 @@ import { SkeletonCard } from '../../../../src/components/ui/Skeleton';
 import { EmptyState } from '../../../../src/components/ui/EmptyState';
 import { Select } from '../../../../src/components/ui/Select';
 import { displayPatientName } from '../../../../src/lib/recordingDisplay';
+import {
+  groupRecordingsByDate,
+  type RecordingDateSection,
+} from '../../../../src/lib/recordingDateGroups';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { ATTENTION_FEED_COPY, RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
@@ -98,6 +102,8 @@ export default function RecordingsListScreen() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  /** Bumped on focus so the date grouping re-evaluates "today" after midnight. */
+  const [nowTick, setNowTick] = useState(0);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
   const isTabFocused = useIsFocused();
   const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
@@ -318,6 +324,15 @@ export default function RecordingsListScreen() {
     }
     return pinSubmitted(recordings);
   }, [debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById]);
+  // Date groups (Today / Yesterday / This week / Earlier) are a pure
+  // post-process over the already-sorted rows, so pagination is unaffected: a
+  // new page just grows "Earlier". `nowTick` is bumped on focus so a tab left
+  // open across midnight regroups instead of filing today under "Yesterday".
+  const dateSections = useMemo(
+    () => groupRecordingsByDate(displayRecordings, Date.now()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- nowTick is the midnight/refocus trigger
+    [displayRecordings, nowTick]
+  );
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
   const handleRefresh = useCallback(() => {
     if (shouldLoadRecordings) {
@@ -330,6 +345,7 @@ export default function RecordingsListScreen() {
   }, [refetch, refetchDrafts, refreshLocalDrafts, shouldLoadDrafts, shouldLoadRecordings]);
 
   const handleFocusRefresh = useCallback(() => {
+    setNowTick((tick) => tick + 1);
     const shouldRefetchRecordings = shouldLoadRecordings && isStale;
     const shouldRefetchDrafts = shouldLoadDrafts && isDraftStale;
     const shouldRefreshLocalDrafts = shouldLoadDrafts;
@@ -479,22 +495,34 @@ export default function RecordingsListScreen() {
             placeholder="Status"
             accessibilityLabel={`Filter recordings by status. Current filter ${activeStatusFilterLabel}`}
             sheetTitle="Filter by status"
-            className="w-[150px]"
+            // Was a fixed w-[150px], which left the search field too narrow for
+            // its own placeholder. It now sizes to its label with a floor.
+            className="shrink-0 min-w-[112px]"
             fieldClassName={selectedStatusFilter !== 'all' ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}
           />
         </View>
       </View>
 
-      <FlatList
-        data={displayRecordings}
+      <SectionList
+        sections={dateSections}
         keyExtractor={keyExtractor}
         keyboardShouldPersistTaps="handled"
+        stickySectionHeadersEnabled={false}
         renderItem={({ item }) => (
           <RecordingCard
             recording={item}
             localDraftSlotId={draftResumeMap[item.id]}
             highlighted={submittedIdSet.has(item.id)}
+            hideStatusBadge={item.status === 'completed'}
           />
+        )}
+        renderSectionHeader={({ section }) => (
+          <Text
+            className="text-body-sm font-semibold text-content-secondary mt-3 mb-2"
+            accessibilityRole="header"
+          >
+            {(section as unknown as RecordingDateSection).title}
+          </Text>
         )}
         contentContainerStyle={FLATLIST_CONTENT_STYLE}
         refreshControl={<RefreshControl refreshing={isListRefetching} onRefresh={handleRefresh} />}

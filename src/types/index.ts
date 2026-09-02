@@ -180,6 +180,13 @@ export interface Patient {
   organizationId: string;
   pimsPatientId: string;
   name: string;
+  /** Free-text owner name from the server list + detail selects. */
+  clientName?: string | null;
+  /**
+   * Most recent visit. NOT sent by the current Connect list select — the row
+   * falls back to the visit count until that ships (layout tier 3 follow-up).
+   */
+  lastVisitAt?: string | null;
   species: string | null;
   breed: string | null;
   dateOfBirth: string | null;

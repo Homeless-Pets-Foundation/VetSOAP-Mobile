@@ -156,7 +156,7 @@ export default function ProfileScreen() {
                 <UserRound color={colors.brand500} size={iconSm} />
               </View>
               <View className="flex-1">
-                <Text className="text-body-lg font-semibold text-content-primary">{PROFILE_COPY.accountName}</Text>
+                <Text className="text-body-lg font-semibold text-content-primary">{PROFILE_COPY.accountSection}</Text>
                 <Text className="text-body-sm text-content-tertiary" numberOfLines={1}>
                   {user?.email ?? ''}
                 </Text>

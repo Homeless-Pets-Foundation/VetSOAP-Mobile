@@ -42,6 +42,11 @@ export class AudioDownloadError extends Error {
 
 export interface AudioDownloadWritableFile {
   write(bytes: Uint8Array): void;
+  /**
+   * Idempotent once the underlying handle has closed. If a previous close
+   * threw, calling again retries the native close so rollback can still
+   * release the file before deleting it.
+   */
   close(): void;
   /** Promote the verified staging file to its final user-visible filename. */
   commit(): void;

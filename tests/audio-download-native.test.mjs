@@ -4,6 +4,8 @@ import { loadTsModule } from './helpers/loadTs.mjs';
 
 const entries = new Map();
 let throwOnOpen = false;
+let failCloseTimes = 0;
+let closeCalls = 0;
 
 class MockFile {
   constructor(parent, name) {
@@ -26,7 +28,13 @@ class MockFile {
       writeBytes(bytes) {
         entry.bytes.push(...bytes);
       },
-      close() {},
+      close() {
+        closeCalls += 1;
+        if (failCloseTimes > 0) {
+          failCloseTimes -= 1;
+          throw new Error('synthetic provider close failure');
+        }
+      },
     };
   }
 
@@ -82,6 +90,8 @@ const native = await loadTsModule(
 test.beforeEach(() => {
   entries.clear();
   throwOnOpen = false;
+  failCloseTimes = 0;
+  closeCalls = 0;
 });
 
 test('native destination registers a staging file before the first provider open', async () => {
@@ -104,4 +114,20 @@ test('native destination promotes a verified staging file only on commit', async
   file.commit();
   assert.equal(entries.get('content://downloads/attempt.partial').exists, false);
   assert.deepEqual(entries.get('content://downloads/final.m4a').bytes, [1, 2, 3]);
+});
+
+test('native destination retries a failed provider close during rollback so the partial can be deleted', async () => {
+  const destination = await native.pickAudioDownloadDestination();
+  const file = destination.create('attempt.partial', 'final.m4a', 'audio/mp4');
+  file.write(Uint8Array.from([1, 2, 3]));
+  failCloseTimes = 1;
+
+  assert.throws(() => file.close(), /synthetic provider close failure/);
+  // The wrapper is closed to further writes even though the handle is still open.
+  assert.throws(() => file.write(Uint8Array.from([4])), /closed/);
+
+  // remove() retries the native close before asking the provider to delete.
+  assert.equal(file.remove(), true);
+  assert.equal(closeCalls, 2);
+  assert.equal(entries.get('content://downloads/attempt.partial').exists, false);
 });

@@ -8,7 +8,7 @@ import type {
 } from './audioDownload';
 
 class NativeWritableDownloadFile implements AudioDownloadWritableFile {
-  private closed = false;
+  private closeRequested = false;
   private committed = false;
   private promotionUncertain = false;
   private handle: FileHandle | null = null;
@@ -25,7 +25,7 @@ class NativeWritableDownloadFile implements AudioDownloadWritableFile {
   }
 
   write(bytes: Uint8Array): void {
-    if (this.closed) throw new Error('Download file is closed');
+    if (this.closeRequested) throw new Error('Download file is closed');
     // Open lazily. The engine has already registered this staging file for
     // rollback, so an open failure cannot escape cleanup accounting.
     this.handle ??= this.stagingFile.open();
@@ -33,9 +33,14 @@ class NativeWritableDownloadFile implements AudioDownloadWritableFile {
   }
 
   close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.handle?.close();
+    this.closeRequested = true;
+    const handle = this.handle;
+    if (!handle) return;
+    // Release the wrapper's handle only after the provider actually closed it.
+    // A throwing close therefore stays retryable from rollback and remove()
+    // instead of stranding an open document the provider then refuses to
+    // delete, while the wrapper still refuses further writes.
+    handle.close();
     this.handle = null;
   }
 

@@ -2043,6 +2043,27 @@ function RecordingSession() {
                 'start',
               );
               await activePointerWrite;
+              // start() SWALLOWS a durable failure and transparently continues on
+              // expo-audio, so it resolves successfully and nothing above can tell
+              // which backend actually won. If durable lost, the pointer we just
+              // wrote is keyed by the durable recordingId and tagged 'durable',
+              // while every expo cleanup path keys off slotId — so it would
+              // survive a perfectly good recording and report a phantom kill.
+              // Re-key it to match the backend that actually owns the capture.
+              if (recorder.getSelectedBackend() === 'expo') {
+                freshDurableRecordingId = null;
+                durableActiveStore.clearActive(recordingId).catch(() => {});
+                expoPointerSlotId = slotId;
+                // Named handle, joined below — the same post-start shape as
+                // activePointerWrite/expoPointerWrite. The mic is already open
+                // here, so this cannot gate start latency; the inline
+                // await-the-call form is banned by the perf fences precisely
+                // because before start it would.
+                const rekeyPointerWrite = raceDurableActiveWrite(
+                  durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
+                );
+                await rekeyPointerWrite;
+              }
             } else {
               // Expo fallback. It leaves no manifest and no recoverable file if
               // the process dies (MediaRecorder writes the MP4 moov atom only on
@@ -2174,6 +2195,9 @@ function RecordingSession() {
         if (manualFinishSlotIdRef.current) return;
         manualFinishSlotIdRef.current = targetSlotId;
         setFinishingDraftSlotId(targetSlotId);
+        // Captured before stop(): resetWithoutDelete() clears it, and the finally
+        // below has to clear whichever key this capture was written under.
+        const durableIdAtFinish = recorder.activeDurableRecordingId;
 
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -2298,6 +2322,19 @@ function RecordingSession() {
         } catch {
           Alert.alert('Recording Error', 'Failed to stop recording.');
         } finally {
+          // Manual Finish is how a recording NORMALLY ends, and it sets
+          // manualFinishSlotIdRef, which makes the stopped-state effect return
+          // before its own pointer cleanup. Without this every ordinary finish
+          // left a live pointer, so the next launch would tell essentially every
+          // user that Android truncated audio that saved perfectly — the detector
+          // would have been pure noise. Cleared in `finally` so the success path,
+          // both "could not be captured/linked" early returns and the catch are
+          // all covered. Both keys: expo captures are keyed by slot, durable by
+          // recording id.
+          durableActiveStore.clearActive(targetSlotId).catch(() => {});
+          if (durableIdAtFinish) {
+            durableActiveStore.clearActive(durableIdAtFinish).catch(() => {});
+          }
           manualFinishSlotIdRef.current = null;
           setFinishingDraftSlotId((current) => current === targetSlotId ? null : current);
         }

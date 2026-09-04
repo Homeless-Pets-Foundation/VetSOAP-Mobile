@@ -127,6 +127,17 @@ export interface UseAudioRecorderReturn {
   };
   /** Snapshot of a finished durable capture, or null when the expo path is used. */
   getDurableSnapshot: () => DurableSnapshot | null;
+  /**
+   * Which backend `start()` ACTUALLY selected, read synchronously from the ref.
+   *
+   * `start(ctx)` catches a durable-start failure and transparently falls back to
+   * expo-audio, so it resolves successfully and the caller cannot tell from the
+   * return value which path ran. `activeDurableRecordingId` is React state and
+   * is not visible in the same tick. record.tsx needs the answer immediately
+   * after awaiting start, to keep the capture pointer keyed to the backend that
+   * actually owns the recording.
+   */
+  getSelectedBackend: () => 'expo' | 'durable';
   start: (ctx?: DurableStartContext) => Promise<void>;
   resumeDurable: (ctx: DurableResumeContext) => Promise<void>;
   pause: () => Promise<void>;
@@ -1160,6 +1171,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     [],
   );
 
+  const getSelectedBackend = useCallback(() => backendRef.current, []);
+
   const duration = state === 'stopped' || state === 'interrupted' ? finalDuration : elapsedSeconds;
   const maxMetering = hasMeteringSampleRef.current ? maxMeteringRef.current : undefined;
   const mimeType = exposedActiveDurableRecordingId ? 'audio/aac' : 'audio/x-m4a';
@@ -1183,6 +1196,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       recoverableDurableRecordingId: null,
       getCommitSnapshot,
       getDurableSnapshot,
+      getSelectedBackend,
       start,
       resumeDurable,
       pause,
@@ -1205,6 +1219,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       exposedActiveDurableRecordingId,
       getCommitSnapshot,
       getDurableSnapshot,
+      getSelectedBackend,
       start,
       resumeDurable,
       pause,

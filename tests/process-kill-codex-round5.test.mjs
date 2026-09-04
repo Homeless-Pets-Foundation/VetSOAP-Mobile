@@ -109,11 +109,11 @@ test('an op abandoned at the deadline cannot clobber later state', async (t) => 
 test('the queue bound and abandon-generation are wired, not just declared', () => {
   const src = read('src/lib/durableAudio/activeStore.ts');
   assert.match(src, /const MUTATION_TIMEOUT_MS = [\d_]+;/);
-  assert.match(src, /const work = op\(isAbandoned\);/);
-  assert.match(src, /withPromiseTimeout\(work, MUTATION_TIMEOUT_MS/);
+  assert.match(src, /withPromiseTimeout\(op\(isAbandoned\), MUTATION_TIMEOUT_MS/);
   assert.match(src, /let abandonGeneration = 0;/);
   assert.match(src, /abandonGeneration\+\+;/);
-  // Both read-modify-write ops must consult it AFTER their read, or a late
-  // completion silently reverts newer state.
+  // Both read-modify-write ops consult it after their read AND again at the
+  // commit point, since the read may be fast while the write is what hangs.
   assert.equal((src.match(/if \(isAbandoned\(\)\) return;/g) ?? []).length, 2);
+  assert.equal((src.match(/\(\) => !isAbandoned\(\)/g) ?? []).length, 2);
 });

@@ -16,8 +16,12 @@ const RECORD = 'app/(app)/(tabs)/record.tsx';
 
 // ---- F1: a stalled WRITE must not be overtaken and then clobber -----------
 
-test('a hung setItemAsync stops later mutations writing underneath it', async (t) => {
+test('a hung setItemAsync neither blocks later mutations nor commits', async (t) => {
   t.diagnostic('waits out the 5s mutation deadline');
+  // Round 8 replaced the stand-off: it wedged the store permanently when the
+  // stuck call never settled. Abandonment now happens at the COMMIT point
+  // instead, so later mutations are never blocked and the timed-out op simply
+  // never publishes.
   const store = new Map();
   let hangWrites = false;
   const mod = await loadTsModule('src/lib/durableAudio/activeStore.ts', {
@@ -25,7 +29,7 @@ test('a hung setItemAsync stops later mutations writing underneath it', async (t
       AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
       async getItemAsync(k) { return store.has(k) ? store.get(k) : null; },
       async setItemAsync(k, v) {
-        if (hangWrites) return new Promise(() => {}); // never settles
+        if (hangWrites) return new Promise(() => {}); // NEVER settles
         store.set(k, v);
       },
       async deleteItemAsync(k) { store.delete(k); },
@@ -33,52 +37,64 @@ test('a hung setItemAsync stops later mutations writing underneath it', async (t
   });
   const s = mod.durableActiveStore;
   s.setUserId('u1');
-  await s.setActive('before', 'slot-before', '2026-09-04T09:00:00.000Z', 'expo');
 
   hangWrites = true;
-  await s.setActive('hung', 'slot-hung', '2026-09-04T10:00:00.000Z', 'expo'); // abandoned at deadline
+  await s.setActive('hung', 'slot-hung', '2026-09-04T10:00:00.000Z', 'expo');
 
-  // While the stalled write is unsettled, later mutations must stand off rather
-  // than write state the stalled one could revert.
+  // The permanently-hung call must not stop this from committing.
   hangWrites = false;
-  await s.clearActive('before');
+  await s.setActive('later', 'slot-later', '2026-09-04T10:01:00.000Z', 'expo');
 
   const list = await s.list();
   assert.ok(
-    list.some((e) => e.recordingId === 'before'),
-    'the stand-off must prevent a write that the stalled op could later revert',
+    list.some((e) => e.recordingId === 'later'),
+    'a permanently hung op must not wedge the store',
   );
 });
 
-test('a rejected op is not treated as a stall', async () => {
-  // Only a genuinely hung op becomes the barrier; a fast rejection must not
-  // wedge the store read-only.
-  let failNext = true;
+test('a clear still commits while an earlier write is permanently hung', async (t) => {
+  t.diagnostic('waits out the 5s mutation deadline');
+  // The stand-off used to swallow this clear, leaving a pointer behind for a
+  // recording that finished normally — a false kill report on the next launch.
   const store = new Map();
+  let hangWrites = false;
   const mod = await loadTsModule('src/lib/durableAudio/activeStore.ts', {
     'expo-secure-store': {
       AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
-      async getItemAsync(k) {
-        if (failNext) { failNext = false; throw new Error('keystore blip'); }
-        return store.has(k) ? store.get(k) : null;
+      async getItemAsync(k) { return store.has(k) ? store.get(k) : null; },
+      async setItemAsync(k, v) {
+        if (hangWrites) return new Promise(() => {});
+        store.set(k, v);
       },
-      async setItemAsync(k, v) { store.set(k, v); },
       async deleteItemAsync(k) { store.delete(k); },
     },
   });
   const s = mod.durableActiveStore;
   s.setUserId('u1');
-  await s.setActive('boom', 'slot-boom', '2026-09-04T10:00:00.000Z', 'expo');
-  await s.setActive('after', 'slot-after', '2026-09-04T10:01:00.000Z', 'expo');
+  await s.setActive('finished', 'slot-finished', '2026-09-04T09:00:00.000Z', 'expo');
+
+  hangWrites = true;
+  await s.setActive('hung', 'slot-hung', '2026-09-04T10:00:00.000Z', 'expo');
+  hangWrites = false;
+  await s.clearActive('finished');
+
   const list = await s.list();
-  assert.ok(list.some((e) => e.recordingId === 'after'), 'a blip must not wedge the store');
+  assert.ok(
+    !list.some((e) => e.recordingId === 'finished'),
+    'a clean finish must clear even after an earlier op hung',
+  );
 });
 
-test('the stall barrier is wired and explains why mid-write abort is unsafe', () => {
+test('abandonment happens at the commit point, and the stall machinery is gone', () => {
   const src = read('src/lib/durableAudio/activeStore.ts');
-  assert.match(src, /let stalledOp: Promise<void> \| null = null;/);
-  assert.match(src, /if \(stalledOp\) \{\n\s*onDeferred\?\.\(\);\n\s*return;/);
-  assert.match(src, /if \(!workSettled\)/);
+  // The commit check lives in writeChunkedValue, immediately before the count
+  // pointer — the only place an abort cannot resurrect a stale pointer.
+  assert.match(src, /await writeList\(userId, list, chunkCount, \(\) => !isAbandoned\(\)\)/);
+  assert.match(read('src/lib/durableAudio/chunkedStore.ts'), /if \(opts\?\.shouldCommit && !opts\.shouldCommit\(\)\) return false;/);
+  // The stand-off is deliberately removed: it wedged permanently on a call that
+  // never settled. Do not reintroduce it.
+  assert.doesNotMatch(src, /stalledOp/);
+  assert.doesNotMatch(src, /pendingClearTasks/);
 });
 
 // ---- F2: the recording-activity guard must be rechecked before the Alert ---

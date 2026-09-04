@@ -26,6 +26,19 @@ export interface WriteChunkedValueOptions {
    * was touched. `null`/omitted keeps the full sweep (unknown prior length).
    */
   prevChunkCount?: number | null;
+  /**
+   * Consulted immediately before the COUNT pointer is written — the commit
+   * point. Returning false aborts without committing.
+   *
+   * This is how a caller cancels a write it has already given up on (see
+   * activeStore's mutation deadline). Aborting here is safe in the direction
+   * that matters: the count still describes the PREVIOUS length, so the value
+   * either reads as it did before or, if this op had already overwritten some
+   * chunks, fails JSON.parse and is read as ABSENT by every caller. Losing
+   * pointers under-reports a kill; it cannot fabricate one, because a fabricated
+   * read would require mixed chunk bytes to parse as a valid entry array.
+   */
+  shouldCommit?: () => boolean;
 }
 
 export async function writeChunkedValue(
@@ -43,6 +56,8 @@ export async function writeChunkedValue(
     const ok = await secureStorage.setRawItem(`${prefix}_chunk_${i}`, chunks[i], 'durableChunkWrite');
     if (!ok) return false;
   }
+  // Commit point. A caller that has already timed out must not publish here.
+  if (opts?.shouldCommit && !opts.shouldCommit()) return false;
   const ok = await secureStorage.setRawItem(`${prefix}_count`, String(chunks.length), 'durableChunkCount');
   if (!ok) return false;
   // Sweep stale higher-index chunks left by a prior longer value.

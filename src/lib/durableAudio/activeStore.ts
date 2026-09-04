@@ -86,8 +86,9 @@ async function writeList(
   userId: string,
   list: DurableActiveEntry[],
   prevChunkCount: number | null,
+  shouldCommit?: () => boolean,
 ): Promise<void> {
-  await writeChunkedValue(prefixFor(userId), JSON.stringify(list), { prevChunkCount });
+  await writeChunkedValue(prefixFor(userId), JSON.stringify(list), { prevChunkCount, shouldCommit });
 }
 
 // Every mutation is a read-modify-write over ONE chunked value, and the
@@ -107,98 +108,45 @@ async function writeList(
 const MUTATION_TIMEOUT_MS = 5_000;
 
 let mutationQueue: Promise<void> = Promise.resolve();
-/**
- * Bumped whenever an op is abandoned at the deadline. A timed-out op is not
- * cancellable — the native call may still be in flight — so it must not write
- * once the queue has moved on: its list was computed from a read taken before
- * the ops that overtook it, and writing would silently revert them.
- */
-let abandonGeneration = 0;
-/**
- * An op that blew its deadline and is STILL RUNNING, or null.
- *
- * The isAbandoned() check makes a stalled READ safe, because the op consults it
- * before writing. It cannot make a stalled WRITE safe: by then the chunk writes
- * are already in flight, and aborting between them would leave new chunk bytes
- * under the old count pointer — a torn value that reads as garbage, which is
- * worse than the clobber it avoids (writeChunkedValue deliberately commits by
- * writing the count LAST for exactly that reason).
- *
- * So instead of racing it, we stand off: while a timed-out op is unsettled, later
- * mutations resolve WITHOUT writing. The pointer store goes briefly read-only on
- * a Keystore that is already failing, which loses some kill evidence — strictly
- * safer than a stale write silently reverting a newer one and manufacturing a
- * false or missing kill report.
- */
-let stalledOp: Promise<void> | null = null;
 
 /**
- * Clears deferred by the stand-off, replayed once the stall settles.
+ * Serialize the read-modify-writes over this one chunked value, and bound each
+ * so the queue always advances.
  *
- * The stand-off is safe for setActive — a dropped write means a MISSING pointer,
- * which merely leaves a real kill unattributable. It is NOT safe for
- * clearActive: a dropped clear leaves a pointer behind for a recording that
- * finished normally, and the next launch reports a process kill that never
- * happened. That is the exact false report this whole detector exists to avoid,
- * so clears are queued and retried instead of discarded.
+ * Rule 24: these are SecureStore calls, which HANG rather than reject on a
+ * degraded Keystore, and a hung op is not cancellable. Earlier revisions tried
+ * to make a late write harmless by standing other writes off while one was
+ * stuck; that wedged the store permanently if the stuck call never settled at
+ * all — every later setActive dropped and every clearActive queued behind a
+ * release that could never fire. Strictly worse than the clobber it prevented.
+ *
+ * So abandonment is handled at the only place it is actually safe: the commit.
+ * `isAbandoned()` is passed down to writeChunkedValue and checked immediately
+ * before the count pointer is written, so a timed-out op never publishes. If it
+ * had already overwritten some chunks, the value fails JSON.parse and readList
+ * reports it ABSENT — pointers are lost, which UNDER-reports a kill, and it
+ * cannot fabricate one. Missing evidence over false evidence, and the next
+ * successful write repairs it. Newer mutations are never blocked.
  */
-let pendingClearTasks: (() => Promise<void>)[] = [];
-
-function replayPendingClears(): void {
-  if (pendingClearTasks.length === 0) return;
-  const tasks = pendingClearTasks;
-  pendingClearTasks = [];
-  // Re-enter the queue. If the store is still stalled these simply defer again,
-  // which terminates as long as the stuck native call eventually settles.
-  for (const task of tasks) void task().catch(() => {});
-}
-
-function serialized(
-  op: (isAbandoned: () => boolean) => Promise<void>,
-  onDeferred?: () => void,
-): Promise<void> {
+function serialized(op: (isAbandoned: () => boolean) => Promise<void>): Promise<void> {
   const runOp = async (): Promise<void> => {
-    // Stand off while a previous mutation is still in flight past its deadline.
-    if (stalledOp) {
-      onDeferred?.();
-      return;
-    }
-
     const myGeneration = abandonGeneration;
     let abandoned = false;
     const isAbandoned = (): boolean => abandoned || myGeneration !== abandonGeneration;
-
-    const work = op(isAbandoned);
-    let workSettled = false;
-    const markSettled = (): void => {
-      workSettled = true;
-    };
-    work.then(markSettled, markSettled);
-
     try {
-      await withPromiseTimeout(work, MUTATION_TIMEOUT_MS, 'durable_active_mutation_timeout');
+      await withPromiseTimeout(op(isAbandoned), MUTATION_TIMEOUT_MS, 'durable_active_mutation_timeout');
     } catch {
-      // Timed out or failed. Abandon it so a late completion cannot clobber the
-      // ops that ran while it was stuck, and let the queue advance.
       abandoned = true;
       abandonGeneration++;
-      // A REJECTED op is already settled and holds nothing up; only a genuinely
-      // hung one becomes the stall barrier.
-      if (!workSettled) {
-        const release = (): void => {
-          if (stalledOp !== stuck) return;
-          stalledOp = null;
-          replayPendingClears();
-        };
-        const stuck: Promise<void> = work.then(release, release);
-        stalledOp = stuck;
-      }
     }
   };
   const run = mutationQueue.then(runOp, runOp);
   mutationQueue = run.catch(() => {});
   return run;
 }
+
+/** Bumped when an op is abandoned, so its late commit is refused. */
+let abandonGeneration = 0;
 
 export const durableActiveStore = {
   setUserId(userId: string | null): void {
@@ -229,13 +177,13 @@ export const durableActiveStore = {
     return serialized(async (isAbandoned) => {
       if (!userId || !isValidDurableId(recordingId)) return;
       const { list: existing, chunkCount } = await readList(userId);
-      // The read may have outlived our slot in the queue; writing now would
-      // revert whatever ran while we were stuck.
       if (isAbandoned()) return;
       const list = existing.filter((e) => e.recordingId !== recordingId);
       list.push({ recordingId, slotId, startedAt, backend });
       while (list.length > MAX_ACTIVE) list.shift();
-      await writeList(userId, list, chunkCount);
+      // Re-checked at the commit point too: the read above may have been fast
+      // while the write is the part that hangs.
+      await writeList(userId, list, chunkCount, () => !isAbandoned());
     });
   },
 
@@ -243,23 +191,15 @@ export const durableActiveStore = {
     // Same scope capture as setActive — a clear that lands after a user switch
     // must not touch the new user's pointers.
     const userId = currentUserId;
-    const run = (): Promise<void> =>
-      serialized(
-        async (isAbandoned) => {
-          if (!userId) return;
-          const { list, chunkCount } = await readList(userId);
-          if (isAbandoned()) return;
-          const next = list.filter((e) => e.recordingId !== recordingId);
-          if (next.length !== list.length) await writeList(userId, next, chunkCount);
-        },
-        // Deferred by the stand-off: retry after the stall settles rather than
-        // reporting success without clearing. The captured userId travels with
-        // the retry, so a later user switch cannot redirect it.
-        () => {
-          pendingClearTasks.push(run);
-        },
-      );
-    return run();
+    return serialized(async (isAbandoned) => {
+      if (!userId) return;
+      const { list, chunkCount } = await readList(userId);
+      if (isAbandoned()) return;
+      const next = list.filter((e) => e.recordingId !== recordingId);
+      if (next.length !== list.length) {
+        await writeList(userId, next, chunkCount, () => !isAbandoned());
+      }
+    });
   },
 
   async list(): Promise<DurableActiveEntry[]> {

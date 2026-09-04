@@ -568,6 +568,42 @@ async function withDurableOpWatchdog<T>(
 // reconstructs the recording from the native manifest.
 const DURABLE_ACTIVE_WRITE_TIMEOUT_MS = 3000;
 
+/**
+ * Bound for the expo capture pointer, which is awaited BEFORE the mic opens.
+ *
+ * Deliberately far tighter than DURABLE_ACTIVE_WRITE_TIMEOUT_MS (3000): that
+ * one guards a write which overlaps native start and so can afford to wait,
+ * whereas this one sits in front of the microphone and any time spent here is
+ * tap latency — the exact regression the record-perf work removed.
+ *
+ * 400 ms is chosen against measurements, not taste. Post-perf-work a setActive
+ * on a short list is ~4 Keystore round trips (the 16 blind stale-chunk deletes
+ * are gone, threaded through prevChunkCount), while Sentry measured
+ * recorder_audio_prepare at 1763 ms on the SM-T220 fleet. So the write
+ * essentially always wins the race anyway; this bound only caps the pathological
+ * degraded-Keystore case, where we open the mic regardless rather than make the
+ * vet wait. Capturing audio matters more than being able to attribute its loss.
+ */
+const EXPO_PRESTART_POINTER_TIMEOUT_MS = 400;
+
+/**
+ * Same shape as raceDurableActiveWrite but on the pre-start budget.
+ *
+ * Separate function on purpose: the durable pointer write must NEVER be awaited
+ * before native start (fenced by tests/record-start-feedback.test.mjs and
+ * tests/durable-recorder-plan.test.mjs), and reusing that helper's name here
+ * would blur an invariant those fences exist to protect.
+ */
+function racePreStartPointerWrite(p: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, EXPO_PRESTART_POINTER_TIMEOUT_MS);
+  });
+  return Promise.race([p.catch(() => {}), bound]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function raceDurableActiveWrite(p: Promise<void>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const bound = new Promise<void>((resolve) => {
@@ -2059,10 +2095,9 @@ function RecordingSession() {
                 // here, so this cannot gate start latency; the inline
                 // await-the-call form is banned by the perf fences precisely
                 // because before start it would.
-                const rekeyPointerWrite = raceDurableActiveWrite(
+                await racePreStartPointerWrite(
                   durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
                 );
-                await rekeyPointerWrite;
               }
             } else {
               // Expo fallback. It leaves no manifest and no recoverable file if
@@ -2075,14 +2110,21 @@ function RecordingSession() {
               // Keystore round trips here gated the mic on older tablets. The
               // slot cannot flip to 'recording' before the join, so a kill after
               // that point is always attributable.
-              const expoPointerWrite = user?.id
-                ? raceDurableActiveWrite(
-                    durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
-                  )
-                : null;
-              if (expoPointerWrite) expoPointerSlotId = slotId;
+              // Unlike the durable branch, this pointer is awaited BEFORE the
+              // mic opens. Durable can afford to overlap because a manifest can
+              // rebuild the recording either way; expo cannot — the pointer is
+              // the only evidence the capture ever existed, and an .m4a killed
+              // before stop() has no moov atom to recover. A kill in the gap
+              // would lose the audio AND the ability to report it. Bounded at
+              // 400 ms so a degraded Keystore delays the mic briefly instead of
+              // stalling the tap.
+              if (user?.id) {
+                expoPointerSlotId = slotId;
+                await racePreStartPointerWrite(
+                  durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
+                );
+              }
               await recorder.start();
-              if (expoPointerWrite) await expoPointerWrite;
             }
           }
           if (recordFirstEnabled) {

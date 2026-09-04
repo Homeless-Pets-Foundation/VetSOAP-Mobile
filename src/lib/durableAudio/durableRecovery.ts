@@ -42,6 +42,8 @@ const SCAN_WATCHDOG_MS = 12_000;
 const PROCESS_START_ISO = new Date().toISOString();
 /** Report the kill signal once per process, even if the scan re-runs. */
 let killSignalReported = false;
+/** No manifests could be enumerated — nothing is recoverable from this kill. */
+const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>();
 
 /**
  * True once this launch has proven a prior process died mid-capture. Read by the
@@ -66,7 +68,7 @@ export function priorProcessKillDetected(): boolean {
  *
  * Never throws — this runs before the recovery work that actually saves audio.
  */
-async function reportPriorProcessKill(recoveredCount: number): Promise<void> {
+async function reportPriorProcessKill(manifestIds: ReadonlySet<string>): Promise<void> {
   if (killSignalReported) return;
   try {
     const entries = await durableActiveStore.list();
@@ -76,20 +78,32 @@ async function reportPriorProcessKill(recoveredCount: number): Promise<void> {
 
     let durable = 0;
     let expo = 0;
+    // Recoverable = a durable pointer from THIS kill that still has a manifest
+    // to rebuild from. The total manifest count is not that number: it also
+    // holds finished recordings already surfaced as drafts or stashes, uploaded
+    // ones awaiting self-heal, and sessions that will be suppressed from the
+    // offer list — so one stale expo pointer could otherwise report "recovered
+    // many", making the loss telemetry unusable. Expo pointers never have a
+    // manifest, which is the whole reason their loss is unrecoverable.
+    let recovered = 0;
     for (const e of stale) {
-      if (e.backend === 'expo') expo++;
-      else durable++;
+      if (e.backend === 'expo') {
+        expo++;
+      } else {
+        durable++;
+        if (manifestIds.has(e.recordingId)) recovered++;
+      }
     }
 
     trackEvent({
       name: 'process_killed_mid_capture',
-      props: { durable_count: durable, expo_count: expo, recovered_count: recoveredCount },
+      props: { durable_count: durable, expo_count: expo, recovered_count: recovered },
     });
     // Sentry sees no crash for an OS kill, so this message is the only trace.
     // Counts only — no ids, no slot ids, no paths.
     captureMessage('process_killed_mid_capture', 'warning', {
       tags: { phase: 'record' },
-      extra: { durable_count: durable, expo_count: expo, recovered_count: recoveredCount },
+      extra: { durable_count: durable, expo_count: expo, recovered_count: recovered },
     });
 
     for (const e of stale) {
@@ -208,14 +222,14 @@ export async function scanDurableRecoveries(
   } catch {
     // Native enumeration failed, but the kill signal lives in SecureStore and is
     // still readable — report it before bailing.
-    if (!isCancelled()) await reportPriorProcessKill(0);
+    if (!isCancelled()) await reportPriorProcessKill(EMPTY_MANIFEST_IDS);
     return [];
   }
   if (!manifests || manifests.length === 0) {
     // No recoverable capture does NOT mean a clean prior exit. The expo fallback
     // leaves no manifest at all, so this is exactly the unrecoverable-loss case
     // the kill probe exists to catch. Reporting also clears the stale pointer.
-    if (!isCancelled()) await reportPriorProcessKill(0);
+    if (!isCancelled()) await reportPriorProcessKill(EMPTY_MANIFEST_IDS);
     return [];
   }
   // The probe READS AND CLEARS activeStore, so it is a mutating side effect and
@@ -225,7 +239,7 @@ export async function scanDurableRecoveries(
   // manifest count, and (because killSignalReported is process-global) stopping
   // the new user's own scan from ever reporting it.
   if (isCancelled()) return [];
-  await reportPriorProcessKill(manifests.length);
+  await reportPriorProcessKill(new Set(manifests.map((m) => m.recordingId)));
 
   // Reconcile created-but-unconfirmed recordings against the server BEFORE
   // selection: if already confirmed-uploaded, mark uploaded so it self-heals and

@@ -121,11 +121,11 @@ test('every kill-probe call site is cancellation-guarded', () => {
   const callSites = calls.filter((m) => !src.slice(0, m.index).endsWith('async function '));
   assert.ok(callSites.length >= 3);
   assert.equal(
-    (src.match(/if \(!isCancelled\(\)\) await reportPriorProcessKill\(0\);/g) ?? []).length,
+    (src.match(/if \(!isCancelled\(\)\) await reportPriorProcessKill\(EMPTY_MANIFEST_IDS\);/g) ?? []).length,
     2,
     'both early-return probes must be guarded',
   );
-  assert.match(src, /if \(isCancelled\(\)\) return \[\];\n\s*await reportPriorProcessKill\(manifests\.length\)/);
+  assert.match(src, /if \(isCancelled\(\)\) return \[\];\n\s*await reportPriorProcessKill\(new Set\(manifests\.map/);
 });
 
 // ---- F2 (P2): a failed start must not leave an expo pointer ----------------
@@ -133,7 +133,8 @@ test('every kill-probe call site is cancellation-guarded', () => {
 test('a failed recorder start clears the expo capture pointer', () => {
   const src = read(RECORD);
   assert.match(src, /let expoPointerSlotId: string \| null = null;/);
-  assert.match(src, /if \(expoPointerWrite\) expoPointerSlotId = slotId;/);
+  // Set as soon as the pointer write is issued, so the catch can always undo it.
+  assert.match(src, /expoPointerSlotId = slotId;\n\s*await racePreStartPointerWrite\(/);
   // Must be cleared in the catch, alongside the durable ids.
   const catchStart = src.indexOf("} catch (error) {", src.indexOf('record_tap_to_recording'));
   const catchBlock = src.slice(catchStart, catchStart + 2500);

@@ -146,10 +146,13 @@ test('the kill report carries counts only — no ids, slots or paths', () => {
 
 test('the expo fallback writes and clears the capture pointer', () => {
   const src = read('app/(app)/(tabs)/record.tsx');
-  // Written before start, bounded exactly like the durable path.
+  // COMMITTED before the mic opens — unlike the durable branch, which may
+  // overlap native start because a manifest can rebuild the recording anyway.
+  // An expo .m4a killed before stop() has no moov atom, so this pointer is the
+  // only evidence the capture existed.
   assert.match(
     src,
-    /raceDurableActiveWrite\(\s*durableActiveStore\.setActive\(slotId, slotId, new Date\(\)\.toISOString\(\), 'expo'\)/,
+    /await racePreStartPointerWrite\(\s*durableActiveStore\.setActive\(slotId, slotId, new Date\(\)\.toISOString\(\), 'expo'\)/,
   );
   // Cleared on a clean capture, else every launch reports a phantom kill.
   assert.match(src, /durableActiveStore\.clearActive\(slotId\)\.catch/);

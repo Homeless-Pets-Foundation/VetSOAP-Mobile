@@ -1236,6 +1236,20 @@ function RecordingSession() {
     if (skipNextAudioCaptureRef.current && !audioCaptureDoneRef.current) {
       audioCaptureDoneRef.current = true;
       skipNextAudioCaptureRef.current = false;
+      // This is the single choke point for every DELIBERATE discard — both
+      // discardCurrentSession and the active-slot Remove flow set the skip flag,
+      // stop the recorder and land here, bypassing the normal capture-done
+      // cleanup below. The capture pointer must go with them: a user who chose
+      // to throw a recording away must never be told on the next launch that
+      // Android killed the app and lost their audio.
+      //
+      // Both ids are cleared because a slot recording durably has no
+      // `slot.durable` yet (it is set in the finish branch), so the discard
+      // loop's own cleanup cannot reach a still-live durable capture.
+      const discardedSlotId = session.recorderBoundToSlotId;
+      const discardedDurableId = recorder.activeDurableRecordingId;
+      if (discardedSlotId) durableActiveStore.clearActive(discardedSlotId).catch(() => {});
+      if (discardedDurableId) durableActiveStore.clearActive(discardedDurableId).catch(() => {});
       unbindRecorder();
       recorder.reset();
       return () => { if (timerId) clearTimeout(timerId); };
@@ -1914,6 +1928,9 @@ function RecordingSession() {
         // Fresh durable start whose pointer write was dispatched alongside the
         // native start, so a failed start can clear it again.
         let freshDurableRecordingId: string | null = null;
+        // Expo capture pointer, written before recorder.start(). Cleared in the
+        // catch below for the same reason as the durable ids.
+        let expoPointerSlotId: string | null = null;
         let startPath: 'durable_start' | 'durable_resume' | 'expo' = 'expo';
         try {
           // Server-enforced min-version floor: block STARTING new capture (fresh or
@@ -2042,6 +2059,7 @@ function RecordingSession() {
                     durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
                   )
                 : null;
+              if (expoPointerWrite) expoPointerSlotId = slotId;
               await recorder.start();
               if (expoPointerWrite) await expoPointerWrite;
             }
@@ -2070,6 +2088,15 @@ function RecordingSession() {
             // racing it — and a start that captured no frame cannot read as
             // "previous process died mid-capture" on the next launch.
             durableActiveStore.clearActive(freshDurableRecordingId).catch(() => {});
+          }
+          if (expoPointerSlotId) {
+            // A start that never captured a frame must not read as "the OS killed
+            // us mid-capture" next launch. Denied mic permission, a busy mic and
+            // native init failure all land here — the three most common start
+            // failures — and each would otherwise tell the vet that Android
+            // truncated a recording that never began. Serialized in the store, so
+            // this clear lands after the overlapped write rather than racing it.
+            durableActiveStore.clearActive(expoPointerSlotId).catch(() => {});
           }
           if (resumeDurableRecordingId) {
             durableActiveStore.clearActive(resumeDurableRecordingId).catch(() => {});

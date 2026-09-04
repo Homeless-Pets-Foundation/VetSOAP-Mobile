@@ -114,8 +114,13 @@ export const durableActiveStore = {
     startedAt: string,
     backend: CaptureBackend = 'durable',
   ): Promise<void> {
+    // Bind the user scope NOW, not when the queued op eventually runs. Reading
+    // the mutable module global inside the closure means a slow Keystore write
+    // that overlaps sign-out lands in the NEXT user's pointer store on a shared
+    // tablet (Rule 13): user A loses their kill signal and user B gets a false
+    // one, carrying A's recording and slot ids.
+    const userId = currentUserId;
     return serialized(async () => {
-      const userId = currentUserId;
       if (!userId || !isValidDurableId(recordingId)) return;
       const { list: existing, chunkCount } = await readList(userId);
       const list = existing.filter((e) => e.recordingId !== recordingId);
@@ -126,8 +131,10 @@ export const durableActiveStore = {
   },
 
   clearActive(recordingId: string): Promise<void> {
+    // Same scope capture as setActive — a clear that lands after a user switch
+    // must not touch the new user's pointers.
+    const userId = currentUserId;
     return serialized(async () => {
-      const userId = currentUserId;
       if (!userId) return;
       const { list, chunkCount } = await readList(userId);
       const next = list.filter((e) => e.recordingId !== recordingId);

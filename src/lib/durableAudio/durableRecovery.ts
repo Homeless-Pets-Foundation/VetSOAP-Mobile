@@ -208,16 +208,23 @@ export async function scanDurableRecoveries(
   } catch {
     // Native enumeration failed, but the kill signal lives in SecureStore and is
     // still readable — report it before bailing.
-    await reportPriorProcessKill(0);
+    if (!isCancelled()) await reportPriorProcessKill(0);
     return [];
   }
   if (!manifests || manifests.length === 0) {
     // No recoverable capture does NOT mean a clean prior exit. The expo fallback
     // leaves no manifest at all, so this is exactly the unrecoverable-loss case
     // the kill probe exists to catch. Reporting also clears the stale pointer.
-    await reportPriorProcessKill(0);
+    if (!isCancelled()) await reportPriorProcessKill(0);
     return [];
   }
+  // The probe READS AND CLEARS activeStore, so it is a mutating side effect and
+  // is bound by this scan's cancellation contract like every other one. A stale
+  // scan resuming past the watchdog after a sign-out would otherwise read, report
+  // and clear the NEXT user's pointers — labelling the event with this user's
+  // manifest count, and (because killSignalReported is process-global) stopping
+  // the new user's own scan from ever reporting it.
+  if (isCancelled()) return [];
   await reportPriorProcessKill(manifests.length);
 
   // Reconcile created-but-unconfirmed recordings against the server BEFORE

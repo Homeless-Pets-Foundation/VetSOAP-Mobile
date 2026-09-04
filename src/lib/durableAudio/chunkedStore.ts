@@ -10,7 +10,7 @@
  * RECOVERY_INTENT and DEVICE_ID (plan: must survive clearAll()).
  */
 import { secureStorage } from '../secureStorage';
-import { readChunksBounded } from '../chunkedRead';
+import { readChunksBounded, MAX_CHUNKS_PER_VALUE } from '../chunkedRead';
 
 const CHUNK_SIZE = 1900;
 const MAX_STALE_SWEEP = 16;
@@ -46,11 +46,13 @@ export async function writeChunkedValue(
   const ok = await secureStorage.setRawItem(`${prefix}_count`, String(chunks.length), 'durableChunkCount');
   if (!ok) return false;
   // Sweep stale higher-index chunks left by a prior longer value.
+  // Clamp to MAX_CHUNKS_PER_VALUE: `prevChunkCount` comes from persisted data,
+  // and no honest value can exceed the reader's own ceiling. Without this an
+  // implausible count turns hygiene into an unbounded serial delete loop.
   const prev = opts?.prevChunkCount;
-  const sweepEnd =
-    typeof prev === 'number' && Number.isInteger(prev) && prev >= 0
-      ? prev
-      : chunks.length + MAX_STALE_SWEEP;
+  const prevUsable =
+    typeof prev === 'number' && Number.isInteger(prev) && prev >= 0 && prev <= MAX_CHUNKS_PER_VALUE;
+  const sweepEnd = prevUsable ? (prev as number) : chunks.length + MAX_STALE_SWEEP;
   for (let i = chunks.length; i < sweepEnd; i++) {
     await secureStorage.deleteRawItem(`${prefix}_chunk_${i}`, 'durableChunkSweep');
   }
@@ -83,7 +85,17 @@ export async function readChunkedValueWithCount(prefix: string): Promise<Chunked
   const result = await readChunksBounded(count, (i) =>
     secureStorage.getRawItem(`${prefix}_chunk_${i}`, 'durableChunkRead'),
   );
-  if (!result.ok) return { value: null, chunkCount: count }; // torn / not-credible read -> treat as absent
+  if (!result.ok) {
+    // A TORN set still tells us what the prior writer intended, so the count is
+    // a usable sweep bound. A count the reader rejected as not credible
+    // (`count_too_large`, i.e. > MAX_CHUNKS_PER_VALUE) must NOT be forwarded:
+    // writeChunkedValue would take it as the sweep end and run that many
+    // sequential Keystore deletes. A corrupt `_count` of 999999999 would then
+    // occupy activeStore's mutation queue effectively forever, stranding every
+    // later pointer write and silently disabling the process-kill detector.
+    // `null` falls back to the bounded stale sweep.
+    return { value: null, chunkCount: result.reason === 'count_too_large' ? null : count };
+  }
   return { value: result.parts.join(''), chunkCount: count };
 }
 

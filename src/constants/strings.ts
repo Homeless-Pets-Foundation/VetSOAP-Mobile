@@ -153,15 +153,24 @@ export const BATTERY_OPTIMIZATION_COPY = {
    * un-sent audio was being lost, and a vague "improve performance" nudge does
    * not earn the trip into system settings.
    */
+  /**
+   * Deliberately says "less likely", never "prevents". This flow only opens the
+   * OS settings list — it cannot confirm the exemption was granted, and OEM
+   * process killers ignore it anyway. A vet who reads this as a guarantee would
+   * stop watching for truncated recordings, which is the opposite of what we
+   * need while the expo fallback can still lose an in-progress file.
+   */
   body:
     'Android may stop Captivet while you record, which can cut a recording short. ' +
-    'Allowing Captivet to run in the background prevents that.\n\n' +
-    'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").',
-  /** Same ask, after we detected the OS actually did it. */
+    'Allowing Captivet to run in the background makes that less likely.\n\n' +
+    'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").\n\n' +
+    'Keep submitting recordings promptly — this setting reduces the risk, it does not remove it.',
+  /** Same ask, after we detected the OS actually did it. Same honesty. */
   bodyAfterKill:
     'Android stopped Captivet during your last recording, so part of it was not saved. ' +
-    'Allowing Captivet to run in the background prevents that.\n\n' +
-    'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").',
+    'Allowing Captivet to run in the background makes that less likely.\n\n' +
+    'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").\n\n' +
+    'Keep submitting recordings promptly — this setting reduces the risk, it does not remove it.',
   confirm: 'Open Settings',
   dismiss: 'Not Now',
 } as const;

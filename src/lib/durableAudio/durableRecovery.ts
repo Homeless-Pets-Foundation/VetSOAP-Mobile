@@ -54,12 +54,17 @@ const killSignalReportedUsers = new Set<string>();
 const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>();
 
 /**
- * True once this launch has proven a prior process died mid-capture. Read by the
- * Record screen so the battery-optimization nudge can state what actually
- * happened instead of speculating. Never resets within a process.
+ * True once this launch has proven a prior process died mid-capture FOR THIS
+ * USER. Read by the Record screen so the battery-optimization nudge can state
+ * what actually happened instead of speculating.
+ *
+ * User-scoped for the same reason the report itself is: on a shared clinic
+ * tablet a process-wide answer would tell vet B that "Android stopped Captivet
+ * during your last recording" when the kill was vet A's. Never resets within a
+ * process.
  */
-export function priorProcessKillDetected(): boolean {
-  return killSignalReportedUsers.size > 0;
+export function priorProcessKillDetected(userId: string | null | undefined): boolean {
+  return !!userId && killSignalReportedUsers.has(userId);
 }
 
 /**

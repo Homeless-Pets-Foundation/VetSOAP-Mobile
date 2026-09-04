@@ -26,6 +26,14 @@ test('kill reporting dedupes per USER, not per process', async () => {
   assert.match(src, /killSignalReportedUsers\.has\(userId\)/);
   assert.match(src, /killSignalReportedUsers\.add\(userId\)/);
   assert.doesNotMatch(src, /let killSignalReported = false/);
+  // The read-back used for the prompt copy is user-scoped too, or vet B is told
+  // "Android stopped Captivet during your last recording" about vet A's kill.
+  assert.match(src, /export function priorProcessKillDetected\(userId: string \| null \| undefined\)/);
+  assert.match(src, /killSignalReportedUsers\.has\(userId\)/);
+  assert.match(
+    read('app/(app)/(tabs)/record.tsx'),
+    /maybePromptBatteryOptimization\(priorProcessKillDetected\(user\?\.id\)\)/,
+  );
 });
 
 test('the probe re-verifies scope after its await and before every clear', () => {

@@ -150,7 +150,9 @@ test('the battery-optimization prompt is one-time, Android-only, and marks befor
 test('the battery prompt is actually wired into the Record screen', () => {
   // openBatteryOptimizationSettings previously shipped with ZERO callers.
   const src = read(RECORD);
-  assert.match(src, /maybePromptBatteryOptimization\(priorProcessKillDetected\(\)\)/);
+  // User-scoped read-back: a process-wide answer would tell vet B about vet A's
+  // kill on a shared tablet.
+  assert.match(src, /maybePromptBatteryOptimization\(priorProcessKillDetected\(user\?\.id\)\)/);
 });
 
 test('battery-prompt copy lives in the strings catalog', () => {

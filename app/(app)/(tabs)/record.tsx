@@ -6589,7 +6589,7 @@ function RecordingSession() {
     const cancelWork = scheduleNonUrgentWork(
       'battery_opt_prompt',
       async () => {
-        await maybePromptBatteryOptimization(priorProcessKillDetected());
+        await maybePromptBatteryOptimization(priorProcessKillDetected(user?.id));
       },
       5_000,
       null,

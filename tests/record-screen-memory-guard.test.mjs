@@ -113,12 +113,24 @@ test('the heavy mount sweeps are serialized, and the UI-driving scan is not', ()
 test('a failing sweep cannot break the chain for the next one', () => {
   const src = read(RECORD);
   const chain = src.slice(src.indexOf('startupSweepTail = startupSweepTail'));
-  assert.match(chain.slice(0, 500), /\(\) => \{\},\s*\n\s*\(\) => \{\},/);
+  assert.match(chain.slice(0, 1500), /\(\) => \{\},\s*\n\s*\(\) => \{\},/);
 });
 
 test('a cancelled sweep does not run after waiting in the queue', () => {
   const src = read(RECORD);
-  assert.match(src, /cancelled \? undefined : measurePhase\(label/);
+  assert.match(src, /cancelled\s*\n?\s*\? undefined/);
+});
+
+test('a hung sweep cannot strand the queue forever (rule 24)', () => {
+  // These sweeps are SecureStore reads, which hang silently on a degraded
+  // Keystore. Without a deadline the module-scoped tail stays pending and every
+  // later orphan cleanup and eviction is stranded for the rest of the process —
+  // the rejection handler only recovers from a SETTLED rejection.
+  const src = read(RECORD);
+  const chain = src.slice(src.indexOf('startupSweepTail = startupSweepTail'), src.indexOf('startupSweepTail = startupSweepTail') + 1500);
+  assert.match(chain, /withPromiseTimeout\(/);
+  assert.match(chain, /STARTUP_SWEEP_TIMEOUT_MS/);
+  assert.match(src, /const STARTUP_SWEEP_TIMEOUT_MS = [\d_]+;/);
 });
 
 test('the battery-optimization prompt is one-time, Android-only, and marks before showing', () => {

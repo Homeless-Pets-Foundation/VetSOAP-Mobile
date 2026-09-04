@@ -66,7 +66,7 @@ test('the durable pointer write still overlaps native start — separate helper,
 
 test('recovered_count intersects stale durable pointers with actual manifests', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  assert.match(src, /reportPriorProcessKill\(manifestIds: ReadonlySet<string>\)/);
+  assert.match(src, /manifestIds: ReadonlySet<string>,/);
   // The old `manifests.length` also counted finished recordings already shown as
   // drafts/stashes, uploaded ones awaiting self-heal, and suppressed sessions.
   assert.doesNotMatch(src, /reportPriorProcessKill\(manifests\.length\)/);
@@ -81,7 +81,7 @@ test('recovered_count intersects stale durable pointers with actual manifests', 
 test('a failed manifest enumeration reports zero recoverable, not an unknown count', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
   assert.match(src, /const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>\(\)/);
-  assert.equal((src.match(/reportPriorProcessKill\(EMPTY_MANIFEST_IDS\)/g) ?? []).length, 2);
+  assert.equal((src.match(/reportPriorProcessKill\(userId, EMPTY_MANIFEST_IDS, isCancelled\)/g) ?? []).length, 2);
 });
 
 // ---- behavioural: the counting rule itself --------------------------------

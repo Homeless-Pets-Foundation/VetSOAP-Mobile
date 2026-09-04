@@ -126,7 +126,10 @@ test('the probe only counts pointers older than this process', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
   assert.match(src, /const PROCESS_START_ISO = new Date\(\)\.toISOString\(\)/);
   assert.match(src, /e\.startedAt < PROCESS_START_ISO/);
-  assert.match(src, /let killSignalReported = false/);
+  // Per-USER, not per-process: a shared tablet must not suppress the second
+  // vet's report because the first vet's was already sent.
+  assert.match(src, /const killSignalReportedUsers = new Set<string>\(\)/);
+  assert.doesNotMatch(src, /let killSignalReported = false/);
 });
 
 test('reported pointers are cleared so the same kill is not re-reported forever', () => {

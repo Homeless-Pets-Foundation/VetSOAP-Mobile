@@ -108,6 +108,15 @@ export const durableActiveStore = {
     currentUserId = userId;
   },
 
+  /**
+   * The scope the store is bound to right now. Callers that await between
+   * deciding to act and acting re-check this, so work launched for one user can
+   * never read or clear another user's pointers on a shared tablet.
+   */
+  getUserId(): string | null {
+    return currentUserId;
+  },
+
   setActive(
     recordingId: string,
     slotId: string,

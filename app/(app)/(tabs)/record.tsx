@@ -672,6 +672,14 @@ function slotSubmitDiagnostics(
  */
 let startupSweepTail: Promise<void> = Promise.resolve();
 
+/**
+ * Per-job ceiling for the serialized startup sweeps. Generous — these legitimately
+ * walk every local draft over the Keystore on a slow tablet (Sentry has seen
+ * local_draft_list past 5 s) — but finite, so one hung native read cannot
+ * permanently strand the queue.
+ */
+const STARTUP_SWEEP_TIMEOUT_MS = 60_000;
+
 function scheduleNonUrgentWork(
   label: string,
   work: () => Promise<void>,
@@ -695,10 +703,26 @@ function scheduleNonUrgentWork(
       // Re-check after the wait: the effect may have been torn down (unmount,
       // user switch) while we were queued, and every sweep's own isScopeValid()
       // guard also re-runs inside work().
-      .then(() => (cancelled ? undefined : measurePhase(label, undefined, work, { warningThresholdMs })))
+      .then(() =>
+        cancelled
+          ? undefined
+          : // Rule 24: these sweeps are made of SecureStore reads, which hang
+            // silently on a degraded Keystore. A never-settling job would leave
+            // this module-scoped tail pending forever, stranding every later
+            // orphan cleanup and eviction for the rest of the process — the
+            // rejection handler below only recovers from a SETTLED rejection.
+            // The deadline settles the queue so the next job still runs; the
+            // hung work is left to finish or not on its own, and its own
+            // isScopeValid() guard stops it acting on stale scope.
+            withPromiseTimeout(
+              measurePhase(label, undefined, work, { warningThresholdMs }),
+              STARTUP_SWEEP_TIMEOUT_MS,
+              `startup_sweep_timeout:${label}`,
+            ),
+      )
       .then(
         () => {},
-        () => {}, // a failed sweep must not break the chain for the next one
+        () => {}, // a failed or timed-out sweep must not break the chain
       );
   };
   const task = InteractionManager.runAfterInteractions(() => {

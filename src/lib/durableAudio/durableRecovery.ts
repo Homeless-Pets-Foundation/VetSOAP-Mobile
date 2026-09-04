@@ -40,8 +40,16 @@ const SCAN_WATCHDOG_MS = 12_000;
  * sign-in mid-session re-runs the scan) and must never be reported as a kill.
  */
 const PROCESS_START_ISO = new Date().toISOString();
-/** Report the kill signal once per process, even if the scan re-runs. */
-let killSignalReported = false;
+/**
+ * Users whose kill signal this process has already reported.
+ *
+ * Per-USER, not per-process: on a shared clinic tablet vet A signs in, their
+ * kill is reported, then vet B signs in — a process-global flag would silently
+ * suppress B's report for the rest of the session, which is exactly the fleet
+ * this detector exists for. Still capped per user so a scan re-run (sign-in
+ * mid-session) cannot double-report.
+ */
+const killSignalReportedUsers = new Set<string>();
 /** No manifests could be enumerated — nothing is recoverable from this kill. */
 const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>();
 
@@ -51,7 +59,7 @@ const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>();
  * happened instead of speculating. Never resets within a process.
  */
 export function priorProcessKillDetected(): boolean {
-  return killSignalReported;
+  return killSignalReportedUsers.size > 0;
 }
 
 /**
@@ -68,13 +76,23 @@ export function priorProcessKillDetected(): boolean {
  *
  * Never throws — this runs before the recovery work that actually saves audio.
  */
-async function reportPriorProcessKill(manifestIds: ReadonlySet<string>): Promise<void> {
-  if (killSignalReported) return;
+async function reportPriorProcessKill(
+  userId: string,
+  manifestIds: ReadonlySet<string>,
+  isCancelled: () => boolean,
+): Promise<void> {
+  if (killSignalReportedUsers.has(userId)) return;
   try {
     const entries = await durableActiveStore.list();
+    // Re-verify scope AFTER the await. This read can straddle a sign-out: the
+    // store (and the analytics identity) may now belong to a different user, in
+    // which case `entries` describes whoever the store is scoped to now, not the
+    // user this scan was launched for. Attributing one vet's lost recording to
+    // another — and clearing the wrong pointers — is worse than not reporting.
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
     const stale = entries.filter((e) => typeof e.startedAt === 'string' && e.startedAt < PROCESS_START_ISO);
     if (stale.length === 0) return;
-    killSignalReported = true;
+    killSignalReportedUsers.add(userId);
 
     let durable = 0;
     let expo = 0;
@@ -107,6 +125,10 @@ async function reportPriorProcessKill(manifestIds: ReadonlySet<string>): Promise
     });
 
     for (const e of stale) {
+      // Checked every iteration: a sign-out mid-loop must not delete the next
+      // user's pointers. clearActive itself binds the scope at call time, so a
+      // switch between check and call is still safe.
+      if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
       await durableActiveStore.clearActive(e.recordingId).catch(() => {});
     }
   } catch {
@@ -222,14 +244,14 @@ export async function scanDurableRecoveries(
   } catch {
     // Native enumeration failed, but the kill signal lives in SecureStore and is
     // still readable — report it before bailing.
-    if (!isCancelled()) await reportPriorProcessKill(EMPTY_MANIFEST_IDS);
+    if (!isCancelled()) await reportPriorProcessKill(userId, EMPTY_MANIFEST_IDS, isCancelled);
     return [];
   }
   if (!manifests || manifests.length === 0) {
     // No recoverable capture does NOT mean a clean prior exit. The expo fallback
     // leaves no manifest at all, so this is exactly the unrecoverable-loss case
     // the kill probe exists to catch. Reporting also clears the stale pointer.
-    if (!isCancelled()) await reportPriorProcessKill(EMPTY_MANIFEST_IDS);
+    if (!isCancelled()) await reportPriorProcessKill(userId, EMPTY_MANIFEST_IDS, isCancelled);
     return [];
   }
   // The probe READS AND CLEARS activeStore, so it is a mutating side effect and
@@ -239,7 +261,7 @@ export async function scanDurableRecoveries(
   // manifest count, and (because killSignalReported is process-global) stopping
   // the new user's own scan from ever reporting it.
   if (isCancelled()) return [];
-  await reportPriorProcessKill(new Set(manifests.map((m) => m.recordingId)));
+  await reportPriorProcessKill(userId, new Set(manifests.map((m) => m.recordingId)), isCancelled);
 
   // Reconcile created-but-unconfirmed recordings against the server BEFORE
   // selection: if already confirmed-uploaded, mark uploaded so it self-heals and

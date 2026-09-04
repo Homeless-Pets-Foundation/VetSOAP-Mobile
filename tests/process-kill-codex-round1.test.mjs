@@ -121,11 +121,11 @@ test('every kill-probe call site is cancellation-guarded', () => {
   const callSites = calls.filter((m) => !src.slice(0, m.index).endsWith('async function '));
   assert.ok(callSites.length >= 3);
   assert.equal(
-    (src.match(/if \(!isCancelled\(\)\) await reportPriorProcessKill\(EMPTY_MANIFEST_IDS\);/g) ?? []).length,
+    (src.match(/if \(!isCancelled\(\)\) await reportPriorProcessKill\(userId, EMPTY_MANIFEST_IDS, isCancelled\);/g) ?? []).length,
     2,
     'both early-return probes must be guarded',
   );
-  assert.match(src, /if \(isCancelled\(\)\) return \[\];\n\s*await reportPriorProcessKill\(new Set\(manifests\.map/);
+  assert.match(src, /if \(isCancelled\(\)\) return \[\];\n\s*await reportPriorProcessKill\(userId, new Set\(manifests\.map/);
 });
 
 // ---- F2 (P2): a failed start must not leave an expo pointer ----------------

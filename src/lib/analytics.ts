@@ -141,6 +141,16 @@ export type AnalyticsEvent =
       props: { durable_count: number; expo_count: number; recovered_count: number };
     }
   | { name: 'durable_battery_opt_exemption'; props: { granted: boolean } }
+  /**
+   * The user acted on the battery-optimization nudge. `opened` means Android
+   * accepted the intent — NOT that an exemption was granted: the flow only
+   * shows the settings list and the user can immediately press Back. There is
+   * no reliable way to read the exemption state back, so this event must never
+   * be conflated with durable_battery_opt_exemption, which claims a grant.
+   */
+  | { name: 'battery_opt_settings_opened'; props: { opened: boolean } }
+  /** The nudge was skipped because a capture was live. */
+  | { name: 'battery_opt_prompt_deferred'; props: Record<string, never> }
   | { name: 'durable_recovery_available'; props: { count: number } }
   | { name: 'durable_recovery_restored'; props: { mode: 'resume' | 'review' | 'stash' } }
   | { name: 'durable_recovery_discarded'; props: Record<string, never> }

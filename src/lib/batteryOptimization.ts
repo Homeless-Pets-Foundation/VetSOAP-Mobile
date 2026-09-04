@@ -14,6 +14,7 @@ import { Alert, Linking, Platform } from 'react-native';
 import { secureStorage } from './secureStorage';
 import { BATTERY_OPTIMIZATION_COPY } from '../constants/strings';
 import { trackEvent } from './analytics';
+import { recordingActivity } from './recordingActivity';
 
 const IGNORE_BATTERY_OPT_SETTINGS = 'android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS';
 
@@ -65,6 +66,16 @@ export async function openBatteryOptimizationSettings(): Promise<boolean> {
  */
 export async function maybePromptBatteryOptimization(afterKill = false): Promise<void> {
   if (Platform.OS !== 'android') return;
+  // Never interrupt a live capture. This task is deferred and can land after the
+  // vet has started recording; accepting the prompt then sends the app to
+  // Android settings MID-RECORDING — precisely the background transition this
+  // nudge exists to make safer. Checked before the one-shot marker is written,
+  // so a skipped prompt is genuinely rescheduled on a later mount rather than
+  // silently consumed.
+  if (recordingActivity.isActive()) {
+    trackEvent({ name: 'battery_opt_prompt_deferred', props: {} });
+    return;
+  }
   let alreadyPrompted: string | null;
   try {
     alreadyPrompted = await secureStorage.getRawItem(PROMPTED_KEY, 'batteryOptPrompted');
@@ -87,7 +98,7 @@ export async function maybePromptBatteryOptimization(afterKill = false): Promise
         text: BATTERY_OPTIMIZATION_COPY.dismiss,
         style: 'cancel',
         onPress: () => {
-          trackEvent({ name: 'durable_battery_opt_exemption', props: { granted: false } });
+          trackEvent({ name: 'battery_opt_settings_opened', props: { opened: false } });
         },
       },
       {
@@ -96,7 +107,13 @@ export async function maybePromptBatteryOptimization(afterKill = false): Promise
           // Alert callbacks are () => void — never hand them a promise (rule 2).
           openBatteryOptimizationSettings()
             .then((opened) => {
-              trackEvent({ name: 'durable_battery_opt_exemption', props: { granted: opened } });
+              // `opened` means the intent was accepted, NOT that an exemption
+              // was granted — the user can press Back immediately, and nothing
+              // here reads the exemption state. Reporting this as
+              // durable_battery_opt_exemption { granted: true } would corrupt
+              // the reliability metric and make later kills look like they
+              // happened despite a confirmed exemption.
+              trackEvent({ name: 'battery_opt_settings_opened', props: { opened } });
             })
             .catch(() => {});
         },

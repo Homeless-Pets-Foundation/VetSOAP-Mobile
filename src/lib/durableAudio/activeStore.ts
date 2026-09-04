@@ -19,6 +19,7 @@
  */
 import { writeChunkedValue, readChunkedValueWithCount, deleteChunkedValue } from './chunkedStore';
 import { isValidDurableId } from './paths';
+import { withPromiseTimeout } from '../promiseTimeout';
 
 const KEY_PREFIX = 'captivet_durable_active';
 const MAX_ACTIVE = 50;
@@ -90,15 +91,45 @@ async function writeList(
 }
 
 // Every mutation is a read-modify-write over ONE chunked value, and the
-// record-start path deliberately does not await the pointer write before the
-// native start (it is bounded by raceDurableActiveWrite instead). Serialize the
-// mutations so an overlapping call — a failed start's clearActive racing its
+// record-start path deliberately does not await the durable pointer write before
+// the native start (it is bounded by raceDurableActiveWrite instead). Serialize
+// the mutations so an overlapping call — a failed start's clearActive racing its
 // own still-in-flight setActive, or a re-tap while the previous write is
 // pending — sees the list the previous call wrote instead of losing it. A
 // rejected op never poisons the chain.
+//
+// Rule 24: the ops are SecureStore calls, which HANG rather than reject on a
+// degraded Keystore. A never-settling op would leave this queue pending forever,
+// so every later setActive/clearActive is stranded — later captures would carry
+// no kill pointer at all, or keep a false one, for the rest of the session. The
+// callers' own 400 ms / 3 s races only stop the CALLER waiting; they do nothing
+// for the queue. So each op is bounded here too.
+const MUTATION_TIMEOUT_MS = 5_000;
+
 let mutationQueue: Promise<void> = Promise.resolve();
-function serialized(op: () => Promise<void>): Promise<void> {
-  const run = mutationQueue.then(op, op);
+/**
+ * Bumped whenever an op is abandoned at the deadline. A timed-out op is not
+ * cancellable — the native call may still be in flight — so it must not write
+ * once the queue has moved on: its list was computed from a read taken before
+ * the ops that overtook it, and writing would silently revert them.
+ */
+let abandonGeneration = 0;
+
+function serialized(op: (isAbandoned: () => boolean) => Promise<void>): Promise<void> {
+  const runOp = async (): Promise<void> => {
+    const myGeneration = abandonGeneration;
+    let abandoned = false;
+    const isAbandoned = (): boolean => abandoned || myGeneration !== abandonGeneration;
+    try {
+      await withPromiseTimeout(op(isAbandoned), MUTATION_TIMEOUT_MS, 'durable_active_mutation_timeout');
+    } catch {
+      // Timed out or failed. Abandon it so a late completion cannot clobber the
+      // ops that ran while it was stuck, and let the queue advance.
+      abandoned = true;
+      abandonGeneration++;
+    }
+  };
+  const run = mutationQueue.then(runOp, runOp);
   mutationQueue = run.catch(() => {});
   return run;
 }
@@ -129,9 +160,12 @@ export const durableActiveStore = {
     // tablet (Rule 13): user A loses their kill signal and user B gets a false
     // one, carrying A's recording and slot ids.
     const userId = currentUserId;
-    return serialized(async () => {
+    return serialized(async (isAbandoned) => {
       if (!userId || !isValidDurableId(recordingId)) return;
       const { list: existing, chunkCount } = await readList(userId);
+      // The read may have outlived our slot in the queue; writing now would
+      // revert whatever ran while we were stuck.
+      if (isAbandoned()) return;
       const list = existing.filter((e) => e.recordingId !== recordingId);
       list.push({ recordingId, slotId, startedAt, backend });
       while (list.length > MAX_ACTIVE) list.shift();
@@ -143,9 +177,10 @@ export const durableActiveStore = {
     // Same scope capture as setActive — a clear that lands after a user switch
     // must not touch the new user's pointers.
     const userId = currentUserId;
-    return serialized(async () => {
+    return serialized(async (isAbandoned) => {
       if (!userId) return;
       const { list, chunkCount } = await readList(userId);
+      if (isAbandoned()) return;
       const next = list.filter((e) => e.recordingId !== recordingId);
       if (next.length !== list.length) await writeList(userId, next, chunkCount);
     });

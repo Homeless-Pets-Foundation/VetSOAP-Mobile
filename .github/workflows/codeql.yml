@@ -12,7 +12,7 @@ concurrency:
 jobs:
   analyze:
     name: Analyze
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-analyze-${{ strategy.job-index }}-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 30
     permissions:
       security-events: write

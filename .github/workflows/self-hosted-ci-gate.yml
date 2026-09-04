@@ -73,19 +73,24 @@ jobs:
               filter: 'latest',
               per_page: 100,
             });
+            // The Linux jobs run on the organization's RunsOn linux-ci profile. Their
+            // label carries a per-run unique id, so it is matched by shape rather
+            // than by an exact string. Swift stays on the local macOS runner.
+            const runsOnLinux = { kind: 'runs-on', runner: 'linux-ci' };
+            const localMacOS = { kind: 'labels', labels: ['self-hosted', 'local-ci', 'macOS', 'ARM64'] };
             const expected = new Map([
-              ['Confirm PR head', ['self-hosted', 'local-ci', 'linux', 'x64']],
-              ['R2 Destination Contract', ['self-hosted', 'local-ci', 'linux', 'x64']],
-              ['Typecheck', ['self-hosted', 'local-ci', 'linux', 'x64']],
-              ['Lint', ['self-hosted', 'local-ci', 'linux', 'x64']],
-              ['Test', ['self-hosted', 'local-ci', 'linux', 'x64']],
-              ['Analyze (javascript-typescript)', ['self-hosted', 'local-ci', 'linux', 'x64']],
-              ['Review', ['self-hosted', 'local-ci', 'linux', 'x64']],
-              ['Swift typecheck (durable recorder)', ['self-hosted', 'local-ci', 'macOS', 'ARM64']],
+              ['Confirm PR head', runsOnLinux],
+              ['R2 Destination Contract', runsOnLinux],
+              ['Typecheck', runsOnLinux],
+              ['Lint', runsOnLinux],
+              ['Test', runsOnLinux],
+              ['Analyze (javascript-typescript)', runsOnLinux],
+              ['Review', runsOnLinux],
+              ['Swift typecheck (durable recorder)', localMacOS],
             ]);
             const failures = [];
 
-            for (const [name, requiredLabels] of expected) {
+            for (const [name, requirement] of expected) {
               const matching = jobs.filter((job) => job.name === name);
               if (matching.length !== 1) {
                 failures.push(`${name}: expected one job, found ${matching.length}`);
@@ -94,13 +99,28 @@ jobs:
 
               const job = matching[0];
               const labels = new Set(job.labels ?? []);
-              const missingLabels = requiredLabels.filter((label) => !labels.has(label));
+              let labelFailure = null;
+              if (requirement.kind === 'runs-on') {
+                const onProfile = [...labels].some(
+                  (label) =>
+                    label.startsWith('runs-on=') &&
+                    label.includes(`/runner=${requirement.runner}`)
+                );
+                if (!onProfile) {
+                  labelFailure = `not on the RunsOn ${requirement.runner} profile`;
+                }
+              } else {
+                const missingLabels = requirement.labels.filter((label) => !labels.has(label));
+                if (missingLabels.length > 0) {
+                  labelFailure = `missing labels ${missingLabels.join(', ')}`;
+                }
+              }
               if (job.status !== 'completed' || job.conclusion !== 'success') {
                 failures.push(`${name}: ${job.status}/${job.conclusion}`);
               } else if (!job.runner_name) {
                 failures.push(`${name}: no runner name reported`);
-              } else if (missingLabels.length > 0) {
-                failures.push(`${name}: missing labels ${missingLabels.join(', ')}`);
+              } else if (labelFailure) {
+                failures.push(`${name}: ${labelFailure}`);
               }
             }
 

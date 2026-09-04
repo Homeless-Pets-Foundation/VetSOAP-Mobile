@@ -16,7 +16,7 @@ concurrency:
 jobs:
   confirm-pr-head:
     name: Confirm PR head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-confirm-pr-head-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 5
     outputs:
       base-sha: ${{ steps.confirm.outputs.base-sha }}
@@ -83,7 +83,7 @@ jobs:
   r2-destination-contract:
     name: R2 Destination Contract
     needs: confirm-pr-head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-r2-destination-contract-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 15
     steps:
       - name: Checkout confirmed PR head
@@ -115,7 +115,7 @@ jobs:
   typecheck:
     name: Typecheck
     needs: confirm-pr-head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-typecheck-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 15
     steps:
       - name: Checkout confirmed PR head
@@ -147,7 +147,7 @@ jobs:
   lint:
     name: Lint
     needs: confirm-pr-head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-lint-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 15
     steps:
       - name: Checkout confirmed PR head
@@ -179,7 +179,7 @@ jobs:
   test:
     name: Test
     needs: confirm-pr-head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-test-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 30
     steps:
       - name: Checkout confirmed PR head
@@ -211,7 +211,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: confirm-pr-head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-analyze-${{ strategy.job-index }}-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 30
     permissions:
       actions: read
@@ -257,7 +257,7 @@ jobs:
   dependency-review:
     name: Review
     needs: confirm-pr-head
-    runs-on: [self-hosted, local-ci, linux, x64]
+    runs-on: "runs-on=${{ github.run_id }}-dependency-review-${{ github.run_attempt }}/runner=linux-ci"
     timeout-minutes: 10
     steps:
       - name: Checkout confirmed PR head

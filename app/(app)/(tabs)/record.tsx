@@ -2029,15 +2029,21 @@ function RecordingSession() {
             } else {
               // Expo fallback. It leaves no manifest and no recoverable file if
               // the process dies (MediaRecorder writes the MP4 moov atom only on
-              // stop()), so the active pointer is the ONLY evidence the capture
-              // ever existed. Write it before start, bounded exactly like the
-              // durable path so a hung Keystore can't strand the tap handler.
-              if (user?.id) {
-                await raceDurableActiveWrite(
-                  durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
-                );
-              }
+              // stop()), so this pointer is the ONLY evidence the capture ever
+              // existed — which is what makes an OS kill visible at all.
+              //
+              // Dispatched alongside the native start and joined after it, for
+              // the same reason as the durable branch above: awaiting serial
+              // Keystore round trips here gated the mic on older tablets. The
+              // slot cannot flip to 'recording' before the join, so a kill after
+              // that point is always attributable.
+              const expoPointerWrite = user?.id
+                ? raceDurableActiveWrite(
+                    durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
+                  )
+                : null;
               await recorder.start();
+              if (expoPointerWrite) await expoPointerWrite;
             }
           }
           if (recordFirstEnabled) {

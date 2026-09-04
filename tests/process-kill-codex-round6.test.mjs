@@ -77,7 +77,7 @@ test('a rejected op is not treated as a stall', async () => {
 test('the stall barrier is wired and explains why mid-write abort is unsafe', () => {
   const src = read('src/lib/durableAudio/activeStore.ts');
   assert.match(src, /let stalledOp: Promise<void> \| null = null;/);
-  assert.match(src, /if \(stalledOp\) return;/);
+  assert.match(src, /if \(stalledOp\) \{\n\s*onDeferred\?\.\(\);\n\s*return;/);
   assert.match(src, /if \(!workSettled\)/);
 });
 
@@ -106,10 +106,13 @@ test('serialized sweeps fold the expiry flag into their scope predicate', () => 
   const src = read(RECORD);
   assert.match(src, /work: \(isExpired: \(\) => boolean\) => Promise<void>/);
   assert.match(src, /scheduleNonUrgentWork\('orphan_cleanup', async \(isExpired\) =>/);
+  assert.match(src, /'battery_opt_prompt',\n\s*async \(isExpired\) =>/);
   assert.match(src, /scheduleNonUrgentWork\('thirty_day_eviction', async \(isExpired\) =>/);
-  // Both must actually consult it, or the timeout only settles the wrapper and
-  // the work races the job that overtook it.
-  assert.equal((src.match(/!isExpired\(\) &&/g) ?? []).length, 2);
+  // Each serialized job must actually consult it, or the timeout only settles
+  // the wrapper and the work races the job that overtook it. Three consumers:
+  // both draft sweeps' isScopeValid(), and the battery prompt's scope predicate.
+  assert.equal((src.match(/!isExpired\(\) &&/g) ?? []).length, 3);
+  assert.match(src, /\(\) => !isExpired\(\) && durableActiveStore\.getUserId\(\) === promptUserId/);
   assert.match(src, /expired = true;/);
 });
 

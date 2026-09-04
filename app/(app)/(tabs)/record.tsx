@@ -1556,6 +1556,13 @@ function RecordingSession() {
       audioCaptureDoneRef.current = true;
       saveAudio(slotId, recorder.audioUri, recorder.duration, recorder.maxMetering);
       dispatch({ type: 'CONTINUE_RECORDING', slotId });
+      // The segment is finalized on disk and the interruption was HANDLED, so
+      // this is a clean exit for the pointer — mirroring the durable branch
+      // above, which already clears snap.recordingId. Without it, a user who
+      // submits the partial segment instead of resuming gets a false
+      // process_killed_mid_capture on their next launch. Resuming simply writes
+      // the pointer again under the same slot key.
+      durableActiveStore.clearActive(slotId).catch(() => {});
     }
     setInterruptionPendingResume({ slotId });
     interruptionPendingResumeRef.current = { slotId };
@@ -2006,6 +2013,14 @@ function RecordingSession() {
       const tappedAtMs = nowMs();
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
       setStartingSlotId(slotId);
+      // The user who tapped Start. Several awaits (floor hydration, free-space
+      // checks, native start) run before the pointer is written, and
+      // durableActiveStore can be rebound by a sign-out in that window —
+      // setActive captures scope when INVOKED, which is too late here. Verified
+      // immediately before each write so A's slot can never land in B's store.
+      const initiatingUserId = user?.id ?? null;
+      const scopeUnchanged = (): boolean =>
+        initiatingUserId !== null && durableActiveStore.getUserId() === initiatingUserId;
       (async () => {
         let resumeDurableRecordingId: string | null = null;
         // Fresh durable start whose pointer write was dispatched alongside the
@@ -2133,7 +2148,7 @@ function RecordingSession() {
               // while every expo cleanup path keys off slotId — so it would
               // survive a perfectly good recording and report a phantom kill.
               // Re-key it to match the backend that actually owns the capture.
-              if (recorder.getSelectedBackend() === 'expo') {
+              if (recorder.getSelectedBackend() === 'expo' && scopeUnchanged()) {
                 freshDurableRecordingId = null;
                 durableActiveStore.clearActive(recordingId).catch(() => {});
                 expoPointerSlotId = slotId;
@@ -2165,7 +2180,7 @@ function RecordingSession() {
               // would lose the audio AND the ability to report it. Bounded at
               // 400 ms so a degraded Keystore delays the mic briefly instead of
               // stalling the tap.
-              if (user?.id) {
+              if (scopeUnchanged()) {
                 expoPointerSlotId = slotId;
                 await racePreStartPointerWrite(
                   durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
@@ -6617,10 +6632,16 @@ function RecordingSession() {
   // actually happened when this launch proved a prior process was killed.
   useEffect(() => {
     if (!user?.id) return;
+    const promptUserId = user.id;
     const cancelWork = scheduleNonUrgentWork(
       'battery_opt_prompt',
-      async () => {
-        await maybePromptBatteryOptimization(priorProcessKillDetected(user?.id));
+      async (isExpired) => {
+        await maybePromptBatteryOptimization(
+          priorProcessKillDetected(promptUserId),
+          // Re-evaluated inside, right before the Alert: this callback can be
+          // mid-await across a sign-out and cancelWork cannot stop it.
+          () => !isExpired() && durableActiveStore.getUserId() === promptUserId,
+        );
       },
       5_000,
       null,

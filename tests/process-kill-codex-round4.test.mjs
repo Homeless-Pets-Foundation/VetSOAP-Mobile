@@ -32,7 +32,7 @@ test('kill reporting dedupes per USER, not per process', async () => {
   assert.match(src, /killSignalReportedUsers\.has\(userId\)/);
   assert.match(
     read('app/(app)/(tabs)/record.tsx'),
-    /maybePromptBatteryOptimization\(priorProcessKillDetected\(user\?\.id\)\)/,
+    /maybePromptBatteryOptimization\(\s*priorProcessKillDetected\(promptUserId\),/,
   );
 });
 

@@ -64,8 +64,17 @@ export async function openBatteryOptimizationSettings(): Promise<boolean> {
  * @param afterKill true when we have just detected that the OS killed a live
  *   capture — the copy then states what actually happened instead of speculating.
  */
-export async function maybePromptBatteryOptimization(afterKill = false): Promise<void> {
+export async function maybePromptBatteryOptimization(
+  afterKill = false,
+  // True while the user this prompt was built for is still the signed-in user.
+  // The callback can be mid-await across a sign-out, and cancelWork cannot stop
+  // an already-running one — without this, user A's "Android stopped Captivet
+  // during your last recording" copy is shown to user B, and the device-wide
+  // one-shot marker is consumed by a prompt that was never theirs.
+  isScopeValid: () => boolean = () => true,
+): Promise<void> {
   if (Platform.OS !== 'android') return;
+  if (!isScopeValid()) return;
   // Never interrupt a live capture. This task is deferred and can land after the
   // vet has started recording; accepting the prompt then sends the app to
   // Android settings MID-RECORDING — precisely the background transition this
@@ -97,7 +106,7 @@ export async function maybePromptBatteryOptimization(afterKill = false): Promise
   // Release the one-shot marker so the prompt is genuinely rescheduled rather
   // than silently consumed; the marker is still written BEFORE the alert in the
   // path that does show it, so a backgrounded dialog cannot loop.
-  if (recordingActivity.isActive()) {
+  if (recordingActivity.isActive() || !isScopeValid()) {
     await secureStorage.deleteRawItem(PROMPTED_KEY, 'batteryOptPrompted').catch(() => {});
     trackEvent({ name: 'battery_opt_prompt_deferred', props: {} });
     return;

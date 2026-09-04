@@ -88,8 +88,8 @@ test('a durable start failure really does fall through to expo without throwing'
 
 test('record.tsx re-keys the pointer when durable start fell back to expo', () => {
   const src = read(RECORD);
-  const idx = src.indexOf("if (recorder.getSelectedBackend() === 'expo') {");
-  assert.ok(idx > 0, 'no fallback re-key branch');
+  const idx = src.indexOf("if (recorder.getSelectedBackend() === 'expo' && scopeUnchanged()) {");
+  assert.ok(idx > 0, 'no fallback re-key branch (must also verify user scope)');
   const branch = src.slice(idx, idx + 900);
   // The durable-keyed pointer must go, or it outlives the recording.
   assert.match(branch, /durableActiveStore\.clearActive\(recordingId\)/);
@@ -105,6 +105,6 @@ test('the re-key happens after start resolves, not before', () => {
   // getSelectedBackend is only meaningful once start() has picked a backend.
   const src = read(RECORD);
   const startAwait = src.indexOf("recorder.start({ userId: user.id, slotId, recordingId })");
-  const rekey = src.indexOf("if (recorder.getSelectedBackend() === 'expo') {");
+  const rekey = src.indexOf("if (recorder.getSelectedBackend() === 'expo' && scopeUnchanged()) {");
   assert.ok(startAwait > 0 && rekey > startAwait, 're-key must follow the start await');
 });

@@ -132,10 +132,37 @@ let abandonGeneration = 0;
  */
 let stalledOp: Promise<void> | null = null;
 
-function serialized(op: (isAbandoned: () => boolean) => Promise<void>): Promise<void> {
+/**
+ * Clears deferred by the stand-off, replayed once the stall settles.
+ *
+ * The stand-off is safe for setActive — a dropped write means a MISSING pointer,
+ * which merely leaves a real kill unattributable. It is NOT safe for
+ * clearActive: a dropped clear leaves a pointer behind for a recording that
+ * finished normally, and the next launch reports a process kill that never
+ * happened. That is the exact false report this whole detector exists to avoid,
+ * so clears are queued and retried instead of discarded.
+ */
+let pendingClearTasks: (() => Promise<void>)[] = [];
+
+function replayPendingClears(): void {
+  if (pendingClearTasks.length === 0) return;
+  const tasks = pendingClearTasks;
+  pendingClearTasks = [];
+  // Re-enter the queue. If the store is still stalled these simply defer again,
+  // which terminates as long as the stuck native call eventually settles.
+  for (const task of tasks) void task().catch(() => {});
+}
+
+function serialized(
+  op: (isAbandoned: () => boolean) => Promise<void>,
+  onDeferred?: () => void,
+): Promise<void> {
   const runOp = async (): Promise<void> => {
     // Stand off while a previous mutation is still in flight past its deadline.
-    if (stalledOp) return;
+    if (stalledOp) {
+      onDeferred?.();
+      return;
+    }
 
     const myGeneration = abandonGeneration;
     let abandoned = false;
@@ -158,14 +185,12 @@ function serialized(op: (isAbandoned: () => boolean) => Promise<void>): Promise<
       // A REJECTED op is already settled and holds nothing up; only a genuinely
       // hung one becomes the stall barrier.
       if (!workSettled) {
-        const stuck: Promise<void> = work.then(
-          () => {
-            if (stalledOp === stuck) stalledOp = null;
-          },
-          () => {
-            if (stalledOp === stuck) stalledOp = null;
-          },
-        );
+        const release = (): void => {
+          if (stalledOp !== stuck) return;
+          stalledOp = null;
+          replayPendingClears();
+        };
+        const stuck: Promise<void> = work.then(release, release);
         stalledOp = stuck;
       }
     }
@@ -218,13 +243,23 @@ export const durableActiveStore = {
     // Same scope capture as setActive — a clear that lands after a user switch
     // must not touch the new user's pointers.
     const userId = currentUserId;
-    return serialized(async (isAbandoned) => {
-      if (!userId) return;
-      const { list, chunkCount } = await readList(userId);
-      if (isAbandoned()) return;
-      const next = list.filter((e) => e.recordingId !== recordingId);
-      if (next.length !== list.length) await writeList(userId, next, chunkCount);
-    });
+    const run = (): Promise<void> =>
+      serialized(
+        async (isAbandoned) => {
+          if (!userId) return;
+          const { list, chunkCount } = await readList(userId);
+          if (isAbandoned()) return;
+          const next = list.filter((e) => e.recordingId !== recordingId);
+          if (next.length !== list.length) await writeList(userId, next, chunkCount);
+        },
+        // Deferred by the stand-off: retry after the stall settles rather than
+        // reporting success without clearing. The captured userId travels with
+        // the retry, so a later user switch cannot redirect it.
+        () => {
+          pendingClearTasks.push(run);
+        },
+      );
+    return run();
   },
 
   async list(): Promise<DurableActiveEntry[]> {

@@ -114,19 +114,60 @@ let mutationQueue: Promise<void> = Promise.resolve();
  * the ops that overtook it, and writing would silently revert them.
  */
 let abandonGeneration = 0;
+/**
+ * An op that blew its deadline and is STILL RUNNING, or null.
+ *
+ * The isAbandoned() check makes a stalled READ safe, because the op consults it
+ * before writing. It cannot make a stalled WRITE safe: by then the chunk writes
+ * are already in flight, and aborting between them would leave new chunk bytes
+ * under the old count pointer — a torn value that reads as garbage, which is
+ * worse than the clobber it avoids (writeChunkedValue deliberately commits by
+ * writing the count LAST for exactly that reason).
+ *
+ * So instead of racing it, we stand off: while a timed-out op is unsettled, later
+ * mutations resolve WITHOUT writing. The pointer store goes briefly read-only on
+ * a Keystore that is already failing, which loses some kill evidence — strictly
+ * safer than a stale write silently reverting a newer one and manufacturing a
+ * false or missing kill report.
+ */
+let stalledOp: Promise<void> | null = null;
 
 function serialized(op: (isAbandoned: () => boolean) => Promise<void>): Promise<void> {
   const runOp = async (): Promise<void> => {
+    // Stand off while a previous mutation is still in flight past its deadline.
+    if (stalledOp) return;
+
     const myGeneration = abandonGeneration;
     let abandoned = false;
     const isAbandoned = (): boolean => abandoned || myGeneration !== abandonGeneration;
+
+    const work = op(isAbandoned);
+    let workSettled = false;
+    const markSettled = (): void => {
+      workSettled = true;
+    };
+    work.then(markSettled, markSettled);
+
     try {
-      await withPromiseTimeout(op(isAbandoned), MUTATION_TIMEOUT_MS, 'durable_active_mutation_timeout');
+      await withPromiseTimeout(work, MUTATION_TIMEOUT_MS, 'durable_active_mutation_timeout');
     } catch {
       // Timed out or failed. Abandon it so a late completion cannot clobber the
       // ops that ran while it was stuck, and let the queue advance.
       abandoned = true;
       abandonGeneration++;
+      // A REJECTED op is already settled and holds nothing up; only a genuinely
+      // hung one becomes the stall barrier.
+      if (!workSettled) {
+        const stuck: Promise<void> = work.then(
+          () => {
+            if (stalledOp === stuck) stalledOp = null;
+          },
+          () => {
+            if (stalledOp === stuck) stalledOp = null;
+          },
+        );
+        stalledOp = stuck;
+      }
     }
   };
   const run = mutationQueue.then(runOp, runOp);

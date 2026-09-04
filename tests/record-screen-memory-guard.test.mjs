@@ -113,7 +113,12 @@ test('the heavy mount sweeps are serialized, and the UI-driving scan is not', ()
 test('a failing sweep cannot break the chain for the next one', () => {
   const src = read(RECORD);
   const chain = src.slice(src.indexOf('startupSweepTail = startupSweepTail'));
-  assert.match(chain.slice(0, 1500), /\(\) => \{\},\s*\n\s*\(\) => \{\},/);
+  // The rejection arm now also marks the job expired so the still-running work
+  // stops instead of racing the job that overtook it — but it must still SWALLOW
+  // the failure, or one bad sweep breaks the chain for every later one.
+  const block = chain.slice(0, 1800);
+  assert.match(block, /\.then\(\s*\n\s*\(\) => \{\},/);
+  assert.match(block, /expired = true;/);
 });
 
 test('a cancelled sweep does not run after waiting in the queue', () => {

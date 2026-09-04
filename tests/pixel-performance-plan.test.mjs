@@ -194,7 +194,7 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
 
   assert.match(record, /function scheduleNonUrgentWork/);
   assert.match(record, /InteractionManager\.runAfterInteractions\(\(\) => \{/);
-  assert.match(record, /measurePhase\(label, undefined, work, \{ warningThresholdMs \}\)\.catch\(\(\) => \{\}\)/);
+  assert.match(record, /measurePhase\(label, undefined, \(\) => work\(isExpired\), \{ warningThresholdMs \}\)\.catch\(\(\) => \{\}\)/);
   assert.match(record, /Promise\.all\(\[\s*[\s\S]*draftStorage\.deleteDraft\(slot\.id\)[\s\S]*\]\)\.then\(\(\) => \{\s*invalidateRecordingCaches\(queryClient, 'draft_deleted'\);/);
   assert.match(record, /'record_pending_draft_scan'/);
   assert.match(record, /'orphan_cleanup'/);

@@ -64,55 +64,53 @@ test('a never-settling storage call does not strand the mutation queue', async (
   );
 });
 
-test('an op abandoned at the deadline cannot clobber the ops that overtook it', async (t) => {
+test('an op abandoned at the deadline cannot clobber later state', async (t) => {
   t.diagnostic('waits out the 5s mutation deadline');
-  const h = hangingSecureStore();
+  // Round 6 changed the correct OUTCOME here. A stalled op is not cancellable,
+  // and aborting mid-write would leave new chunk bytes under the old count
+  // pointer — a torn value, worse than the clobber. So the store now STANDS OFF
+  // while a stalled op is unsettled: later mutations resolve without writing.
+  // The invariant is therefore "no clobber, no torn state", not "the newer write
+  // wins" — losing pointer updates on an already-failing Keystore is the
+  // deliberate trade.
+  const seeded = new Map();
+  let gateOpen = false;
+  let releaseRead;
+  const gate = new Promise((resolve) => { releaseRead = resolve; });
   const mod = await loadTsModule('src/lib/durableAudio/activeStore.ts', {
-    'expo-secure-store': h.mock,
+    'expo-secure-store': {
+      AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+      async getItemAsync(k) {
+        if (gateOpen) await gate;
+        return seeded.has(k) ? seeded.get(k) : null;
+      },
+      async setItemAsync(k, v) { seeded.set(k, v); },
+      async deleteItemAsync(k) { seeded.delete(k); },
+    },
   });
   const s = mod.durableActiveStore;
   s.setUserId('u1');
-
-  // Seed one entry so the hung op's stale read has content to revert to.
   await s.setActive('seed', 'slot-seed', '2026-09-04T09:00:00.000Z', 'expo');
 
-  // Hang a read, then let it complete AFTER a newer op has written.
-  let releaseRead;
-  const gate = new Promise((resolve) => { releaseRead = resolve; });
-  const seeded = new Map(h.store);
-  const gatedMock = {
-    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
-    async getItemAsync(k) {
-      if (gatedMock.__gate) { await gate; }
-      return seeded.has(k) ? seeded.get(k) : null;
-    },
-    async setItemAsync(k, v) { seeded.set(k, v); },
-    async deleteItemAsync(k) { seeded.delete(k); },
-    __gate: false,
-  };
-  const mod2 = await loadTsModule('src/lib/durableAudio/activeStore.ts', {
-    'expo-secure-store': gatedMock,
-  });
-  const s2 = mod2.durableActiveStore;
-  s2.setUserId('u1');
-  await s2.setActive('seed', 'slot-seed', '2026-09-04T09:00:00.000Z', 'expo');
-
-  gatedMock.__gate = true;
-  const stale = s2.setActive('stale', 'slot-stale', '2026-09-04T09:30:00.000Z', 'expo');
-  await stale;              // abandoned at the deadline
-  gatedMock.__gate = false;
-  await s2.setActive('fresh', 'slot-fresh', '2026-09-04T10:00:00.000Z', 'expo');
-  releaseRead();            // the hung read finally completes
+  gateOpen = true;
+  await s.setActive('stale', 'slot-stale', '2026-09-04T09:30:00.000Z', 'expo'); // abandoned
+  gateOpen = false;
+  await s.setActive('fresh', 'slot-fresh', '2026-09-04T10:00:00.000Z', 'expo'); // stands off
+  releaseRead();
   await new Promise((r) => setTimeout(r, 50));
 
-  const list = await s2.list();
-  assert.ok(list.some((e) => e.recordingId === 'fresh'), 'the newer write must survive');
+  const list = await s.list();
+  // The abandoned op must not have written once the queue moved on.
+  assert.ok(!list.some((e) => e.recordingId === 'stale'), 'abandoned op must not write');
+  // And the pre-existing entry must be intact — no torn or reverted state.
+  assert.ok(list.some((e) => e.recordingId === 'seed'), 'existing state must survive');
 });
 
 test('the queue bound and abandon-generation are wired, not just declared', () => {
   const src = read('src/lib/durableAudio/activeStore.ts');
   assert.match(src, /const MUTATION_TIMEOUT_MS = [\d_]+;/);
-  assert.match(src, /withPromiseTimeout\(op\(isAbandoned\), MUTATION_TIMEOUT_MS/);
+  assert.match(src, /const work = op\(isAbandoned\);/);
+  assert.match(src, /withPromiseTimeout\(work, MUTATION_TIMEOUT_MS/);
   assert.match(src, /let abandonGeneration = 0;/);
   assert.match(src, /abandonGeneration\+\+;/);
   // Both read-modify-write ops must consult it AFTER their read, or a late

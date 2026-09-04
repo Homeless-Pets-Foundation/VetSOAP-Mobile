@@ -90,6 +90,19 @@ export async function maybePromptBatteryOptimization(afterKill = false): Promise
     .catch(() => false);
   if (!marked) return;
 
+  // Recheck: a recording can start while either SecureStore call above is
+  // pending, which makes the first check stale. Showing the alert then puts it
+  // over a live capture, and accepting it backgrounds the app into Android
+  // settings mid-recording — the exact transition this nudge exists to avoid.
+  // Release the one-shot marker so the prompt is genuinely rescheduled rather
+  // than silently consumed; the marker is still written BEFORE the alert in the
+  // path that does show it, so a backgrounded dialog cannot loop.
+  if (recordingActivity.isActive()) {
+    await secureStorage.deleteRawItem(PROMPTED_KEY, 'batteryOptPrompted').catch(() => {});
+    trackEvent({ name: 'battery_opt_prompt_deferred', props: {} });
+    return;
+  }
+
   Alert.alert(
     BATTERY_OPTIMIZATION_COPY.title,
     afterKill ? BATTERY_OPTIMIZATION_COPY.bodyAfterKill : BATTERY_OPTIMIZATION_COPY.body,

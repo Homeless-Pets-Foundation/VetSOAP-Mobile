@@ -682,7 +682,13 @@ const STARTUP_SWEEP_TIMEOUT_MS = 60_000;
 
 function scheduleNonUrgentWork(
   label: string,
-  work: () => Promise<void>,
+  // `isExpired()` goes true once this job has passed its deadline and the queue
+  // has moved on. Serialized sweeps MUST fold it into their own scope predicate:
+  // withPromiseTimeout only settles the wrapper, so without it a slow orphan
+  // cleanup keeps running concurrently with the eviction pass that overtook it —
+  // reintroducing the overlapping Keystore load and the mid-deletion
+  // classification ordering that serializing them was added to prevent.
+  work: (isExpired: () => boolean) => Promise<void>,
   fallbackMs = 2_500,
   warningThresholdMs: number | null = 10_000,
   // Queue behind the other serialized sweeps instead of racing them. Only for
@@ -695,8 +701,10 @@ function scheduleNonUrgentWork(
   const run = () => {
     if (cancelled || started) return;
     started = true;
+    let expired = false;
+    const isExpired = (): boolean => expired;
     if (!serial) {
-      measurePhase(label, undefined, work, { warningThresholdMs }).catch(() => {});
+      measurePhase(label, undefined, () => work(isExpired), { warningThresholdMs }).catch(() => {});
       return;
     }
     startupSweepTail = startupSweepTail
@@ -715,14 +723,19 @@ function scheduleNonUrgentWork(
             // hung work is left to finish or not on its own, and its own
             // isScopeValid() guard stops it acting on stale scope.
             withPromiseTimeout(
-              measurePhase(label, undefined, work, { warningThresholdMs }),
+              measurePhase(label, undefined, () => work(isExpired), { warningThresholdMs }),
               STARTUP_SWEEP_TIMEOUT_MS,
               `startup_sweep_timeout:${label}`,
             ),
       )
       .then(
         () => {},
-        () => {}, // a failed or timed-out sweep must not break the chain
+        () => {
+          // Timed out (or failed). Mark it expired so the still-running work
+          // stops at its next scope check instead of racing the job that is
+          // about to start. A failed sweep must not break the chain either.
+          expired = true;
+        },
       );
   };
   const task = InteractionManager.runAfterInteractions(() => {
@@ -1741,6 +1754,14 @@ function RecordingSession() {
 
     if (shouldResetRecorder) {
       skipNextAudioCaptureRef.current = true;
+      // Captured BEFORE stop/unbind/reset erase them. The stopped-state effect's
+      // skip branch cannot be relied on here: unbindRecorder() and
+      // recorder.reset() run synchronously below, so by the time that effect
+      // renders, recorderBoundToSlotId and activeDurableRecordingId are already
+      // null and it would clear nothing. A deliberate discard must never be
+      // reported as an OS kill on the next launch.
+      const discardedSlotId = session.recorderBoundToSlotId;
+      const discardedDurableId = recorder.activeDurableRecordingId;
       if (recorder.state === 'recording' || recorder.state === 'paused') {
         try {
           await recorder.stop();
@@ -1748,6 +1769,8 @@ function RecordingSession() {
           // stop() already performs internal cleanup
         }
       }
+      if (discardedSlotId) durableActiveStore.clearActive(discardedSlotId).catch(() => {});
+      if (discardedDurableId) durableActiveStore.clearActive(discardedDurableId).catch(() => {});
       unbindRecorder();
       recorder.reset();
     }
@@ -2649,7 +2672,15 @@ function RecordingSession() {
                     // Stop recording if this slot owns the recorder
                     if (session.recorderBoundToSlotId === slotId) {
                       skipNextAudioCaptureRef.current = true;
+                      // Same reason as discardCurrentSession: captured before
+                      // stop/unbind/reset erase the lookup state the passive
+                      // stopped-state effect would have needed.
+                      const removedDurableId = recorder.activeDurableRecordingId;
                       try { await recorder.stop(); } catch {}
+                      durableActiveStore.clearActive(slotId).catch(() => {});
+                      if (removedDurableId) {
+                        durableActiveStore.clearActive(removedDurableId).catch(() => {});
+                      }
                       unbindRecorder();
                       recorder.reset();
                     }
@@ -6622,10 +6653,11 @@ function RecordingSession() {
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
-    const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async () => {
+    const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async (isExpired) => {
       const userScopeVersion = draftStorage.getUserScopeVersion();
       const isScopeValid = () =>
         !cancelled &&
+        !isExpired() &&
         AppState.currentState === 'active' &&
         draftStorage.getUserId() === user.id &&
         draftStorage.getUserScopeVersion() === userScopeVersion;
@@ -6679,11 +6711,12 @@ function RecordingSession() {
     evictionSweptUserRef.current = user.id;
     const online = isConnected !== false;
     let cancelled = false;
-    const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async () => {
+    const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async (isExpired) => {
       try {
         const userScopeVersion = draftStorage.getUserScopeVersion();
         const isScopeValid = () =>
           !cancelled &&
+          !isExpired() &&
           AppState.currentState === 'active' &&
           draftStorage.getUserId() === user.id &&
           draftStorage.getUserScopeVersion() === userScopeVersion;

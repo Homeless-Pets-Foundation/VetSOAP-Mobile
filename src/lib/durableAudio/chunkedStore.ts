@@ -15,7 +15,24 @@ import { readChunksBounded } from '../chunkedRead';
 const CHUNK_SIZE = 1900;
 const MAX_STALE_SWEEP = 16;
 
-export async function writeChunkedValue(prefix: string, value: string): Promise<boolean> {
+export interface WriteChunkedValueOptions {
+  /**
+   * Chunk count of the value previously stored under `prefix`, when the caller
+   * has just read it (see `readChunkedValueWithCount`). Chunks at index >= the
+   * persisted count are never read, so the stale sweep is hygiene, not
+   * correctness — and with the previous count known it covers exactly
+   * `[chunks.length, prevChunkCount)`. On the record-start path the blind
+   * 16-key sweep was ~16 serial Keystore round trips awaited before the mic
+   * was touched. `null`/omitted keeps the full sweep (unknown prior length).
+   */
+  prevChunkCount?: number | null;
+}
+
+export async function writeChunkedValue(
+  prefix: string,
+  value: string,
+  opts?: WriteChunkedValueOptions,
+): Promise<boolean> {
   const chunks: string[] = [];
   for (let i = 0; i < value.length; i += CHUNK_SIZE) {
     chunks.push(value.slice(i, i + CHUNK_SIZE));
@@ -29,17 +46,35 @@ export async function writeChunkedValue(prefix: string, value: string): Promise<
   const ok = await secureStorage.setRawItem(`${prefix}_count`, String(chunks.length), 'durableChunkCount');
   if (!ok) return false;
   // Sweep stale higher-index chunks left by a prior longer value.
-  for (let i = chunks.length; i < chunks.length + MAX_STALE_SWEEP; i++) {
+  const prev = opts?.prevChunkCount;
+  const sweepEnd =
+    typeof prev === 'number' && Number.isInteger(prev) && prev >= 0
+      ? prev
+      : chunks.length + MAX_STALE_SWEEP;
+  for (let i = chunks.length; i < sweepEnd; i++) {
     await secureStorage.deleteRawItem(`${prefix}_chunk_${i}`, 'durableChunkSweep');
   }
   return true;
 }
 
-export async function readChunkedValue(prefix: string): Promise<string | null> {
+export interface ChunkedValueWithCount {
+  value: string | null;
+  /**
+   * Persisted chunk count: `0` when no count pointer exists (proven absent),
+   * the stored count when it parsed (even if the chunk set was torn — it is
+   * still the upper bound a prior writer intended), `null` when the pointer is
+   * corrupt so a later write falls back to the full sweep.
+   */
+  chunkCount: number | null;
+}
+
+/** Read the value AND its persisted chunk count, so a read-modify-write can
+ *  thread the count into `writeChunkedValue` and skip the blind sweep. */
+export async function readChunkedValueWithCount(prefix: string): Promise<ChunkedValueWithCount> {
   const countStr = await secureStorage.getRawItem(`${prefix}_count`, 'durableChunkCountRead');
-  if (!countStr) return null;
+  if (!countStr) return { value: null, chunkCount: 0 };
   const count = parseInt(countStr, 10);
-  if (!Number.isFinite(count) || count < 0) return null;
+  if (!Number.isFinite(count) || count < 0) return { value: null, chunkCount: null };
   // `durableTombstone.has()` calls this per draft during the orphan/eviction
   // sweeps and the list can reach ~7 chunks at MAX_TOMBSTONES, so the serial
   // version cost ~8 Keystore round trips per probe. Windowed rather than fully
@@ -48,8 +83,12 @@ export async function readChunkedValue(prefix: string): Promise<string | null> {
   const result = await readChunksBounded(count, (i) =>
     secureStorage.getRawItem(`${prefix}_chunk_${i}`, 'durableChunkRead'),
   );
-  if (!result.ok) return null; // torn / not-credible read -> treat as absent
-  return result.parts.join('');
+  if (!result.ok) return { value: null, chunkCount: count }; // torn / not-credible read -> treat as absent
+  return { value: result.parts.join(''), chunkCount: count };
+}
+
+export async function readChunkedValue(prefix: string): Promise<string | null> {
+  return (await readChunkedValueWithCount(prefix)).value;
 }
 
 /**

@@ -146,8 +146,14 @@ test('submit failure telemetry reads network state at failure time and carries t
 
   // netInfo was read once before the upload started, behind uploadSlot's pinned
   // dep array, so a multi-minute upload reported the transport it BEGAN on.
-  assert.match(src, /const netInfoRef = useRef\(netInfo\);/);
-  assert.match(src, /netInfoRef\.current = netInfo;/);
+  // The ref mirror now lives in useConnectivity (which re-renders the screen
+  // on isConnected flips only); record.tsx must still read the CURRENT state
+  // through that ref at failure time.
+  assert.match(src, /const netInfoRef = useRef<NetInfoState \| null>\(null\);/);
+  assert.match(src, /const isConnected = useConnectivity\(netInfoRef\);/);
+  assert.match(src, /networkStateFromNetInfo\(netInfoRef\.current\)/);
+  const connectivity = await read('src/hooks/useConnectivity.ts');
+  assert.match(connectivity, /if \(mirrorRef\) mirrorRef\.current = next;/);
 
   const severityIndex = src.indexOf('const isRecoverable = isRecoverableSubmitFailure(error);');
   const telemetryBody = src.slice(severityIndex, severityIndex + 3400);

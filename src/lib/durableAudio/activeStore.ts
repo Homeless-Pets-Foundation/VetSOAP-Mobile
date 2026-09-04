@@ -17,7 +17,7 @@
  *
  * Survives secureStorage.clearAll() (prefixed key, not in the delete allowlist).
  */
-import { writeChunkedValue, readChunkedValue, deleteChunkedValue } from './chunkedStore';
+import { writeChunkedValue, readChunkedValueWithCount, deleteChunkedValue } from './chunkedStore';
 import { isValidDurableId } from './paths';
 
 const KEY_PREFIX = 'captivet_durable_active';
@@ -35,23 +35,53 @@ function prefixFor(userId: string): string {
   return `${KEY_PREFIX}_${userId}`;
 }
 
-async function readList(userId: string): Promise<DurableActiveEntry[]> {
-  const raw = await readChunkedValue(prefixFor(userId));
-  if (!raw) return [];
+interface ActiveListRead {
+  list: DurableActiveEntry[];
+  /** Persisted chunk count, threaded into the write so its stale sweep is exact. */
+  chunkCount: number | null;
+}
+
+async function readList(userId: string): Promise<ActiveListRead> {
+  const { value: raw, chunkCount } = await readChunkedValueWithCount(prefixFor(userId));
+  if (!raw) return { list: [], chunkCount };
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (e): e is DurableActiveEntry =>
-        e && typeof e.recordingId === 'string' && typeof e.slotId === 'string',
-    );
+    if (!Array.isArray(parsed)) return { list: [], chunkCount };
+    return {
+      list: parsed.filter(
+        (e): e is DurableActiveEntry =>
+          e && typeof e.recordingId === 'string' && typeof e.slotId === 'string',
+      ),
+      chunkCount,
+    };
   } catch {
-    return [];
+    return { list: [], chunkCount };
   }
 }
 
-async function writeList(userId: string, list: DurableActiveEntry[]): Promise<void> {
-  await writeChunkedValue(prefixFor(userId), JSON.stringify(list));
+// `setActive` runs on the record-start critical path (before the mic opens).
+// Passing the count we just read turns the blind 16-key stale sweep into zero
+// deletes in the steady state — see WriteChunkedValueOptions.
+async function writeList(
+  userId: string,
+  list: DurableActiveEntry[],
+  prevChunkCount: number | null,
+): Promise<void> {
+  await writeChunkedValue(prefixFor(userId), JSON.stringify(list), { prevChunkCount });
+}
+
+// Every mutation is a read-modify-write over ONE chunked value, and the
+// record-start path deliberately does not await the pointer write before the
+// native start (it is bounded by raceDurableActiveWrite instead). Serialize the
+// mutations so an overlapping call — a failed start's clearActive racing its
+// own still-in-flight setActive, or a re-tap while the previous write is
+// pending — sees the list the previous call wrote instead of losing it. A
+// rejected op never poisons the chain.
+let mutationQueue: Promise<void> = Promise.resolve();
+function serialized(op: () => Promise<void>): Promise<void> {
+  const run = mutationQueue.then(op, op);
+  mutationQueue = run.catch(() => {});
+  return run;
 }
 
 export const durableActiveStore = {
@@ -59,27 +89,32 @@ export const durableActiveStore = {
     currentUserId = userId;
   },
 
-  async setActive(recordingId: string, slotId: string, startedAt: string): Promise<void> {
-    const userId = currentUserId;
-    if (!userId || !isValidDurableId(recordingId)) return;
-    const list = (await readList(userId)).filter((e) => e.recordingId !== recordingId);
-    list.push({ recordingId, slotId, startedAt });
-    while (list.length > MAX_ACTIVE) list.shift();
-    await writeList(userId, list);
+  setActive(recordingId: string, slotId: string, startedAt: string): Promise<void> {
+    return serialized(async () => {
+      const userId = currentUserId;
+      if (!userId || !isValidDurableId(recordingId)) return;
+      const { list: existing, chunkCount } = await readList(userId);
+      const list = existing.filter((e) => e.recordingId !== recordingId);
+      list.push({ recordingId, slotId, startedAt });
+      while (list.length > MAX_ACTIVE) list.shift();
+      await writeList(userId, list, chunkCount);
+    });
   },
 
-  async clearActive(recordingId: string): Promise<void> {
-    const userId = currentUserId;
-    if (!userId) return;
-    const list = await readList(userId);
-    const next = list.filter((e) => e.recordingId !== recordingId);
-    if (next.length !== list.length) await writeList(userId, next);
+  clearActive(recordingId: string): Promise<void> {
+    return serialized(async () => {
+      const userId = currentUserId;
+      if (!userId) return;
+      const { list, chunkCount } = await readList(userId);
+      const next = list.filter((e) => e.recordingId !== recordingId);
+      if (next.length !== list.length) await writeList(userId, next, chunkCount);
+    });
   },
 
   async list(): Promise<DurableActiveEntry[]> {
     const userId = currentUserId;
     if (!userId) return [];
-    return readList(userId);
+    return (await readList(userId)).list;
   },
 
   /** True if any durable recording was still marked active from a prior process. */
@@ -87,7 +122,7 @@ export const durableActiveStore = {
     return (await this.list()).length > 0;
   },
 
-  async clearForUser(userId: string): Promise<void> {
-    await deleteChunkedValue(prefixFor(userId));
+  clearForUser(userId: string): Promise<void> {
+    return serialized(() => deleteChunkedValue(prefixFor(userId)));
   },
 };

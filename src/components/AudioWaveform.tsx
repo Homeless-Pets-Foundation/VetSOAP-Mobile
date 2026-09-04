@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { View } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -7,63 +7,62 @@ import Animated, {
   withRepeat,
   Easing,
   cancelAnimation,
+  type SharedValue,
 } from 'react-native-reanimated';
 import { useResponsive } from '../hooks/useResponsive';
 
 const MIN_HEIGHT = 4;
-const METERING_MIN = -60;
-const METERING_MAX = 0;
 
 interface AudioWaveformProps {
   isActive: boolean;
   isPaused?: boolean;
-  metering?: number;
+  /**
+   * 0..1 level (see `normalizeMeteringDb`), owned by the caller. A metering
+   * sample is written straight into this SharedValue, so it never passes
+   * through React state on its way to the bars — the previous design fanned
+   * one sample into 24–36 per-bar `withTiming` starts on a LAYOUT prop
+   * (`height`) through a React re-render, which on the durable backend's 4 Hz
+   * metering was ~100+ animation starts and a Yoga relayout per second on
+   * low-end Android. Omit for a static (inactive) waveform.
+   */
+  level?: SharedValue<number>;
 }
 
 interface WaveBarProps {
   index: number;
   barCount: number;
   isActive: boolean;
-  isPaused?: boolean;
   barWidth: number;
   barGap: number;
   maxHeight: number;
-  targetHeight: number;
+  level: SharedValue<number>;
   jitter: number;
 }
 
-const WaveBar = React.memo(function WaveBar({ index, barCount, isActive, isPaused, barWidth, barGap, maxHeight, targetHeight, jitter }: WaveBarProps) {
-  const height = useSharedValue(MIN_HEIGHT);
-
-  useEffect(() => {
-    if (isActive && !isPaused) {
-      // Add per-bar variation: bars near center are taller, edges shorter
-      const center = barCount / 2;
-      const distFromCenter = Math.abs(index - center) / center;
-      const variation = 1 - distFromCenter * 0.4;
-      const finalHeight = Math.max(MIN_HEIGHT, targetHeight * variation * jitter);
-
-      height.value = withTiming(finalHeight, {
-        duration: 150,
-        easing: Easing.out(Easing.ease),
-      });
-    } else if (isPaused) {
-      cancelAnimation(height);
-    } else {
-      height.value = withTiming(MIN_HEIGHT, { duration: 400 });
-    }
-    return () => { cancelAnimation(height); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- height is a stable Reanimated SharedValue ref; barCount/index/jitter are stable per-bar props
-  }, [isActive, isPaused, targetHeight, maxHeight]);
+/**
+ * One bar. Fixed layout height, animated via `scaleY` on the UI thread from the
+ * shared level — no per-bar effect, no per-bar animation start, no layout pass.
+ */
+const WaveBar = React.memo(function WaveBar({ index, barCount, isActive, barWidth, barGap, maxHeight, level, jitter }: WaveBarProps) {
+  // Per-bar constant: bars near the center are taller, edges shorter.
+  const center = barCount / 2;
+  const distFromCenter = Math.abs(index - center) / center;
+  const variation = (1 - distFromCenter * 0.4) * jitter;
+  const minScale = MIN_HEIGHT / maxHeight;
 
   const animatedStyle = useAnimatedStyle(() => ({
-    height: height.value,
+    transform: [{ scaleY: Math.max(minScale, Math.min(1, level.value * variation)) }],
   }));
 
   return (
     <Animated.View
       className={`rounded-full ${isActive ? 'bg-brand-500' : 'bg-border-strong'}`}
-      style={[{ width: barWidth, marginHorizontal: barGap / 2 }, animatedStyle]}
+      style={[
+        // Explicit radius: `rounded-full` resolves against the un-scaled box, so
+        // pin it to the bar width to keep the pill ends round at low scale.
+        { width: barWidth, height: maxHeight, marginHorizontal: barGap / 2, borderRadius: barWidth / 2 },
+        animatedStyle,
+      ]}
     />
   );
 });
@@ -77,7 +76,7 @@ const WaveBar = React.memo(function WaveBar({ index, barCount, isActive, isPause
 function BreathingRing({ active }: { active: boolean }) {
   const progress = useSharedValue(0);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (active) {
       progress.value = withRepeat(
         withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.ease) }),
@@ -110,7 +109,12 @@ function BreathingRing({ active }: { active: boolean }) {
   );
 }
 
-export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWaveformProps) {
+/**
+ * Memoized: its props are `isActive`, `isPaused` and a stable SharedValue, so
+ * the once-per-second timer commit in RecorderLiveReadout never reaches the
+ * bars.
+ */
+export const AudioWaveform = React.memo(function AudioWaveform({ isActive, isPaused, level }: AudioWaveformProps) {
   const { isTablet: isWide } = useResponsive();
   const barCount = isWide ? 36 : 24;
   const barWidth = isWide ? 4 : 3;
@@ -120,21 +124,23 @@ export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWave
   const maxHeight = isWide ? 104 : 68;
   const containerHeight = isWide ? 120 : 80;
 
+  // A static waveform (non-owner card) has no caller-owned level: rest at 0.
+  const idleLevel = useSharedValue(0);
+  const barLevel = level ?? idleLevel;
+
   // Pre-calculate per-bar jitter once (deterministic across renders)
   const jitterValues = useMemo(
     () => Array.from({ length: barCount }, () => 0.85 + Math.random() * 0.3),
     [barCount]
   );
 
-  // Normalize metering from dB range to pixel height
-  const clamped = Math.max(METERING_MIN, Math.min(METERING_MAX, metering));
-  const normalized = (clamped - METERING_MIN) / (METERING_MAX - METERING_MIN);
-  const targetHeight = MIN_HEIGHT + normalized * (maxHeight - MIN_HEIGHT);
-
   const live = isActive && !isPaused;
 
   return (
     <View
+      // The glow stays on THIS node: iOS draws a legacy shadow from the layer's
+      // content alpha, so an empty sibling would render no glow at all, and on
+      // Android the elevation shadow comes from the outline, not the children.
       className={`flex-row items-center justify-center my-3 rounded-card ${live ? 'shadow-glow' : ''}`}
       style={{ height: containerHeight }}
       accessibilityLabel="Audio recording waveform"
@@ -147,14 +153,13 @@ export function AudioWaveform({ isActive, isPaused, metering = -160 }: AudioWave
           index={i}
           barCount={barCount}
           isActive={isActive}
-          isPaused={isPaused}
           barWidth={barWidth}
           barGap={barGap}
           maxHeight={maxHeight}
-          targetHeight={targetHeight}
+          level={barLevel}
           jitter={jitterValues[i]}
         />
       ))}
     </View>
   );
-}
+});

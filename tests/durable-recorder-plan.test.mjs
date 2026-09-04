@@ -890,7 +890,15 @@ test('durable active-pointer write is bounded so a hung Keystore cannot strand s
   assert.match(rec, /const DURABLE_ACTIVE_WRITE_TIMEOUT_MS =/);
   // The timeout RESOLVES (setTimeout(resolve, ...)) so start always proceeds.
   assert.match(rec, /timer = setTimeout\(resolve, DURABLE_ACTIVE_WRITE_TIMEOUT_MS\)/);
-  assert.match(rec, /await raceDurableActiveWrite\(\s*durableActiveStore\.setActive\(/);
+  // The write is DISPATCHED before native start and JOINED after it, so its
+  // Keystore round trips overlap MediaCodec/AudioRecord init instead of gating
+  // it (record-start latency on older devices). Still bounded, still awaited
+  // before the slot flips to 'recording'.
+  const iPointer = rec.indexOf('const activePointerWrite = raceDurableActiveWrite(');
+  const iStart = rec.indexOf('withDurableOpWatchdog(', iPointer);
+  const iJoin = rec.indexOf('await activePointerWrite;', iStart);
+  assert.ok(iPointer > 0 && iStart > iPointer && iJoin > iStart, 'pointer write must overlap native start');
+  assert.doesNotMatch(rec, /await raceDurableActiveWrite\(/);
 });
 
 test('resumeSession counts missing durable audio in the all-missing prune check', async () => {

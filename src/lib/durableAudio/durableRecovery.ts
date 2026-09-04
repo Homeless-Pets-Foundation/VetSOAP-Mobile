@@ -44,6 +44,15 @@ const PROCESS_START_ISO = new Date().toISOString();
 let killSignalReported = false;
 
 /**
+ * True once this launch has proven a prior process died mid-capture. Read by the
+ * Record screen so the battery-optimization nudge can state what actually
+ * happened instead of speculating. Never resets within a process.
+ */
+export function priorProcessKillDetected(): boolean {
+  return killSignalReported;
+}
+
+/**
  * Detect and report "a prior process died while capturing".
  *
  * This is the only signal we have for an OS process kill: an LMK / battery-

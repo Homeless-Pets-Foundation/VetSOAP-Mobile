@@ -145,6 +145,27 @@ export const SILENT_CHECK_COPY = {
   upload: 'Upload Anyway',
 } as const;
 
+export const BATTERY_OPTIMIZATION_COPY = {
+  title: 'Keep recordings safe',
+  /**
+   * Shown once per device, Android only. Deliberately concrete about the
+   * consequence — Android silently killing the app mid-exam is exactly how
+   * un-sent audio was being lost, and a vague "improve performance" nudge does
+   * not earn the trip into system settings.
+   */
+  body:
+    'Android may stop Captivet while you record, which can cut a recording short. ' +
+    'Allowing Captivet to run in the background prevents that.\n\n' +
+    'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").',
+  /** Same ask, after we detected the OS actually did it. */
+  bodyAfterKill:
+    'Android stopped Captivet during your last recording, so part of it was not saved. ' +
+    'Allowing Captivet to run in the background prevents that.\n\n' +
+    'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").',
+  confirm: 'Open Settings',
+  dismiss: 'Not Now',
+} as const;
+
 export const OVERSIZED_CONFIRM_COPY = {
   title: 'Recording is large',
   /** Body builder. `hours` rounded to 1 decimal, `mb` rounded to whole MB, `parts` is the predicted part count. */

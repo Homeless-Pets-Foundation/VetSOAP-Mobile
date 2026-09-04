@@ -23,7 +23,7 @@ import { safeDeleteFile, safeDeleteDirectory, fileExists, writeFilePrefix, ensur
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { Paths } from 'expo-file-system';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
-import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
+import type { checkAudioSilenceForUpload as CheckAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import {
   DISCARD_SESSION_COPY,
   MULTI_PATIENT_RECORD_FIRST_COPY,
@@ -55,6 +55,8 @@ import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
 import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
+import { priorProcessKillDetected } from '../../../src/lib/durableAudio/durableRecovery';
+import { maybePromptBatteryOptimization } from '../../../src/lib/batteryOptimization';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
 import { durableReconcileHold } from '../../../src/lib/durableAudio/reconcileHold';
 import { withPromiseTimeout } from '../../../src/lib/promiseTimeout';
@@ -470,6 +472,15 @@ async function checkSilentAudio(slot: PatientSlot): Promise<{
     );
     for (let index = 0; index < slot.segments.length; index++) {
       const segment = slot.segments[index];
+      // Lazy (rule 19). src/lib/ffmpeg imports ffmpeg-kit-react-native, whose
+      // module load links the FFmpeg native libraries into the process. As a
+      // static import that happened on every Record-tab mount — on the low-end
+      // Galaxy Tab A7 Lite fleet that is heap pressure paid for a check that
+      // only runs at submit time. The sibling static import via oversizedSplit
+      // is lazied for the same reason; make BOTH lazy or neither helps.
+      const checkAudioSilenceForUpload: typeof CheckAudioSilenceForUpload =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require('../../../src/lib/ffmpeg').checkAudioSilenceForUpload;
       const result = await checkAudioSilenceForUpload(
         segment.uri,
         {},
@@ -605,18 +616,53 @@ function slotSubmitDiagnostics(
   };
 }
 
+/**
+ * Tail of the serialized startup-sweep chain.
+ *
+ * The mount sweeps each walk every local draft, and one draft costs
+ * `1 + chunkCount` AndroidKeyStore round-trips. Run concurrently on the
+ * low-end Galaxy Tab A7 Lite fleet they starved the JS thread — Sentry showed
+ * slow_phase_fetchUser at 14 456 ms against a 10 000 ms threshold and
+ * init_watchdog_fired with 734 MB still free, i.e. contention, not memory.
+ *
+ * Serializing also FIXES an ordering bug: the 30-day eviction used to read its
+ * draft list concurrently with the orphan sweep, so it classified rows that
+ * cleanup was in the middle of deleting. Chained, eviction sees post-cleanup
+ * state.
+ *
+ * Deliberately module-scoped, not a ref: the chain must outlive a remount of
+ * the Record tab, and a rejected link must not poison the tail.
+ */
+let startupSweepTail: Promise<void> = Promise.resolve();
+
 function scheduleNonUrgentWork(
   label: string,
   work: () => Promise<void>,
   fallbackMs = 2_500,
-  warningThresholdMs: number | null = 10_000
+  warningThresholdMs: number | null = 10_000,
+  // Queue behind the other serialized sweeps instead of racing them. Only for
+  // the heavy mount-once sweeps — never for work that drives visible UI state,
+  // which must not sit behind a multi-second eviction pass.
+  serial = false
 ): () => void {
   let cancelled = false;
   let started = false;
   const run = () => {
     if (cancelled || started) return;
     started = true;
-    measurePhase(label, undefined, work, { warningThresholdMs }).catch(() => {});
+    if (!serial) {
+      measurePhase(label, undefined, work, { warningThresholdMs }).catch(() => {});
+      return;
+    }
+    startupSweepTail = startupSweepTail
+      // Re-check after the wait: the effect may have been torn down (unmount,
+      // user switch) while we were queued, and every sweep's own isScopeValid()
+      // guard also re-runs inside work().
+      .then(() => (cancelled ? undefined : measurePhase(label, undefined, work, { warningThresholdMs })))
+      .then(
+        () => {},
+        () => {}, // a failed sweep must not break the chain for the next one
+      );
   };
   const task = InteractionManager.runAfterInteractions(() => {
     run();
@@ -6339,6 +6385,25 @@ function RecordingSession() {
     });
   }, []);
 
+  // Effect: ask once per device whether to exempt Captivet from Android battery
+  // optimization. Samsung One UI app-sleep kills the app mid-recording, and that
+  // kill reaches no crash reporter at all. Queued behind the startup sweeps so
+  // the dialog never lands while the screen is still settling, and it says what
+  // actually happened when this launch proved a prior process was killed.
+  useEffect(() => {
+    if (!user?.id) return;
+    const cancelWork = scheduleNonUrgentWork(
+      'battery_opt_prompt',
+      async () => {
+        await maybePromptBatteryOptimization(priorProcessKillDetected());
+      },
+      5_000,
+      null,
+      true,
+    );
+    return cancelWork;
+  }, [user?.id]);
+
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
@@ -6394,7 +6459,7 @@ function RecordingSession() {
       // own uniquely-timestamped subdir and are guarded by the orchestrator's
       // own try/catch — this only wipes leftovers.
       if (isScopeValid()) cleanupSplitTempDirs(user.id);
-    }, 3_000);
+    }, 3_000, 10_000, true);
     return () => {
       cancelled = true;
       cancelWork();
@@ -6512,7 +6577,7 @@ function RecordingSession() {
       } catch (error) {
         if (__DEV__) console.error('[record] eviction sweep failed:', error);
       }
-    }, 4_000);
+    }, 4_000, 10_000, true);
     return () => {
       cancelled = true;
       cancelWork();

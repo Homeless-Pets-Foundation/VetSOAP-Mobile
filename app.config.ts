@@ -110,6 +110,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       },
     ],
     'expo-secure-store',
+    // Raise the Java heap ceiling on the low-end Galaxy Tab A7 Lite fleet so the
+    // OS reaches for us later. See the plugin header for the Sentry evidence.
+    './plugins/with-android-large-heap',
     [
       'expo-local-authentication',
       {

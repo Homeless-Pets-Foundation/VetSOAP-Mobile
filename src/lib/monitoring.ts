@@ -199,9 +199,19 @@ export function initMonitoring(): void {
         }
         return 0.1;
       },
-      // iOS app-hang tracking: watchdog-style detection when the main thread
-      // stops responding. Android ANR detection is enabled through the native
-      // SDK's default integrations but called out here for clarity.
+      // iOS ONLY — watchdog-style detection when the main thread stops
+      // responding. This option does nothing on Android (@platform ios in the
+      // SDK's options.d.ts), and neither does enableWatchdogTerminationTracking.
+      //
+      // Android ANRs come from sentry-android's default AnrIntegration, which we
+      // do not configure here. More importantly, NEITHER covers the failure mode
+      // that actually hurts on our fleet: an OS process kill (low-memory killer,
+      // Samsung One UI app-sleep, battery optimizer) raises no exception and no
+      // native signal, so Sentry records nothing at all. The only detector for
+      // that is the launch-time capture pointer — see reportPriorProcessKill in
+      // src/lib/durableAudio/durableRecovery.ts, which emits
+      // 'process_killed_mid_capture'. Do not delete it expecting Sentry to catch
+      // these; it cannot.
       enableAppHangTracking: true,
       // Default PII off — we set user ID manually via setUser().
       sendDefaultPii: false,

@@ -33,6 +33,64 @@ const MAX_OFFERED = 50;
 /** Rule 24 watchdog: a hung native scan must never stall app entry. */
 const SCAN_WATCHDOG_MS = 12_000;
 
+/**
+ * When THIS process started. Any active-capture pointer with an earlier
+ * `startedAt` was written by a process that never got to clear it — i.e. the OS
+ * killed us. Entries at or after this instant belong to the live process (a
+ * sign-in mid-session re-runs the scan) and must never be reported as a kill.
+ */
+const PROCESS_START_ISO = new Date().toISOString();
+/** Report the kill signal once per process, even if the scan re-runs. */
+let killSignalReported = false;
+
+/**
+ * Detect and report "a prior process died while capturing".
+ *
+ * This is the only signal we have for an OS process kill: an LMK / battery-
+ * optimizer / app-sleep kill raises no JS exception and no native signal, so
+ * Sentry records nothing at all. A capture pointer that outlived its process is
+ * the proof, because every clean stop, discard and purge clears it.
+ *
+ * Reported entries are cleared afterwards so the same kill is not re-reported on
+ * every subsequent launch. Clearing is safe: recovery is driven by native
+ * manifests, never by this pointer.
+ *
+ * Never throws — this runs before the recovery work that actually saves audio.
+ */
+async function reportPriorProcessKill(recoveredCount: number): Promise<void> {
+  if (killSignalReported) return;
+  try {
+    const entries = await durableActiveStore.list();
+    const stale = entries.filter((e) => typeof e.startedAt === 'string' && e.startedAt < PROCESS_START_ISO);
+    if (stale.length === 0) return;
+    killSignalReported = true;
+
+    let durable = 0;
+    let expo = 0;
+    for (const e of stale) {
+      if (e.backend === 'expo') expo++;
+      else durable++;
+    }
+
+    trackEvent({
+      name: 'process_killed_mid_capture',
+      props: { durable_count: durable, expo_count: expo, recovered_count: recoveredCount },
+    });
+    // Sentry sees no crash for an OS kill, so this message is the only trace.
+    // Counts only — no ids, no slot ids, no paths.
+    captureMessage('process_killed_mid_capture', 'warning', {
+      tags: { phase: 'record' },
+      extra: { durable_count: durable, expo_count: expo, recovered_count: recoveredCount },
+    });
+
+    for (const e of stale) {
+      await durableActiveStore.clearActive(e.recordingId).catch(() => {});
+    }
+  } catch {
+    // Never let the kill probe block recovery.
+  }
+}
+
 /** Uploaded/processed = not one of the pre-upload states. null = unverifiable. */
 async function serverStatusIsUploaded(serverRecordingId: string): Promise<boolean | null> {
   try {
@@ -139,13 +197,19 @@ export async function scanDurableRecoveries(
   try {
     manifests = await durableRecorder.listRecoverableSessions(userId);
   } catch {
+    // Native enumeration failed, but the kill signal lives in SecureStore and is
+    // still readable — report it before bailing.
+    await reportPriorProcessKill(0);
     return [];
   }
   if (!manifests || manifests.length === 0) {
-    // Even with no recoverable capture, clear the active-recording pointer so a
-    // clean prior exit doesn't look like a crash next launch.
+    // No recoverable capture does NOT mean a clean prior exit. The expo fallback
+    // leaves no manifest at all, so this is exactly the unrecoverable-loss case
+    // the kill probe exists to catch. Reporting also clears the stale pointer.
+    await reportPriorProcessKill(0);
     return [];
   }
+  await reportPriorProcessKill(manifests.length);
 
   // Reconcile created-but-unconfirmed recordings against the server BEFORE
   // selection: if already confirmed-uploaded, mark uploaded so it self-heals and

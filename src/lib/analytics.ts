@@ -129,6 +129,17 @@ export type AnalyticsEvent =
   | { name: 'durable_writer_backpressure'; props: { queue_ms?: number } }
   | { name: 'durable_capture_drop'; props: { dropped_frames?: number } }
   | { name: 'durable_process_recovered'; props: { recovered_count: number } }
+  /**
+   * A prior process died while a capture was live — the OS killed us (LMK,
+   * battery optimizer, app-sleep), which produces no crash event anywhere.
+   * `expo_count` captures are UNRECOVERABLE: MediaRecorder writes the MP4 moov
+   * atom only on stop(), so a killed process leaves an undecodable file.
+   * `durable_count` captures lose only the tail since the last ~2s commit.
+   */
+  | {
+      name: 'process_killed_mid_capture';
+      props: { durable_count: number; expo_count: number; recovered_count: number };
+    }
   | { name: 'durable_battery_opt_exemption'; props: { granted: boolean } }
   | { name: 'durable_recovery_available'; props: { count: number } }
   | { name: 'durable_recovery_restored'; props: { mode: 'resume' | 'review' | 'stash' } }

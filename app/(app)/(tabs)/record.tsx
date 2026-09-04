@@ -1238,6 +1238,8 @@ function RecordingSession() {
       if (persistedSlot) {
         pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
       }
+      // Segment captured and finalized — this was a clean exit for the expo path.
+      durableActiveStore.clearActive(slotId).catch(() => {});
       recordingSegmentStartedAtMsRef.current = null;
 
       // If there's a pending stash, just reset the recorder here.
@@ -1263,6 +1265,9 @@ function RecordingSession() {
       const boundSlotId = session.recorderBoundToSlotId;
       const boundSlot = session.slots.find((s) => s.id === boundSlotId);
       unbindRecorder();
+      // Native capture failed outright. The process is alive and handled it, so
+      // this is not an OS kill — drop the pointer or next launch misreports it.
+      durableActiveStore.clearActive(boundSlotId).catch(() => {});
       recordingSegmentStartedAtMsRef.current = null;
 
       if (boundSlot) {
@@ -1932,6 +1937,16 @@ function RecordingSession() {
                 'start',
               );
             } else {
+              // Expo fallback. It leaves no manifest and no recoverable file if
+              // the process dies (MediaRecorder writes the MP4 moov atom only on
+              // stop()), so the active pointer is the ONLY evidence the capture
+              // ever existed. Write it before start, bounded exactly like the
+              // durable path so a hung Keystore can't strand the tap handler.
+              if (user?.id) {
+                await raceDurableActiveWrite(
+                  durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
+                );
+              }
               await recorder.start();
             }
           }

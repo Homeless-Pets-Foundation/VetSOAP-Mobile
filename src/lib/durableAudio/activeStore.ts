@@ -23,10 +23,29 @@ import { isValidDurableId } from './paths';
 const KEY_PREFIX = 'captivet_durable_active';
 const MAX_ACTIVE = 50;
 
+export type CaptureBackend = 'durable' | 'expo';
+
 export interface DurableActiveEntry {
   recordingId: string;
   slotId: string;
   startedAt: string;
+  /**
+   * Which recorder owned the capture. Absent on entries persisted before this
+   * field existed — read as 'durable', which is what those entries were.
+   *
+   * The expo fallback writes here too. It has no durable manifest to recover,
+   * so an 'expo' entry surviving to next launch is PURELY a kill signal: the
+   * in-progress .m4a had no moov atom written and is unrecoverable. That is the
+   * loss we are trying to measure, and it is the only backend running in
+   * production until the durable flag is turned on.
+   */
+  backend?: CaptureBackend;
+}
+
+/** Counts of entries that survived a prior process, split by recorder. */
+export interface LastExitCapture {
+  durable: number;
+  expo: number;
 }
 
 let currentUserId: string | null = null;
@@ -59,11 +78,16 @@ export const durableActiveStore = {
     currentUserId = userId;
   },
 
-  async setActive(recordingId: string, slotId: string, startedAt: string): Promise<void> {
+  async setActive(
+    recordingId: string,
+    slotId: string,
+    startedAt: string,
+    backend: CaptureBackend = 'durable',
+  ): Promise<void> {
     const userId = currentUserId;
     if (!userId || !isValidDurableId(recordingId)) return;
     const list = (await readList(userId)).filter((e) => e.recordingId !== recordingId);
-    list.push({ recordingId, slotId, startedAt });
+    list.push({ recordingId, slotId, startedAt, backend });
     while (list.length > MAX_ACTIVE) list.shift();
     await writeList(userId, list);
   },
@@ -82,9 +106,30 @@ export const durableActiveStore = {
     return readList(userId);
   },
 
-  /** True if any durable recording was still marked active from a prior process. */
+  /** True if any recording was still marked active from a prior process. */
   async wasRecordingAtLastExit(): Promise<boolean> {
     return (await this.list()).length > 0;
+  },
+
+  /**
+   * Per-backend counts of captures that outlived their process, for the
+   * launch-time kill signal. Never throws — a Keystore failure reads as zero
+   * rather than manufacturing a false kill report.
+   */
+  async capturesAtLastExit(): Promise<LastExitCapture> {
+    let list: DurableActiveEntry[];
+    try {
+      list = await this.list();
+    } catch {
+      return { durable: 0, expo: 0 };
+    }
+    let durable = 0;
+    let expo = 0;
+    for (const e of list) {
+      if (e.backend === 'expo') expo++;
+      else durable++;
+    }
+    return { durable, expo };
   },
 
   async clearForUser(userId: string): Promise<void> {

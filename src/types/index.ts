@@ -265,6 +265,8 @@ export interface User {
   email: string;
   fullName: string;
   role: string;
+  /** Platform flag returned by /auth/me; independent from the practice role. */
+  isSuperAdmin?: boolean;
   organizationId: string;
   avatarUrl: string | null;
   capabilities?: string[];

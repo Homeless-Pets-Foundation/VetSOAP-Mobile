@@ -87,6 +87,8 @@ async function loadHarness({
         },
       },
       './client': { apiClient, ApiError },
+      '../config': { R2_BUCKET_HOSTNAME: 'recordings.example.test' },
+      './downloadManifest': { parseDownloadManifest: (value) => value },
       '../lib/validation': realValidation,
       '../lib/aiModels': { normalizeOrgAiModels: (value) => value },
       '../lib/sslPinning': { validateUploadUrl: () => {} },

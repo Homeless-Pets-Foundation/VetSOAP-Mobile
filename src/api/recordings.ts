@@ -75,6 +75,11 @@ import {
   isNativePreflightTimeout,
   type NativePreflightMode,
 } from '../lib/nativePreflight';
+import { R2_BUCKET_HOSTNAME } from '../config';
+import {
+  parseDownloadManifest,
+  type DownloadManifest,
+} from './downloadManifest';
 
 const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 250 MB
 const GENERATIVE_REQUEST_TIMEOUT_MS = 90_000;
@@ -1940,8 +1945,8 @@ export const recordingsApi = {
   /**
    * Issue short-lived presigned GET URLs for a recording's audio (server S5).
    * `Recording.audioFileUrl` is a raw R2 object key — never fetchable
-   * directly. Multi-segment recordings are not merged server-side, so each
-   * segment gets its own URL; `url` mirrors `segmentUrls[0]`.
+   * directly. Multi-segment recordings remain separate persisted originals,
+   * so each segment gets its own URL; `url` mirrors `segmentUrls[0]`.
    */
   async getPlaybackUrl(recordingId: string): Promise<PlaybackUrlResult> {
     recordingIdSchema.parse(recordingId);
@@ -1959,6 +1964,35 @@ export const recordingsApi = {
       throw new ApiError('No playable audio URL was returned.', 0, false, undefined, 'NO_AUDIO');
     }
     return { url: segmentUrls[0], expiresAt: result?.expiresAt ?? '', segmentUrls };
+  },
+
+  /**
+   * Fetch and strictly validate the ordered original-audio attachment manifest.
+   * The organization id comes from the authenticated profile and is used only
+   * to pin every signed R2 object path to the current tenant + recording.
+   */
+  async getDownloadManifest(
+    recordingId: string,
+    organizationId: string
+  ): Promise<DownloadManifest> {
+    recordingIdSchema.parse(recordingId);
+    if (typeof organizationId !== 'string' || organizationId.length === 0) {
+      throw new ApiError(
+        'Audio download is unavailable.',
+        0,
+        false,
+        undefined,
+        'DOWNLOAD_MANIFEST_INVALID'
+      );
+    }
+    const result = await apiClient.post<unknown>(
+      `/api/recordings/${recordingId}/download-url`
+    );
+    return parseDownloadManifest(result, {
+      recordingId,
+      organizationId,
+      configuredVirtualHost: R2_BUCKET_HOSTNAME,
+    });
   },
 
   async translate(

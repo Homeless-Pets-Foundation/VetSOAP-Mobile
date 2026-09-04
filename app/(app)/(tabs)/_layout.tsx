@@ -124,6 +124,14 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: 'Home',
+          // Per-screen freeze (never the global react-native-screens switch, never
+          // screenOptions — both would also freeze this whole tab navigator when a
+          // stack screen is pushed over it mid-recording): while the
+          // user is on Record, cache invalidations from finish/draft-save/
+          // upload no longer re-render this tree behind it. The record tab is
+          // deliberately excluded — its AppState/audio-focus/recorder effects
+          // must keep committing while a recording runs from another tab.
+          freezeOnBlur: true,
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Home} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Home dashboard',
         }}
@@ -147,6 +155,7 @@ export default function TabsLayout() {
         name="recordings"
         options={{
           title: 'Recordings',
+          freezeOnBlur: true,
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={FileText} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'View all recordings',
         }}
@@ -155,6 +164,7 @@ export default function TabsLayout() {
         name="patient"
         options={{
           title: 'Patients',
+          freezeOnBlur: true,
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Users} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Browse patients',
         }}

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Alert, AppState, Platform, PermissionsAndroid } from 'react-native';
 import {
   useAudioRecorder as useExpoAudioRecorder,
@@ -112,12 +112,19 @@ export interface UseAudioRecorderReturn {
   activeDurableRecordingId: string | null;
   /** Reserved for a recoverable durable recording surfaced to this hook (null in v1). */
   recoverableDurableRecordingId: string | null;
-  /** Durably-saved-through time (ms) — drives the secondary "saved" indicator. */
-  committedThroughMs: number;
-  /** Byte offset through the last complete ADTS frame (durable only). */
-  completeFrameBytes: number;
-  /** Timestamp of the last durable commit tick, or null. */
-  lastCommitAt: number | null;
+  /**
+   * Durable commit progress (saved-through time, complete-frame byte offset,
+   * last commit tick) read on demand from refs. Deliberately NOT React state:
+   * the native writer thread commits every 2 s and these values only ever
+   * grow, so as state they re-rendered the whole record screen (and every
+   * mounted slot card) twice a minute for values nothing displayed. A future
+   * "saved through" indicator polls this from a leaf, like getLiveStats.
+   */
+  getCommitSnapshot: () => {
+    committedThroughMs: number;
+    completeFrameBytes: number;
+    lastCommitAt: number | null;
+  };
   /** Snapshot of a finished durable capture, or null when the expo path is used. */
   getDurableSnapshot: () => DurableSnapshot | null;
   start: (ctx?: DurableStartContext) => Promise<void>;
@@ -232,8 +239,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   // ref-based callbacks). The durably-saved-through time is the crash-safe
   // duration to attribute to an interrupted capture.
   const committedThroughMsRef = useRef(0);
-  const [committedThroughMs, setCommittedThroughMs] = useState(0);
-  const [completeFrameBytes, setCompleteFrameBytes] = useState(0);
+  const completeFrameBytesRef = useRef(0);
   const [activeDurableRecordingId, setActiveDurableRecordingId] = useState<string | null>(null);
 
   const setElapsedSecondsValue = useCallback((seconds: number) => {
@@ -254,6 +260,16 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     }
     return Math.floor(durationMillis / 1000);
   }, []);
+
+  // Cheap sibling of getNativeDurationSeconds for the 250 ms live readout: the
+  // render-free sampler below already refreshes lastStatusRef every 500 ms
+  // (2000 ms in background), so the readout must not pay a second synchronous
+  // native getStatus() per tick on top of it (~6 bridge calls/s on the expo
+  // path). Transition-time reads (freeze/persist) keep the fresh native call.
+  const getPolledDurationSeconds = useCallback(
+    () => Math.floor((lastStatusRef.current?.durationMillis ?? 0) / 1000),
+    [],
+  );
 
   const getElapsedDurationSeconds = useCallback(() => {
     const startedAt = recordingStartedAtMsRef.current;
@@ -419,8 +435,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       durableRecorder.addRecordingProgressListener((e) => {
         if (backendRef.current !== 'durable' || e.recordingId !== durableRecordingIdRef.current) return;
         committedThroughMsRef.current = e.committedThroughMs;
-        setCommittedThroughMs(e.committedThroughMs);
-        setCompleteFrameBytes(e.completeFrameBytes);
+        completeFrameBytesRef.current = e.completeFrameBytes;
         lastCommitAtRef.current = Date.now();
         if (typeof e.peakDb === 'number' && e.peakDb > durablePeakDbRef.current) {
           durablePeakDbRef.current = e.peakDb;
@@ -528,14 +543,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       // Mirrors getPersistableSnapshot's live branch: the JS clock is the
       // primary source (iOS native status throttling can't make it jump),
       // native duration is the fallback when the JS clock loses (e.g. process
-      // was suspended), and the last transition value is the floor.
+      // was suspended), and the last transition value is the floor. The native
+      // value is the 500 ms polled sample, not a fresh bridge call.
       durationSeconds: Math.max(
         elapsedSecondsRef.current,
         getElapsedDurationSeconds(),
-        getNativeDurationSeconds()
+        getPolledDurationSeconds()
       ),
     };
-  }, [getElapsedDurationSeconds, getNativeDurationSeconds]);
+  }, [getElapsedDurationSeconds, getPolledDurationSeconds]);
 
   /** Clear durable backend refs + state back to the idle/expo default. */
   const resetDurableState = useCallback(() => {
@@ -547,8 +563,8 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     durableDurationMsRef.current = 0;
     durableLiveRef.current = { meteringDb: -160, capturedDurationMs: 0 };
     lastCommitAtRef.current = null;
-    setCommittedThroughMs(0);
-    setCompleteFrameBytes(0);
+    committedThroughMsRef.current = 0;
+    completeFrameBytesRef.current = 0;
     setActiveDurableRecordingId(null);
   }, []);
 
@@ -600,6 +616,14 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
             slotId: ctx.slotId,
             recordingId: ctx.recordingId,
           });
+          // Observer only (the race below still owns the outcome): times the
+          // native mic + MediaCodec + FGS bring-up like the expo phases, so a
+          // slow durable start on legacy hardware is visible in the same place.
+          // Bounded by the same deadline as the race so a start that never
+          // settles cannot leak measurePhase's AppState listener.
+          measurePhase('recorder_durable_start', undefined, () => withDurableTimeout(startPromise, DURABLE_START_TIMEOUT_MS, 'durable start timed out'), {
+            warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS,
+          }).catch(() => {});
           // If the timeout wins the race we fall back to expo-audio, but the
           // native start may still resolve LATE and own the mic + foreground
           // service with no JS slot referencing it. Discard that orphan capture
@@ -633,8 +657,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
           durableDurationMsRef.current = 0;
           durableLiveRef.current = { meteringDb: -160, capturedDurationMs: 0 };
           lastCommitAtRef.current = null;
-          setCommittedThroughMs(0);
-          setCompleteFrameBytes(0);
+          // Reset the REF too (previously only the state was): a stale
+          // committedThroughMs from the last capture would otherwise fold into
+          // the next recording's getDurableSnapshot() until its first commit.
+          committedThroughMsRef.current = 0;
+          completeFrameBytesRef.current = 0;
           setActiveDurableRecordingId(ctx.recordingId);
           startElapsedClock();
           setState('recording');
@@ -684,6 +711,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS,
       });
 
+      // Drop the previous capture's last polled sample: the readout's first
+      // tick after this commit runs BEFORE the sampler effect refreshes it
+      // (child effects first), and getLiveStats would otherwise show the
+      // prior segment's duration for one tick.
+      lastStatusRef.current = null;
       startElapsedClock();
       setState('recording');
       setAudioUri(null);
@@ -847,8 +879,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       };
       committedThroughMsRef.current = durableDurationMsRef.current;
       lastCommitAtRef.current = null;
-      setCommittedThroughMs(durableDurationMsRef.current);
-      setCompleteFrameBytes(existingManifest.audioFile.completeFrameBytes);
+      completeFrameBytesRef.current = existingManifest.audioFile.completeFrameBytes;
       setActiveDurableRecordingId(ctx.durable.recordingId);
       elapsedBeforeCurrentRunMsRef.current = durableDurationMsRef.current;
       recordingStartedAtMsRef.current = Date.now();
@@ -884,8 +915,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         capturedDurationMs: Math.max(ctx.durable.durationMs, manifest.capturedDurationMs),
       };
       committedThroughMsRef.current = Math.max(ctx.durable.durationMs, manifest.durationMs);
-      setCommittedThroughMs(committedThroughMsRef.current);
-      setCompleteFrameBytes(manifest.audioFile.completeFrameBytes);
+      completeFrameBytesRef.current = manifest.audioFile.completeFrameBytes;
       setState('recording');
       trackEvent({
         name: 'durable_recorder_started',
@@ -1110,38 +1140,79 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   const exposedActiveDurableRecordingId = activeDurableRecordingId ?? durableRecordingIdRef.current;
 
-  return {
-    state,
-    isStarting,
-    duration:
-      state === 'stopped' || state === 'interrupted'
-        ? finalDuration
-        : elapsedSeconds,
-    maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
-    getLiveStats,
-    audioUri,
-    mimeType: exposedActiveDurableRecordingId ? 'audio/aac' : 'audio/x-m4a',
-    getPersistableSnapshot: () => ({
+  const getPersistableSnapshot = useCallback(
+    () => ({
       audioUri: latestAudioUriRef.current,
       duration: finalDurationRef.current > 0
         ? finalDurationRef.current
         : Math.max(elapsedSecondsRef.current, getElapsedDurationSeconds(), getNativeDurationSeconds()),
       maxMetering: hasMeteringSampleRef.current ? maxMeteringRef.current : undefined,
     }),
-    activeDurableRecordingId: exposedActiveDurableRecordingId,
-    recoverableDurableRecordingId: null,
-    committedThroughMs,
-    completeFrameBytes,
-    lastCommitAt: lastCommitAtRef.current,
-    getDurableSnapshot,
-    start,
-    resumeDurable,
-    pause,
-    resume,
-    stop,
-    reset,
-    resetWithoutDelete,
-    triggerInterruption: runInterruptionFlow,
-    isSupported: true,
-  };
+    [getElapsedDurationSeconds, getNativeDurationSeconds],
+  );
+
+  const getCommitSnapshot = useCallback(
+    () => ({
+      committedThroughMs: committedThroughMsRef.current,
+      completeFrameBytes: completeFrameBytesRef.current,
+      lastCommitAt: lastCommitAtRef.current,
+    }),
+    [],
+  );
+
+  const duration = state === 'stopped' || state === 'interrupted' ? finalDuration : elapsedSeconds;
+  const maxMetering = hasMeteringSampleRef.current ? maxMeteringRef.current : undefined;
+  const mimeType = exposedActiveDurableRecordingId ? 'audio/aac' : 'audio/x-m4a';
+
+  // Memoized so the object's identity changes only on a real transition. The
+  // record screen lists `recorder` in ~9 handler deps and hands those handlers
+  // to a React.memo slot card; a fresh literal per render (plus an inline
+  // getPersistableSnapshot arrow) defeated every one of those memos, so any
+  // screen-level state change re-rendered all mounted 1,000-line cards.
+  return useMemo<UseAudioRecorderReturn>(
+    () => ({
+      state,
+      isStarting,
+      duration,
+      maxMetering,
+      getLiveStats,
+      audioUri,
+      mimeType,
+      getPersistableSnapshot,
+      activeDurableRecordingId: exposedActiveDurableRecordingId,
+      recoverableDurableRecordingId: null,
+      getCommitSnapshot,
+      getDurableSnapshot,
+      start,
+      resumeDurable,
+      pause,
+      resume,
+      stop,
+      reset,
+      resetWithoutDelete,
+      triggerInterruption: runInterruptionFlow,
+      isSupported: true,
+    }),
+    [
+      state,
+      isStarting,
+      duration,
+      maxMetering,
+      getLiveStats,
+      audioUri,
+      mimeType,
+      getPersistableSnapshot,
+      exposedActiveDurableRecordingId,
+      getCommitSnapshot,
+      getDurableSnapshot,
+      start,
+      resumeDurable,
+      pause,
+      resume,
+      stop,
+      reset,
+      resetWithoutDelete,
+      runInterruptionFlow,
+    ],
+  );
 }

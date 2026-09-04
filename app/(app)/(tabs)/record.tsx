@@ -39,7 +39,7 @@ import {
   METADATA_DIVERGENCE_COPY,
 } from '../../../src/constants/strings';
 import { Toast } from '../../../src/components/Toast';
-import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
+import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { rememberOrphanDraftId } from '../../../src/lib/orphanDraftRetry';
 import { stashStorage, MAX_STASHES } from '../../../src/lib/stashStorage';
@@ -72,6 +72,7 @@ import {
   normalizeUploadIntentId,
 } from '../../../src/lib/uploadIntent';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
+import { useConnectivity } from '../../../src/hooks/useConnectivity';
 import { useAuthUser } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
 import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
@@ -106,7 +107,7 @@ import {
   type AutoStashReason,
   type SubmitDiagnosticsProps,
 } from '../../../src/lib/analytics';
-import { breadcrumb, captureException, captureMessage, measurePhase } from '../../../src/lib/monitoring';
+import { breadcrumb, captureException, captureMessage, completePhaseFrom, measurePhase, nowMs } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
@@ -882,6 +883,17 @@ function RecordingSession() {
   const [submitIntentCount, setSubmitIntentCount] = useState(0);
   const [uploadRestartCount, setUploadRestartCount] = useState(0);
   const [finishingDraftSlotId, setFinishingDraftSlotId] = useState<string | null>(null);
+  // Slot whose Start tap has been acknowledged and whose start chain is in
+  // flight. Set synchronously on the tap frame (before any await) and cleared
+  // in startRecordingForSlot's finally, so the card's button reacts at once
+  // instead of looking idle until the hook's own isStarting flips.
+  const [startingSlotId, setStartingSlotId] = useState<string | null>(null);
+  // Render-visible mirror of pendingStartSlotQueueRef (stop-then-start queue):
+  // a slot waiting for the previous recording to stop shows the same spinner
+  // as a slot whose start chain is running. Cleared the moment the queue pops
+  // it — startRecordingForSlot then takes over via startingSlotId — so a
+  // popped start that early-returns can never strand a spinner.
+  const [queuedStartSlotIds, setQueuedStartSlotIds] = useState<string[]>([]);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
   // Set when an audio session interruption (incoming call, Siri, etc.) tore
   // down the recording mid-stream. The hook captures the partial segment and
@@ -900,16 +912,18 @@ function RecordingSession() {
   // talking while nothing records.
   const [pauseToast, setPauseToast] = useState<string | null>(null);
   const hidePauseToast = useCallback(() => setPauseToast(null), []);
-  const netInfo = useNetInfo();
-  const isConnected = netInfo.isConnected;
-  // uploadSlot's dep array is pinned and excludes netInfo, so a closure over
-  // `netInfo` reports the transport as it was when the callback was created —
-  // which for a multi-minute upload is not the transport it died on. Mirror it
-  // into a ref (same pattern as sessionRef above) so the catch block can read
-  // the CURRENT value. A ref, not `await NetInfo.fetch()`: the catch must
-  // neither throw nor hang.
-  const netInfoRef = useRef(netInfo);
-  netInfoRef.current = netInfo;
+  // isConnected-only subscription: `useNetInfo()` re-rendered this 7,000-line
+  // screen (and every mounted slot card) on every connection-detail change.
+  // uploadSlot's dep array is pinned and excludes the network state, so a
+  // closure over it reports the transport as it was when the callback was
+  // created — which for a multi-minute upload is not the transport it died on.
+  // The hook mirrors the full state into this ref (same pattern as sessionRef
+  // above) so the catch block can read the CURRENT value. A ref, not
+  // `await NetInfo.fetch()`: the catch must neither throw nor hang. Declared
+  // HERE (not returned by the hook) so exhaustive-deps keeps treating it as a
+  // stable ref in the pinned callbacks below.
+  const netInfoRef = useRef<NetInfoState | null>(null);
+  const isConnected = useConnectivity(netInfoRef);
   // Derives a coarse connection descriptor for telemetry. Don't leak SSIDs or
   // carrier names — only the type bucket.
   const networkStateForTelemetry = (): NetworkState =>
@@ -931,11 +945,13 @@ function RecordingSession() {
   const enqueuePendingStart = useCallback((slotId: string) => {
     const q = pendingStartSlotQueueRef.current;
     if (!q.includes(slotId)) q.push(slotId);
+    setQueuedStartSlotIds((ids) => (ids.includes(slotId) ? ids : [...ids, slotId]));
   }, []);
   const removePendingStart = useCallback((slotId: string) => {
     const q = pendingStartSlotQueueRef.current;
     const idx = q.indexOf(slotId);
     if (idx !== -1) q.splice(idx, 1);
+    setQueuedStartSlotIds((ids) => ids.filter((id) => id !== slotId));
   }, []);
   // Track pending stash for "stop recorder then stash" flow
   const pendingStashRef = useRef(false);
@@ -1254,6 +1270,7 @@ function RecordingSession() {
         recorder.resetWithoutDelete();
       } else if (pendingStartSlotQueueRef.current.length > 0) {
         const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
+        setQueuedStartSlotIds((ids) => ids.filter((id) => id !== nextSlotId));
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -1298,6 +1315,7 @@ function RecordingSession() {
         // Pop the head of the queue. Subsequent queued slots will be drained
         // on later stop cycles — one stop, one start.
         const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
+        setQueuedStartSlotIds((ids) => ids.filter((id) => id !== nextSlotId));
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -1331,6 +1349,7 @@ function RecordingSession() {
         );
       } else if (pendingStartSlotQueueRef.current.length > 0) {
         const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
+        setQueuedStartSlotIds((ids) => ids.filter((id) => id !== nextSlotId));
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -1630,6 +1649,7 @@ function RecordingSession() {
     const durableUserId = user?.id;
 
     pendingStartSlotQueueRef.current = [];
+    setQueuedStartSlotIds([]);
     pendingStashRef.current = false;
     // Cancel every slot's scheduled server-draft debounce timer. Without this
     // cleanup, a timer queued before the user tapped "Load Draft" / "Discard"
@@ -1882,8 +1902,19 @@ function RecordingSession() {
     (slotId: string) => {
       if (startInFlightRef.current) return;
       startInFlightRef.current = true;
+      // Acknowledge the tap on THIS frame, before any await. The haptic and
+      // the starting state used to sit behind the floor-hydration await, so on
+      // an older tablet the button looked idle — and re-tappable, with the
+      // second tap silently swallowed by startInFlightRef — for a visible beat.
+      const tappedAtMs = nowMs();
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+      setStartingSlotId(slotId);
       (async () => {
         let resumeDurableRecordingId: string | null = null;
+        // Fresh durable start whose pointer write was dispatched alongside the
+        // native start, so a failed start can clear it again.
+        let freshDurableRecordingId: string | null = null;
+        let startPath: 'durable_start' | 'durable_resume' | 'expo' = 'expo';
         try {
           // Server-enforced min-version floor: block STARTING new capture (fresh or
           // Resume→Continue — every mic start funnels through here) on a build known
@@ -1902,7 +1933,6 @@ function RecordingSession() {
             );
             return;
           }
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
           bindRecorder(slotId);
           const startSlot = sessionRef.current.slots.find((s) => s.id === slotId);
           const existingDurable = startSlot?.durable ?? null;
@@ -1934,13 +1964,17 @@ function RecordingSession() {
               );
             }
             resumeDurableRecordingId = existingDurable.recordingId;
-            await raceDurableActiveWrite(
+            startPath = 'durable_resume';
+            // Dispatched before, joined after the native resume — see the
+            // fresh-start branch below for why.
+            const activePointerWrite = raceDurableActiveWrite(
               durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
             );
             await withDurableOpWatchdog(
               recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable }),
               'resume',
             );
+            await activePointerWrite;
           } else {
             // Durable capture only for a FRESH recording (no durable/segments yet)
             // when the server-driven flag is on and the native module is available.
@@ -1972,16 +2006,26 @@ function RecordingSession() {
                 );
               }
               const recordingId = newDurableRecordingId();
-              // Write the active pointer BEFORE start (death-surviving breadcrumb),
-              // but bound the SecureStore write so a hung Keystore can't strand the
-              // start handler before the watchdog/finally — see raceDurableActiveWrite.
-              await raceDurableActiveWrite(
+              startPath = 'durable_start';
+              // Dispatch the active-pointer write (death-surviving breadcrumb)
+              // and the native start together, joining the write after start
+              // returns. Awaited first, its serial Keystore round trips gated
+              // the mic on older devices. It is still bounded (raceDurableActiveWrite
+              // resolves on timeout, so a hung Keystore can't strand the handler
+              // before the watchdog/finally), still joined before the slot flips
+              // to 'recording', and in practice still lands before the first ADTS
+              // frame (encoder priming ≥250 ms). The contract was already
+              // best-effort: on a skipped pointer crash recovery reconstructs the
+              // recording from the native manifest.
+              const activePointerWrite = raceDurableActiveWrite(
                 durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
               );
+              freshDurableRecordingId = recordingId;
               await withDurableOpWatchdog(
                 recorder.start({ userId: user.id, slotId, recordingId }),
                 'start',
               );
+              await activePointerWrite;
             } else {
               // Expo fallback. It leaves no manifest and no recoverable file if
               // the process dies (MediaRecorder writes the MP4 moov atom only on
@@ -2007,8 +2051,20 @@ function RecordingSession() {
           }
           recordingSegmentStartedAtMsRef.current = Date.now();
           setAudioState(slotId, 'recording');
+          // Tap→recording stopwatch: the number the owner actually feels. A
+          // breadcrumb only — the native phases carry their own slow warnings.
+          completePhaseFrom('record_tap_to_recording', tappedAtMs, { path: startPath }, { warningThresholdMs: null });
         } catch (error) {
+          completePhaseFrom('record_tap_to_recording', tappedAtMs, { path: startPath }, { warningThresholdMs: null, outcome: 'error' });
           unbindRecorder();
+          if (freshDurableRecordingId) {
+            // Nothing owns this id (the hook discards a late-resolving native
+            // start). durableActiveStore serializes its mutations, so this
+            // clear runs AFTER the overlapped pointer write lands — never
+            // racing it — and a start that captured no frame cannot read as
+            // "previous process died mid-capture" on the next launch.
+            durableActiveStore.clearActive(freshDurableRecordingId).catch(() => {});
+          }
           if (resumeDurableRecordingId) {
             durableActiveStore.clearActive(resumeDurableRecordingId).catch(() => {});
             setAudioState(slotId, 'stopped');
@@ -2024,9 +2080,11 @@ function RecordingSession() {
           Alert.alert('Recording Error', msg);
         } finally {
           startInFlightRef.current = false;
+          setStartingSlotId((cur) => (cur === slotId ? null : cur));
         }
       })().catch(() => {
         startInFlightRef.current = false;
+        setStartingSlotId((cur) => (cur === slotId ? null : cur));
       });
     },
     [recorder, bindRecorder, unbindRecorder, setAudioState, recordFirstEnabled, user?.id]
@@ -6816,7 +6874,11 @@ function RecordingSession() {
           slotIndex={index}
           totalSlots={session.slots.length}
           isRecorderOwner={isRecorderOwner}
-          recorder={recorder}
+          recorderState={isRecorderOwner ? recorder.state : 'idle'}
+          recorderDuration={isRecorderOwner ? recorder.duration : 0}
+          getLiveStats={recorder.getLiveStats}
+          isStarting={startingSlotId === item.id || queuedStartSlotIds.includes(item.id) || (isRecorderOwner && recorder.isStarting)}
+          startInFlight={startingSlotId !== null || recorder.isStarting}
           recorderBusy={recorderBusy && !isRecorderOwner}
           isFinishSaving={finishingDraftSlotId === item.id}
           templates={templates}
@@ -6853,7 +6915,12 @@ function RecordingSession() {
       handleResubmitAsNew,
       session.recorderBoundToSlotId,
       session.slots.length,
-      recorder,
+      recorder.state,
+      recorder.duration,
+      recorder.getLiveStats,
+      recorder.isStarting,
+      startingSlotId,
+      queuedStartSlotIds,
       recorderBusy,
       templates,
       templatesLoading,

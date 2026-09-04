@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, View, Pressable } from 'react-native';
+import { ActivityIndicator, StyleSheet, View, Pressable } from 'react-native';
 import { Text } from './ui/Text';
 import { ScrollView } from 'react-native-gesture-handler';
 import Animated, {
@@ -25,7 +25,7 @@ import { Toggle } from './ui/Toggle';
 import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot } from '../types/multiPatient';
 import type { CreateRecording, Template } from '../types';
-import type { UseAudioRecorderReturn } from '../hooks/useAudioRecorder';
+import type { RecordingState, UseAudioRecorderReturn } from '../hooks/useAudioRecorder';
 import { useResponsive } from '../hooks/useResponsive';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { patientsApi } from '../api/patients';
@@ -54,7 +54,31 @@ interface PatientSlotCardProps {
   slotIndex: number;
   totalSlots: number;
   isRecorderOwner: boolean;
-  recorder: UseAudioRecorderReturn;
+  // Primitives, not the recorder object: React.memo compares props shallowly,
+  // and this card only ever reads state/duration/getLiveStats from the hook.
+  // Passing the whole object coupled the 1,000-line card to every hook field
+  // (audioUri, activeDurableRecordingId, ...) and re-rendered all mounted
+  // cards on any transition. The parent passes owner-gated values so a
+  // non-owner card does not re-render on the owner's transitions either.
+  recorderState: RecordingState;
+  recorderDuration: number;
+  getLiveStats: UseAudioRecorderReturn['getLiveStats'];
+  /**
+   * The tap was acknowledged and the start chain (floor gate → active pointer
+   * → native mic/MediaCodec bring-up) is in flight. Set synchronously on the
+   * tap frame by the parent so the button reacts immediately instead of
+   * looking idle (and re-tappable) until the hook flips its own isStarting.
+   */
+  isStarting?: boolean;
+  /**
+   * SOME slot's start chain is in flight (this one or another). Every Start
+   * button is inert until it settles — the lockout the hook's own isStarting
+   * used to give all cards, extended to the pre-native part of the chain.
+   * Only the tapped card shows the spinner (`isStarting`). A queued start
+   * (stop-then-start) does NOT set this: rapid taps across slots must keep
+   * queueing while the previous recording stops.
+   */
+  startInFlight?: boolean;
   recorderBusy: boolean;
   isFinishSaving: boolean;
   templates: Template[];
@@ -122,7 +146,11 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   slotIndex,
   totalSlots,
   isRecorderOwner,
-  recorder,
+  recorderState,
+  recorderDuration,
+  getLiveStats,
+  isStarting = false,
+  startInFlight = false,
   recorderBusy,
   isFinishSaving,
   templates,
@@ -229,7 +257,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     !!slot.formData.appointmentType;
 
   // The slot's audio state determines what we show
-  const audioState = isRecorderOwner ? recorder.state : slot.audioState;
+  const audioState = isRecorderOwner ? recorderState : slot.audioState;
   const isRecording = audioState === 'recording';
   const isPaused = audioState === 'paused';
   const isStopped = audioState === 'stopped';
@@ -266,7 +294,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   const hasCapturedAudio = slotHasRecoverableAudio(slot);
   const previousSegmentsDuration = slot.segments.reduce((sum, s) => sum + s.duration, 0);
   const duration = isRecorderOwner
-    ? previousSegmentsDuration + recorder.duration
+    ? previousSegmentsDuration + recorderDuration
     : slot.audioDuration;
 
   React.useEffect(() => {
@@ -293,7 +321,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
     : '';
 
   // Allow recording when idle (even with existing segments — for continuation)
-  const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !isUploading && !recorder.isStarting && !isFinishSaving;
+  const canStartRecording = (recordFirstEnabled || hasRequiredFields) && audioState === 'idle' && !isUploading && !isStarting && !startInFlight && !isFinishSaving;
   // An unresolved IDENTITY conflict must be settled through the reconciliation
   // card's three explicit choices. The slot is still in 'error' from the adopt
   // guard, so the submit card would otherwise render underneath offering
@@ -449,12 +477,12 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
             re-render that leaf only — never this card or the record screen. */}
         {isRecorderOwner ? (
           <RecorderLiveReadout
-            getLiveStats={recorder.getLiveStats}
+            getLiveStats={getLiveStats}
             isLive={isRecording || isPaused}
             isRecording={isRecording}
             isPaused={isPaused}
             baseDurationSeconds={previousSegmentsDuration}
-            fallbackDurationSeconds={recorder.duration}
+            fallbackDurationSeconds={recorderDuration}
           />
         ) : isStopped ? (
           <Text className="text-body text-content-secondary mb-3" style={{ alignSelf: 'stretch', textAlign: 'center' }}>
@@ -489,7 +517,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
         <View className="flex-row gap-3">
           {/* Idle: show big record button */}
           {audioState === 'idle' && (
-            <Animated.View entering={FadeIn.duration(300)}>
+            // No mount animation on the hot control rows: a fade here sits
+            // directly on the tap→controls path the owner perceives as lag.
+            <View>
               <AnimatedPressable
                 onPress={handleStart}
                 onPressIn={() => {
@@ -500,19 +530,28 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                 }}
                 disabled={!canStartRecording}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: !canStartRecording, busy: isStarting }}
                 accessibilityLabel={
-                  !recordFirstEnabled && !hasRequiredFields
-                    ? 'Enter patient name, client name, species, and appointment type first'
-                    : recorderBusy
-                      ? 'Start recording — will stop current recording first'
-                      : 'Start recording'
+                  isStarting
+                    ? 'Starting recording…'
+                    : !recordFirstEnabled && !hasRequiredFields
+                      ? 'Enter patient name, client name, species, and appointment type first'
+                      : recorderBusy
+                        ? 'Start recording — will stop current recording first'
+                        : 'Start recording'
                 }
+                // Stays brand-colored while starting: grey reads as "can't
+                // record", not "starting". Same box, so nothing reflows.
                 className={`rounded-full justify-center items-center ${
-                  canStartRecording ? 'bg-brand-500' : 'bg-border-strong'
+                  canStartRecording || isStarting ? 'bg-brand-500' : 'bg-border-strong'
                 }`}
                 style={[{ width: scale(80), height: scale(80) }, recordBtnAnimStyle]}
               >
-                <Mic color={canStartRecording ? colors.contentOnBrand : colors.contentTertiary} size={scale(32)} />
+                {isStarting ? (
+                  <ActivityIndicator color={colors.contentOnBrand} />
+                ) : (
+                  <Mic color={canStartRecording ? colors.contentOnBrand : colors.contentTertiary} size={scale(32)} />
+                )}
               </AnimatedPressable>
               {!recordFirstEnabled && !hasRequiredFields && audioState === 'idle' && (
                 <Text
@@ -522,23 +561,23 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
                   Fill in patient, client, species, and appointment type to record.
                 </Text>
               )}
-            </Animated.View>
+            </View>
           )}
 
           {/* Recording: pause + finish */}
           {isRecorderOwner && isRecording && (
-            <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
+            <View className="flex-row gap-3">
               <Button variant="secondary" onPress={handlePause}>Pause</Button>
               <Button variant="primary" onPress={handleStop} icon={<Check color={colors.contentOnBrand} size={16} />}>Finish</Button>
-            </Animated.View>
+            </View>
           )}
 
           {/* Paused: resume + finish (recorder owner) */}
           {isRecorderOwner && isPaused && (
-            <Animated.View entering={FadeIn.duration(200)} className="flex-row gap-3">
+            <View className="flex-row gap-3">
               <Button variant="secondary" onPress={handleResume}>Resume</Button>
               <Button variant="primary" onPress={handleStop} icon={<Check color={colors.contentOnBrand} size={16} />}>Finish</Button>
-            </Animated.View>
+            </View>
           )}
 
           {/* Paused but not recorder owner: let user continue or start over */}

@@ -115,7 +115,15 @@ interface VersionedPointer {
  * pointer's sequence is older than what we know we published, the persisted one
  * is a late completion and the generation it names is stale. The generation we
  * published is still intact in the ring, so the correct value is recoverable —
- * we read from it and best-effort republish to repair the pointer.
+ * we read from it and leave the persisted pointer alone.
+ *
+ * The pointer is deliberately NOT repaired here. A repair write would be a
+ * second uncontrolled writer of `_ptr`, outside the mutation queue that
+ * sequences every other publish: stall it past a later clearActive and it lands
+ * afterwards, resurrecting the entry that clear removed — the exact false kill
+ * report this layout exists to prevent. It also buys nothing this process does
+ * not already have, since `known` serves every in-process read. The next
+ * ordinary publish converges the pointer on its own.
  *
  * Residual window, stated plainly: if the process dies between a late pointer
  * write landing and the next publish, the next launch has no high-water mark and
@@ -174,12 +182,14 @@ export async function readChunkedValueVersioned(prefix: string): Promise<string 
   // still in the ring.
   if (known && (!persisted || (persisted.s ?? 0) < (known.s ?? 0))) {
     const recovered = await readGeneration(prefix, known);
-    if (recovered !== null) {
-      void secureStorage
-        .setRawItem(`${prefix}_ptr`, JSON.stringify(known), 'durableChunkPtrWrite')
-        .catch(() => {});
-      return recovered;
-    }
+    if (recovered !== null) return recovered;
+    // The known-good generation did not read back — a transient chunk-read
+    // failure. Falling through to `persisted` would hand back state this branch
+    // has ALREADY PROVEN superseded, and a caller that read-modify-writes it
+    // republishes cleared capture ids, which is the one direction that
+    // FABRICATES a kill report. Absent is the safe answer: readList maps null to
+    // [], which can only ever under-report.
+    return null;
   }
   const ptr = persisted;
   if (!ptr) {

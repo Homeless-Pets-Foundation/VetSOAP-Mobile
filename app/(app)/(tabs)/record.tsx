@@ -2176,8 +2176,10 @@ function RecordingSession() {
                 durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
               );
             }
-            // Rechecked after the await — see the fresh-start branch.
+            // Rechecked after the await — see the fresh-start branch, including
+            // why the possibly-published pointer has to be cleared here.
             if (!scopeUnchanged()) {
+              await clearCapturePointer(initiatingUserId, existingDurable.recordingId);
               unbindRecorder();
               setAudioState(slotId, 'stopped');
               return;
@@ -2264,6 +2266,12 @@ function RecordingSession() {
               // — and the engine is a process singleton, so starting for a
               // departed user holds the mic and fails the next user with BUSY.
               if (!scopeUnchanged()) {
+                // The write above may already have PUBLISHED. Nothing else can
+                // remove it: the catch cleanup and the unmount teardown both key
+                // off a durable id that native start never got to attach, so the
+                // pointer would survive and report an attempt that never opened
+                // the microphone as an interrupted capture.
+                await clearCapturePointer(initiatingUserId, recordingId);
                 unbindRecorder();
                 return;
               }

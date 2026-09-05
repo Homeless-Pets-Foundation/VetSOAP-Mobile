@@ -157,12 +157,12 @@ test('the battery prompt is actually wired into the Record screen', () => {
   const src = read(RECORD);
   // User-scoped read-back: a process-wide answer would tell vet B about vet A's
   // kill on a shared tablet.
-  assert.match(src, /maybePromptBatteryOptimization\(\s*priorProcessKillDetected\(promptUserId\),/);
+  assert.match(src, /maybePromptBatteryOptimization\(\s*priorUncleanExitDetected\(promptUserId\),/);
 });
 
 test('battery-prompt copy lives in the strings catalog', () => {
   const strings = read('src/constants/strings.ts');
   assert.match(strings, /export const BATTERY_OPTIMIZATION_COPY/);
-  assert.match(strings, /bodyAfterKill:/);
+  assert.match(strings, /bodyAfterUncleanExit:/);
   assert.doesNotMatch(read('src/lib/batteryOptimization.ts'), /Alert\.alert\(\s*'/);
 });

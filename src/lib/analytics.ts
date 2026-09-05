@@ -130,14 +130,21 @@ export type AnalyticsEvent =
   | { name: 'durable_capture_drop'; props: { dropped_frames?: number } }
   | { name: 'durable_process_recovered'; props: { recovered_count: number } }
   /**
-   * A prior process died while a capture was live — the OS killed us (LMK,
-   * battery optimizer, app-sleep), which produces no crash event anywhere.
+   * A prior process ended while a capture was live, without running cleanup.
+   *
+   * Named for what the evidence proves, not for the cause we suspect. An OS kill
+   * (LMK, battery optimizer, app-sleep) is the motivating case and produces no
+   * crash event anywhere — but a reboot, a swipe from Recents, a force-stop and
+   * a native crash leave an identical pointer, and nothing available to the
+   * client distinguishes them. Calling every one of these a kill would make the
+   * metric unusable for judging whether the memory work actually reduced kills.
+   *
    * `expo_count` captures are UNRECOVERABLE: MediaRecorder writes the MP4 moov
-   * atom only on stop(), so a killed process leaves an undecodable file.
+   * atom only on stop(), so an interrupted process leaves an undecodable file.
    * `durable_count` captures lose only the tail since the last ~2s commit.
    */
   | {
-      name: 'process_killed_mid_capture';
+      name: 'capture_ended_without_cleanup';
       props: { durable_count: number; expo_count: number; recovered_count: number };
     }
   | { name: 'durable_battery_opt_exemption'; props: { granted: boolean } }

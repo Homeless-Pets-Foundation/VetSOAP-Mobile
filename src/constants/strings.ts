@@ -165,10 +165,21 @@ export const BATTERY_OPTIMIZATION_COPY = {
     'Allowing Captivet to run in the background makes that less likely.\n\n' +
     'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").\n\n' +
     'Keep submitting recordings promptly — this setting reduces the risk, it does not remove it.',
-  /** Same ask, after we detected the OS actually did it. Same honesty. */
-  bodyAfterKill:
-    'Android stopped Captivet during your last recording, so part of it was not saved. ' +
-    'Allowing Captivet to run in the background makes that less likely.\n\n' +
+  /**
+   * Same ask, after a launch found the previous process exited mid-capture.
+   *
+   * Deliberately does NOT assert a cause. The capture pointer proves only that
+   * the last process ended without cleanup — a reboot, a swipe from Recents, a
+   * force-stop and a native crash all leave exactly the same evidence as the
+   * battery optimizer. Naming Android as the culprit would be wrong most of the
+   * time a vet reboots their tablet, and would send them into a setting that
+   * had nothing to do with it. State the observation, offer the setting as one
+   * thing that can help, and let the conditional carry the uncertainty.
+   */
+  bodyAfterUncleanExit:
+    'Your last recording ended unexpectedly, before it was finished. ' +
+    'That can happen when Android stops Captivet in the background. ' +
+    'Allowing Captivet to run in the background makes it less likely.\n\n' +
     'On the next screen, find Captivet and choose "Don\'t optimize" (or "Unrestricted").\n\n' +
     'Keep submitting recordings promptly — this setting reduces the risk, it does not remove it.',
   confirm: 'Open Settings',

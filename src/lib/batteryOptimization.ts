@@ -61,15 +61,17 @@ export async function openBatteryOptimizationSettings(): Promise<boolean> {
  * Fires at most once per device and is fully dismissible. A storage failure is
  * treated as "already asked" so a broken Keystore cannot produce a prompt loop.
  *
- * @param afterKill true when we have just detected that the OS killed a live
- *   capture — the copy then states what actually happened instead of speculating.
+ * @param afterUncleanExit true when this launch found the previous process
+ *   exited mid-capture. That is evidence of an unclean exit, NOT proof the OS
+ *   killed us — a reboot or a swipe from Recents looks identical — so the copy
+ *   it selects reports the observation and offers this setting conditionally.
  */
 export async function maybePromptBatteryOptimization(
-  afterKill = false,
+  afterUncleanExit = false,
   // True while the user this prompt was built for is still the signed-in user.
   // The callback can be mid-await across a sign-out, and cancelWork cannot stop
-  // an already-running one — without this, user A's "Android stopped Captivet
-  // during your last recording" copy is shown to user B, and the device-wide
+  // an already-running one — without this, user A's "your last recording ended
+  // unexpectedly" copy is shown to user B, and the device-wide
   // one-shot marker is consumed by a prompt that was never theirs.
   isScopeValid: () => boolean = () => true,
 ): Promise<void> {
@@ -114,7 +116,7 @@ export async function maybePromptBatteryOptimization(
 
   Alert.alert(
     BATTERY_OPTIMIZATION_COPY.title,
-    afterKill ? BATTERY_OPTIMIZATION_COPY.bodyAfterKill : BATTERY_OPTIMIZATION_COPY.body,
+    afterUncleanExit ? BATTERY_OPTIMIZATION_COPY.bodyAfterUncleanExit : BATTERY_OPTIMIZATION_COPY.body,
     [
       {
         text: BATTERY_OPTIMIZATION_COPY.dismiss,

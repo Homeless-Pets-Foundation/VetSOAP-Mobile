@@ -207,11 +207,13 @@ export function initMonitoring(): void {
       // do not configure here. More importantly, NEITHER covers the failure mode
       // that actually hurts on our fleet: an OS process kill (low-memory killer,
       // Samsung One UI app-sleep, battery optimizer) raises no exception and no
-      // native signal, so Sentry records nothing at all. The only detector for
-      // that is the launch-time capture pointer — see reportPriorProcessKill in
+      // native signal, so Sentry records nothing at all. The nearest detector is
+      // the launch-time capture pointer — see reportPriorUncleanExit in
       // src/lib/durableAudio/durableRecovery.ts, which emits
-      // 'process_killed_mid_capture'. Do not delete it expecting Sentry to catch
-      // these; it cannot.
+      // 'capture_ended_without_cleanup'. That event is a SUPERSET of OS kills (a
+      // reboot or swipe-away is indistinguishable), so treat it as a bound on
+      // them, not a count. Do not delete it expecting Sentry to catch these; it
+      // cannot.
       enableAppHangTracking: true,
       // Default PII off — we set user ID manually via setUser().
       sendDefaultPii: false,

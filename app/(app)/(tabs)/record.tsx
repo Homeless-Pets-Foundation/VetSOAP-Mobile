@@ -55,7 +55,7 @@ import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
 import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
-import { priorProcessKillDetected } from '../../../src/lib/durableAudio/durableRecovery';
+import { priorUncleanExitDetected } from '../../../src/lib/durableAudio/durableRecovery';
 import { maybePromptBatteryOptimization } from '../../../src/lib/batteryOptimization';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
 import { durableReconcileHold } from '../../../src/lib/durableAudio/reconcileHold';
@@ -1560,7 +1560,7 @@ function RecordingSession() {
       // this is a clean exit for the pointer — mirroring the durable branch
       // above, which already clears snap.recordingId. Without it, a user who
       // submits the partial segment instead of resuming gets a false
-      // process_killed_mid_capture on their next launch. Resuming simply writes
+      // capture_ended_without_cleanup on their next launch. Resuming simply writes
       // the pointer again under the same slot key.
       durableActiveStore.clearActive(slotId).catch(() => {});
     }
@@ -6660,8 +6660,9 @@ function RecordingSession() {
   // Effect: ask once per device whether to exempt Captivet from Android battery
   // optimization. Samsung One UI app-sleep kills the app mid-recording, and that
   // kill reaches no crash reporter at all. Queued behind the startup sweeps so
-  // the dialog never lands while the screen is still settling, and it says what
-  // actually happened when this launch proved a prior process was killed.
+  // the dialog never lands while the screen is still settling. When this launch
+  // found a prior process ended mid-capture the copy reports THAT — it does not
+  // claim Android caused it, because a reboot looks identical from here.
   useEffect(() => {
     if (!user?.id) return;
     const promptUserId = user.id;
@@ -6669,7 +6670,7 @@ function RecordingSession() {
       'battery_opt_prompt',
       async (isExpired) => {
         await maybePromptBatteryOptimization(
-          priorProcessKillDetected(promptUserId),
+          priorUncleanExitDetected(promptUserId),
           // Re-evaluated inside, right before the Alert: this callback can be
           // mid-await across a sign-out and cancelWork cannot stop it.
           () => !isExpired() && durableActiveStore.getUserId() === promptUserId,

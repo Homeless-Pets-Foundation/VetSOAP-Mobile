@@ -83,12 +83,12 @@ test('the versioned reader falls back to the legacy layout for existing installs
 
 test('the kill probe is detached and bounded, off the recovery critical path', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  assert.match(src, /const KILL_PROBE_TIMEOUT_MS = [\d_]+;/);
-  assert.match(src, /function reportPriorProcessKillDetached/);
-  assert.match(src, /void withPromiseTimeout\(\s*reportPriorProcessKill\(/);
+  assert.match(src, /const UNCLEAN_EXIT_PROBE_TIMEOUT_MS = [\d_]+;/);
+  assert.match(src, /function reportPriorUncleanExitDetached/);
+  assert.match(src, /void withPromiseTimeout\(\s*reportPriorUncleanExit\(/);
   // Nothing may await the probe: the scan watchdog would publish an empty offer
   // list and the real offers could never be published afterwards.
-  assert.doesNotMatch(src, /await reportPriorProcessKill\(/);
+  assert.doesNotMatch(src, /await reportPriorUncleanExit\(/);
 });
 
 // ---- F3: sign-out during a live capture -----------------------------------

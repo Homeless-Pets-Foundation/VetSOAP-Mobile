@@ -22,23 +22,23 @@ test('kill reporting dedupes per USER, not per process', async () => {
   // signs in. A process-global flag silently suppressed B for the rest of the
   // session — on exactly the fleet this detector exists for.
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  assert.match(src, /const killSignalReportedUsers = new Set<string>\(\)/);
-  assert.match(src, /killSignalReportedUsers\.has\(userId\)/);
-  assert.match(src, /killSignalReportedUsers\.add\(userId\)/);
+  assert.match(src, /const uncleanExitReportedUsers = new Set<string>\(\)/);
+  assert.match(src, /uncleanExitReportedUsers\.has\(userId\)/);
+  assert.match(src, /uncleanExitReportedUsers\.add\(userId\)/);
   assert.doesNotMatch(src, /let killSignalReported = false/);
   // The read-back used for the prompt copy is user-scoped too, or vet B is told
   // "Android stopped Captivet during your last recording" about vet A's kill.
-  assert.match(src, /export function priorProcessKillDetected\(userId: string \| null \| undefined\)/);
-  assert.match(src, /killSignalReportedUsers\.has\(userId\)/);
+  assert.match(src, /export function priorUncleanExitDetected\(userId: string \| null \| undefined\)/);
+  assert.match(src, /uncleanExitReportedUsers\.has\(userId\)/);
   assert.match(
     read('app/(app)/(tabs)/record.tsx'),
-    /maybePromptBatteryOptimization\(\s*priorProcessKillDetected\(promptUserId\),/,
+    /maybePromptBatteryOptimization\(\s*priorUncleanExitDetected\(promptUserId\),/,
   );
 });
 
 test('the probe re-verifies scope after its await and before every clear', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  const start = src.indexOf('async function reportPriorProcessKill');
+  const start = src.indexOf('async function reportPriorUncleanExit');
   const body = src.slice(start, src.indexOf('\n}\n', start));
   const listAwait = body.indexOf('await durableActiveStore.list()');
   const recheck = body.indexOf('durableActiveStore.getUserId() !== userId');

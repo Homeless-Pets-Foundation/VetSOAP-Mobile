@@ -111,17 +111,17 @@ test('capturesAtLastExit reports zero rather than throwing when storage fails', 
 
 test('the kill probe is actually wired into the launch scan', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  assert.match(src, /async function reportPriorProcessKill/);
+  assert.match(src, /async function reportPriorUncleanExit/);
   // Must run on BOTH early returns: the expo fallback leaves no manifest at all,
   // which is precisely the unrecoverable case.
-  const calls = src.match(/reportPriorProcessKillDetached\(/g) ?? [];
+  const calls = src.match(/reportPriorUncleanExitDetached\(/g) ?? [];
   assert.ok(calls.length >= 3, `expected >=3 call sites, found ${calls.length}`);
   // Telemetry must never sit on the recovery critical path: a hung read here
   // would burn the scan watchdog and leave recoverable audio unpublished.
-  assert.match(src, /const KILL_PROBE_TIMEOUT_MS = [\d_]+;/);
-  assert.match(src, /void withPromiseTimeout\(\s*reportPriorProcessKill\(/);
-  assert.match(src, /trackEvent\(\{\s*name: 'process_killed_mid_capture'/);
-  assert.match(src, /captureMessage\('process_killed_mid_capture'/);
+  assert.match(src, /const UNCLEAN_EXIT_PROBE_TIMEOUT_MS = [\d_]+;/);
+  assert.match(src, /void withPromiseTimeout\(\s*reportPriorUncleanExit\(/);
+  assert.match(src, /trackEvent\(\{\s*name: 'capture_ended_without_cleanup'/);
+  assert.match(src, /captureMessage\('capture_ended_without_cleanup'/);
 });
 
 test('the probe only counts pointers older than this process', () => {
@@ -132,19 +132,19 @@ test('the probe only counts pointers older than this process', () => {
   assert.match(src, /e\.startedAt < PROCESS_START_ISO/);
   // Per-USER, not per-process: a shared tablet must not suppress the second
   // vet's report because the first vet's was already sent.
-  assert.match(src, /const killSignalReportedUsers = new Set<string>\(\)/);
+  assert.match(src, /const uncleanExitReportedUsers = new Set<string>\(\)/);
   assert.doesNotMatch(src, /let killSignalReported = false/);
 });
 
 test('reported pointers are cleared so the same kill is not re-reported forever', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  const probe = src.slice(src.indexOf('async function reportPriorProcessKill'));
+  const probe = src.slice(src.indexOf('async function reportPriorUncleanExit'));
   assert.match(probe.slice(0, probe.indexOf('\n}\n')), /durableActiveStore\.clearActive\(e\.recordingId\)/);
 });
 
 test('the kill report carries counts only — no ids, slots or paths', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  const start = src.indexOf('async function reportPriorProcessKill');
+  const start = src.indexOf('async function reportPriorUncleanExit');
   const probe = src.slice(start, src.indexOf('\n}\n', start));
   assert.doesNotMatch(probe, /recordingId:|slotId:|slot_id|recording_id|uri/i);
 });
@@ -178,11 +178,11 @@ test('the Sentry config no longer claims Android ANR coverage', () => {
     /Android ANR detection is enabled through the native\s*\/\/\s*SDK's default integrations/,
   );
   assert.match(src, /iOS ONLY/);
-  assert.match(src, /process_killed_mid_capture/);
+  assert.match(src, /capture_ended_without_cleanup/);
 });
 
-test('process_killed_mid_capture is declared in the analytics union', () => {
+test('capture_ended_without_cleanup is declared in the analytics union', () => {
   const src = read('src/lib/analytics.ts');
-  assert.match(src, /name: 'process_killed_mid_capture'/);
+  assert.match(src, /name: 'capture_ended_without_cleanup'/);
   assert.match(src, /durable_count: number; expo_count: number; recovered_count: number/);
 });

@@ -1,5 +1,7 @@
 'use strict';
 
+// Rollout probe: this protected-path change must remain pending without owner approval.
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {

@@ -37,6 +37,20 @@ import { readFileSync } from 'node:fs';
 
 const SRC = readFileSync(new URL('../src/components/AudioWaveform.tsx', import.meta.url), 'utf8');
 
+/**
+ * True only for a className whose value is a STRING LITERAL — `className="..."`
+ * or `className={'...'}`.
+ *
+ * Rejecting just `${...}` and `live` was not enough (Codex, PR #207): a plain
+ * ternary such as `className={isActive ? 'a shadow-glow' : 'a'}` contains
+ * neither, yet makes this node's className dynamic again and reinstates the
+ * crash. The invariant is "constant", so the guard checks for a literal rather
+ * than blacklisting the shapes we happened to think of.
+ */
+export function isLiteralClassName(value) {
+  return /^"[^"]*"$/.test(value) || /^\{\s*(['"`])(?:(?!\1)[^\\$])*\1\s*\}$/.test(value);
+}
+
 /** The container `<View>` rendered by AudioWaveform, up to its first child. */
 function containerElement() {
   const fnStart = SRC.indexOf('export const AudioWaveform = React.memo(');
@@ -48,20 +62,29 @@ function containerElement() {
   return SRC.slice(open, close);
 }
 
-test('the AudioWaveform container className is a constant, not a live-dependent template', () => {
+test('the literal check rejects every dynamic className shape, not just the one that broke', () => {
+  // Asserted directly so this guard cannot go vacuous the way the first draft
+  // did: these are the shapes a future edit would plausibly reach for.
+  assert.ok(isLiteralClassName('"flex-row items-center rounded-card"'));
+  assert.ok(isLiteralClassName("{'flex-row items-center rounded-card'}"));
+
+  assert.ok(!isLiteralClassName("{`flex-row ${live ? 'shadow-glow' : ''}`}"), 'template interpolation');
+  assert.ok(!isLiteralClassName("{isActive ? 'flex-row shadow-glow' : 'flex-row'}"), 'ternary');
+  assert.ok(!isLiteralClassName('{cn("flex-row", live && "shadow-glow")}'), 'helper call');
+  assert.ok(!isLiteralClassName('{containerClass}'), 'identifier');
+  assert.ok(!isLiteralClassName("{'flex-row ' + extra}"), 'concatenation');
+});
+
+test('the AudioWaveform container className is a constant literal', () => {
   const el = containerElement();
   const className = /className=(\{[^}]*\}|"[^"]*")/.exec(el);
   assert.ok(className, 'container <View> has no className');
   const value = className[1];
 
-  // A template literal with a `${...}` hole is the exact shape that broke it.
-  assert.doesNotMatch(
-    value,
-    /\$\{/,
-    'container className must not interpolate — a className that changes when capture starts throws ReanimatedError in dev and kills the recording'
+  assert.ok(
+    isLiteralClassName(value),
+    `container className must be a string literal, got ${value} — a className that CHANGES when capture starts throws ReanimatedError in dev and kills the recording`
   );
-  // `live` reaching the className at all is the regression, interpolated or not.
-  assert.doesNotMatch(value, /\blive\b/, 'container className must not depend on `live`');
 });
 
 test('the glow is applied through the inline style, so it still appears while recording', () => {

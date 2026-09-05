@@ -544,6 +544,35 @@ function newDurableRecordingId(): string {
  */
 const DURABLE_TEARDOWN_STOP_TIMEOUT_MS = 5_000;
 
+/**
+ * Finalize a capture whose initiating user signed out while the native call was
+ * still in flight, reporting whether the finalize is CONFIRMED.
+ *
+ * Only a confirmed finalize may clear the capture pointer. `recorder.stop()`
+ * swallows native failures by contract (rule 6), so clearing on its resolution
+ * would erase the breadcrumb in exactly the case where finalization actually
+ * failed and the singleton may still hold the microphone. When durable never
+ * won the start there is no durable capture to finalize, so the pointer
+ * describes nothing and is safe to drop.
+ */
+async function finalizeDepartedUserCapture(
+  userId: string,
+  recordingId: string,
+  isDurable: boolean,
+): Promise<boolean> {
+  if (!isDurable) return true;
+  try {
+    await withPromiseTimeout(
+      durableRecorder.stop({ userId, recordingId }),
+      DURABLE_TEARDOWN_STOP_TIMEOUT_MS,
+      'durable_departed_user_stop',
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function withDurableOpWatchdog<T>(
   p: Promise<T>,
   op: 'start' | 'pause' | 'resume' | 'stop',
@@ -2121,7 +2150,24 @@ function RecordingSession() {
               // Sign-out landed DURING the native resume. Finalize — never
               // discard: the manifest is how the departed user recovers this
               // audio (rule 8) — and release the singleton for the next user.
+              const confirmed = initiatingUserId
+                ? await finalizeDepartedUserCapture(
+                    initiatingUserId,
+                    existingDurable.recordingId,
+                    recorder.getSelectedBackend() === 'durable',
+                  )
+                : false;
+              // Also stops the expo backend and settles hook state; a second
+              // stop of an already-finalized durable capture is swallowed.
               await recorder.stop().catch(() => {});
+              if (confirmed && initiatingUserId) {
+                // Deliberately finalized, so the pointer would report a
+                // phantom interruption on the next launch. Cleared by EXPLICIT
+                // user: the ambient store scope is already null here.
+                await durableActiveStore
+                  .clearActiveForUser(initiatingUserId, existingDurable.recordingId)
+                  .catch(() => {});
+              }
               unbindRecorder();
               return;
             }
@@ -2188,8 +2234,20 @@ function RecordingSession() {
               if (!scopeUnchanged()) {
                 // Sign-out landed DURING the native start — see the resume
                 // branch. Finalize, never discard.
+                const confirmed = initiatingUserId
+                  ? await finalizeDepartedUserCapture(
+                      initiatingUserId,
+                      recordingId,
+                      recorder.getSelectedBackend() === 'durable',
+                    )
+                  : false;
                 freshDurableRecordingId = null;
                 await recorder.stop().catch(() => {});
+                if (confirmed && initiatingUserId) {
+                  await durableActiveStore
+                    .clearActiveForUser(initiatingUserId, recordingId)
+                    .catch(() => {});
+                }
                 unbindRecorder();
                 return;
               }
@@ -2355,7 +2413,11 @@ function RecordingSession() {
           }
           await durableActiveStore.clearActiveForUser(userId, durableId).catch(() => {});
           if (slotId) await durableActiveStore.clearActiveForUser(userId, slotId).catch(() => {});
-        })();
+        })().catch(() => {});
+        // Terminal catch at the fire-and-forget boundary (rule 4). The inner
+        // guards are narrow; a synchronous throw before the try, or a future
+        // await added outside them, would otherwise surface as a Hermes
+        // unhandled rejection and crash the release build during sign-out.
         return;
       }
       if (slotId) durableActiveStore.clearActiveForUser(userId, slotId).catch(() => {});
@@ -6753,32 +6815,6 @@ function RecordingSession() {
     });
   }, []);
 
-  // Effect: ask once per device whether to exempt Captivet from Android battery
-  // optimization. Samsung One UI app-sleep kills the app mid-recording, and that
-  // kill reaches no crash reporter at all. Queued behind the startup sweeps so
-  // the dialog never lands while the screen is still settling. When this launch
-  // found a prior process ended mid-capture the copy reports THAT — it does not
-  // claim Android caused it, because a reboot looks identical from here.
-  useEffect(() => {
-    if (!user?.id) return;
-    const promptUserId = user.id;
-    const cancelWork = scheduleNonUrgentWork(
-      'battery_opt_prompt',
-      async (isExpired) => {
-        await maybePromptBatteryOptimization(
-          priorUncleanExitDetected(promptUserId),
-          // Re-evaluated inside, right before the Alert: this callback can be
-          // mid-await across a sign-out and cancelWork cannot stop it.
-          () => !isExpired() && durableActiveStore.getUserId() === promptUserId,
-        );
-      },
-      5_000,
-      null,
-      true,
-    );
-    return cancelWork;
-  }, [user?.id]);
-
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
@@ -6960,6 +6996,39 @@ function RecordingSession() {
       cancelWork();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per user; isConnected read via closure at mount
+  }, [user?.id]);
+
+  // Effect: ask once per device whether to exempt Captivet from Android battery
+  // optimization. Samsung One UI app-sleep kills the app mid-recording, and that
+  // kill reaches no crash reporter at all. When this launch found a prior
+  // process ended mid-capture the copy reports THAT — it does not claim Android
+  // caused it, because a reboot looks identical from here.
+  //
+  // DECLARATION ORDER IS LOAD-BEARING: this must stay BELOW the orphan-cleanup
+  // and eviction effects. These jobs are `serial`, so they chain onto
+  // startupSweepTail in the order their effects register, which is declaration
+  // order. Declared above the sweeps, the prompt became the HEAD of the chain
+  // and fired before the screen had settled — and the eviction pass could then
+  // raise its own Alert over the open one-shot prompt, after this prompt's
+  // already-asked marker had been consumed.
+  useEffect(() => {
+    if (!user?.id) return;
+    const promptUserId = user.id;
+    const cancelWork = scheduleNonUrgentWork(
+      'battery_opt_prompt',
+      async (isExpired) => {
+        await maybePromptBatteryOptimization(
+          priorUncleanExitDetected(promptUserId),
+          // Re-evaluated inside, right before the Alert: this callback can be
+          // mid-await across a sign-out and cancelWork cannot stop it.
+          () => !isExpired() && durableActiveStore.getUserId() === promptUserId,
+        );
+      },
+      5_000,
+      null,
+      true,
+    );
+    return cancelWork;
   }, [user?.id]);
 
   const handleResumeStash = useCallback(

@@ -50,8 +50,15 @@ test('a sign-out DURING the native call finalizes rather than leaks the singleto
   const fn = startHandler();
   // Both branches re-check after the await and stop the recorder. Without this
   // the window inside the native call itself stays open.
-  const stops = fn.match(/if \(!scopeUnchanged\(\)\) \{[\s\S]{0,400}?await recorder\.stop\(\)\.catch\(\(\) => \{\}\);/g);
-  assert.equal(stops?.length, 2, 'both durable branches must finalize on late scope loss');
+  // Round 19 inserted the confirmed-finalize call ahead of the stop, so this
+  // matches on the pair rather than a fixed character window.
+  const finalize = fn.match(/await finalizeDepartedUserCapture\(/g);
+  const stops = fn.match(/await recorder\.stop\(\)\.catch\(\(\) => \{\}\);/g);
+  assert.equal(finalize?.length, 2, 'both durable branches must finalize on late scope loss');
+  assert.equal(stops?.length, 2, 'and both must settle the recorder itself');
+  for (const branch of ['recordingId,', 'existingDurable.recordingId,']) {
+    assert.ok(fn.includes(branch), `finalize must name ${branch}`);
+  }
 });
 
 test('the late-scope-loss path finalizes, never discards', () => {

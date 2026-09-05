@@ -138,8 +138,10 @@ test('a failed recorder start clears the expo capture pointer', () => {
   // Must be cleared in the catch, alongside the durable ids.
   const catchStart = src.indexOf("} catch (error) {", src.indexOf('record_tap_to_recording'));
   const catchBlock = src.slice(catchStart, catchStart + 2500);
-  assert.match(catchBlock, /durableActiveStore\.clearActive\(expoPointerSlotId\)/);
-  assert.match(catchBlock, /durableActiveStore\.clearActive\(freshDurableRecordingId\)/);
+  // Round 21 routed every await-downstream clear through clearCapturePointer,
+  // which names the INITIATING user: an ambient clear no-ops across a sign-out.
+  assert.match(catchBlock, /clearCapturePointer\(initiatingUserId, expoPointerSlotId\)/);
+  assert.match(catchBlock, /clearCapturePointer\(initiatingUserId, freshDurableRecordingId\)/);
 });
 
 // ---- F6 (P2): a deliberate discard must not read as a kill -----------------

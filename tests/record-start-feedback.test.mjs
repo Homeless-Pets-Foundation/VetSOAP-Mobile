@@ -134,7 +134,7 @@ test('the durable active-pointer write overlaps native start instead of gating i
   assert.ok(rPointer > 0 && rResume > rPointer && rJoin > rResume);
   // A failed fresh start clears its pointer; activeStore serializes mutations
   // so the clear lands AFTER the overlapped write, never racing it.
-  assert.match(fn, /durableActiveStore\.clearActive\(freshDurableRecordingId\)\.catch\(\(\) => \{\}\)/);
+  assert.match(fn, /clearCapturePointer\(initiatingUserId, freshDurableRecordingId\)/);
 });
 
 test('active-pointer mutations are serialized so an overlapped clear cannot lose to its own write', async () => {

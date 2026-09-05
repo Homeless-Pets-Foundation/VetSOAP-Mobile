@@ -28,7 +28,7 @@ function stopHandler() {
 
 test('the pointer is cleared before the slow autosave, not only after it', () => {
   const fn = stopHandler();
-  const clear = fn.indexOf('await durableActiveStore.clearActive(targetSlotId)');
+  const clear = fn.indexOf('await clearCapturePointer(finishUserId, targetSlotId)');
   const autosave = fn.indexOf('await autoSaveDraftRef.current(persistedSlot)');
   assert.ok(clear > 0, 'the early clear must exist');
   assert.ok(autosave > 0, 'autosave anchor');
@@ -39,8 +39,8 @@ test('the early clear is awaited, so it cannot race the autosave', () => {
   const fn = stopHandler();
   // Fire-and-forget would reintroduce the window: the point is that the pointer
   // is gone before the seconds-long work begins.
-  assert.match(fn, /await durableActiveStore\.clearActive\(targetSlotId\)\.catch\(\(\) => \{\}\);/);
-  assert.match(fn, /await durableActiveStore\.clearActive\(durableIdAtFinish\)\.catch\(\(\) => \{\}\);/);
+  assert.match(fn, /await clearCapturePointer\(finishUserId, targetSlotId\);/);
+  assert.match(fn, /await clearCapturePointer\(finishUserId, durableIdAtFinish\);/);
 });
 
 test('the finally still clears both keys for the early-return and catch paths', () => {
@@ -49,6 +49,6 @@ test('the finally still clears both keys for the early-return and catch paths', 
   assert.ok(fin.length > 0, 'finally anchor');
   // A second clear is a no-op; dropping it would strand the pointer on the
   // "could not be captured/linked" early returns and on the catch.
-  assert.match(fin, /durableActiveStore\.clearActive\(targetSlotId\)/);
-  assert.match(fin, /durableActiveStore\.clearActive\(durableIdAtFinish\)/);
+  assert.match(fin, /clearCapturePointer\(finishUserId, targetSlotId\)/);
+  assert.match(fin, /clearCapturePointer\(finishUserId, durableIdAtFinish\)/);
 });

@@ -36,8 +36,10 @@ test('handleStop clears the capture pointer in finally, covering every exit', ()
 
   // `finally` is the only placement that covers the success path, BOTH
   // "could not be captured/linked" early returns, and the catch.
-  assert.match(finallyBlock, /durableActiveStore\.clearActive\(targetSlotId\)/);
-  assert.match(finallyBlock, /durableActiveStore\.clearActive\(durableIdAtFinish\)/);
+  // Round 21: cleared for the user who FINISHED, not the ambient scope — this
+  // finally runs after autoSaveDraft, which is seconds of work.
+  assert.match(finallyBlock, /clearCapturePointer\(finishUserId, targetSlotId\)/);
+  assert.match(finallyBlock, /clearCapturePointer\(finishUserId, durableIdAtFinish\)/);
 });
 
 test('handleStop captures the durable id before stop() can clear it', () => {
@@ -92,7 +94,7 @@ test('record.tsx re-keys the pointer when durable start fell back to expo', () =
   assert.ok(idx > 0, 'no fallback re-key branch (must also verify user scope)');
   const branch = src.slice(idx, idx + 900);
   // The durable-keyed pointer must go, or it outlives the recording.
-  assert.match(branch, /durableActiveStore\.clearActive\(recordingId\)/);
+  assert.match(branch, /clearCapturePointer\(initiatingUserId, recordingId\)/);
   // freshDurableRecordingId must be dropped too, or the catch would later clear
   // an id that no longer describes anything.
   assert.match(branch, /freshDurableRecordingId = null/);

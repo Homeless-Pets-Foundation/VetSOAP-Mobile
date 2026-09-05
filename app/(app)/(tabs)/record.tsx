@@ -2038,6 +2038,32 @@ function RecordingSession() {
     [isSlotUploadActive, session.recorderBoundToSlotId, session.slots, recorder, user?.role]
   );
 
+  /**
+   * Clear a capture pointer for the user who INITIATED the work, not whoever the
+   * store happens to be bound to when the clear finally runs.
+   *
+   * Every call site below sits downstream of an await, and AuthProvider rebinds
+   * durableActiveStore to null (then to the next user) BEFORE the React state
+   * change that unmounts this screen. An ambient clear therefore silently no-ops
+   * across a sign-out, stranding the pointer so user A gets a phantom
+   * "recording interrupted" report — and, on a shared tablet, so does whoever
+   * signs in next. Codex rounds 14, 17, 18, 19 and 21 were all this one bug
+   * surfacing at different exits; this is the shared form.
+   *
+   * Falls back to the ambient clear only when no initiating user is known, which
+   * is strictly better than skipping the clear entirely.
+   */
+  const clearCapturePointer = useCallback(
+    (initiatorId: string | null, id: string | null): Promise<void> => {
+      if (!id) return Promise.resolve();
+      const done = initiatorId
+        ? durableActiveStore.clearActiveForUser(initiatorId, id)
+        : durableActiveStore.clearActive(id);
+      return done.catch(() => {});
+    },
+    []
+  );
+
   const startRecordingForSlot = useCallback(
     (slotId: string) => {
       if (startInFlightRef.current) return;
@@ -2260,7 +2286,7 @@ function RecordingSession() {
               // Re-key it to match the backend that actually owns the capture.
               if (recorder.getSelectedBackend() === 'expo' && scopeUnchanged()) {
                 freshDurableRecordingId = null;
-                durableActiveStore.clearActive(recordingId).catch(() => {});
+                void clearCapturePointer(initiatingUserId, recordingId);
                 expoPointerSlotId = slotId;
                 // Named handle, joined below — the same post-start shape as
                 // activePointerWrite/expoPointerWrite. The mic is already open
@@ -2322,7 +2348,7 @@ function RecordingSession() {
             // clear runs AFTER the overlapped pointer write lands — never
             // racing it — and a start that captured no frame cannot read as
             // "previous process died mid-capture" on the next launch.
-            durableActiveStore.clearActive(freshDurableRecordingId).catch(() => {});
+            void clearCapturePointer(initiatingUserId, freshDurableRecordingId);
           }
           if (expoPointerSlotId) {
             // A start that never captured a frame must not read as "the OS killed
@@ -2331,10 +2357,10 @@ function RecordingSession() {
             // failures — and each would otherwise tell the vet that Android
             // truncated a recording that never began. Serialized in the store, so
             // this clear lands after the overlapped write rather than racing it.
-            durableActiveStore.clearActive(expoPointerSlotId).catch(() => {});
+            void clearCapturePointer(initiatingUserId, expoPointerSlotId);
           }
           if (resumeDurableRecordingId) {
-            durableActiveStore.clearActive(resumeDurableRecordingId).catch(() => {});
+            void clearCapturePointer(initiatingUserId, resumeDurableRecordingId);
             setAudioState(slotId, 'stopped');
           }
           const errMsg = error instanceof Error ? error.message.toLowerCase() : '';
@@ -2355,7 +2381,7 @@ function RecordingSession() {
         setStartingSlotId((cur) => (cur === slotId ? null : cur));
       });
     },
-    [recorder, bindRecorder, unbindRecorder, setAudioState, recordFirstEnabled, user?.id]
+    [recorder, bindRecorder, unbindRecorder, setAudioState, recordFirstEnabled, user?.id, clearCapturePointer]
   );
 
   // Keep the ref in sync for the effect
@@ -2469,6 +2495,9 @@ function RecordingSession() {
     (slotId: string) => {
       (async () => {
         const targetSlotId = sessionRef.current.recorderBoundToSlotId ?? slotId;
+        // Captured up front: the clears below run after autoSaveDraft, which is
+        // seconds of work, so the ambient store scope may have moved on.
+        const finishUserId = user?.id ?? null;
         if (manualFinishSlotIdRef.current) return;
         manualFinishSlotIdRef.current = targetSlotId;
         setFinishingDraftSlotId(targetSlotId);
@@ -2522,7 +2551,7 @@ function RecordingSession() {
             pendingDraftRecoveryReasonRef.current.set(targetSlotId, 'draft_finish');
             recordingSegmentStartedAtMsRef.current = null;
             setDurableRecording(targetSlotId, durableRef);
-            durableActiveStore.clearActive(snap.recordingId).catch(() => {});
+            void clearCapturePointer(finishUserId, snap.recordingId);
             recorder.resetWithoutDelete();
             if (boundSlot) {
               const durableSlot: PatientSlot = {
@@ -2601,9 +2630,9 @@ function RecordingSession() {
           // degraded Keystore cannot stall Finish. The finally still repeats
           // both clears — it covers the early returns and the catch, and a
           // second clear is a no-op.
-          await durableActiveStore.clearActive(targetSlotId).catch(() => {});
+          await clearCapturePointer(finishUserId, targetSlotId);
           if (durableIdAtFinish) {
-            await durableActiveStore.clearActive(durableIdAtFinish).catch(() => {});
+            await clearCapturePointer(finishUserId, durableIdAtFinish);
           }
 
           const saved = await autoSaveDraftRef.current(persistedSlot);
@@ -2625,16 +2654,16 @@ function RecordingSession() {
           // both "could not be captured/linked" early returns and the catch are
           // all covered. Both keys: expo captures are keyed by slot, durable by
           // recording id.
-          durableActiveStore.clearActive(targetSlotId).catch(() => {});
+          void clearCapturePointer(finishUserId, targetSlotId);
           if (durableIdAtFinish) {
-            durableActiveStore.clearActive(durableIdAtFinish).catch(() => {});
+            void clearCapturePointer(finishUserId, durableIdAtFinish);
           }
           manualFinishSlotIdRef.current = null;
           setFinishingDraftSlotId((current) => current === targetSlotId ? null : current);
         }
       })().catch(() => {});
     },
-    [buildPersistedSlot, recorder, saveAudio, setAudioState, unbindRecorder, setDurableRecording]
+    [buildPersistedSlot, recorder, saveAudio, setAudioState, unbindRecorder, setDurableRecording, user?.id, clearCapturePointer]
   );
 
   const handleContinueRecording = useCallback(

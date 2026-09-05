@@ -44,15 +44,22 @@ test('no scope-abort after a pointer write returns without clearing', () => {
   // Per BRANCH: a gate before that branch's own write has nothing published yet
   // to clear, so scanning the whole handler from the first write would flag the
   // fresh branch's legitimate pre-write gate.
+  // Round 31 gave the EXPO branch the same post-await aborts, so it is covered
+  // here too. Its pointer write is the last one in the handler.
+  const expoStart = fn.indexOf('await recorder.ensureRecordingNotificationPermission();');
   const branches = {
     resume: fn.slice(fn.indexOf('const existingDurable ='), fn.indexOf('const freshDurable =')),
-    fresh: fn.slice(fn.indexOf('const freshDurable =')),
+    fresh: fn.slice(fn.indexOf('const freshDurable ='), expoStart),
+    expo: fn.slice(expoStart),
   };
   for (const [name, branch] of Object.entries(branches)) {
     const write = branch.indexOf('await racePreStartPointerWrite(');
     assert.ok(write > 0, `${name}: pointer write anchor`);
     const blocks = [...branch.slice(write).matchAll(/if \(!scopeUnchanged\(\)\) \{([\s\S]*?)\n(\s*)\}/g)];
-    assert.ok(blocks.length >= 2, `${name}: expected the post-write aborts`);
+    // At least one: the durable branches have a post-write abort AND one after
+    // the native call; expo has only the former. The count is not the invariant
+    // — what matters is that EVERY such block clears before returning.
+    assert.ok(blocks.length >= 1, `${name}: expected a post-write abort`);
     for (const [, body] of blocks) {
       assert.match(
         body,

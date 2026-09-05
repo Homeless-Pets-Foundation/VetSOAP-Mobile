@@ -85,9 +85,11 @@ test('the notification preflight runs before the expo pointer is published', () 
   const publish = src.indexOf("durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo')");
   assert.ok(preflight > 0, 'preflight anchor');
   assert.ok(publish > preflight, 'the dialog must be dealt with before the pointer exists');
-  // And the scope gate still sits between them, per the round-25 rule.
+  // And a scope check still sits between them, per the round-25 rule — round 31
+  // turned it into an outright abort, since merely skipping the write still let
+  // recorder.start() open the mic after logout.
   const between = src.slice(preflight, publish);
-  assert.match(between, /if \(scopeUnchanged\(\)\) \{/);
+  assert.match(between, /if \(!scopeUnchanged\(\)\) \{[\s\S]*?return;/);
 });
 
 test('the preflight is exposed and idempotent, not a second request', () => {

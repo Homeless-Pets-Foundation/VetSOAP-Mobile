@@ -25,22 +25,39 @@ test('a hung write keeps its generation reserved across a full ring wrap', async
   const store = new Map();
   let hangGen = null;
   let release;
+  let reached;
   const gate = new Promise((r) => { release = r; });
+  // Synchronise on the mock actually BLOCKING. writeChunkedValueVersioned awaits
+  // the `_ptr` read first, so the call yields before it ever reaches
+  // setItemAsync — clearing the selector on the next line meant the chunk was
+  // never gated, the test performed only sequential completed writes, and it
+  // passed even with the reservation removed (Codex round 31).
+  const atGate = new Promise((r) => { reached = r; });
   const mod = await loadTsModule('src/lib/durableAudio/chunkedStore.ts', {
     'expo-secure-store': {
       AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
       async getItemAsync(k) { return store.has(k) ? store.get(k) : null; },
       async setItemAsync(k, v) {
-        if (hangGen !== null && k.includes(`_g${hangGen}_chunk_`)) { await gate; }
+        if (hangGen !== null && k.includes(`_g${hangGen}_chunk_`)) {
+          reached();
+          await gate;
+        }
         store.set(k, v);
       },
       async deleteItemAsync(k) { store.delete(k); },
     },
   });
 
-  // First write establishes generation 0 and then hangs on its chunk.
+  // First write establishes generation 0 and then hangs on its chunk. It carries
+  // the same shouldCommit guard activeStore always passes, so once its deadline
+  // passes it must not publish — mirroring a real abandoned mutation rather than
+  // a bare writer call, which would legitimately publish on release.
+  let abandoned = false;
   hangGen = 0;
-  const hung = mod.writeChunkedValueVersioned(PREFIX, JSON.stringify(['stale']));
+  const hung = mod.writeChunkedValueVersioned(PREFIX, JSON.stringify(['stale']), {
+    shouldCommit: () => !abandoned,
+  });
+  await atGate;
   hangGen = null;
   // Wrap the ring with more mutations than it has slots.
   for (let i = 0; i < 10; i++) {
@@ -49,9 +66,13 @@ test('a hung write keeps its generation reserved across a full ring wrap', async
   const current = JSON.parse(store.get(`${PREFIX}_ptr`));
   assert.notEqual(current.g, 0, 'the pointer must not name a generation still in flight');
 
+  abandoned = true;
   release();
-  await hung;
-  // The late write landed on its own reserved slot, so the current value stands.
+  assert.equal(await hung, false, 'an abandoned write must not publish');
+  // The late chunk write landed on its OWN reserved slot, so the generation the
+  // live pointer names was never touched. Without the reservation, one of the
+  // ten wrapping writes would have taken generation 0 and this would read
+  // '["stale"]'.
   assert.equal(await mod.readChunkedValueVersioned(PREFIX), JSON.stringify(['v9']));
 });
 

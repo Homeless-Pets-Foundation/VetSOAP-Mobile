@@ -72,7 +72,8 @@ test('pre-start pointer writes verify the initiating user', () => {
   assert.match(src, /durableActiveStore\.getUserId\(\) === initiatingUserId/);
   // Both write sites are guarded: the plain expo start and the durable->expo
   // re-key, each of which runs after several awaits.
-  assert.match(src, /if \(scopeUnchanged\(\)\) \{\n\s*expoPointerSlotId = slotId;/);
+  // Round 31: an abort now precedes it rather than wrapping it.
+  assert.match(src, /if \(!scopeUnchanged\(\)\) \{\s*\n\s*unbindRecorder\(\);\s*\n\s*return;\s*\n\s*\}\s*\n\s*expoPointerSlotId = slotId;/);
   assert.match(src, /getSelectedBackend\(\) === 'expo' && scopeUnchanged\(\)/);
 });
 

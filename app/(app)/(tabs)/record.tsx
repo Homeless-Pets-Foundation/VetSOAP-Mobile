@@ -2354,12 +2354,27 @@ function RecordingSession() {
               // interruption on the next launch. Idempotent and one-shot per
               // process, so the in-start call is then a no-op.
               await recorder.ensureRecordingNotificationPermission();
-              // Re-checked after that await, like every other post-await gate.
-              if (scopeUnchanged()) {
-                expoPointerSlotId = slotId;
-                await racePreStartPointerWrite(
-                  durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
-                );
+              // Abort, don't merely skip the write: the preflight can sit on a
+              // system dialog, and calling start() afterwards would open the
+              // microphone for a user who has since signed out.
+              if (!scopeUnchanged()) {
+                unbindRecorder();
+                return;
+              }
+              expoPointerSlotId = slotId;
+              await racePreStartPointerWrite(
+                durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
+              );
+              // Rechecked again after the write, and the pointer it may already
+              // have PUBLISHED is cleared — the same shape as both durable
+              // branches. Without this the expo path could both open the mic
+              // post-logout and strand A's breadcrumb for a capture that never
+              // began.
+              if (!scopeUnchanged()) {
+                await clearCapturePointer(initiatingUserId, slotId);
+                expoPointerSlotId = null;
+                unbindRecorder();
+                return;
               }
               await recorder.start();
             }

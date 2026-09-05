@@ -282,6 +282,44 @@ export const durableActiveStore = {
   },
 
   /**
+   * Swap one pointer for another in ONE serialized mutation.
+   *
+   * The re-key path (durable start silently fell back to expo) previously
+   * cleared the durable entry and then wrote the expo one as two separate
+   * mutations. Because the queue serializes them, the removal PUBLISHES first,
+   * so between the two the live capture had no pointer at all: a process death
+   * in that window — or a failure of the second write — left the only evidence
+   * of an unclean exit missing. Doing it as one read-modify-write leaves no gap
+   * in either direction, where "write first, clear after" would instead briefly
+   * publish two pointers for one capture and over-report.
+   */
+  replaceActive(
+    previousRecordingId: string,
+    recordingId: string,
+    slotId: string,
+    startedAt: string,
+    backend: CaptureBackend = 'durable',
+  ): Promise<void> {
+    const userId = currentUserId;
+    return serialized(async (isAbandoned) => {
+      if (!userId || !isValidDurableId(recordingId)) return;
+      let list: DurableActiveEntry[];
+      try {
+        list = await readListStrict(userId);
+      } catch {
+        return;
+      }
+      if (isAbandoned()) return;
+      const next = list.filter(
+        (e) => e.recordingId !== previousRecordingId && e.recordingId !== recordingId,
+      );
+      next.push({ recordingId, slotId, startedAt, backend });
+      while (next.length > MAX_ACTIVE) next.shift();
+      await writeList(userId, next, () => !isAbandoned());
+    });
+  },
+
+  /**
    * Remove every entry that started before `cutoffIso`, in ONE serialized
    * mutation, for an EXPLICIT user.
    *

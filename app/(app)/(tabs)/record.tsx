@@ -2309,13 +2309,22 @@ function RecordingSession() {
               // Re-key it to match the backend that actually owns the capture.
               if (recorder.getSelectedBackend() === 'expo' && scopeUnchanged()) {
                 freshDurableRecordingId = null;
-                void clearCapturePointer(initiatingUserId, recordingId);
                 expoPointerSlotId = slotId;
-                // The mic is already open here, so this re-key cannot gate
-                // start latency at all — it is the same bounded helper used in
+                // ONE mutation, not a clear followed by a write. Serialized
+                // separately, the removal publishes first and the live capture
+                // has no pointer until the second lands — so a death in that
+                // window, or a failed second write, loses the only evidence of
+                // an unclean exit. The mic is already open here, so this cannot
+                // gate start latency; it is the same bounded helper used in
                 // front of the mic, simply on the far side of it.
                 await racePreStartPointerWrite(
-                  durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
+                  durableActiveStore.replaceActive(
+                    recordingId,
+                    slotId,
+                    slotId,
+                    new Date().toISOString(),
+                    'expo',
+                  ),
                 );
               }
             } else {

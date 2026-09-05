@@ -114,8 +114,8 @@ test('the queue bound and abandon-generation are wired, not just declared', () =
   assert.match(src, /abandonGeneration\+\+;/);
   // Both read-modify-write ops consult it after their read AND again at the
   // commit point, since the read may be fast while the write is what hangs.
-  // Four read-modify-write ops now: setActive, clearActive, clearActiveForUser,
-  // pruneStartedBefore.
-  assert.equal((src.match(/if \(isAbandoned\(\)\) return;/g) ?? []).length, 4);
-  assert.equal((src.match(/\(\) => !isAbandoned\(\)/g) ?? []).length, 4);
+  // Five read-modify-write ops now: setActive, clearActive, clearActiveForUser,
+  // replaceActive, pruneStartedBefore.
+  assert.equal((src.match(/if \(isAbandoned\(\)\) return;/g) ?? []).length, 5);
+  assert.equal((src.match(/\(\) => !isAbandoned\(\)/g) ?? []).length, 5);
 });

@@ -85,6 +85,10 @@ test('setActive refuses to publish over an unreadable list', async () => {
 
 test('both mutation paths read strictly', () => {
   const src = read('src/lib/durableAudio/activeStore.ts');
-  assert.equal((src.match(/await readListStrict\(userId\)/g) ?? []).length, 3, 'setActive + both clears');
+  assert.equal(
+    (src.match(/await readListStrict\(userId\)/g) ?? []).length,
+    4,
+    'setActive + both clears + replaceActive',
+  );
   assert.doesNotMatch(src, /const existing = await readList\(userId\);/);
 });

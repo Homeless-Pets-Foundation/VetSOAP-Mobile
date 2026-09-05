@@ -92,15 +92,20 @@ test('record.tsx re-keys the pointer when durable start fell back to expo', () =
   const src = read(RECORD);
   const idx = src.indexOf("if (recorder.getSelectedBackend() === 'expo' && scopeUnchanged()) {");
   assert.ok(idx > 0, 'no fallback re-key branch (must also verify user scope)');
-  const branch = src.slice(idx, idx + 900);
+  // Bounded by the branch's own end, not a fixed character count: a fixed
+  // window silently drops assertions off the end as the block grows.
+  const branch = src.slice(idx, src.indexOf('\n            } else {', idx));
   // The durable-keyed pointer must go, or it outlives the recording.
-  assert.match(branch, /clearCapturePointer\(initiatingUserId, recordingId\)/);
+  // Round 27: one serialized mutation. Clearing then setting published the
+  // removal first, leaving the live capture with no pointer in between.
+  assert.match(branch, /durableActiveStore\.replaceActive\(\s*\n\s*recordingId,\s*\n\s*slotId,/);
+  assert.doesNotMatch(branch, /clearCapturePointer\(initiatingUserId, recordingId\)/);
   // freshDurableRecordingId must be dropped too, or the catch would later clear
   // an id that no longer describes anything.
   assert.match(branch, /freshDurableRecordingId = null/);
   // And an expo-keyed pointer must replace it, so the capture stays covered.
   assert.match(branch, /expoPointerSlotId = slotId/);
-  assert.match(branch, /setActive\(slotId, slotId, new Date\(\)\.toISOString\(\), 'expo'\)/);
+  assert.match(branch, /slotId,\s*\n\s*slotId,\s*\n\s*new Date\(\)\.toISOString\(\),\s*\n\s*'expo',/);
 });
 
 test('the re-key happens after start resolves, not before', () => {

@@ -61,7 +61,7 @@ test('a clear publishes even when the snapshot looks empty', async (t) => {
 
 test('both clears publish unconditionally', () => {
   const src = read('src/lib/durableAudio/activeStore.ts');
-  const body = src.slice(src.indexOf('clearActive(recordingId'), src.indexOf('pruneStartedBefore('));
+  const body = src.slice(src.indexOf('clearActive(recordingId'), src.indexOf('replaceActive('));
   assert.ok(body.length > 0, 'anchor');
   assert.doesNotMatch(
     body,

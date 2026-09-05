@@ -2259,19 +2259,27 @@ function RecordingSession() {
   //
   // Reads the live values from refs at teardown time. A real OS kill never runs
   // this cleanup, so genuine evidence is untouched.
-  const liveCaptureRef = useRef<{ slotId: string | null; durableId: string | null }>({
-    slotId: null,
-    durableId: null,
-  });
+  //
+  // The user id is captured too, and cleared through clearActiveForUser: sign-out
+  // rebinds durableActiveStore to null BEFORE clearing the React user state that
+  // unmounts this screen, so anything relying on the ambient scope here would
+  // capture null and silently do nothing.
+  const liveCaptureRef = useRef<{
+    userId: string | null;
+    slotId: string | null;
+    durableId: string | null;
+  }>({ userId: null, slotId: null, durableId: null });
   liveCaptureRef.current = {
+    userId: user?.id ?? null,
     slotId: session.recorderBoundToSlotId,
     durableId: recorder.activeDurableRecordingId,
   };
   useEffect(() => {
     return () => {
-      const { slotId, durableId } = liveCaptureRef.current;
-      if (slotId) durableActiveStore.clearActive(slotId).catch(() => {});
-      if (durableId) durableActiveStore.clearActive(durableId).catch(() => {});
+      const { userId, slotId, durableId } = liveCaptureRef.current;
+      if (!userId) return;
+      if (slotId) durableActiveStore.clearActiveForUser(userId, slotId).catch(() => {});
+      if (durableId) durableActiveStore.clearActiveForUser(userId, durableId).catch(() => {});
     };
   }, []);
 

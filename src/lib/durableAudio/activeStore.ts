@@ -197,6 +197,27 @@ export const durableActiveStore = {
     });
   },
 
+  /**
+   * Clear a pointer for an EXPLICIT user, independent of the current scope.
+   *
+   * Sign-out rebinds this store to null (AuthProvider) BEFORE clearing the React
+   * user state that unmounts the Record screen, so a teardown relying on the
+   * ambient scope captures null and silently does nothing. A capture live at
+   * sign-out would then be reported as an OS kill on the next launch. Callers
+   * that already know whose pointer it is must use this.
+   */
+  clearActiveForUser(userId: string, recordingId: string): Promise<void> {
+    return serialized(async (isAbandoned) => {
+      if (!userId) return;
+      const list = await readList(userId);
+      if (isAbandoned()) return;
+      const next = list.filter((e) => e.recordingId !== recordingId);
+      if (next.length !== list.length) {
+        await writeList(userId, next, () => !isAbandoned());
+      }
+    });
+  },
+
   async list(): Promise<DurableActiveEntry[]> {
     const userId = currentUserId;
     if (!userId) return [];

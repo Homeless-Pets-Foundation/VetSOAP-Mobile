@@ -76,7 +76,7 @@ test('writes are generation-namespaced and publish through a single pointer key'
 test('the versioned reader falls back to the legacy layout for existing installs', () => {
   const src = read('src/lib/durableAudio/chunkedStore.ts');
   const fn = src.slice(src.indexOf('export async function readChunkedValueVersioned'));
-  assert.match(fn.slice(0, 900), /return readChunkedValue\(prefix\);/);
+  assert.match(fn.slice(0, 1600), /return readChunkedValue\(prefix\);/);
 });
 
 // ---- F2: telemetry must never block a recovery offer ----------------------
@@ -99,10 +99,11 @@ test('unmounting the Record screen clears a live capture pointer', () => {
   // without this the next launch reports that Android stopped a recording the
   // user ended by logging out.
   const src = read('app/(app)/(tabs)/record.tsx');
-  assert.match(src, /const liveCaptureRef = useRef<\{ slotId: string \| null; durableId: string \| null \}>/);
+  assert.match(src, /const liveCaptureRef = useRef<\{/);
   const idx = src.indexOf('const liveCaptureRef');
   const block = src.slice(idx, idx + 1200);
   assert.match(block, /return \(\) => \{/);
-  assert.match(block, /durableActiveStore\.clearActive\(slotId\)/);
-  assert.match(block, /durableActiveStore\.clearActive\(durableId\)/);
+  // Explicit user, not ambient scope: sign-out nulls the scope BEFORE unmount.
+  assert.match(block, /durableActiveStore\.clearActiveForUser\(userId, slotId\)/);
+  assert.match(block, /durableActiveStore\.clearActiveForUser\(userId, durableId\)/);
 });

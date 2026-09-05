@@ -2085,6 +2085,18 @@ function RecordingSession() {
                 'Your device is low on free space. The recording may stop early if space runs out — free up space if you can.',
               );
             }
+            // The NATIVE start must be gated too, not just the pointer write.
+            // The engine is a process singleton, so a capture that begins for a
+            // user who has since signed out holds the microphone under the
+            // DEPARTED user's directory and rejects the next user's start with
+            // BUSY. The unmount teardown cannot rescue it: activeDurableRecordingId
+            // is only populated once native start RESOLVES, so a start still in
+            // flight is invisible there.
+            if (!scopeUnchanged()) {
+              unbindRecorder();
+              setAudioState(slotId, 'stopped');
+              return;
+            }
             resumeDurableRecordingId = existingDurable.recordingId;
             startPath = 'durable_resume';
             // Dispatched before, joined after the native resume — see the
@@ -2105,6 +2117,14 @@ function RecordingSession() {
               'resume',
             );
             await activePointerWrite;
+            if (!scopeUnchanged()) {
+              // Sign-out landed DURING the native resume. Finalize — never
+              // discard: the manifest is how the departed user recovers this
+              // audio (rule 8) — and release the singleton for the next user.
+              await recorder.stop().catch(() => {});
+              unbindRecorder();
+              return;
+            }
           } else {
             // Durable capture only for a FRESH recording (no durable/segments yet)
             // when the server-driven flag is on and the native module is available.
@@ -2135,6 +2155,13 @@ function RecordingSession() {
                   'Your device is low on free space. The recording may stop early if space runs out — free up space if you can.',
                 );
               }
+              // Same gate as the resume branch above: the native start itself
+              // must not run for a departed user, and an in-flight start is
+              // invisible to the unmount teardown.
+              if (!scopeUnchanged()) {
+                unbindRecorder();
+                return;
+              }
               const recordingId = newDurableRecordingId();
               startPath = 'durable_start';
               // Dispatch the active-pointer write (death-surviving breadcrumb)
@@ -2158,6 +2185,14 @@ function RecordingSession() {
                 'start',
               );
               await activePointerWrite;
+              if (!scopeUnchanged()) {
+                // Sign-out landed DURING the native start — see the resume
+                // branch. Finalize, never discard.
+                freshDurableRecordingId = null;
+                await recorder.stop().catch(() => {});
+                unbindRecorder();
+                return;
+              }
               // start() SWALLOWS a durable failure and transparently continues on
               // expo-audio, so it resolves successfully and nothing above can tell
               // which backend actually won. If durable lost, the pointer we just

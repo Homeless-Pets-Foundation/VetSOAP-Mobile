@@ -208,9 +208,14 @@ async function readVersionedInternal(
     // Only a PROVEN-absent pointer means this store was never migrated. A
     // present-but-unparseable one means it was, and its legacy keys are stale.
     if (rawPtr !== null) return { value: null, readable: false };
-    // Fall back to the legacy layout so an install that predates this migration
-    // still reads its existing value.
-    return { value: await readChunkedValue(prefix), readable: true };
+    // Never-migrated install: read the legacy layout STRICTLY. readChunkedValue
+    // is lenient, so a transient `_count`/chunk failure came back as null and
+    // was marked readable — after which setActive would treat the old list as
+    // empty and publish a generation holding only the new capture, permanently
+    // hiding a prior unclean-exit pointer.
+    const legacy = await readChunkedValueStrict(prefix);
+    if (legacy.status === 'unavailable') return { value: null, readable: false };
+    return { value: legacy.status === 'value' ? legacy.value : null, readable: true };
   }
   if (ptr.n === 0) return { value: '', readable: true };
   const result = await readChunksBounded(ptr.n, (i) =>

@@ -28,14 +28,19 @@ test('both durable pointer writes are gated on the initiating user', () => {
   const src = read('app/(app)/(tabs)/record.tsx');
   // Round 24 turned these into awaited pre-start writes; the scope gate is what
   // this fence is about and it survives in `if (scopeUnchanged())` form.
-  // Named by their DURABLE arguments so the expo pre-start write, which is
-  // gated the same way, is not counted here.
-  for (const arg of ['recordingId, slotId', 'existingDurable.recordingId, slotId']) {
-    const re = new RegExp(
-      `if \\(scopeUnchanged\\(\\)\\) \\{\\s*\\n\\s*await racePreStartPointerWrite\\(\\s*\\n\\s*durableActiveStore\\.setActive\\(${arg.replace(/[.]/g, '\\.')}`,
-    );
-    assert.match(src, re, `${arg} write must be scope-gated`);
-  }
+  // Literal patterns, not built from strings: naming the DURABLE arguments keeps
+  // the expo pre-start write (gated the same way) out of the count, and avoids
+  // hand-escaping a regex, which CodeQL rightly flagged as incomplete.
+  assert.match(
+    src,
+    /if \(scopeUnchanged\(\)\) \{\s*\n\s*await racePreStartPointerWrite\(\s*\n\s*durableActiveStore\.setActive\(recordingId, slotId/,
+    'fresh-start write must be scope-gated',
+  );
+  assert.match(
+    src,
+    /if \(scopeUnchanged\(\)\) \{\s*\n\s*await racePreStartPointerWrite\(\s*\n\s*durableActiveStore\.setActive\(existingDurable\.recordingId, slotId/,
+    'resume write must be scope-gated',
+  );
   // An unguarded durable write must not creep back in.
   assert.doesNotMatch(
     src,

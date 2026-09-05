@@ -83,7 +83,10 @@ test('the versioned reader falls back to the legacy layout for existing installs
     src.indexOf('async function readVersionedInternal('),
     src.indexOf('const GEN_RING'),
   );
-  assert.match(fn, /value: await readChunkedValue\(prefix\), readable: true/);
+  // Round 25: the legacy read is STRICT too — a failed one must not read as an
+  // empty store, or setActive publishes over a prior unclean-exit pointer.
+  assert.match(fn, /const legacy = await readChunkedValueStrict\(prefix\);/);
+  assert.match(fn, /if \(legacy\.status === 'unavailable'\) return \{ value: null, readable: false \};/);
   // ...but ONLY when the pointer is proven absent. A failed or corrupt read must
   // not revive a pre-migration list (Codex round 14).
   assert.match(fn, /if \(rawPtr !== null\) return \{ value: null, readable: false \};/);

@@ -2176,6 +2176,12 @@ function RecordingSession() {
                 durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
               );
             }
+            // Rechecked after the await — see the fresh-start branch.
+            if (!scopeUnchanged()) {
+              unbindRecorder();
+              setAudioState(slotId, 'stopped');
+              return;
+            }
             await withDurableOpWatchdog(
               recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable }),
               'resume',
@@ -2251,6 +2257,15 @@ function RecordingSession() {
                 await racePreStartPointerWrite(
                   durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
                 );
+              }
+              // RECHECKED after the await. Making the pointer write awaited
+              // (round 24) put an await between the pre-start gate and the
+              // native call, so the gate above is stale by the time we get here
+              // — and the engine is a process singleton, so starting for a
+              // departed user holds the mic and fails the next user with BUSY.
+              if (!scopeUnchanged()) {
+                unbindRecorder();
+                return;
               }
               freshDurableRecordingId = recordingId;
               await withDurableOpWatchdog(

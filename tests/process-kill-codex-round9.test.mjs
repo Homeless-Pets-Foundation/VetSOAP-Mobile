@@ -70,7 +70,11 @@ test('writes are generation-namespaced and publish through a single pointer key'
   // generation the abandoned one is still writing into.
   assert.match(src, /const lastHandedOutGen = new Map<string, number>\(\);/);
   assert.match(src, /const base = seen \?\? current\?\.g \?\? -1;/);
-  assert.match(src, /const gen = \(base \+ 1\) % GEN_RING;/);
+  // Round 24: the candidate now skips generations whose write has not settled,
+  // so the ring cannot wrap onto a slot a hung write may still land on.
+  assert.match(src, /let gen = \(base \+ 1\) % GEN_RING;/);
+  assert.match(src, /reserved\.has\(gen\)/);
+  assert.match(src, /const inFlightGenerations = new Map<string, Set<number>>\(\);/);
 });
 
 test('the versioned reader falls back to the legacy layout for existing installs', () => {

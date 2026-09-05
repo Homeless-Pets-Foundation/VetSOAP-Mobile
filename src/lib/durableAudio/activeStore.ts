@@ -195,7 +195,20 @@ export const durableActiveStore = {
     const userId = currentUserId;
     return serialized(async (isAbandoned) => {
       if (!userId || !isValidDurableId(recordingId)) return;
-      const existing = await readList(userId);
+      // STRICT, for the same reason the clears are: the lenient reader collapses
+      // a transient `_ptr`/chunk failure to [], and publishing on top of that
+      // would DISCARD any prior-process pointers still waiting for the detached
+      // launch probe — so a genuinely interrupted capture would never be
+      // reported at all, and could not select the prior-exit prompt copy.
+      // Aborting only forgoes a breadcrumb for the NEW capture, which the
+      // pointer contract already treats as best-effort; destroying evidence that
+      // already exists is the worse of the two.
+      let existing: DurableActiveEntry[];
+      try {
+        existing = await readListStrict(userId);
+      } catch {
+        return;
+      }
       if (isAbandoned()) return;
       const list = existing.filter((e) => e.recordingId !== recordingId);
       list.push({ recordingId, slotId, startedAt, backend });

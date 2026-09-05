@@ -271,6 +271,15 @@ const GEN_RING = 8;
  */
 const lastHandedOutGen = new Map<string, number>();
 
+/**
+ * Generations whose write has not settled yet, per prefix.
+ *
+ * A hung SecureStore write is not cancellable, so its generation must stay
+ * reserved until it actually finishes — otherwise the ring wraps around and the
+ * late write lands on whatever now occupies that slot.
+ */
+const inFlightGenerations = new Map<string, Set<number>>();
+
 export async function writeChunkedValueVersioned(
   prefix: string,
   value: string,
@@ -281,8 +290,40 @@ export async function writeChunkedValueVersioned(
   );
   const seen = lastHandedOutGen.get(prefix);
   const base = seen ?? current?.g ?? -1;
-  const gen = (base + 1) % GEN_RING;
+  // Never recycle a generation whose write may STILL SETTLE. The ring alone was
+  // not enough: a chunk write that hangs past its op deadline keeps running, and
+  // after GEN_RING further mutations — four ordinary start/finish cycles — its
+  // generation comes round again and may be the one the CURRENT pointer names.
+  // The late write then overwrites live chunks with a stale list without
+  // touching the pointer sequence, so neither the sequence nor the high-water
+  // mark can detect it, and a finished recording is resurrected as an unclean
+  // exit. A reservation is released when the write actually settles, however
+  // late, so a hung write holds its slot for as long as it needs to.
+  const reserved = inFlightGenerations.get(prefix) ?? new Set<number>();
+  inFlightGenerations.set(prefix, reserved);
+  let gen = (base + 1) % GEN_RING;
+  for (let step = 0; step < GEN_RING && reserved.has(gen); step++) {
+    gen = (gen + 1) % GEN_RING;
+  }
+  // Every slot reserved means GEN_RING writes are simultaneously hung, which is
+  // a wedged Keystore. Proceed on the computed generation rather than refusing
+  // to record anything at all — degraded, but no worse than before the ring.
   lastHandedOutGen.set(prefix, gen);
+  reserved.add(gen);
+  try {
+    return await writeGeneration(prefix, value, gen, current, opts);
+  } finally {
+    reserved.delete(gen);
+  }
+}
+
+async function writeGeneration(
+  prefix: string,
+  value: string,
+  gen: number,
+  current: VersionedPointer | null,
+  opts?: { shouldCommit?: () => boolean },
+): Promise<boolean> {
 
   const chunks: string[] = [];
   for (let i = 0; i < value.length; i += CHUNK_SIZE) {

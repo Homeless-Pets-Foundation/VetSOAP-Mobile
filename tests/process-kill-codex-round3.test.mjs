@@ -58,7 +58,8 @@ test('the durable pointer write still overlaps native start — separate helper,
   // record-start-feedback.test.mjs and durable-recorder-plan.test.mjs enforce.
   const fn = startHandler(read(RECORD));
   assert.doesNotMatch(fn, /await raceDurableActiveWrite\(/);
-  assert.match(fn, /const activePointerWrite = raceDurableActiveWrite\(/);
+  // Gated on the initiating user since round 14, still dispatched not awaited.
+  assert.match(fn, /const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(/);
   assert.match(fn, /await activePointerWrite;/);
 });
 

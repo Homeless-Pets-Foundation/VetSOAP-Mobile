@@ -894,7 +894,7 @@ test('durable active-pointer write is bounded so a hung Keystore cannot strand s
   // Keystore round trips overlap MediaCodec/AudioRecord init instead of gating
   // it (record-start latency on older devices). Still bounded, still awaited
   // before the slot flips to 'recording'.
-  const iPointer = rec.indexOf('const activePointerWrite = raceDurableActiveWrite(');
+  const iPointer = rec.search(/const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(/);
   const iStart = rec.indexOf('withDurableOpWatchdog(', iPointer);
   const iJoin = rec.indexOf('await activePointerWrite;', iStart);
   assert.ok(iPointer > 0 && iStart > iPointer && iJoin > iStart, 'pointer write must overlap native start');

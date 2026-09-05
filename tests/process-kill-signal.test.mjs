@@ -139,7 +139,12 @@ test('the probe only counts pointers older than this process', () => {
 test('reported pointers are cleared so the same kill is not re-reported forever', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
   const probe = src.slice(src.indexOf('async function reportPriorUncleanExit'));
-  assert.match(probe.slice(0, probe.indexOf('\n}\n')), /durableActiveStore\.clearActive\(e\.recordingId\)/);
+  // Clearing by id from a snapshot could delete a pointer renewed while this
+  // detached probe ran (Codex round 14); the prune is keyed on startedAt.
+  assert.match(
+    probe.slice(0, probe.indexOf('\n}\n')),
+    /durableActiveStore\.pruneStartedBefore\(userId, PROCESS_START_ISO\)/,
+  );
 });
 
 test('the kill report carries counts only — no ids, slots or paths', () => {

@@ -173,9 +173,19 @@ async function readGeneration(prefix: string, ptr: VersionedPointer): Promise<st
 }
 
 export async function readChunkedValueVersioned(prefix: string): Promise<string | null> {
-  const persisted = parseVersionedPointer(
-    await secureStorage.getRawItem(`${prefix}_ptr`, 'durableChunkPtrRead'),
-  );
+  // STRICT: a Keystore failure here must not read as "no pointer". Migration
+  // deliberately leaves the legacy keys in place rather than paying for deletes
+  // on the record-start path, so treating a failed read as "never migrated"
+  // would fall through to the legacy layout and revive a pre-migration list the
+  // versioned writer already superseded — re-reporting an already-cleared
+  // capture, or republishing it on the next read-modify-write.
+  let rawPtr: string | null;
+  try {
+    rawPtr = await secureStorage.getRawItemStrict(`${prefix}_ptr`, 'durableChunkPtrRead');
+  } catch {
+    return null; // unavailable, not absent — readList maps null to [].
+  }
+  const persisted = parseVersionedPointer(rawPtr);
   const known = lastPublished.get(prefix);
   // A persisted pointer OLDER than what this process published is a late write
   // that overwrote a newer publish. Trust what we published; its generation is
@@ -193,8 +203,11 @@ export async function readChunkedValueVersioned(prefix: string): Promise<string 
   }
   const ptr = persisted;
   if (!ptr) {
-    // No versioned pointer yet — fall back to the legacy layout so an install
-    // that predates this migration still reads its existing value.
+    // Only a PROVEN-absent pointer means this store was never migrated. A
+    // present-but-unparseable one means it was, and its legacy keys are stale.
+    if (rawPtr !== null) return null;
+    // Fall back to the legacy layout so an install that predates this migration
+    // still reads its existing value.
     return readChunkedValue(prefix);
   }
   if (ptr.n === 0) return '';

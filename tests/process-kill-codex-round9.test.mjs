@@ -75,8 +75,15 @@ test('writes are generation-namespaced and publish through a single pointer key'
 
 test('the versioned reader falls back to the legacy layout for existing installs', () => {
   const src = read('src/lib/durableAudio/chunkedStore.ts');
-  const fn = src.slice(src.indexOf('export async function readChunkedValueVersioned'));
-  assert.match(fn.slice(0, 1600), /return readChunkedValue\(prefix\);/);
+  const fn = src.slice(
+    src.indexOf('export async function readChunkedValueVersioned'),
+    src.indexOf('const GEN_RING'),
+  );
+  assert.match(fn, /return readChunkedValue\(prefix\);/);
+  // ...but ONLY when the pointer is proven absent. A failed or corrupt read must
+  // not revive a pre-migration list (Codex round 14).
+  assert.match(fn, /if \(rawPtr !== null\) return null;/);
+  assert.match(fn, /getRawItemStrict/);
 });
 
 // ---- F2: telemetry must never block a recovery offer ----------------------

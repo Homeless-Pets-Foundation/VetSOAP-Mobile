@@ -2082,9 +2082,17 @@ function RecordingSession() {
             startPath = 'durable_resume';
             // Dispatched before, joined after the native resume — see the
             // fresh-start branch below for why.
-            const activePointerWrite = raceDurableActiveWrite(
-              durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
-            );
+            // Same scope gate as the expo writes below. setActive binds the
+            // store's CURRENT user when invoked, and floor hydration plus the
+            // free-space checks above are awaited — so a sign-out in that window
+            // would file user A's pointer in user B's store, giving B a false
+            // unclean-exit report and losing A's breadcrumb (shared clinic
+            // tablets, rule 13).
+            const activePointerWrite = scopeUnchanged()
+              ? raceDurableActiveWrite(
+                  durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
+                )
+              : Promise.resolve();
             await withDurableOpWatchdog(
               recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable }),
               'resume',
@@ -2132,9 +2140,11 @@ function RecordingSession() {
               // frame (encoder priming ≥250 ms). The contract was already
               // best-effort: on a skipped pointer crash recovery reconstructs the
               // recording from the native manifest.
-              const activePointerWrite = raceDurableActiveWrite(
-                durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
-              );
+              const activePointerWrite = scopeUnchanged()
+                ? raceDurableActiveWrite(
+                    durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
+                  )
+                : Promise.resolve();
               freshDurableRecordingId = recordingId;
               await withDurableOpWatchdog(
                 recorder.start({ userId: user.id, slotId, recordingId }),

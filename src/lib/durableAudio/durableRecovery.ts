@@ -159,13 +159,14 @@ async function reportPriorUncleanExit(
       extra: { durable_count: durable, expo_count: expo, recovered_count: recovered },
     });
 
-    for (const e of stale) {
-      // Checked every iteration: a sign-out mid-loop must not delete the next
-      // user's pointers. clearActive itself binds the scope at call time, so a
-      // switch between check and call is still safe.
-      if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
-      await durableActiveStore.clearActive(e.recordingId).catch(() => {});
-    }
+    // ONE serialized mutation keyed on startedAt, not N clears keyed on a
+    // snapshot of ids: this probe is detached, and while it runs the vet can
+    // resume a draft and start a new capture under a slot id the snapshot also
+    // holds. Clearing by id would delete that live pointer (see
+    // pruneStartedBefore). Scope re-checked once more first — a sign-out must
+    // not prune the next user's pointers.
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+    await durableActiveStore.pruneStartedBefore(userId, PROCESS_START_ISO).catch(() => {});
   } catch {
     // Never let the unclean-exit probe block recovery.
   }

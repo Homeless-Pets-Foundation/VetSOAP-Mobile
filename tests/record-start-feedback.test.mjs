@@ -113,7 +113,9 @@ test('the durable active-pointer write overlaps native start instead of gating i
   const fn = startHandler(record);
   // Fresh-start branch.
   const fresh = fn.slice(fn.indexOf('const freshDurable ='));
-  const pointer = fresh.indexOf('const activePointerWrite = raceDurableActiveWrite(\n                durableActiveStore.setActive(recordingId, slotId');
+  const pointer = fresh.search(
+    /const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(\s*\n\s*durableActiveStore\.setActive\(recordingId, slotId/,
+  );
   const start = fresh.indexOf('withDurableOpWatchdog(\n                recorder.start({ userId: user.id, slotId, recordingId })');
   const join = fresh.indexOf('await activePointerWrite;');
   const recording = fresh.indexOf("setAudioState(slotId, 'recording')");
@@ -124,7 +126,9 @@ test('the durable active-pointer write overlaps native start instead of gating i
   assert.doesNotMatch(fn, /await raceDurableActiveWrite\(/);
   // Resume→Continue branch, same shape.
   const resume = fn.slice(fn.indexOf('const existingDurable ='), fn.indexOf('const freshDurable ='));
-  const rPointer = resume.indexOf('const activePointerWrite = raceDurableActiveWrite(\n              durableActiveStore.setActive(existingDurable.recordingId, slotId');
+  const rPointer = resume.search(
+    /const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(\s*\n\s*durableActiveStore\.setActive\(existingDurable\.recordingId, slotId/,
+  );
   const rResume = resume.indexOf('recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable })');
   const rJoin = resume.indexOf('await activePointerWrite;');
   assert.ok(rPointer > 0 && rResume > rPointer && rJoin > rResume);

@@ -218,6 +218,33 @@ export const durableActiveStore = {
     });
   },
 
+  /**
+   * Remove every entry that started before `cutoffIso`, in ONE serialized
+   * mutation, for an EXPLICIT user.
+   *
+   * Deliberately not a loop of `clearActive(id)` over a snapshot. Expo pointers
+   * are keyed by slotId and a resumed draft reuses its slot id, so between the
+   * snapshot and a later clear the vet can start a NEW capture under an id the
+   * snapshot also holds — clearing by id alone then deletes the LIVE pointer and
+   * leaves the running capture with no breadcrumb. Comparing `startedAt` cannot
+   * make that mistake: a renewed entry necessarily carries a timestamp at or
+   * after the cutoff. It also collapses N Keystore write round trips into one on
+   * the launch path.
+   */
+  pruneStartedBefore(userId: string, cutoffIso: string): Promise<void> {
+    return serialized(async (isAbandoned) => {
+      if (!userId) return;
+      const list = await readList(userId);
+      if (isAbandoned()) return;
+      const next = list.filter(
+        (e) => !(typeof e.startedAt === 'string' && e.startedAt < cutoffIso),
+      );
+      if (next.length !== list.length) {
+        await writeList(userId, next, () => !isAbandoned());
+      }
+    });
+  },
+
   async list(): Promise<DurableActiveEntry[]> {
     const userId = currentUserId;
     if (!userId) return [];

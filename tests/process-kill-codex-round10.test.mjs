@@ -89,7 +89,12 @@ test('the unmount teardown clears by explicit user, not ambient scope', () => {
   assert.match(src, /durableActiveStore\.clearActiveForUser\(userId, durableId\)/);
   // The ambient-scope version would silently no-op at sign-out.
   const idx = src.indexOf('const liveCaptureRef');
-  const block = src.slice(idx, idx + 1400);
+  // Bounded by the next declaration. A doesNotMatch inside a FIXED window is the
+  // dangerous shape: as the block grows past it the assertion stops covering the
+  // tail and passes vacuously, unlike a match, which fails loudly. The teardown
+  // has roughly doubled since this was written (round 17's native finalize).
+  const block = src.slice(idx, src.indexOf('const handlePause = useCallback(', idx));
+  assert.ok(block.length > 0, 'anchor');
   assert.doesNotMatch(block, /durableActiveStore\.clearActive\(/);
 });
 

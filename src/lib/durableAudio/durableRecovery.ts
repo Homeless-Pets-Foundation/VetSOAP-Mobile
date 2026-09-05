@@ -157,6 +157,13 @@ async function reportPriorUncleanExit(
       .pruneStartedBefore(userId, PROCESS_START_ISO)
       .catch(() => false);
     if (!pruned) return;
+    // Re-verify AFTER the prune await, before marking or emitting. On a shared
+    // tablet A can sign out and B sign in while the prune is in SecureStore, and
+    // the analytics and Sentry identities are GLOBAL — already rebound to B by
+    // then. Emitting here would file A's interruption counts against B and
+    // corrupt per-user reliability data across an account boundary. The counts
+    // are worth less than the boundary.
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
     uncleanExitReportedUsers.add(userId);
 
     trackEvent({

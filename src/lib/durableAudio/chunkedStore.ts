@@ -290,9 +290,19 @@ export async function writeChunkedValueVersioned(
   value: string,
   opts?: { shouldCommit?: () => boolean },
 ): Promise<boolean> {
-  const current = parseVersionedPointer(
-    await secureStorage.getRawItem(`${prefix}_ptr`, 'durableChunkPtrRead'),
-  );
+  // STRICT: this read decides which generation to write into. Collapsed to null
+  // by the lenient reader, the first mutation after launch picks generation 0 —
+  // and if the persisted pointer already names generation 0, we overwrite chunks
+  // it still references. Should this mutation then fail, time out or be
+  // abandoned before publishing, readers follow that pointer into a half-written
+  // or mixed payload and drop live capture breadcrumbs.
+  let rawCurrent: string | null;
+  try {
+    rawCurrent = await secureStorage.getRawItemStrict(`${prefix}_ptr`, 'durableChunkPtrRead');
+  } catch {
+    return false;
+  }
+  const current = parseVersionedPointer(rawCurrent);
   const seen = lastHandedOutGen.get(prefix);
   const base = seen ?? current?.g ?? -1;
   // Never recycle a generation whose write may STILL SETTLE. The ring alone was

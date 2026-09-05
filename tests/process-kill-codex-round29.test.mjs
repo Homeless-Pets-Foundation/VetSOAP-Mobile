@@ -73,6 +73,12 @@ test('a write refuses rather than recycle a reserved generation', async () => {
 
 test('the refusal is explicit, not a silent recycle', () => {
   const src = read('src/lib/durableAudio/chunkedStore.ts');
-  const fn = src.slice(src.indexOf('export async function writeChunkedValueVersioned'));
-  assert.match(fn.slice(0, 2000), /if \(reserved\.has\(gen\)\) \{[\s\S]{0,900}?return false;/);
+  // Bounded by the function's own end, not a fixed slice: round 30 added the
+  // strict pointer read above this and pushed it past a fixed window.
+  const fn = src.slice(
+    src.indexOf('export async function writeChunkedValueVersioned'),
+    src.indexOf('async function writeGeneration('),
+  );
+  assert.ok(fn.length > 0, 'anchor');
+  assert.match(fn, /if \(reserved\.has\(gen\)\) \{[\s\S]{0,900}?return false;/);
 });

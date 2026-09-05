@@ -42,6 +42,16 @@ test('recording permission matrix mirrors server delete authorization', async ()
   assert.equal(getRecordingPermissions({ id: 'user_owner', role: 'owner' }, recording('user_vet')).canPlayAudio, true);
   assert.equal(getRecordingPermissions({ id: 'user_admin', role: 'admin' }, recording('user_vet')).canPlayAudio, true);
   assert.equal(getRecordingPermissions({ id: 'user_vet', role: 'veterinarian' }, recording('user_vet')).canPlayAudio, true);
+  assert.equal(getRecordingPermissions({ id: 'user_owner', role: 'owner' }, recording('user_vet')).canDownloadAudio, true);
+  assert.equal(getRecordingPermissions({ id: 'user_admin', role: 'admin' }, recording('user_vet')).canDownloadAudio, true);
+  assert.equal(getRecordingPermissions({ id: 'user_vet', role: 'veterinarian' }, recording('user_vet')).canDownloadAudio, true);
+  const tenantSuperAdmin = getRecordingPermissions(
+    { id: 'user_super', role: 'veterinarian', isSuperAdmin: true },
+    recording('user_vet')
+  );
+  assert.equal(tenantSuperAdmin.canDelete, false);
+  assert.equal(tenantSuperAdmin.canPlayAudio, true);
+  assert.equal(tenantSuperAdmin.canDownloadAudio, true);
 
   const nonOwnerVet = getRecordingPermissions(
     { id: 'user_vet', role: 'veterinarian' },
@@ -49,6 +59,7 @@ test('recording permission matrix mirrors server delete authorization', async ()
   );
   assert.equal(nonOwnerVet.canDelete, false);
   assert.equal(nonOwnerVet.canPlayAudio, false);
+  assert.equal(nonOwnerVet.canDownloadAudio, false);
   assert.match(nonOwnerVet.deleteBlockedReason, /recording owner or an administrator/);
 
   const supportStaff = getRecordingPermissions(
@@ -57,6 +68,7 @@ test('recording permission matrix mirrors server delete authorization', async ()
   );
   assert.equal(supportStaff.canDelete, false);
   assert.equal(supportStaff.canPlayAudio, true);
+  assert.equal(supportStaff.canDownloadAudio, true);
   assert.equal(supportStaff.deleteBlockedReason, 'Your role cannot delete recordings.');
 });
 
@@ -136,6 +148,7 @@ test('recording detail hides audio controls unless local permissions mirror play
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
 
   assert.match(detail, /recordingPermissions\.canPlayAudio \? \(/);
+  assert.match(detail, /canDownloadAudio=\{recordingPermissions\.canDownloadAudio\}/);
   assert.match(detail, /AUDIO_PLAYER_COPY\.forbidden/);
 });
 

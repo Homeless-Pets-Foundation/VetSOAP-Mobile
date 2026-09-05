@@ -19,6 +19,7 @@ import { useThemeColors } from '../hooks/useThemeColors';
 import { AUDIO_PLAYER_COPY } from '../constants/strings';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
 import { CLIP_SAFE, clipSafe } from './ui/styles';
+import { RecordingAudioDownload } from './RecordingAudioDownload';
 
 const LOAD_WATCHDOG_MS = 15_000;
 const SEEK_WATCHDOG_MS = 8_000;
@@ -273,6 +274,8 @@ function SeekBar({
 
 interface RecordingAudioPlayerProps {
   recordingId: string;
+  organizationId: string;
+  canDownloadAudio?: boolean;
   initialDurationSeconds?: number | null;
 }
 
@@ -287,6 +290,8 @@ interface RecordingAudioPlayerProps {
  */
 export function RecordingAudioPlayer({
   recordingId,
+  organizationId,
+  canDownloadAudio = true,
   initialDurationSeconds,
 }: RecordingAudioPlayerProps) {
   const colors = useThemeColors();
@@ -317,6 +322,13 @@ export function RecordingAudioPlayer({
             {AUDIO_PLAYER_COPY.disabledWhileRecording}
           </Text>
         </View>
+        {canDownloadAudio && (
+          <RecordingAudioDownload
+            recordingId={recordingId}
+            organizationId={organizationId}
+            disabled
+          />
+        )}
       </Card>
     );
   }
@@ -324,6 +336,8 @@ export function RecordingAudioPlayer({
   return (
     <ActiveAudioPlayer
       recordingId={recordingId}
+      organizationId={organizationId}
+      canDownloadAudio={canDownloadAudio}
       initialDurationSeconds={initialDurationSeconds}
     />
   );
@@ -331,9 +345,13 @@ export function RecordingAudioPlayer({
 
 function ActiveAudioPlayer({
   recordingId,
+  organizationId,
+  canDownloadAudio,
   initialDurationSeconds,
 }: {
   recordingId: string;
+  organizationId: string;
+  canDownloadAudio: boolean;
   initialDurationSeconds?: number | null;
 }) {
   const colors = useThemeColors();
@@ -848,6 +866,12 @@ function ActiveAudioPlayer({
             </View>
           )}
         </>
+      )}
+      {canDownloadAudio && (
+        <RecordingAudioDownload
+          recordingId={recordingId}
+          organizationId={organizationId}
+        />
       )}
     </Card>
   );

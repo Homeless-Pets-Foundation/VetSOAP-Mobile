@@ -370,6 +370,27 @@ export const AUDIO_PLAYER_COPY = {
   speed: (rate: number): string => `${rate}x`,
 } as const;
 
+export const AUDIO_DOWNLOAD_COPY = {
+  action: 'Download audio',
+  cancel: 'Cancel download',
+  choosingFolder: 'Choose a folder in Files or Downloads.',
+  storageNotice:
+    'For device-only storage, choose On My iPhone/iPad or Downloads. Downloaded files live outside Captivet and remain after sign-out or app removal.',
+  disabledWhileRecording: 'Finish the active recording before downloading audio.',
+  progress: (part: number, count: number, downloaded: string, total: string): string =>
+    `Downloading part ${part} of ${count} · ${downloaded} of ${total}`,
+  completedTitle: 'Audio downloaded',
+  completedBody: (partCount: number): string =>
+    `${partCount === 1 ? 'The original audio file is' : 'All original audio parts are'} saved in the folder you selected. These files are outside Captivet and remain after sign-out or app removal.`,
+  failedTitle: 'Download failed',
+  failedBody:
+    'No files from this attempt were kept. Check your connection, available storage, and folder access, then try again.',
+  sourceUnavailableBody:
+    'The original server audio is not available to download. Nothing was saved to the selected folder.',
+  rollbackIncompleteBody:
+    'The download did not finish, and the selected file provider would not let Captivet remove every partial file. Check the selected folder and remove files from this attempt before trying again.',
+} as const;
+
 export const APP_LOCK_COPY = {
   title: 'Captivet Locked',
   subtitle: 'Authenticate to continue using the app.',

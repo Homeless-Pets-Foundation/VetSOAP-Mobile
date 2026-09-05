@@ -10,6 +10,7 @@ export interface RecordingPermissions {
   canEdit: boolean;
   canDelete: boolean;
   canPlayAudio: boolean;
+  canDownloadAudio: boolean;
   canExport: boolean;
   canCopy: boolean;
   canRetry: boolean;
@@ -20,6 +21,7 @@ const NO_PERMISSIONS: RecordingPermissions = {
   canEdit: false,
   canDelete: false,
   canPlayAudio: false,
+  canDownloadAudio: false,
   canExport: false,
   canCopy: false,
   canRetry: false,
@@ -31,7 +33,7 @@ export function canRecordAppointments(role: string | null | undefined): boolean 
 }
 
 function deleteBlockedReason(
-  user: Pick<User, 'id' | 'role'>,
+  user: Pick<User, 'id' | 'role' | 'isSuperAdmin'>,
   recording: Pick<Recording, 'userId'>
 ): string | null {
   if (user.role === 'support_staff') {
@@ -50,7 +52,7 @@ function deleteBlockedReason(
 }
 
 export function getRecordingPermissions(
-  user: Pick<User, 'id' | 'role'> | null | undefined,
+  user: Pick<User, 'id' | 'role' | 'isSuperAdmin'> | null | undefined,
   recording: Pick<Recording, 'userId'> | null | undefined
 ): RecordingPermissions {
   if (!user || !recording) {
@@ -59,13 +61,15 @@ export function getRecordingPermissions(
 
   const isAuthor = recording.userId === user.id;
   const isPrivileged = user.role === 'owner' || user.role === 'admin';
+  const canAdministerAudio = isPrivileged || user.isSuperAdmin === true;
   const canModify = isPrivileged || (user.role === 'veterinarian' && isAuthor);
   const blockedReason = canModify ? null : deleteBlockedReason(user, recording);
 
   return {
     canEdit: canModify,
     canDelete: canModify,
-    canPlayAudio: isAuthor || isPrivileged,
+    canPlayAudio: isAuthor || canAdministerAudio,
+    canDownloadAudio: isAuthor || canAdministerAudio,
     canRetry: canModify,
     canExport: true,
     canCopy: true,

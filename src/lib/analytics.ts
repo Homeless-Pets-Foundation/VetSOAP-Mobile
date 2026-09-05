@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { POSTHOG_KEY, POSTHOG_HOST } from '../config';
 import { shouldEmit, getSuppressionSummary } from './rateLimitMonitoring';
+import type { AudioDownloadErrorCode } from './audioDownload';
 
 /**
  * PostHog analytics wrapper with a strict whitelist of event names and
@@ -177,6 +178,10 @@ export type AnalyticsEvent =
   | { name: 'transcript_viewed'; props: { recording_id: string } }
   | { name: 'audio_playback_started'; props: { recording_id: string } }
   | { name: 'audio_playback_failed'; props: { recording_id: string; error_code: string } }
+  | { name: 'audio_download_started'; props: { recording_id: string; part_count: number; bytes: number } }
+  | { name: 'audio_download_completed'; props: { recording_id: string; part_count: number; bytes: number } }
+  | { name: 'audio_download_cancelled'; props: { recording_id: string; part_count: number; bytes: number } }
+  | { name: 'audio_download_failed'; props: { recording_id: string; part_count: number; bytes: number; error_code: AudioDownloadErrorCode } }
   // SOAP
   | { name: 'soap_visible'; props: { recording_id: string; ms_since_finish: number | null; ms_since_submit: number | null } }
   | { name: 'soap_section_edited'; props: { recording_id: string; section: SoapSectionName } }

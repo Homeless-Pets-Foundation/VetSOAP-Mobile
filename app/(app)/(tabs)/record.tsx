@@ -2458,6 +2458,23 @@ function RecordingSession() {
           );
           recorder.resetWithoutDelete();
 
+          // Capture is over the moment the snapshot is in the slot, so the
+          // pointer is cleared HERE, not only in the finally below.
+          // autoSaveDraft copies the audio, writes chunked SecureStore metadata
+          // and creates a server draft — seconds on a loaded SM-T220 — and a
+          // process death inside that window would leave a pointer for a
+          // recording that ended cleanly, reporting a phantom interruption on
+          // the next launch and nagging the vet about battery settings for a
+          // recording that saved perfectly. Awaited so it lands before the slow
+          // work begins; bounded by the store's own 5s mutation timeout, so a
+          // degraded Keystore cannot stall Finish. The finally still repeats
+          // both clears — it covers the early returns and the catch, and a
+          // second clear is a no-op.
+          await durableActiveStore.clearActive(targetSlotId).catch(() => {});
+          if (durableIdAtFinish) {
+            await durableActiveStore.clearActive(durableIdAtFinish).catch(() => {});
+          }
+
           const saved = await autoSaveDraftRef.current(persistedSlot);
           if (!saved) {
             Alert.alert(

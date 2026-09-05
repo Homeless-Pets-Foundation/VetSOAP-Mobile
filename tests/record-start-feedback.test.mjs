@@ -84,6 +84,30 @@ test('the slot card disables the record button and shows a spinner while startin
   assert.match(idle, /'Starting recording…'/);
 });
 
+test('the pager is told when start state changes, or the spinner cannot paint', async () => {
+  // FlatList is a PureComponent. `data` is session.slots and the renderItem is
+  // deliberately identity-stable, so without extraData the shallow prop compare
+  // sees nothing when a tap sets startingSlotId — the cells never re-render and
+  // the spinner plus the startInFlight lockout only appear once session.slots
+  // itself changes, i.e. after the native start latency they exist to mask.
+  const src = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(src, /renderItem=\{stableRenderSlotCard\}\s*\n\s*extraData=\{slotCardExtraData\}/);
+
+  const memo = src.slice(
+    src.indexOf('const slotCardExtraData = useMemo('),
+    src.indexOf('const getItemLayout'),
+  );
+  assert.ok(memo.length > 0, 'anchor');
+  for (const key of ['startingSlotId', 'queuedStartSlotIds', 'recorderIsStarting']) {
+    assert.match(memo, new RegExp(key), `extraData must carry ${key}`);
+  }
+  // The perf invariant this must not undo: the live timer and metering
+  // re-render RecorderLiveReadout alone. Feeding duration in here would
+  // re-render every card twice a second.
+  assert.doesNotMatch(memo, /recorder\.duration/, 'duration must stay out of extraData');
+  assert.doesNotMatch(memo, /getLiveStats/, 'getLiveStats must stay out of extraData');
+});
+
 test('the durable active-pointer write overlaps native start instead of gating it', async () => {
   const record = await read('app/(app)/(tabs)/record.tsx');
   const fn = startHandler(record);

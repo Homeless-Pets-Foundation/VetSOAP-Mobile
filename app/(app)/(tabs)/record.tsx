@@ -7177,6 +7177,92 @@ function RecordingSession() {
     []
   );
 
+  /**
+   * Tells the FlatList that a cell's OUTPUT changed even though `data` did not.
+   *
+   * FlatList is a PureComponent, `data` is `session.slots`, and
+   * `stableRenderSlotCard` is deliberately identity-stable — so with no
+   * `extraData` the shallow prop compare saw nothing and the cells never
+   * re-rendered. Tapping Start sets only `startingSlotId`, so the spinner and
+   * the `startInFlight` lockout on the other Start buttons could not paint until
+   * `session.slots` itself changed, i.e. after the native start latency they
+   * exist to mask — reinstating the exact delayed-feedback and swallowed-retap
+   * behaviour the record-perf work removed (Codex round 13).
+   *
+   * Mirrors renderSlotCard's deps with two deliberate omissions: `recorder.duration`
+   * and `recorder.getLiveStats`. The live timer and metering re-render
+   * RecorderLiveReadout alone (see PatientSlotCard), so including duration would
+   * re-render every card twice a second — the render thrash that work removed.
+   */
+  const slotCardExtraData = useMemo(
+    () => ({
+      recorderBoundToSlotId: session.recorderBoundToSlotId,
+      slotCount: session.slots.length,
+      recorderState: recorder.state,
+      recorderIsStarting: recorder.isStarting,
+      startingSlotId,
+      queuedStartSlotIds,
+      recorderBusy,
+      finishingDraftSlotId,
+      reconcilingSlotId,
+      templates,
+      templatesLoading,
+      defaultTemplateId: effectiveDefaultTemplate?.id ?? null,
+      defaultTemplateSavingId,
+      screenWidth,
+      recordFirstEnabled,
+      handleUpdateForm,
+      handleStart,
+      handlePause,
+      handleResume,
+      handleStop,
+      handleRecordAgain,
+      handleContinueRecording,
+      handleRemove,
+      handleSubmitSingle,
+      handleEditRecording,
+      handleSetDefaultTemplate,
+      handleOpenDivergentRecording,
+      handleReleaseLocalCopy,
+      handleResubmitAsNew,
+      handleDismissDivergence,
+      slotHasLiveRecorder,
+    }),
+    [
+      session.recorderBoundToSlotId,
+      session.slots.length,
+      recorder.state,
+      recorder.isStarting,
+      startingSlotId,
+      queuedStartSlotIds,
+      recorderBusy,
+      finishingDraftSlotId,
+      reconcilingSlotId,
+      templates,
+      templatesLoading,
+      effectiveDefaultTemplate?.id,
+      defaultTemplateSavingId,
+      screenWidth,
+      recordFirstEnabled,
+      handleUpdateForm,
+      handleStart,
+      handlePause,
+      handleResume,
+      handleStop,
+      handleRecordAgain,
+      handleContinueRecording,
+      handleRemove,
+      handleSubmitSingle,
+      handleEditRecording,
+      handleSetDefaultTemplate,
+      handleOpenDivergentRecording,
+      handleReleaseLocalCopy,
+      handleResubmitAsNew,
+      handleDismissDivergence,
+      slotHasLiveRecorder,
+    ]
+  );
+
   const getItemLayout = useCallback(
     (_: any, index: number) => ({
       length: screenWidth,
@@ -7323,6 +7409,7 @@ function RecordingSession() {
         ref={pagerRef}
         data={session.slots}
         renderItem={stableRenderSlotCard}
+        extraData={slotCardExtraData}
         keyExtractor={(item) => item.id}
         horizontal
         pagingEnabled

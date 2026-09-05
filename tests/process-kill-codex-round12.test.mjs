@@ -69,7 +69,17 @@ test('no identifier or string still claims a kill was proven', () => {
   try {
     out = execFileSync(
       'git',
-      ['grep', '-nI', '-e', 'process_killed_mid_capture', '-e', 'priorProcessKillDetected', '--', 'src', 'app', 'tests'],
+      [
+        'grep', '-nI',
+        '-e', 'process_killed_mid_capture',
+        '-e', 'priorProcessKillDetected',
+        '--', 'src', 'app', 'tests',
+        // Exclude THIS file: it names the old identifiers literally, so once it
+        // is tracked the search matches its own argv and the fence fails on a
+        // clean tree. It passed before the commit only because git grep skips
+        // untracked files.
+        ':(exclude)tests/process-kill-codex-round12.test.mjs',
+      ],
       { cwd: new URL('..', import.meta.url), encoding: 'utf8' },
     );
   } catch {

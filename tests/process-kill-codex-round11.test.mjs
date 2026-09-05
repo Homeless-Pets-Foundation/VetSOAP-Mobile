@@ -95,11 +95,13 @@ test('an unreadable known generation reads as absent, never as the superseded va
 
 test('the pointer-regression branch has no write in it', () => {
   const src = read('src/lib/durableAudio/chunkedStore.ts');
+  // The logic lives in readVersionedInternal since round 22 split the lenient
+  // and strict readers; the public readers are thin wrappers over it.
   const fn = src.slice(
-    src.indexOf('export async function readChunkedValueVersioned'),
+    src.indexOf('async function readVersionedInternal('),
     src.indexOf('const GEN_RING'),
   );
   assert.ok(fn.length > 0, 'anchor');
-  assert.doesNotMatch(fn, /setRawItem/, 'the read path must not write');
-  assert.match(fn, /return null;/);
+  assert.doesNotMatch(fn, /setRawItem\(/, 'the read path must not write');
+  assert.match(fn, /return \{ value: null, readable: false \};/);
 });

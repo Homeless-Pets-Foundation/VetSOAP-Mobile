@@ -11,6 +11,7 @@
  */
 import { secureStorage } from '../secureStorage';
 import { readChunksBounded, MAX_CHUNKS_PER_VALUE } from '../chunkedRead';
+import { StrictReadUnavailableError } from '../strictRead';
 
 const CHUNK_SIZE = 1900;
 const MAX_STALE_SWEEP = 16;
@@ -172,49 +173,69 @@ async function readGeneration(prefix: string, ptr: VersionedPointer): Promise<st
   return result.ok ? result.parts.join('') : null;
 }
 
-export async function readChunkedValueVersioned(prefix: string): Promise<string | null> {
-  // STRICT: a Keystore failure here must not read as "no pointer". Migration
-  // deliberately leaves the legacy keys in place rather than paying for deletes
-  // on the record-start path, so treating a failed read as "never migrated"
-  // would fall through to the legacy layout and revive a pre-migration list the
-  // versioned writer already superseded — re-reporting an already-cleared
-  // capture, or republishing it on the next read-modify-write.
+/**
+ * Tri-state read behind both public readers.
+ *
+ * `readable: false` means a read FAILED (Keystore, torn chunks, an unusable
+ * generation) — which the lenient reader collapses to the same `null` it returns
+ * for a store that is genuinely empty. Callers that write based on what they
+ * read must be able to tell those apart: publishing an empty list because the
+ * read failed would destroy live pointers.
+ */
+async function readVersionedInternal(
+  prefix: string,
+): Promise<{ value: string | null; readable: boolean }> {
   let rawPtr: string | null;
   try {
     rawPtr = await secureStorage.getRawItemStrict(`${prefix}_ptr`, 'durableChunkPtrRead');
   } catch {
-    return null; // unavailable, not absent — readList maps null to [].
+    return { value: null, readable: false };
   }
   const persisted = parseVersionedPointer(rawPtr);
   const known = lastPublished.get(prefix);
-  // A persisted pointer OLDER than what this process published is a late write
-  // that overwrote a newer publish. Trust what we published; its generation is
-  // still in the ring.
   if (known && (!persisted || (persisted.s ?? 0) < (known.s ?? 0))) {
     const recovered = await readGeneration(prefix, known);
-    if (recovered !== null) return recovered;
+    if (recovered !== null) return { value: recovered, readable: true };
     // The known-good generation did not read back — a transient chunk-read
     // failure. Falling through to `persisted` would hand back state this branch
     // has ALREADY PROVEN superseded, and a caller that read-modify-writes it
     // republishes cleared capture ids, which is the one direction that
-    // FABRICATES a kill report. Absent is the safe answer: readList maps null to
-    // [], which can only ever under-report.
-    return null;
+    // FABRICATES a kill report.
+    return { value: null, readable: false };
   }
   const ptr = persisted;
   if (!ptr) {
     // Only a PROVEN-absent pointer means this store was never migrated. A
     // present-but-unparseable one means it was, and its legacy keys are stale.
-    if (rawPtr !== null) return null;
+    if (rawPtr !== null) return { value: null, readable: false };
     // Fall back to the legacy layout so an install that predates this migration
     // still reads its existing value.
-    return readChunkedValue(prefix);
+    return { value: await readChunkedValue(prefix), readable: true };
   }
-  if (ptr.n === 0) return '';
+  if (ptr.n === 0) return { value: '', readable: true };
   const result = await readChunksBounded(ptr.n, (i) =>
     secureStorage.getRawItem(`${prefix}_g${ptr.g}_chunk_${i}`, 'durableChunkRead'),
   );
-  return result.ok ? result.parts.join('') : null;
+  return result.ok ? { value: result.parts.join(''), readable: true } : { value: null, readable: false };
+}
+
+/**
+ * Like `readChunkedValueVersioned`, but a FAILED read rejects with the shared
+ * strict sentinel instead of masquerading as an empty store. Use this wherever
+ * the result decides a write.
+ */
+export async function readChunkedValueVersionedStrict(prefix: string): Promise<string | null> {
+  const { value, readable } = await readVersionedInternal(prefix);
+  if (!readable) throw new StrictReadUnavailableError(`durable_active:${prefix.split('_').length}`);
+  return value;
+}
+
+export async function readChunkedValueVersioned(prefix: string): Promise<string | null> {
+  // Lenient: a failed read reads as absent, which callers map to []. That
+  // UNDER-reports and can never fabricate a pointer, so it stays the default for
+  // read-only paths. Anything that writes based on the result must use the
+  // strict variant instead.
+  return (await readVersionedInternal(prefix)).value;
 }
 
 /**

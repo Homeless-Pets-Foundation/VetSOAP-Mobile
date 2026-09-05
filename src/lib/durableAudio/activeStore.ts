@@ -20,6 +20,7 @@
 import {
   writeChunkedValueVersioned,
   readChunkedValueVersioned,
+  readChunkedValueVersionedStrict,
   deleteChunkedValueVersioned,
 } from './chunkedStore';
 import { isValidDurableId } from './paths';
@@ -61,6 +62,29 @@ function prefixFor(userId: string): string {
 
 async function readList(userId: string): Promise<DurableActiveEntry[]> {
   const raw = await readChunkedValueVersioned(prefixFor(userId));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e): e is DurableActiveEntry =>
+        e && typeof e.recordingId === 'string' && typeof e.slotId === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * STRICT list read: rejects when the read failed instead of returning [].
+ *
+ * The clears publish unconditionally (a skipped publish loses to a late write —
+ * see clearActive), so they must be able to tell a genuinely empty store from an
+ * unreadable one. Publishing [] because a Keystore read failed would destroy
+ * live pointers, which is the opposite failure and a far worse one.
+ */
+async function readListStrict(userId: string): Promise<DurableActiveEntry[]> {
+  const raw = await readChunkedValueVersionedStrict(prefixFor(userId));
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -188,12 +212,25 @@ export const durableActiveStore = {
     const userId = currentUserId;
     return serialized(async (isAbandoned) => {
       if (!userId) return;
-      const list = await readList(userId);
+      // STRICT: an unreadable store must not be published over as empty.
+      let list: DurableActiveEntry[];
+      try {
+        list = await readListStrict(userId);
+      } catch {
+        return;
+      }
       if (isAbandoned()) return;
       const next = list.filter((e) => e.recordingId !== recordingId);
-      if (next.length !== list.length) {
-        await writeList(userId, next, () => !isAbandoned());
-      }
+      // Publish UNCONDITIONALLY, even when the snapshot does not contain the id.
+      // A setActive abandoned by the mutation deadline may already have its
+      // `_ptr` write in flight — `shouldCommit` is checked before that write is
+      // issued, not after — so the store can read empty while a pointer is still
+      // about to land. Skipping the write here left that late write as the ONLY
+      // publication, and the next launch reported a cleanly finished recording
+      // as interrupted. Publishing gives the clear a higher sequence, so it wins
+      // outright whenever the late write lands first, and the in-process
+      // high-water mark covers the reverse order.
+      await writeList(userId, next, () => !isAbandoned());
     });
   },
 
@@ -209,12 +246,25 @@ export const durableActiveStore = {
   clearActiveForUser(userId: string, recordingId: string): Promise<void> {
     return serialized(async (isAbandoned) => {
       if (!userId) return;
-      const list = await readList(userId);
+      // STRICT: an unreadable store must not be published over as empty.
+      let list: DurableActiveEntry[];
+      try {
+        list = await readListStrict(userId);
+      } catch {
+        return;
+      }
       if (isAbandoned()) return;
       const next = list.filter((e) => e.recordingId !== recordingId);
-      if (next.length !== list.length) {
-        await writeList(userId, next, () => !isAbandoned());
-      }
+      // Publish UNCONDITIONALLY, even when the snapshot does not contain the id.
+      // A setActive abandoned by the mutation deadline may already have its
+      // `_ptr` write in flight — `shouldCommit` is checked before that write is
+      // issued, not after — so the store can read empty while a pointer is still
+      // about to land. Skipping the write here left that late write as the ONLY
+      // publication, and the next launch reported a cleanly finished recording
+      // as interrupted. Publishing gives the clear a higher sequence, so it wins
+      // outright whenever the late write lands first, and the in-process
+      // high-water mark covers the reverse order.
+      await writeList(userId, next, () => !isAbandoned());
     });
   },
 

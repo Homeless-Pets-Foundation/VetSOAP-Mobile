@@ -2,17 +2,20 @@ name: Self-hosted CI Attestation Bridge
 
 on:
   workflow_run:
-    workflows: [Self-hosted CI]
+    workflows: [Self-hosted CI, R2 Approval Gate]
     types: [completed]
 
 permissions:
-  actions: write
   contents: read
   pull-requests: read
 
 jobs:
   rerun-pr-attestation:
     name: Rerun PR attestation
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
     if: >-
       github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.conclusion == 'success'
@@ -20,7 +23,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Rerun the exact PR gate
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const completed = context.payload.workflow_run;
@@ -85,3 +88,33 @@ jobs:
               run_id: candidates[0].id,
             });
             core.notice(`Rerunning PR gate ${candidates[0].id} for manual run ${completed.id}.`);
+
+  publish-r2-approval:
+    name: Publish R2 approval status
+    if: github.event.workflow_run.name == 'R2 Approval Gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    concurrency:
+      group: r2-current-head-approval
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted publisher revision only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            .github/scripts
+            .github/r2-protected-paths.txt
+      - name: Recompute approval for the current PR head
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const gate = require('./.github/scripts/r2-approval-gate.cjs');
+            await gate.publish({ github, context, core });

@@ -141,10 +141,14 @@ test('reported pointers are cleared so the same kill is not re-reported forever'
   const probe = src.slice(src.indexOf('async function reportPriorUncleanExit'));
   // Clearing by id from a snapshot could delete a pointer renewed while this
   // detached probe ran (Codex round 14); the prune is keyed on startedAt.
-  assert.match(
-    probe.slice(0, probe.indexOf('\n}\n')),
-    /durableActiveStore\.pruneStartedBefore\(userId, PROCESS_START_ISO\)/,
-  );
+  // Round 28: pruned BEFORE the emit, and the emit is gated on confirmed
+  // removal — otherwise a failed prune left the pointer and the next process
+  // counted the same interruption again.
+  const body = probe.slice(0, probe.indexOf('\n}\n'));
+  const prune = body.indexOf('.pruneStartedBefore(userId, PROCESS_START_ISO)');
+  const emit = body.indexOf("name: 'capture_ended_without_cleanup'");
+  assert.ok(prune > 0 && emit > prune, 'prune must precede the emit');
+  assert.match(body, /if \(!pruned\) return;/);
 });
 
 test('the kill report carries counts only — no ids, slots or paths', () => {

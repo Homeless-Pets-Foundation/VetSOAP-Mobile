@@ -138,6 +138,17 @@ export interface UseAudioRecorderReturn {
    * actually owns the recording.
    */
   getSelectedBackend: () => 'expo' | 'durable';
+  /**
+   * Run the one-time Android 13+ POST_NOTIFICATIONS preflight WITHOUT starting.
+   *
+   * start() calls this internally, but it can display a system dialog and wait
+   * on it — so a caller that publishes a death-surviving capture pointer before
+   * start() would leave that pointer behind if the process exits while the
+   * dialog is up, reporting an interrupted capture that never opened the mic.
+   * Callers get the dialog out of the way first, then publish, then start.
+   * Idempotent: the in-start call becomes a no-op.
+   */
+  ensureRecordingNotificationPermission: () => Promise<void>;
   start: (ctx?: DurableStartContext) => Promise<void>;
   resumeDurable: (ctx: DurableResumeContext) => Promise<void>;
   pause: () => Promise<void>;
@@ -1172,6 +1183,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   );
 
   const getSelectedBackend = useCallback(() => backendRef.current, []);
+  const ensureRecordingNotificationPermission = useCallback(
+    () => ensureAndroidRecordingNotificationPermission(),
+    [],
+  );
 
   const duration = state === 'stopped' || state === 'interrupted' ? finalDuration : elapsedSeconds;
   const maxMetering = hasMeteringSampleRef.current ? maxMeteringRef.current : undefined;
@@ -1197,6 +1212,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       getCommitSnapshot,
       getDurableSnapshot,
       getSelectedBackend,
+      ensureRecordingNotificationPermission,
       start,
       resumeDurable,
       pause,
@@ -1220,6 +1236,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       getCommitSnapshot,
       getDurableSnapshot,
       getSelectedBackend,
+      ensureRecordingNotificationPermission,
       start,
       resumeDurable,
       pause,

@@ -71,14 +71,21 @@ test('both clears publish unconditionally', () => {
   assert.equal((body.match(/await writeList\(userId, next, \(\) => !isAbandoned\(\)\);/g) ?? []).length, 2);
 });
 
-test('the prune keeps its conditional write, deliberately', () => {
-  // Opposite reasoning: at launch a late setActive describes a CURRENT capture
-  // (startedAt >= cutoff), which must not be pruned — so there is nothing to
-  // contend with and an unconditional write would only add a Keystore round
-  // trip to every start.
+test('the prune still writes only when something is stale', () => {
+  // Opposite reasoning to the clears: at launch a late setActive describes a
+  // CURRENT capture (startedAt >= cutoff), which must not be pruned — so there
+  // is nothing to contend with and an unconditional write would only add a
+  // Keystore round trip to every start. Round 28 restructured it to REPORT
+  // success rather than to publish unconditionally.
   const src = read('src/lib/durableAudio/activeStore.ts');
-  const prune = src.slice(src.indexOf('pruneStartedBefore(userId: string'));
-  assert.match(prune.slice(0, 900), /if \(next\.length !== list\.length\) \{/);
+  const prune = src.slice(
+    src.indexOf('async pruneStartedBefore(userId: string'),
+    src.indexOf('async list('),
+  );
+  assert.ok(prune.length > 0, 'anchor');
+  assert.match(prune, /if \(next\.length === list\.length\) \{/);
+  assert.match(prune, /pruned = true;/);
+  assert.match(prune, /pruned = await writeList\(userId, next/);
 });
 
 test('an unreadable store is never published over as empty', async () => {

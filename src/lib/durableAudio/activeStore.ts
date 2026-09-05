@@ -106,8 +106,8 @@ async function writeList(
   userId: string,
   list: DurableActiveEntry[],
   shouldCommit?: () => boolean,
-): Promise<void> {
-  await writeChunkedValueVersioned(prefixFor(userId), JSON.stringify(list), { shouldCommit });
+): Promise<boolean> {
+  return writeChunkedValueVersioned(prefixFor(userId), JSON.stringify(list), { shouldCommit });
 }
 
 // Every mutation is a read-modify-write over ONE chunked value, and the
@@ -332,18 +332,34 @@ export const durableActiveStore = {
    * after the cutoff. It also collapses N Keystore write round trips into one on
    * the launch path.
    */
-  pruneStartedBefore(userId: string, cutoffIso: string): Promise<void> {
-    return serialized(async (isAbandoned) => {
+  async pruneStartedBefore(userId: string, cutoffIso: string): Promise<boolean> {
+    // Reports CONFIRMED removal. The caller emits the unclean-exit telemetry only
+    // when this succeeds: the lenient reader used to collapse a transient failure
+    // to [], skip the conditional write, and leave the stale pointer behind — so
+    // the next process, whose reported-user set starts empty, counted the very
+    // same interruption again and inflated the reliability metric these changes
+    // are judged by.
+    let pruned = false;
+    await serialized(async (isAbandoned) => {
       if (!userId) return;
-      const list = await readList(userId);
+      let list: DurableActiveEntry[];
+      try {
+        list = await readListStrict(userId);
+      } catch {
+        return;
+      }
       if (isAbandoned()) return;
       const next = list.filter(
         (e) => !(typeof e.startedAt === 'string' && e.startedAt < cutoffIso),
       );
-      if (next.length !== list.length) {
-        await writeList(userId, next, () => !isAbandoned());
+      if (next.length === list.length) {
+        // Nothing stale to remove, and the read was trustworthy.
+        pruned = true;
+        return;
       }
+      pruned = await writeList(userId, next, () => !isAbandoned());
     });
+    return pruned;
   },
 
   async list(): Promise<DurableActiveEntry[]> {

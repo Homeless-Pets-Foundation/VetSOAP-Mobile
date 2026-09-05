@@ -2346,6 +2346,15 @@ function RecordingSession() {
               // would lose the audio AND the ability to report it. Bounded at
               // 400 ms so a degraded Keystore delays the mic briefly instead of
               // stalling the tap.
+              // Get the Android 13+ POST_NOTIFICATIONS dialog out of the way
+              // BEFORE publishing. start() runs this preflight internally, and
+              // it can put up a system dialog and wait on it — so publishing
+              // first meant an exit while that dialog was up left a pointer for
+              // a capture that never opened the microphone, reported as an
+              // interruption on the next launch. Idempotent and one-shot per
+              // process, so the in-start call is then a no-op.
+              await recorder.ensureRecordingNotificationPermission();
+              // Re-checked after that await, like every other post-await gate.
               if (scopeUnchanged()) {
                 expoPointerSlotId = slotId;
                 await racePreStartPointerWrite(

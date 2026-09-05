@@ -87,8 +87,8 @@ test('both mutation paths read strictly', () => {
   const src = read('src/lib/durableAudio/activeStore.ts');
   assert.equal(
     (src.match(/await readListStrict\(userId\)/g) ?? []).length,
-    4,
-    'setActive + both clears + replaceActive',
+    5,
+    'setActive + both clears + replaceActive + prune',
   );
   assert.doesNotMatch(src, /const existing = await readList\(userId\);/);
 });

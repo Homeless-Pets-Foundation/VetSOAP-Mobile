@@ -137,7 +137,11 @@ test('pruning keeps an entry renewed after the cutoff', async () => {
 
 test('the launch probe prunes by timestamp, not by a snapshot of ids', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
-  assert.match(src, /durableActiveStore\.pruneStartedBefore\(userId, PROCESS_START_ISO\)/);
+  // Round 28: the prune now runs BEFORE the emit and gates it on confirmed
+  // removal, so the call moved but the invariant (prune by timestamp, never by a
+  // snapshot of ids) is unchanged.
+  assert.match(src, /\.pruneStartedBefore\(userId, PROCESS_START_ISO\)/);
+  assert.match(src, /if \(!pruned\) return;/);
   // The id-keyed clear is what deleted a renewed pointer. Scope to the probe:
   // clearActive is legitimate elsewhere in this file.
   const start = src.indexOf('async function reportPriorUncleanExit(');

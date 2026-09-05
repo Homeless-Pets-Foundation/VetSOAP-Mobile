@@ -125,7 +125,6 @@ async function reportPriorUncleanExit(
     if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
     const stale = entries.filter((e) => typeof e.startedAt === 'string' && e.startedAt < PROCESS_START_ISO);
     if (stale.length === 0) return;
-    uncleanExitReportedUsers.add(userId);
 
     let durable = 0;
     let expo = 0;
@@ -146,6 +145,20 @@ async function reportPriorUncleanExit(
       }
     }
 
+    // PRUNE FIRST, and report only if the stale pointer is CONFIRMED gone.
+    // Emitting first and pruning after double-counted: a transient read failure
+    // left the pointer behind, and the next process — whose reported-user set
+    // starts empty — counted the very same interruption again, inflating the
+    // reliability metric these changes are judged by. Under-reporting once is
+    // recoverable; a metric that inflates on a degraded Keystore is not.
+    // Scope re-checked first: a sign-out must not prune the next user's pointers.
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+    const pruned = await durableActiveStore
+      .pruneStartedBefore(userId, PROCESS_START_ISO)
+      .catch(() => false);
+    if (!pruned) return;
+    uncleanExitReportedUsers.add(userId);
+
     trackEvent({
       name: 'capture_ended_without_cleanup',
       props: { durable_count: durable, expo_count: expo, recovered_count: recovered },
@@ -159,14 +172,7 @@ async function reportPriorUncleanExit(
       extra: { durable_count: durable, expo_count: expo, recovered_count: recovered },
     });
 
-    // ONE serialized mutation keyed on startedAt, not N clears keyed on a
-    // snapshot of ids: this probe is detached, and while it runs the vet can
-    // resume a draft and start a new capture under a slot id the snapshot also
-    // holds. Clearing by id would delete that live pointer (see
-    // pruneStartedBefore). Scope re-checked once more first — a sign-out must
-    // not prune the next user's pointers.
-    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
-    await durableActiveStore.pruneStartedBefore(userId, PROCESS_START_ISO).catch(() => {});
+
   } catch {
     // Never let the unclean-exit probe block recovery.
   }

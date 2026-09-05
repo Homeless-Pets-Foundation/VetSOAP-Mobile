@@ -141,8 +141,31 @@ export const AudioWaveform = React.memo(function AudioWaveform({ isActive, isPau
       // The glow stays on THIS node: iOS draws a legacy shadow from the layer's
       // content alpha, so an empty sibling would render no glow at all, and on
       // Android the elevation shadow comes from the outline, not the children.
-      className={`flex-row items-center justify-center my-3 rounded-card ${live ? 'shadow-glow' : ''}`}
-      style={{ height: containerHeight }}
+      //
+      // It is an inline style, NOT a conditional `shadow-glow` class, and the
+      // className on this node must stay CONSTANT. Under
+      // `jsxImportSource: 'nativewind'` every element renders through
+      // cssInterop; on this node a className that CHANGES ends up handing the
+      // plain host View a Reanimated animated style, whose dev-only
+      // `_requiresAnimatedComponent` getter throws "trying to pass an animated
+      // style to a non-animated component" as soon as it is read. `live` flips
+      // exactly when capture starts, so in a dev build the Record screen died
+      // on the first frame of every recording and took the running capture with
+      // it. Bisected on an Android emulator 2026-09-05: conditional
+      // `shadow-glow` throws; the SAME className held constant does not, with
+      // or without `shadow-glow`; and toggling the identical glow through the
+      // inline style below does not. Release builds never throw — that getter
+      // exists only under __DEV__ — which is why no vet hit it and Sentry saw
+      // nothing. (Other conditional `shadow-glow` sites — StatusBadge,
+      // PatientSlotCard, RecorderLiveReadout — did not reproduce it, so treat
+      // this as the node-specific hazard it was measured to be, not a blanket
+      // rule about conditional classNames.)
+      className="flex-row items-center justify-center my-3 rounded-card"
+      style={{
+        height: containerHeight,
+        // Mirrors tailwind.config.js theme.extend.boxShadow.glow — keep in sync.
+        ...(live ? { boxShadow: '0 0 16px rgba(13,135,117,0.35)' } : null),
+      }}
       accessibilityLabel="Audio recording waveform"
       accessibilityRole="image"
     >

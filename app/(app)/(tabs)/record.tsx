@@ -2590,7 +2590,12 @@ function RecordingSession() {
             pendingDraftRecoveryReasonRef.current.set(targetSlotId, 'draft_finish');
             recordingSegmentStartedAtMsRef.current = null;
             setDurableRecording(targetSlotId, durableRef);
-            void clearCapturePointer(finishUserId, snap.recordingId);
+            // AWAITED, like the expo branch: autoSaveDraft below copies audio,
+            // writes chunked metadata and creates a server draft — seconds on a
+            // loaded tablet — and a process death in that window with the clear
+            // still in flight leaves a pointer for a recording that finished
+            // cleanly. Bounded by the store's own mutation timeout.
+            await clearCapturePointer(finishUserId, snap.recordingId);
             recorder.resetWithoutDelete();
             if (boundSlot) {
               const durableSlot: PatientSlot = {

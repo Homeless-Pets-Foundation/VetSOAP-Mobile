@@ -310,9 +310,16 @@ export async function writeChunkedValueVersioned(
   for (let step = 0; step < GEN_RING && reserved.has(gen); step++) {
     gen = (gen + 1) % GEN_RING;
   }
-  // Every slot reserved means GEN_RING writes are simultaneously hung, which is
-  // a wedged Keystore. Proceed on the computed generation rather than refusing
-  // to record anything at all — degraded, but no worse than before the ring.
+  if (reserved.has(gen)) {
+    // Every slot reserved means GEN_RING writes are simultaneously hung — a
+    // wedged Keystore. Reusing one anyway was wrong: if this write published
+    // that generation before the older write to it settled, the late write would
+    // overwrite the chunks the CURRENT pointer names and could resurrect a
+    // completed capture as active. Refusing costs a breadcrumb, which
+    // under-reports; recycling FABRICATES an interruption, and throughout this
+    // store a missing report is always preferred to an invented one.
+    return false;
+  }
   lastHandedOutGen.set(prefix, gen);
   reserved.add(gen);
   try {

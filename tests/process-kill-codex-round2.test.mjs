@@ -57,7 +57,7 @@ test('the manual-finish early return in the stopped effect still precedes cleanu
   // the finally silently reintroduces a false kill on every recording.
   const src = read(RECORD);
   const guard = src.indexOf('if (manualFinishSlotIdRef.current && manualFinishSlotIdRef.current === session.recorderBoundToSlotId)');
-  const effectCleanup = src.indexOf('durableActiveStore.clearActive(slotId).catch');
+  const effectCleanup = src.indexOf('void clearCapturePointer(user?.id ?? null, slotId);');
   assert.ok(guard > 0);
   assert.ok(effectCleanup > guard, 'guard must still precede the effect cleanup for this fence to mean anything');
 });

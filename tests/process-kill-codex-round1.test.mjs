@@ -153,10 +153,10 @@ test('the deliberate-discard path clears both capture pointers', () => {
   const skipIdx = src.indexOf('if (skipNextAudioCaptureRef.current && !audioCaptureDoneRef.current) {');
   assert.ok(skipIdx > 0);
   const branch = src.slice(skipIdx, skipIdx + 1800);
-  assert.match(branch, /durableActiveStore\.clearActive\(discardedSlotId\)/);
+  assert.match(branch, /clearCapturePointer\(user\?\.id \?\? null, discardedSlotId\)/);
   // A durably-recording slot has no slot.durable yet, so the discard loop's own
   // cleanup cannot reach it — clear the live id here too.
-  assert.match(branch, /durableActiveStore\.clearActive\(discardedDurableId\)/);
+  assert.match(branch, /clearCapturePointer\(user\?\.id \?\? null, discardedDurableId\)/);
   assert.match(branch, /recorder\.activeDurableRecordingId/);
 });
 

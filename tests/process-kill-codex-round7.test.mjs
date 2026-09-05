@@ -61,7 +61,7 @@ test('the expo interruption path clears the pointer, like the durable one', () =
   const idx = src.indexOf("dispatch({ type: 'CONTINUE_RECORDING', slotId });");
   assert.ok(idx > 0);
   const block = src.slice(idx, idx + 800);
-  assert.match(block, /durableActiveStore\.clearActive\(slotId\)/);
+  assert.match(block, /clearCapturePointer\(user\?\.id \?\? null, slotId\)/);
 });
 
 // ---- F2: the pre-start write belongs to the user who tapped Start ---------
@@ -92,5 +92,6 @@ test('the battery prompt takes a scope predicate and rechecks it before the Aler
 test('the Record screen passes a live scope predicate, not a captured boolean', () => {
   const src = read(RECORD);
   assert.match(src, /const promptUserId = user\.id;/);
-  assert.match(src, /\(\) => !isExpired\(\) && durableActiveStore\.getUserId\(\) === promptUserId/);
+  // Round 23: the predicate gained a start-in-flight term and wrapped.
+  assert.match(src, /!isExpired\(\) &&\s*\n\s*!startInFlightRef\.current &&\s*\n\s*durableActiveStore\.getUserId\(\) === promptUserId/);
 });

@@ -133,8 +133,11 @@ test('serialized sweeps fold the expiry flag into their scope predicate', () => 
   // Each serialized job must actually consult it, or the timeout only settles
   // the wrapper and the work races the job that overtook it. Three consumers:
   // both draft sweeps' isScopeValid(), and the battery prompt's scope predicate.
-  assert.equal((src.match(/!isExpired\(\) &&/g) ?? []).length, 3);
-  assert.match(src, /\(\) => !isExpired\(\) && durableActiveStore\.getUserId\(\) === promptUserId/);
+  // Round 23 added a start-in-flight term to the battery predicate, so its
+  // `!isExpired() &&` now appears on its own line alongside the others.
+  assert.ok((src.match(/!isExpired\(\) &&/g) ?? []).length >= 3);
+  // Round 23: the predicate gained a start-in-flight term and wrapped.
+  assert.match(src, /!isExpired\(\) &&\s*\n\s*!startInFlightRef\.current &&\s*\n\s*durableActiveStore\.getUserId\(\) === promptUserId/);
   assert.match(src, /expired = true;/);
 });
 
@@ -146,11 +149,11 @@ test('discardCurrentSession clears both pointers before it erases the lookup sta
   const block = src.slice(idx, idx + 1600);
   const capture = block.indexOf('const discardedSlotId = session.recorderBoundToSlotId');
   const unbind = block.indexOf('unbindRecorder();');
-  const clear = block.indexOf('durableActiveStore.clearActive(discardedSlotId)');
+  const clear = block.indexOf('clearCapturePointer(user?.id ?? null, discardedSlotId)');
   assert.ok(capture > 0, 'ids must be captured');
   assert.ok(unbind > capture, 'captured before unbind erases them');
   assert.ok(clear > 0 && clear < unbind, 'cleared before the state is torn down');
-  assert.match(block, /durableActiveStore\.clearActive\(discardedDurableId\)/);
+  assert.match(block, /clearCapturePointer\(user\?\.id \?\? null, discardedDurableId\)/);
 });
 
 test('the active-slot Remove flow clears both pointers too', () => {
@@ -158,7 +161,7 @@ test('the active-slot Remove flow clears both pointers too', () => {
   const idx = src.indexOf('const removedDurableId = recorder.activeDurableRecordingId;');
   assert.ok(idx > 0, 'durable id not captured in the Remove flow');
   const block = src.slice(idx, idx + 700);
-  assert.match(block, /durableActiveStore\.clearActive\(slotId\)/);
-  assert.match(block, /durableActiveStore\.clearActive\(removedDurableId\)/);
-  assert.ok(block.indexOf('unbindRecorder();') > block.indexOf('clearActive(slotId)'));
+  assert.match(block, /clearCapturePointer\(user\?\.id \?\? null, slotId\)/);
+  assert.match(block, /clearCapturePointer\(user\?\.id \?\? null, removedDurableId\)/);
+  assert.ok(block.indexOf('unbindRecorder();') > block.indexOf('clearCapturePointer(user?.id ?? null, slotId)'));
 });

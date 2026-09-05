@@ -167,8 +167,8 @@ test('the expo fallback writes and clears the capture pointer', () => {
     /await racePreStartPointerWrite\(\s*durableActiveStore\.setActive\(slotId, slotId, new Date\(\)\.toISOString\(\), 'expo'\)/,
   );
   // Cleared on a clean capture, else every launch reports a phantom kill.
-  assert.match(src, /durableActiveStore\.clearActive\(slotId\)\.catch/);
-  assert.match(src, /durableActiveStore\.clearActive\(boundSlotId\)\.catch/);
+  assert.match(src, /clearCapturePointer\(user\?\.id \?\? null, slotId\)/);
+  assert.match(src, /clearCapturePointer\(user\?\.id \?\? null, boundSlotId\)/);
 });
 
 // ---------------------------------------------------------------- monitoring

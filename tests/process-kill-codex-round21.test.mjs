@@ -27,22 +27,24 @@ function slice(from, to) {
 
 test('the shared helper prefers the initiating user and never skips the clear', () => {
   const src = read('app/(app)/(tabs)/record.tsx');
-  assert.match(src, /const clearCapturePointer = useCallback\(/);
-  const fn = slice('const clearCapturePointer = useCallback(', 'const startRecordingForSlot');
+  assert.match(src, /async function clearCapturePointer\(initiatorId: string \| null, id: string \| null\)/);
+  const fn = slice('async function clearCapturePointer(', 'async function withDurableOpWatchdog');
   assert.match(fn, /durableActiveStore\.clearActiveForUser\(initiatorId, id\)/);
   // Ambient is the fallback when no initiator is known — strictly better than
   // not clearing at all.
   assert.match(fn, /durableActiveStore\.clearActive\(id\)/);
 });
 
-test('the helper is declared BEFORE its first use', () => {
-  // Not style: these are useCallback dependency arrays, which evaluate at the
-  // useCallback call. Declared after the start handler, adding it to that dep
-  // array is a TDZ throw on every render of the Record screen.
+test('the helper is a module function, not a hook', () => {
+  // As a useCallback it had to precede every handler listing it as a dependency,
+  // because dep arrays evaluate at the useCallback call — declared after, it is
+  // a TDZ throw on every render of the Record screen. A hoisted function
+  // declaration removes that hazard entirely, and it needs no component state.
   const src = read('app/(app)/(tabs)/record.tsx');
-  const decl = src.indexOf('const clearCapturePointer = useCallback(');
-  const firstUse = src.indexOf('const startRecordingForSlot = useCallback(');
-  assert.ok(decl > 0 && firstUse > decl, 'helper must precede the handlers that depend on it');
+  assert.doesNotMatch(src, /const clearCapturePointer = useCallback\(/);
+  assert.match(src, /^async function clearCapturePointer\(/m);
+  // ...and therefore is not a dependency of anything.
+  assert.doesNotMatch(src, /, clearCapturePointer\]/);
 });
 
 test('no failed-start cleanup clears by ambient scope', () => {
@@ -64,4 +66,18 @@ test('the finish path clears for the user who finished', () => {
   // The round-16 pre-autosave pair, the finally pair, and the durable finish
   // clear — every one of them downstream of an await.
   assert.equal((fn.match(/clearCapturePointer\(finishUserId, /g) ?? []).length, 5);
+});
+
+test('record.tsx clears pointers ONLY through the helper', () => {
+  // The fence that ends this bug family (rounds 14/17/18/19/21/23). Every
+  // ambient clear is a latent sign-out bug, so the file is allowed exactly one
+  // call — the fallback inside the helper itself.
+  const src = read('app/(app)/(tabs)/record.tsx');
+  const calls = src.match(/durableActiveStore\.clearActive\(/g) ?? [];
+  assert.equal(calls.length, 1, 'only the helper may call clearActive directly');
+  const helper = src.slice(
+    src.indexOf('async function clearCapturePointer('),
+    src.indexOf('async function withDurableOpWatchdog'),
+  );
+  assert.match(helper, /durableActiveStore\.clearActive\(id\)/, 'and that one is the fallback');
 });

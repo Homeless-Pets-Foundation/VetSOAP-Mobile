@@ -17,7 +17,11 @@
  *
  * Survives secureStorage.clearAll() (prefixed key, not in the delete allowlist).
  */
-import { writeChunkedValue, readChunkedValueWithCount, deleteChunkedValue } from './chunkedStore';
+import {
+  writeChunkedValueVersioned,
+  readChunkedValueVersioned,
+  deleteChunkedValueVersioned,
+} from './chunkedStore';
 import { isValidDurableId } from './paths';
 import { withPromiseTimeout } from '../promiseTimeout';
 
@@ -55,40 +59,31 @@ function prefixFor(userId: string): string {
   return `${KEY_PREFIX}_${userId}`;
 }
 
-interface ActiveListRead {
-  list: DurableActiveEntry[];
-  /** Persisted chunk count, threaded into the write so its stale sweep is exact. */
-  chunkCount: number | null;
-}
-
-async function readList(userId: string): Promise<ActiveListRead> {
-  const { value: raw, chunkCount } = await readChunkedValueWithCount(prefixFor(userId));
-  if (!raw) return { list: [], chunkCount };
+async function readList(userId: string): Promise<DurableActiveEntry[]> {
+  const raw = await readChunkedValueVersioned(prefixFor(userId));
+  if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return { list: [], chunkCount };
-    return {
-      list: parsed.filter(
-        (e): e is DurableActiveEntry =>
-          e && typeof e.recordingId === 'string' && typeof e.slotId === 'string',
-      ),
-      chunkCount,
-    };
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e): e is DurableActiveEntry =>
+        e && typeof e.recordingId === 'string' && typeof e.slotId === 'string',
+    );
   } catch {
-    return { list: [], chunkCount };
+    return [];
   }
 }
 
-// `setActive` runs on the record-start critical path (before the mic opens).
-// Passing the count we just read turns the blind 16-key stale sweep into zero
-// deletes in the steady state — see WriteChunkedValueOptions.
+// Generation-namespaced write: a late chunk write from an op we already gave up
+// on lands on keys nothing reads, so it can never resurrect a stale pointer and
+// manufacture a false process-kill report. `shouldCommit` stops an abandoned op
+// publishing at all.
 async function writeList(
   userId: string,
   list: DurableActiveEntry[],
-  prevChunkCount: number | null,
   shouldCommit?: () => boolean,
 ): Promise<void> {
-  await writeChunkedValue(prefixFor(userId), JSON.stringify(list), { prevChunkCount, shouldCommit });
+  await writeChunkedValueVersioned(prefixFor(userId), JSON.stringify(list), { shouldCommit });
 }
 
 // Every mutation is a read-modify-write over ONE chunked value, and the
@@ -176,14 +171,14 @@ export const durableActiveStore = {
     const userId = currentUserId;
     return serialized(async (isAbandoned) => {
       if (!userId || !isValidDurableId(recordingId)) return;
-      const { list: existing, chunkCount } = await readList(userId);
+      const existing = await readList(userId);
       if (isAbandoned()) return;
       const list = existing.filter((e) => e.recordingId !== recordingId);
       list.push({ recordingId, slotId, startedAt, backend });
       while (list.length > MAX_ACTIVE) list.shift();
-      // Re-checked at the commit point too: the read above may have been fast
-      // while the write is the part that hangs.
-      await writeList(userId, list, chunkCount, () => !isAbandoned());
+      // Re-checked between every chunk and at the publish point: the read above
+      // may be fast while the write is the part that hangs.
+      await writeList(userId, list, () => !isAbandoned());
     });
   },
 
@@ -193,11 +188,11 @@ export const durableActiveStore = {
     const userId = currentUserId;
     return serialized(async (isAbandoned) => {
       if (!userId) return;
-      const { list, chunkCount } = await readList(userId);
+      const list = await readList(userId);
       if (isAbandoned()) return;
       const next = list.filter((e) => e.recordingId !== recordingId);
       if (next.length !== list.length) {
-        await writeList(userId, next, chunkCount, () => !isAbandoned());
+        await writeList(userId, next, () => !isAbandoned());
       }
     });
   },
@@ -205,7 +200,7 @@ export const durableActiveStore = {
   async list(): Promise<DurableActiveEntry[]> {
     const userId = currentUserId;
     if (!userId) return [];
-    return (await readList(userId)).list;
+    return readList(userId);
   },
 
   /** True if any recording was still marked active from a prior process. */
@@ -235,6 +230,6 @@ export const durableActiveStore = {
   },
 
   clearForUser(userId: string): Promise<void> {
-    return serialized(() => deleteChunkedValue(prefixFor(userId)));
+    return serialized(() => deleteChunkedValueVersioned(prefixFor(userId)));
   },
 };

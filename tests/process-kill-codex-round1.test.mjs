@@ -117,15 +117,15 @@ test('every kill-probe call site is cancellation-guarded', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
   // The probe reads AND clears activeStore; a stale scan resuming after a user
   // switch would report and clear the NEXT user's pointers.
-  const calls = [...src.matchAll(/reportPriorProcessKill\(/g)];
-  const callSites = calls.filter((m) => !src.slice(0, m.index).endsWith('async function '));
-  assert.ok(callSites.length >= 3);
+  const calls = [...src.matchAll(/reportPriorProcessKillDetached\(/g)];
+  // Definition + three guarded call sites (two early returns, one main path).
+  assert.ok(calls.length >= 4, `expected the helper plus >=3 call sites, found ${calls.length}`);
   assert.equal(
-    (src.match(/if \(!isCancelled\(\)\) await reportPriorProcessKill\(userId, EMPTY_MANIFEST_IDS, isCancelled\);/g) ?? []).length,
+    (src.match(/if \(!isCancelled\(\)\) reportPriorProcessKillDetached\(userId, EMPTY_MANIFEST_IDS, isCancelled\);/g) ?? []).length,
     2,
     'both early-return probes must be guarded',
   );
-  assert.match(src, /if \(isCancelled\(\)\) return \[\];\n\s*await reportPriorProcessKill\(userId, new Set\(manifests\.map/);
+  assert.match(src, /reportPriorProcessKillDetached\(userId, new Set\(manifests\.map/);
 });
 
 // ---- F2 (P2): a failed start must not leave an expo pointer ----------------

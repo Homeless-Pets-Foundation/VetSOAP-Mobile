@@ -74,6 +74,147 @@ export async function writeChunkedValue(
   return true;
 }
 
+/**
+ * Versioned (generation-namespaced) variant, for values where a LATE write from
+ * an abandoned operation must never become readable.
+ *
+ * The plain writer overwrites `${prefix}_chunk_i` in place. That is fine when
+ * writes always complete, but a SecureStore call that hangs past its caller's
+ * deadline and lands later will overwrite whatever newer payload replaced it.
+ * Checking a commit flag before the `_count` write does not help: these values
+ * are typically a SINGLE chunk and keep the same count, so the resurrected JSON
+ * parses cleanly and silently restores stale state. For the active-capture
+ * pointer that means a recording which finished normally reappears as live, and
+ * the next launch reports a process kill that never happened.
+ *
+ * Here each write goes to a fresh generation — `${prefix}_g{N}_chunk_i` — and
+ * publishes by writing ONE pointer key, `${prefix}_ptr` = {"g":N,"n":count}.
+ * A late chunk write from generation N-1 therefore lands on keys nothing reads.
+ * A late POINTER write can still regress the generation, but the older
+ * generation's chunks have been swept, so it reads as absent rather than stale —
+ * losing a pointer under-reports a kill, it cannot fabricate one.
+ */
+interface VersionedPointer {
+  g: number;
+  n: number;
+}
+
+function parseVersionedPointer(raw: string | null): VersionedPointer | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<VersionedPointer>;
+    if (
+      typeof parsed?.g !== 'number' ||
+      typeof parsed?.n !== 'number' ||
+      !Number.isInteger(parsed.g) ||
+      !Number.isInteger(parsed.n) ||
+      parsed.g < 0 ||
+      parsed.n < 0 ||
+      parsed.n > MAX_CHUNKS_PER_VALUE
+    ) {
+      return null;
+    }
+    return { g: parsed.g, n: parsed.n };
+  } catch {
+    return null;
+  }
+}
+
+export async function readChunkedValueVersioned(prefix: string): Promise<string | null> {
+  const ptr = parseVersionedPointer(
+    await secureStorage.getRawItem(`${prefix}_ptr`, 'durableChunkPtrRead'),
+  );
+  if (!ptr) {
+    // No versioned pointer yet — fall back to the legacy layout so an install
+    // that predates this migration still reads its existing value.
+    return readChunkedValue(prefix);
+  }
+  if (ptr.n === 0) return '';
+  const result = await readChunksBounded(ptr.n, (i) =>
+    secureStorage.getRawItem(`${prefix}_g${ptr.g}_chunk_${i}`, 'durableChunkRead'),
+  );
+  return result.ok ? result.parts.join('') : null;
+}
+
+/**
+ * Generations rotate through a small ring rather than incrementing forever.
+ *
+ * A ring means no sweep is needed: reusing a generation overwrites its own keys
+ * in place, and the pointer's `n` bounds how many are ever read, so a shrunken
+ * value leaves at most a few unreadable orphans. That matters because setActive
+ * runs on the record-start critical path, before the mic opens — a per-write
+ * delete is exactly the serial-Keystore latency the record-perf work removed.
+ *
+ * Safety margin: a late write can only collide once GEN_RING further writes have
+ * published, i.e. a call hung across eight subsequent mutations of the same
+ * value. The window it closes (a single stalled write landing after the next
+ * one) is the realistic case.
+ */
+const GEN_RING = 8;
+
+/**
+ * Last generation HANDED OUT per prefix, which is not the same as the last
+ * generation published.
+ *
+ * Deriving the next generation from the stored pointer looks right and is
+ * wrong: an abandoned write never publishes, so the pointer still names the
+ * generation before it, and the very next write picks the SAME generation the
+ * abandoned one is still writing into. Its late chunk write then lands under the
+ * generation the new pointer references — exactly the resurrection this layout
+ * exists to prevent. Handing out generations per ATTEMPT keeps them disjoint.
+ *
+ * In-memory only: a hung native call cannot outlive its process, so a fresh
+ * process has nothing in flight to collide with, and the counter is seeded from
+ * the persisted pointer on first use.
+ */
+const lastHandedOutGen = new Map<string, number>();
+
+export async function writeChunkedValueVersioned(
+  prefix: string,
+  value: string,
+  opts?: { shouldCommit?: () => boolean },
+): Promise<boolean> {
+  const current = parseVersionedPointer(
+    await secureStorage.getRawItem(`${prefix}_ptr`, 'durableChunkPtrRead'),
+  );
+  const seen = lastHandedOutGen.get(prefix);
+  const base = seen ?? current?.g ?? -1;
+  const gen = (base + 1) % GEN_RING;
+  lastHandedOutGen.set(prefix, gen);
+
+  const chunks: string[] = [];
+  for (let i = 0; i < value.length; i += CHUNK_SIZE) {
+    chunks.push(value.slice(i, i + CHUNK_SIZE));
+  }
+  if (chunks.length > MAX_CHUNKS_PER_VALUE) return false;
+
+  for (let i = 0; i < chunks.length; i++) {
+    // Bail between chunks too: no point writing the rest of a generation that
+    // will never be published.
+    if (opts?.shouldCommit && !opts.shouldCommit()) return false;
+    const ok = await secureStorage.setRawItem(`${prefix}_g${gen}_chunk_${i}`, chunks[i], 'durableChunkWrite');
+    if (!ok) return false;
+  }
+  if (opts?.shouldCommit && !opts.shouldCommit()) return false;
+  // Single-key publish. Nothing is deleted here — see GEN_RING.
+  return secureStorage.setRawItem(
+    `${prefix}_ptr`,
+    JSON.stringify({ g: gen, n: chunks.length } satisfies VersionedPointer),
+    'durableChunkPtrWrite',
+  );
+}
+
+/** Full teardown for a user scope: pointer, every ring generation, and legacy. */
+export async function deleteChunkedValueVersioned(prefix: string): Promise<void> {
+  await secureStorage.deleteRawItem(`${prefix}_ptr`, 'durableChunkSweep');
+  for (let g = 0; g < GEN_RING; g++) {
+    for (let i = 0; i < MAX_STALE_SWEEP; i++) {
+      await secureStorage.deleteRawItem(`${prefix}_g${g}_chunk_${i}`, 'durableChunkSweep');
+    }
+  }
+  await deleteChunkedValue(prefix);
+}
+
 export interface ChunkedValueWithCount {
   value: string | null;
   /**

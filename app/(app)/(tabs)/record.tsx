@@ -2251,6 +2251,30 @@ function RecordingSession() {
   // Keep the ref in sync for the effect
   startRecordingRef.current = startRecordingForSlot;
 
+  // Unmount teardown: a sign-out (or any teardown of the app group) while a
+  // capture is live runs none of the Finish / discard / interruption paths, so
+  // the pointer would survive. Durable pointer keys deliberately outlive
+  // secureStorage.clearAll(), so it would sit there until the next launch and
+  // report that Android stopped a recording the USER ended by logging out.
+  //
+  // Reads the live values from refs at teardown time. A real OS kill never runs
+  // this cleanup, so genuine evidence is untouched.
+  const liveCaptureRef = useRef<{ slotId: string | null; durableId: string | null }>({
+    slotId: null,
+    durableId: null,
+  });
+  liveCaptureRef.current = {
+    slotId: session.recorderBoundToSlotId,
+    durableId: recorder.activeDurableRecordingId,
+  };
+  useEffect(() => {
+    return () => {
+      const { slotId, durableId } = liveCaptureRef.current;
+      if (slotId) durableActiveStore.clearActive(slotId).catch(() => {});
+      if (durableId) durableActiveStore.clearActive(durableId).catch(() => {});
+    };
+  }, []);
+
   const handlePause = useCallback(
     (slotId: string) => {
       (async () => {

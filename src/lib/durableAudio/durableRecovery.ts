@@ -26,6 +26,7 @@ import { stashStorage } from '../stashStorage';
 import { recoveryIntent } from '../recoveryIntent';
 import { recordingsApi } from '../../api/recordings';
 import { breadcrumb, captureMessage } from '../monitoring';
+import { withPromiseTimeout } from '../promiseTimeout';
 import { trackEvent } from '../analytics';
 import { durableRecoveryStore } from './recoveryState';
 
@@ -40,6 +41,26 @@ const SCAN_WATCHDOG_MS = 12_000;
  * sign-in mid-session re-runs the scan) and must never be reported as a kill.
  */
 const PROCESS_START_ISO = new Date().toISOString();
+/**
+ * The kill probe is TELEMETRY. It must never delay or suppress a recovery offer:
+ * a hung durableActiveStore read would otherwise burn the 12 s scan watchdog,
+ * `Promise.race` would publish the watchdog's empty list, and the real offers
+ * could never be published afterwards — leaving recoverable audio unreachable
+ * for the whole session, since AuthProvider runs this scan once per user.
+ */
+const KILL_PROBE_TIMEOUT_MS = 4_000;
+
+function reportPriorProcessKillDetached(
+  userId: string,
+  manifestIds: ReadonlySet<string>,
+  isCancelled: () => boolean,
+): void {
+  void withPromiseTimeout(
+    reportPriorProcessKill(userId, manifestIds, isCancelled),
+    KILL_PROBE_TIMEOUT_MS,
+    'kill_probe_timeout',
+  ).catch(() => {});
+}
 /**
  * Users whose kill signal this process has already reported.
  *
@@ -249,14 +270,14 @@ export async function scanDurableRecoveries(
   } catch {
     // Native enumeration failed, but the kill signal lives in SecureStore and is
     // still readable — report it before bailing.
-    if (!isCancelled()) await reportPriorProcessKill(userId, EMPTY_MANIFEST_IDS, isCancelled);
+    if (!isCancelled()) reportPriorProcessKillDetached(userId, EMPTY_MANIFEST_IDS, isCancelled);
     return [];
   }
   if (!manifests || manifests.length === 0) {
     // No recoverable capture does NOT mean a clean prior exit. The expo fallback
     // leaves no manifest at all, so this is exactly the unrecoverable-loss case
     // the kill probe exists to catch. Reporting also clears the stale pointer.
-    if (!isCancelled()) await reportPriorProcessKill(userId, EMPTY_MANIFEST_IDS, isCancelled);
+    if (!isCancelled()) reportPriorProcessKillDetached(userId, EMPTY_MANIFEST_IDS, isCancelled);
     return [];
   }
   // The probe READS AND CLEARS activeStore, so it is a mutating side effect and
@@ -266,7 +287,9 @@ export async function scanDurableRecoveries(
   // manifest count, and (because killSignalReported is process-global) stopping
   // the new user's own scan from ever reporting it.
   if (isCancelled()) return [];
-  await reportPriorProcessKill(userId, new Set(manifests.map((m) => m.recordingId)), isCancelled);
+  // Detached AND bounded: recovery offers are the thing that actually saves a
+  // vet's audio, and must not wait on a telemetry read.
+  reportPriorProcessKillDetached(userId, new Set(manifests.map((m) => m.recordingId)), isCancelled);
 
   // Reconcile created-but-unconfirmed recordings against the server BEFORE
   // selection: if already confirmed-uploaded, mark uploaded so it self-heals and

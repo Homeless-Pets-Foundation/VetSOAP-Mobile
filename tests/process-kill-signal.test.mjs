@@ -114,8 +114,12 @@ test('the kill probe is actually wired into the launch scan', () => {
   assert.match(src, /async function reportPriorProcessKill/);
   // Must run on BOTH early returns: the expo fallback leaves no manifest at all,
   // which is precisely the unrecoverable case.
-  const calls = src.match(/await reportPriorProcessKill\(/g) ?? [];
+  const calls = src.match(/reportPriorProcessKillDetached\(/g) ?? [];
   assert.ok(calls.length >= 3, `expected >=3 call sites, found ${calls.length}`);
+  // Telemetry must never sit on the recovery critical path: a hung read here
+  // would burn the scan watchdog and leave recoverable audio unpublished.
+  assert.match(src, /const KILL_PROBE_TIMEOUT_MS = [\d_]+;/);
+  assert.match(src, /void withPromiseTimeout\(\s*reportPriorProcessKill\(/);
   assert.match(src, /trackEvent\(\{\s*name: 'process_killed_mid_capture'/);
   assert.match(src, /captureMessage\('process_killed_mid_capture'/);
 });

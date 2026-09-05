@@ -81,7 +81,7 @@ test('recovered_count intersects stale durable pointers with actual manifests', 
 test('a failed manifest enumeration reports zero recoverable, not an unknown count', () => {
   const src = read('src/lib/durableAudio/durableRecovery.ts');
   assert.match(src, /const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>\(\)/);
-  assert.equal((src.match(/reportPriorProcessKill\(userId, EMPTY_MANIFEST_IDS, isCancelled\)/g) ?? []).length, 2);
+  assert.equal((src.match(/reportPriorProcessKillDetached\(userId, EMPTY_MANIFEST_IDS, isCancelled\)/g) ?? []).length, 2);
 });
 
 // ---- behavioural: the counting rule itself --------------------------------

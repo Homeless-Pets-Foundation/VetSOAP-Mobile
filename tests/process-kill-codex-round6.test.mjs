@@ -89,8 +89,14 @@ test('abandonment happens at the commit point, and the stall machinery is gone',
   const src = read('src/lib/durableAudio/activeStore.ts');
   // The commit check lives in writeChunkedValue, immediately before the count
   // pointer — the only place an abort cannot resurrect a stale pointer.
-  assert.match(src, /await writeList\(userId, list, chunkCount, \(\) => !isAbandoned\(\)\)/);
-  assert.match(read('src/lib/durableAudio/chunkedStore.ts'), /if \(opts\?\.shouldCommit && !opts\.shouldCommit\(\)\) return false;/);
+  assert.match(src, /await writeList\(userId, list, \(\) => !isAbandoned\(\)\)/);
+  const chunked = read('src/lib/durableAudio/chunkedStore.ts');
+  // Checked between EVERY chunk and again at the publish, not just at the end:
+  // these lists are usually one chunk, so a late chunk write would otherwise
+  // republish fully-valid stale JSON under an unchanged count.
+  assert.ok((chunked.match(/if \(opts\?\.shouldCommit && !opts\.shouldCommit\(\)\) return false;/g) ?? []).length >= 2,
+    'must check inside the chunk loop AND at the publish');
+  assert.match(chunked, /const GEN_RING = 8;/);
   // The stand-off is deliberately removed: it wedged permanently on a call that
   // never settled. Do not reintroduce it.
   assert.doesNotMatch(src, /stalledOp/);

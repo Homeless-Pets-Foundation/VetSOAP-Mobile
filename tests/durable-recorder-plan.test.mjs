@@ -655,7 +655,7 @@ test('startRecordingForSlot resumes existing durable before fresh durable start'
   const branch = rec.slice(iExisting, iFresh);
   assert.match(branch, /isDurableCaptureEnabled\(\)/);
   assert.match(branch, /checkPreRecordFreeSpace\(\)/);
-  assert.match(branch, /raceDurableActiveWrite\(\s*durableActiveStore\.setActive\(existingDurable\.recordingId, slotId/);
+  assert.match(branch, /await racePreStartPointerWrite\(\s*\n\s*durableActiveStore\.setActive\(existingDurable\.recordingId, slotId/);
   assert.match(branch, /recorder\.resumeDurable\(\{ userId: user\.id, slotId, durable: existingDurable \}\)/);
   assert.match(branch, /withDurableOpWatchdog\([\s\S]*'resume'/);
 });
@@ -886,19 +886,22 @@ test('durable offline draft-create uses a deterministic idempotency anchor', asy
 
 test('durable active-pointer write is bounded so a hung Keystore cannot strand start', async () => {
   const rec = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(rec, /function raceDurableActiveWrite/);
-  assert.match(rec, /const DURABLE_ACTIVE_WRITE_TIMEOUT_MS =/);
+  // Codex round 24: the overlapping-write helper is retired — both durable
+  // paths now await the shared, tighter pre-start bound in front of the mic.
+  assert.match(rec, /function racePreStartPointerWrite/);
+  assert.match(rec, /const EXPO_PRESTART_POINTER_TIMEOUT_MS =/);
   // The timeout RESOLVES (setTimeout(resolve, ...)) so start always proceeds.
-  assert.match(rec, /timer = setTimeout\(resolve, DURABLE_ACTIVE_WRITE_TIMEOUT_MS\)/);
+  assert.match(rec, /timer = setTimeout\(resolve, EXPO_PRESTART_POINTER_TIMEOUT_MS\)/);
   // The write is DISPATCHED before native start and JOINED after it, so its
   // Keystore round trips overlap MediaCodec/AudioRecord init instead of gating
   // it (record-start latency on older devices). Still bounded, still awaited
   // before the slot flips to 'recording'.
-  const iPointer = rec.search(/const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(/);
+  // The write now PRECEDES native start rather than overlapping it (round 24):
+  // overlapping made the before-first-frame ordering probabilistic.
+  const iPointer = rec.search(/await racePreStartPointerWrite\(\s*\n\s*durableActiveStore\.setActive\(recordingId, slotId/);
   const iStart = rec.indexOf('withDurableOpWatchdog(', iPointer);
-  const iJoin = rec.indexOf('await activePointerWrite;', iStart);
-  assert.ok(iPointer > 0 && iStart > iPointer && iJoin > iStart, 'pointer write must overlap native start');
-  assert.doesNotMatch(rec, /await raceDurableActiveWrite\(/);
+  assert.ok(iPointer > 0 && iStart > iPointer, 'pointer write must precede native start');
+  assert.doesNotMatch(rec, /raceDurableActiveWrite/);
 });
 
 test('resumeSession counts missing durable audio in the all-missing prune check', async () => {

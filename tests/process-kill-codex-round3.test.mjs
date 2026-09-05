@@ -38,11 +38,13 @@ test('the pre-start bound is far tighter than the overlapping-write bound', () =
   const src = read(RECORD);
   // Time spent here is tap latency, in front of the microphone. The 3000 ms
   // budget is only acceptable for a write that overlaps native start.
+  // Codex round 24 retired the looser overlapping-write budget: BOTH paths now
+  // await the pointer write in front of the mic, so there is one bound and it
+  // has to stay short enough to sit there.
   const pre = /const EXPO_PRESTART_POINTER_TIMEOUT_MS = (\d+);/.exec(src);
-  const durable = /const DURABLE_ACTIVE_WRITE_TIMEOUT_MS = (\d+);/.exec(src);
-  assert.ok(pre && durable);
+  assert.ok(pre);
   assert.ok(Number(pre[1]) <= 500, `pre-start bound ${pre[1]}ms is too long to sit in front of the mic`);
-  assert.ok(Number(pre[1]) < Number(durable[1]));
+  assert.doesNotMatch(src, /DURABLE_ACTIVE_WRITE_TIMEOUT_MS/);
 });
 
 test('the bound RESOLVES, so a degraded Keystore delays the mic but never blocks it', () => {
@@ -53,14 +55,20 @@ test('the bound RESOLVES, so a degraded Keystore delays the mic but never blocks
   assert.match(body, /p\.catch\(\(\) => \{\}\)/, 'a rejected write must not reject the race');
 });
 
-test('the durable pointer write still overlaps native start — separate helper, separate rule', () => {
-  // Reusing raceDurableActiveWrite here would blur the invariant that
-  // record-start-feedback.test.mjs and durable-recorder-plan.test.mjs enforce.
+test('the durable pointer write is awaited BEFORE native start', () => {
+  // Reversed deliberately at Codex round 24. Dispatching it and joining after
+  // the native start made the before-first-frame ordering probabilistic: it
+  // relied on encoder priming beating SecureStore, so a kill in that window
+  // produced frames with no breadcrumb and went uncounted. Safe to await only
+  // because the bound RESOLVES on timeout, and durable capture is off in
+  // production so the fleet's tap latency is unaffected.
   const fn = startHandler(read(RECORD));
-  assert.doesNotMatch(fn, /await raceDurableActiveWrite\(/);
-  // Gated on the initiating user since round 14, still dispatched not awaited.
-  assert.match(fn, /const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(/);
-  assert.match(fn, /await activePointerWrite;/);
+  assert.doesNotMatch(fn, /raceDurableActiveWrite/);
+  assert.doesNotMatch(fn, /const activePointerWrite/);
+  const durableWrites = fn.match(
+    /await racePreStartPointerWrite\(\s*\n\s*durableActiveStore\.setActive\((recordingId|existingDurable\.recordingId)/g,
+  );
+  assert.equal(durableWrites?.length, 2, 'fresh start and resume both await it');
 });
 
 // ---- F2: recovered_count must describe THIS kill --------------------------

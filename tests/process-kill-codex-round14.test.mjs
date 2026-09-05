@@ -26,10 +26,16 @@ const PREFIX = 'captivet_durable_active_u1';
 
 test('both durable pointer writes are gated on the initiating user', () => {
   const src = read('app/(app)/(tabs)/record.tsx');
-  const guarded = src.match(
-    /const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\?\s*raceDurableActiveWrite\(/g,
-  );
-  assert.equal(guarded?.length, 2, 'both the resume and fresh-start writes must be gated');
+  // Round 24 turned these into awaited pre-start writes; the scope gate is what
+  // this fence is about and it survives in `if (scopeUnchanged())` form.
+  // Named by their DURABLE arguments so the expo pre-start write, which is
+  // gated the same way, is not counted here.
+  for (const arg of ['recordingId, slotId', 'existingDurable.recordingId, slotId']) {
+    const re = new RegExp(
+      `if \\(scopeUnchanged\\(\\)\\) \\{\\s*\\n\\s*await racePreStartPointerWrite\\(\\s*\\n\\s*durableActiveStore\\.setActive\\(${arg.replace(/[.]/g, '\\.')}`,
+    );
+    assert.match(src, re, `${arg} write must be scope-gated`);
+  }
   // An unguarded durable write must not creep back in.
   assert.doesNotMatch(
     src,

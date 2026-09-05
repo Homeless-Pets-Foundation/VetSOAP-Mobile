@@ -636,15 +636,14 @@ async function withDurableOpWatchdog<T>(
 // always proceeds. Tradeoff: on timeout the pointer is skipped, losing only the
 // "prior process died mid-capture" launch breadcrumb — crash recovery still
 // reconstructs the recording from the native manifest.
-const DURABLE_ACTIVE_WRITE_TIMEOUT_MS = 3000;
-
 /**
  * Bound for the expo capture pointer, which is awaited BEFORE the mic opens.
  *
- * Deliberately far tighter than DURABLE_ACTIVE_WRITE_TIMEOUT_MS (3000): that
- * one guards a write which overlaps native start and so can afford to wait,
- * whereas this one sits in front of the microphone and any time spent here is
- * tap latency — the exact regression the record-perf work removed.
+ * This sits in front of the microphone, so any time spent here is tap latency —
+ * the exact regression the record-perf work removed. An earlier revision let the
+ * DURABLE write overlap native start on a looser 3 s budget instead; Codex round
+ * 24 showed that made the before-first-frame ordering probabilistic, so both
+ * paths now share this bound.
  *
  * 400 ms is chosen against measurements, not taste. Post-perf-work a setActive
  * on a short list is ~4 Keystore round trips (the 16 blind stale-chunk deletes
@@ -657,27 +656,27 @@ const DURABLE_ACTIVE_WRITE_TIMEOUT_MS = 3000;
 const EXPO_PRESTART_POINTER_TIMEOUT_MS = 400;
 
 /**
- * Same shape as raceDurableActiveWrite but on the pre-start budget.
+ * Bounded pre-start pointer write: awaited BEFORE native start, so the
+ * death-surviving breadcrumb exists before the first frame can be produced.
  *
- * Separate function on purpose: the durable pointer write must NEVER be awaited
- * before native start (fenced by tests/record-start-feedback.test.mjs and
- * tests/durable-recorder-plan.test.mjs), and reusing that helper's name here
- * would blur an invariant those fences exist to protect.
+ * Used by the expo path from the start, and by the durable paths since Codex
+ * round 24. Dispatching the durable write and joining it after native start made
+ * the ordering probabilistic — it relied on encoder priming (>=250 ms) winning a
+ * race against SecureStore — so a process killed in that window produced frames
+ * with no pointer and went uncounted, which is precisely the slow-device case
+ * the kill detector targets.
+ *
+ * The budget is what makes this safe to await: the race RESOLVES on timeout
+ * rather than rejecting, so a degraded Keystore delays the microphone by at most
+ * EXPO_PRESTART_POINTER_TIMEOUT_MS and never strands the handler. Durable
+ * capture is off in production, so extending this to the durable paths cannot
+ * affect the fleet's current tap latency; it applies to the pilot, where the
+ * device A/B must measure it.
  */
 function racePreStartPointerWrite(p: Promise<void>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const bound = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, EXPO_PRESTART_POINTER_TIMEOUT_MS);
-  });
-  return Promise.race([p.catch(() => {}), bound]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
-function raceDurableActiveWrite(p: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const bound = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, DURABLE_ACTIVE_WRITE_TIMEOUT_MS);
   });
   return Promise.race([p.catch(() => {}), bound]).finally(() => {
     if (timer) clearTimeout(timer);
@@ -2171,16 +2170,16 @@ function RecordingSession() {
             // would file user A's pointer in user B's store, giving B a false
             // unclean-exit report and losing A's breadcrumb (shared clinic
             // tablets, rule 13).
-            const activePointerWrite = scopeUnchanged()
-              ? raceDurableActiveWrite(
-                  durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
-                )
-              : Promise.resolve();
+            // Awaited before the native resume — see the fresh-start branch.
+            if (scopeUnchanged()) {
+              await racePreStartPointerWrite(
+                durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
+              );
+            }
             await withDurableOpWatchdog(
               recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable }),
               'resume',
             );
-            await activePointerWrite;
             if (!scopeUnchanged()) {
               // Sign-out landed DURING the native resume. Finalize — never
               // discard: the manifest is how the departed user recovers this
@@ -2245,27 +2244,19 @@ function RecordingSession() {
               }
               const recordingId = newDurableRecordingId();
               startPath = 'durable_start';
-              // Dispatch the active-pointer write (death-surviving breadcrumb)
-              // and the native start together, joining the write after start
-              // returns. Awaited first, its serial Keystore round trips gated
-              // the mic on older devices. It is still bounded (raceDurableActiveWrite
-              // resolves on timeout, so a hung Keystore can't strand the handler
-              // before the watchdog/finally), still joined before the slot flips
-              // to 'recording', and in practice still lands before the first ADTS
-              // frame (encoder priming ≥250 ms). The contract was already
-              // best-effort: on a skipped pointer crash recovery reconstructs the
-              // recording from the native manifest.
-              const activePointerWrite = scopeUnchanged()
-                ? raceDurableActiveWrite(
-                    durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
-                  )
-                : Promise.resolve();
+              // Awaited BEFORE the native start (Codex round 24): the breadcrumb
+              // must exist before the encoder can emit a frame, not merely be
+              // likely to. Bounded at 400 ms and resolving on timeout.
+              if (scopeUnchanged()) {
+                await racePreStartPointerWrite(
+                  durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
+                );
+              }
               freshDurableRecordingId = recordingId;
               await withDurableOpWatchdog(
                 recorder.start({ userId: user.id, slotId, recordingId }),
                 'start',
               );
-              await activePointerWrite;
               if (!scopeUnchanged()) {
                 // Sign-out landed DURING the native start — see the resume
                 // branch. Finalize, never discard.
@@ -2297,11 +2288,9 @@ function RecordingSession() {
                 freshDurableRecordingId = null;
                 void clearCapturePointer(initiatingUserId, recordingId);
                 expoPointerSlotId = slotId;
-                // Named handle, joined below — the same post-start shape as
-                // activePointerWrite/expoPointerWrite. The mic is already open
-                // here, so this cannot gate start latency; the inline
-                // await-the-call form is banned by the perf fences precisely
-                // because before start it would.
+                // The mic is already open here, so this re-key cannot gate
+                // start latency at all — it is the same bounded helper used in
+                // front of the mic, simply on the far side of it.
                 await racePreStartPointerWrite(
                   durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
                 );

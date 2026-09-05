@@ -108,30 +108,30 @@ test('the pager is told when start state changes, or the spinner cannot paint', 
   assert.doesNotMatch(memo, /getLiveStats/, 'getLiveStats must stay out of extraData');
 });
 
-test('the durable active-pointer write overlaps native start instead of gating it', async () => {
+test('the durable active-pointer write precedes native start', async () => {
   const record = await read('app/(app)/(tabs)/record.tsx');
   const fn = startHandler(record);
   // Fresh-start branch.
   const fresh = fn.slice(fn.indexOf('const freshDurable ='));
+  // Round 24: awaited BEFORE native start, not dispatched alongside it.
   const pointer = fresh.search(
-    /const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(\s*\n\s*durableActiveStore\.setActive\(recordingId, slotId/,
+    /await racePreStartPointerWrite\(\s*\n\s*durableActiveStore\.setActive\(recordingId, slotId/,
   );
   const start = fresh.indexOf('withDurableOpWatchdog(\n                recorder.start({ userId: user.id, slotId, recordingId })');
-  const join = fresh.indexOf('await activePointerWrite;');
   const recording = fresh.indexOf("setAudioState(slotId, 'recording')");
-  assert.ok(pointer > 0, 'pointer write not dispatched');
-  assert.ok(start > pointer, 'native start must be dispatched after the pointer write starts');
-  assert.ok(join > start, 'pointer write must be joined after native start');
-  assert.ok(recording > join, 'recording state flips only after both settle');
-  assert.doesNotMatch(fn, /await raceDurableActiveWrite\(/);
+  assert.ok(pointer > 0, 'pointer write missing');
+  assert.ok(start > pointer, 'the breadcrumb must land BEFORE native start (round 24)');
+  assert.ok(recording > start, 'recording state flips only after the start settles');
+  // The overlapping helper is retired; there is no handle left to join.
+  assert.doesNotMatch(fn, /raceDurableActiveWrite/);
+  assert.doesNotMatch(fn, /activePointerWrite/);
   // Resume→Continue branch, same shape.
   const resume = fn.slice(fn.indexOf('const existingDurable ='), fn.indexOf('const freshDurable ='));
   const rPointer = resume.search(
-    /const activePointerWrite = scopeUnchanged\(\)\s*\n\s*\? raceDurableActiveWrite\(\s*\n\s*durableActiveStore\.setActive\(existingDurable\.recordingId, slotId/,
+    /await racePreStartPointerWrite\(\s*\n\s*durableActiveStore\.setActive\(existingDurable\.recordingId, slotId/,
   );
   const rResume = resume.indexOf('recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable })');
-  const rJoin = resume.indexOf('await activePointerWrite;');
-  assert.ok(rPointer > 0 && rResume > rPointer && rJoin > rResume);
+  assert.ok(rPointer > 0 && rResume > rPointer, 'resume breadcrumb must precede the native resume');
   // A failed fresh start clears its pointer; activeStore serializes mutations
   // so the clear lands AFTER the overlapped write, never racing it.
   assert.match(fn, /clearCapturePointer\(initiatingUserId, freshDurableRecordingId\)/);

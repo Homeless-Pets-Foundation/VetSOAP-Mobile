@@ -147,10 +147,14 @@ test('blurred non-record tabs freeze; the record tab and the stack never do', as
     const end = layout.indexOf('<Tabs.Screen', start + 1);
     return layout.slice(start, end === -1 ? undefined : end);
   };
-  for (const name of ['index', 'recordings', 'patient']) {
+  for (const name of ['index', 'patient']) {
     assert.match(screen(name), /freezeOnBlur: true/, `${name} must freeze on blur`);
   }
   assert.doesNotMatch(screen('record'), /freezeOnBlur/);
+  // The recordings tab hosts RecordingAudioPlayer. Freezing it makes the
+  // recordingActivity update unrenderable, so the native player is never
+  // released and playback continues under a live recorder (Codex round 20).
+  assert.doesNotMatch(screen('recordings'), /freezeOnBlur/);
   const screenOptions = layout.slice(layout.indexOf('screenOptions={{'), layout.indexOf('screenListeners='));
   assert.doesNotMatch(screenOptions, /freezeOnBlur/);
 

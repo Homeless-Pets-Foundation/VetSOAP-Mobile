@@ -155,7 +155,15 @@ export default function TabsLayout() {
         name="recordings"
         options={{
           title: 'Recordings',
-          freezeOnBlur: true,
+          // Deliberately NOT frozen on blur, unlike the other non-record tabs.
+          // This tab hosts RecordingAudioPlayer, whose safety contract is a
+          // recordingActivity subscription: when the recorder takes the audio
+          // session, the state update must render the inert branch so
+          // ActiveAudioPlayer UNMOUNTS and releases the native player. A frozen
+          // screen cannot render that update, so playback would keep running
+          // with allowsRecording already flipped off under a live recorder —
+          // the rule-6 failure class that mechanism exists to prevent, on the
+          // path where it would corrupt a clinical recording.
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={FileText} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'View all recordings',
         }}

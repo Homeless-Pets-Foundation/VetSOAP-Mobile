@@ -108,9 +108,20 @@ test('unmounting the Record screen clears a live capture pointer', () => {
   const src = read('app/(app)/(tabs)/record.tsx');
   assert.match(src, /const liveCaptureRef = useRef<\{/);
   const idx = src.indexOf('const liveCaptureRef');
-  const block = src.slice(idx, idx + 1200);
+  // Bounded by the next declaration, not a fixed char count: the teardown grew
+  // when it gained the native finalize (round 17) and a fixed slice silently
+  // dropped the tail assertions.
+  const block = src.slice(idx, src.indexOf('const handlePause = useCallback(', idx));
+  assert.ok(block.length > 0, 'teardown block anchor');
   assert.match(block, /return \(\) => \{/);
   // Explicit user, not ambient scope: sign-out nulls the scope BEFORE unmount.
   assert.match(block, /durableActiveStore\.clearActiveForUser\(userId, slotId\)/);
   assert.match(block, /durableActiveStore\.clearActiveForUser\(userId, durableId\)/);
+  // Round 17: a DURABLE capture is finalized first — clearing the breadcrumb
+  // while the native singleton kept recording stranded the mic and blocked the
+  // next user with BUSY.
+  assert.ok(
+    block.indexOf('durableRecorder.stop(') < block.indexOf('clearActiveForUser(userId, durableId)'),
+    'the native finalize must precede the pointer clear',
+  );
 });

@@ -537,6 +537,13 @@ function newDurableRecordingId(): string {
  * render state — on a silent native hang (locked storage, permission edge) it
  * rejects so callers flip out of the gating state into a recoverable error.
  */
+/**
+ * Bound on the teardown finalize. Rule 24: the durable stop is a native bridge
+ * call that can hang, and this runs in an unmount cleanup that cannot await. On
+ * expiry the capture pointers are deliberately KEPT — see the teardown effect.
+ */
+const DURABLE_TEARDOWN_STOP_TIMEOUT_MS = 5_000;
+
 async function withDurableOpWatchdog<T>(
   p: Promise<T>,
   op: 'start' | 'pause' | 'resume' | 'stop',
@@ -2288,8 +2295,35 @@ function RecordingSession() {
     return () => {
       const { userId, slotId, durableId } = liveCaptureRef.current;
       if (!userId) return;
+      if (durableId) {
+        // A live DURABLE capture must be FINALIZED before its breadcrumb goes.
+        // The Android engine is a process singleton and detach() only flushes —
+        // it deliberately leaves a running capture alive (DurableRecorderEngine
+        // .detach) — so an unstopped one keeps the microphone open, keeps
+        // appending under the DEPARTED user's directory, and makes the next
+        // user's start throw BUSY (`running` guard in start()) on a shared
+        // clinic tablet. expo-audio auto-releases on unmount; the durable
+        // recorder has no such path, so this is it.
+        void (async () => {
+          try {
+            await withPromiseTimeout(
+              durableRecorder.stop({ userId, recordingId: durableId }),
+              DURABLE_TEARDOWN_STOP_TIMEOUT_MS,
+              'durable_teardown_stop',
+            );
+          } catch {
+            // Could not finalize (broken, or the bridge never answered). KEEP
+            // both pointers: one extra "recording interrupted" report is much
+            // better than a microphone still running with nothing on disk
+            // recording who owned it.
+            return;
+          }
+          await durableActiveStore.clearActiveForUser(userId, durableId).catch(() => {});
+          if (slotId) await durableActiveStore.clearActiveForUser(userId, slotId).catch(() => {});
+        })();
+        return;
+      }
       if (slotId) durableActiveStore.clearActiveForUser(userId, slotId).catch(() => {});
-      if (durableId) durableActiveStore.clearActiveForUser(userId, durableId).catch(() => {});
     };
   }, []);
 

@@ -43,6 +43,11 @@ export function setMinVersionFloor(version: unknown): void {
 }
 
 let hydrationPromise: Promise<void> | null = null;
+// Set once the memoized read has settled (either way). Every record-start tap
+// awaits `ensureFloorHydrated()` FIRST, so after the one real read this must be
+// a synchronous fast path — not a fresh Promise.race that arms a 2 s timer per
+// tap and yields through the microtask queue before the haptic can fire.
+let hydrationSettled = false;
 
 /**
  * Hydrate the cached floor from persistent storage at app startup (before any
@@ -62,6 +67,8 @@ export function hydrateMinVersionFloor(): Promise<void> {
         }
       } catch {
         /* best-effort; unknown floor fails open (allow) */
+      } finally {
+        hydrationSettled = true;
       }
     })();
   }
@@ -73,12 +80,22 @@ export function hydrateMinVersionFloor(): Promise<void> {
  * cold start can't allow record-start on a known-below-floor build before the
  * persisted floor has loaded into memory. Kicks off hydration if not started;
  * times out (fail-open) rather than blocking record-start on a hung SecureStore.
+ * Resolves immediately once the read has settled (the common case: every tap
+ * after the first).
  */
 export async function ensureFloorHydrated(timeoutMs = 2000): Promise<void> {
+  if (hydrationSettled) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     hydrateMinVersionFloor(),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-  ]).catch(() => {});
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ])
+    .catch(() => {})
+    .finally(() => {
+      if (timer) clearTimeout(timer);
+    });
 }
 
 export function getMinVersionFloor(): string | null {
@@ -89,6 +106,7 @@ export function getMinVersionFloor(): string | null {
 export function __resetMinVersionFloor(): void {
   cachedFloor = null;
   hydrationPromise = null;
+  hydrationSettled = false;
 }
 
 /** Compare dotted numeric versions. Returns <0, 0, >0. Missing parts = 0. */

@@ -1,6 +1,6 @@
 import { Paths, Directory } from 'expo-file-system';
 import { getInfoAsync } from 'expo-file-system/legacy';
-import { splitAudioBySize } from './ffmpeg';
+import type { splitAudioBySize as SplitAudioBySize } from './ffmpeg';
 import { safeDeleteDirectory, ensureDirectory } from './fileOps';
 import type { AudioSegment } from '../types/multiPatient';
 import { createNativePreflightBatch } from './nativePreflight';
@@ -148,6 +148,13 @@ export async function maybeSplitForUpload(
       const subDir = `${tempDir}seg_${i}/`;
       ensureDirectory(subDir);
 
+      // Lazy — importing ./ffmpeg loads ffmpeg-kit-react-native, which links its
+      // native .so set into the process. record.tsx imports this module for
+      // maybeSplitForUpload/cleanupSplitTempDirs, so a static import here paid
+      // that cost on every Record-tab mount even though splitting is rare. See
+      // the note on the checkAudioSilenceForUpload require in record.tsx.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const splitAudioBySize: typeof SplitAudioBySize = require('./ffmpeg').splitAudioBySize;
       const parts = await splitAudioBySize(
         seg.uri,
         SPLIT_TARGET_BYTES,

@@ -199,9 +199,21 @@ export function initMonitoring(): void {
         }
         return 0.1;
       },
-      // iOS app-hang tracking: watchdog-style detection when the main thread
-      // stops responding. Android ANR detection is enabled through the native
-      // SDK's default integrations but called out here for clarity.
+      // iOS ONLY — watchdog-style detection when the main thread stops
+      // responding. This option does nothing on Android (@platform ios in the
+      // SDK's options.d.ts), and neither does enableWatchdogTerminationTracking.
+      //
+      // Android ANRs come from sentry-android's default AnrIntegration, which we
+      // do not configure here. More importantly, NEITHER covers the failure mode
+      // that actually hurts on our fleet: an OS process kill (low-memory killer,
+      // Samsung One UI app-sleep, battery optimizer) raises no exception and no
+      // native signal, so Sentry records nothing at all. The nearest detector is
+      // the launch-time capture pointer — see reportPriorUncleanExit in
+      // src/lib/durableAudio/durableRecovery.ts, which emits
+      // 'capture_ended_without_cleanup'. That event is a SUPERSET of OS kills (a
+      // reboot or swipe-away is indistinguishable), so treat it as a bound on
+      // them, not a count. Do not delete it expecting Sentry to catch these; it
+      // cannot.
       enableAppHangTracking: true,
       // Default PII off — we set user ID manually via setUser().
       sendDefaultPii: false,
@@ -416,7 +428,9 @@ function phaseTagString(value: PhaseTagValue): string | undefined {
   return String(value).slice(0, 64);
 }
 
-function nowMs(): number {
+/** Monotonic-ish clock shared by measurePhase/completePhaseFrom (exported so a
+ *  caller can stamp a start time synchronously in an event handler). */
+export function nowMs(): number {
   try {
     if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
       return performance.now();
@@ -449,6 +463,90 @@ export interface MeasurePhaseOptions {
   warningThresholdMs?: number | null;
 }
 
+type PhaseOutcome = 'success' | 'error';
+
+function resolveWarningThreshold(options?: MeasurePhaseOptions): number | null {
+  const configuredThreshold = options?.warningThresholdMs;
+  return configuredThreshold === null
+    ? null
+    : typeof configuredThreshold === 'number' && configuredThreshold > 0
+      ? configuredThreshold
+      : 5000;
+}
+
+/** Shared tail of measurePhase / completePhaseFrom: breadcrumb + slow warning. */
+function completePhase(
+  name: string,
+  startedAt: number,
+  tags: Record<string, PhaseTagValue> | undefined,
+  warningThresholdMs: number | null,
+  outcome: PhaseOutcome,
+  leftActiveState: boolean,
+): void {
+  const durationMs = Math.max(0, Math.round(nowMs() - startedAt));
+  const sanitizedTags: Record<string, string> = {
+    phase: name,
+    duration_bucket: bucketDuration(durationMs),
+    outcome,
+  };
+  for (const [key, value] of Object.entries(tags ?? {})) {
+    const safe = phaseTagString(value);
+    if (safe !== undefined) sanitizedTags[key] = safe;
+  }
+
+  // Dev-client visibility: breadcrumbs are dropped until Sentry initialises
+  // (disabled in dev) and only ship attached to a later event, so the on-device
+  // A/B for record-start latency reads this line from `adb logcat -s
+  // ReactNativeJS`. Fixed phase names + a duration, never PHI (rule 12).
+  if (__DEV__) console.log(`[perf] ${name} ${durationMs}ms ${outcome}`);
+
+  breadcrumb('performance', 'phase_complete', {
+    phase: name,
+    duration_ms: durationMs,
+    duration_bucket: sanitizedTags.duration_bucket,
+    outcome,
+    skipped: sanitizedTags.skipped,
+    count: sanitizedTags.count,
+    ...(leftActiveState ? { app_suspended: 'true' } : {}),
+  });
+
+  if (warningThresholdMs !== null && durationMs >= warningThresholdMs && !leftActiveState) {
+    captureMessage(`slow_phase_${name}`, 'warning', {
+      tags: sanitizedTags,
+      extra: { duration_ms: durationMs, warning_threshold_ms: warningThresholdMs },
+    });
+  }
+}
+
+/**
+ * Complete a phase whose start was stamped elsewhere with `nowMs()` — e.g. a
+ * tap timestamp taken synchronously in an event handler and finished several
+ * awaits later. Same breadcrumb/warning shape as measurePhase. Suspension is
+ * only observable at completion here, so phases that can span a background
+ * trip should pass `warningThresholdMs: null`.
+ */
+export function completePhaseFrom(
+  name: string,
+  startedAtMs: number,
+  tags?: Record<string, PhaseTagValue>,
+  options?: MeasurePhaseOptions & { outcome?: PhaseOutcome },
+): void {
+  let leftActiveState = false;
+  try {
+    leftActiveState = AppState.currentState != null && AppState.currentState !== 'active';
+  } catch {
+    // best-effort
+  }
+  completePhase(
+    name,
+    startedAtMs,
+    tags,
+    resolveWarningThreshold(options),
+    options?.outcome ?? 'success',
+    leftActiveState,
+  );
+}
+
 export function measurePhase<T>(
   name: string,
   tags: Record<string, PhaseTagValue> | undefined,
@@ -468,13 +566,7 @@ export function measurePhase<T>(
   options?: MeasurePhaseOptions,
 ): T | Promise<T> {
   const startedAt = nowMs();
-  const configuredThreshold = options?.warningThresholdMs;
-  const warningThresholdMs =
-    configuredThreshold === null
-      ? null
-      : typeof configuredThreshold === 'number' && configuredThreshold > 0
-        ? configuredThreshold
-        : 5000;
+  const warningThresholdMs = resolveWarningThreshold(options);
   // performance.now() keeps counting while Android suspends the app, so a
   // phase awaited across a suspension reports minutes of wall time (observed:
   // a 614s registerDevice). Track whether the app left 'active' during the
@@ -492,40 +584,14 @@ export function measurePhase<T>(
   } catch {
     // Guard is best-effort; measurement must never fail because of it.
   }
-  const finish = (outcome: 'success' | 'error') => {
+  const finish = (outcome: PhaseOutcome) => {
     try {
       appStateSubscription?.remove();
     } catch {
       // swallow
     }
     appStateSubscription = null;
-    const durationMs = Math.max(0, Math.round(nowMs() - startedAt));
-    const sanitizedTags: Record<string, string> = {
-      phase: name,
-      duration_bucket: bucketDuration(durationMs),
-      outcome,
-    };
-    for (const [key, value] of Object.entries(tags ?? {})) {
-      const safe = phaseTagString(value);
-      if (safe !== undefined) sanitizedTags[key] = safe;
-    }
-
-    breadcrumb('performance', 'phase_complete', {
-      phase: name,
-      duration_ms: durationMs,
-      duration_bucket: sanitizedTags.duration_bucket,
-      outcome,
-      skipped: sanitizedTags.skipped,
-      count: sanitizedTags.count,
-      ...(leftActiveState ? { app_suspended: 'true' } : {}),
-    });
-
-    if (warningThresholdMs !== null && durationMs >= warningThresholdMs && !leftActiveState) {
-      captureMessage(`slow_phase_${name}`, 'warning', {
-        tags: sanitizedTags,
-        extra: { duration_ms: durationMs, warning_threshold_ms: warningThresholdMs },
-      });
-    }
+    completePhase(name, startedAt, tags, warningThresholdMs, outcome, leftActiveState);
   };
 
   try {

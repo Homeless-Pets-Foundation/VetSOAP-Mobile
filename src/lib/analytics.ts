@@ -130,7 +130,35 @@ export type AnalyticsEvent =
   | { name: 'durable_writer_backpressure'; props: { queue_ms?: number } }
   | { name: 'durable_capture_drop'; props: { dropped_frames?: number } }
   | { name: 'durable_process_recovered'; props: { recovered_count: number } }
+  /**
+   * A prior process ended while a capture was live, without running cleanup.
+   *
+   * Named for what the evidence proves, not for the cause we suspect. An OS kill
+   * (LMK, battery optimizer, app-sleep) is the motivating case and produces no
+   * crash event anywhere — but a reboot, a swipe from Recents, a force-stop and
+   * a native crash leave an identical pointer, and nothing available to the
+   * client distinguishes them. Calling every one of these a kill would make the
+   * metric unusable for judging whether the memory work actually reduced kills.
+   *
+   * `expo_count` captures are UNRECOVERABLE: MediaRecorder writes the MP4 moov
+   * atom only on stop(), so an interrupted process leaves an undecodable file.
+   * `durable_count` captures lose only the tail since the last ~2s commit.
+   */
+  | {
+      name: 'capture_ended_without_cleanup';
+      props: { durable_count: number; expo_count: number; recovered_count: number };
+    }
   | { name: 'durable_battery_opt_exemption'; props: { granted: boolean } }
+  /**
+   * The user acted on the battery-optimization nudge. `opened` means Android
+   * accepted the intent — NOT that an exemption was granted: the flow only
+   * shows the settings list and the user can immediately press Back. There is
+   * no reliable way to read the exemption state back, so this event must never
+   * be conflated with durable_battery_opt_exemption, which claims a grant.
+   */
+  | { name: 'battery_opt_settings_opened'; props: { opened: boolean } }
+  /** The nudge was skipped because a capture was live. */
+  | { name: 'battery_opt_prompt_deferred'; props: Record<string, never> }
   | { name: 'durable_recovery_available'; props: { count: number } }
   | { name: 'durable_recovery_restored'; props: { mode: 'resume' | 'review' | 'stash' } }
   | { name: 'durable_recovery_discarded'; props: Record<string, never> }

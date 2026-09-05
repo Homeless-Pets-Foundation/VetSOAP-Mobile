@@ -23,7 +23,7 @@ import { safeDeleteFile, safeDeleteDirectory, fileExists, writeFilePrefix, ensur
 import { getInfoAsync } from 'expo-file-system/legacy';
 import { Paths } from 'expo-file-system';
 import { maybeSplitForUpload, cleanupSplitTempDirs } from '../../../src/lib/oversizedSplit';
-import { checkAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
+import type { checkAudioSilenceForUpload as CheckAudioSilenceForUpload } from '../../../src/lib/ffmpeg';
 import {
   DISCARD_SESSION_COPY,
   MULTI_PATIENT_RECORD_FIRST_COPY,
@@ -39,7 +39,7 @@ import {
   METADATA_DIVERGENCE_COPY,
 } from '../../../src/constants/strings';
 import { Toast } from '../../../src/components/Toast';
-import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
+import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { rememberOrphanDraftId } from '../../../src/lib/orphanDraftRetry';
 import { stashStorage, MAX_STASHES } from '../../../src/lib/stashStorage';
@@ -55,6 +55,8 @@ import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
 import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
+import { priorUncleanExitDetected } from '../../../src/lib/durableAudio/durableRecovery';
+import { maybePromptBatteryOptimization } from '../../../src/lib/batteryOptimization';
 import { durableTombstone } from '../../../src/lib/durableAudio/tombstone';
 import { durableReconcileHold } from '../../../src/lib/durableAudio/reconcileHold';
 import { withPromiseTimeout } from '../../../src/lib/promiseTimeout';
@@ -70,6 +72,7 @@ import {
   normalizeUploadIntentId,
 } from '../../../src/lib/uploadIntent';
 import { useAudioRecorder } from '../../../src/hooks/useAudioRecorder';
+import { useConnectivity } from '../../../src/hooks/useConnectivity';
 import { useAuthUser } from '../../../src/hooks/useAuth';
 import { useMultiPatientSession } from '../../../src/hooks/useMultiPatientSession';
 import { useStashedSessions } from '../../../src/hooks/useStashedSessions';
@@ -104,7 +107,7 @@ import {
   type AutoStashReason,
   type SubmitDiagnosticsProps,
 } from '../../../src/lib/analytics';
-import { breadcrumb, captureException, captureMessage, measurePhase } from '../../../src/lib/monitoring';
+import { breadcrumb, captureException, captureMessage, completePhaseFrom, measurePhase, nowMs } from '../../../src/lib/monitoring';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
@@ -470,6 +473,15 @@ async function checkSilentAudio(slot: PatientSlot): Promise<{
     );
     for (let index = 0; index < slot.segments.length; index++) {
       const segment = slot.segments[index];
+      // Lazy (rule 19). src/lib/ffmpeg imports ffmpeg-kit-react-native, whose
+      // module load links the FFmpeg native libraries into the process. As a
+      // static import that happened on every Record-tab mount — on the low-end
+      // Galaxy Tab A7 Lite fleet that is heap pressure paid for a check that
+      // only runs at submit time. The sibling static import via oversizedSplit
+      // is lazied for the same reason; make BOTH lazy or neither helps.
+      const checkAudioSilenceForUpload: typeof CheckAudioSilenceForUpload =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require('../../../src/lib/ffmpeg').checkAudioSilenceForUpload;
       const result = await checkAudioSilenceForUpload(
         segment.uri,
         {},
@@ -525,6 +537,76 @@ function newDurableRecordingId(): string {
  * render state — on a silent native hang (locked storage, permission edge) it
  * rejects so callers flip out of the gating state into a recoverable error.
  */
+/**
+ * Bound on the teardown finalize. Rule 24: the durable stop is a native bridge
+ * call that can hang, and this runs in an unmount cleanup that cannot await. On
+ * expiry the capture pointers are deliberately KEPT — see the teardown effect.
+ */
+const DURABLE_TEARDOWN_STOP_TIMEOUT_MS = 5_000;
+
+/**
+ * Finalize a capture whose initiating user signed out while the native call was
+ * still in flight, reporting whether the finalize is CONFIRMED.
+ *
+ * Only a confirmed finalize may clear the capture pointer. `recorder.stop()`
+ * swallows native failures by contract (rule 6), so clearing on its resolution
+ * would erase the breadcrumb in exactly the case where finalization actually
+ * failed and the singleton may still hold the microphone. When durable never
+ * won the start there is no durable capture to finalize, so the pointer
+ * describes nothing and is safe to drop.
+ */
+async function finalizeDepartedUserCapture(
+  userId: string,
+  recordingId: string,
+  isDurable: boolean,
+): Promise<boolean> {
+  if (!isDurable) return true;
+  try {
+    await withPromiseTimeout(
+      durableRecorder.stop({ userId, recordingId }),
+      DURABLE_TEARDOWN_STOP_TIMEOUT_MS,
+      'durable_departed_user_stop',
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Clear a capture pointer for the user who INITIATED the work, not whoever the
+ * store happens to be bound to when the clear finally runs.
+ *
+ * Every call site is downstream of an await, and AuthProvider rebinds
+ * durableActiveStore to null (then to the next user) BEFORE the React state
+ * change that unmounts the Record screen. An ambient clear therefore silently
+ * no-ops across a sign-out, stranding the pointer so user A gets a phantom
+ * "recording interrupted" report — and on a shared tablet, so can whoever signs
+ * in next. Codex rounds 14, 17, 18, 19, 21 and 23 were each this one bug at a
+ * different exit, so record.tsx now clears through this helper and nothing
+ * else — a fence allows exactly one direct ambient clear in the file, the
+ * fallback below.
+ *
+ * The `user` each caller reads is its own closure's value — the user who
+ * initiated that work — not the current global, which is exactly the capture we
+ * want.
+ *
+ * Module-level on purpose. As a useCallback it had to precede every handler
+ * listing it as a dependency, because dep arrays evaluate at the useCallback
+ * call — declared after, it is a TDZ throw on every render. A hoisted function
+ * declaration cannot have that problem, and it needs no component state.
+ *
+ * Falls back to the ambient clear only when no initiator is known, which is
+ * strictly better than skipping the clear entirely.
+ */
+async function clearCapturePointer(initiatorId: string | null, id: string | null): Promise<void> {
+  if (!id) return;
+  const done = initiatorId
+    ? durableActiveStore.clearActiveForUser(initiatorId, id)
+    : durableActiveStore.clearActive(id);
+  return done.catch(() => {});
+}
+
 async function withDurableOpWatchdog<T>(
   p: Promise<T>,
   op: 'start' | 'pause' | 'resume' | 'stop',
@@ -554,12 +636,47 @@ async function withDurableOpWatchdog<T>(
 // always proceeds. Tradeoff: on timeout the pointer is skipped, losing only the
 // "prior process died mid-capture" launch breadcrumb — crash recovery still
 // reconstructs the recording from the native manifest.
-const DURABLE_ACTIVE_WRITE_TIMEOUT_MS = 3000;
+/**
+ * Bound for the expo capture pointer, which is awaited BEFORE the mic opens.
+ *
+ * This sits in front of the microphone, so any time spent here is tap latency —
+ * the exact regression the record-perf work removed. An earlier revision let the
+ * DURABLE write overlap native start on a looser 3 s budget instead; Codex round
+ * 24 showed that made the before-first-frame ordering probabilistic, so both
+ * paths now share this bound.
+ *
+ * 400 ms is chosen against measurements, not taste. Post-perf-work a setActive
+ * on a short list is ~4 Keystore round trips (the 16 blind stale-chunk deletes
+ * are gone, threaded through prevChunkCount), while Sentry measured
+ * recorder_audio_prepare at 1763 ms on the SM-T220 fleet. So the write
+ * essentially always wins the race anyway; this bound only caps the pathological
+ * degraded-Keystore case, where we open the mic regardless rather than make the
+ * vet wait. Capturing audio matters more than being able to attribute its loss.
+ */
+const EXPO_PRESTART_POINTER_TIMEOUT_MS = 400;
 
-function raceDurableActiveWrite(p: Promise<void>): Promise<void> {
+/**
+ * Bounded pre-start pointer write: awaited BEFORE native start, so the
+ * death-surviving breadcrumb exists before the first frame can be produced.
+ *
+ * Used by the expo path from the start, and by the durable paths since Codex
+ * round 24. Dispatching the durable write and joining it after native start made
+ * the ordering probabilistic — it relied on encoder priming (>=250 ms) winning a
+ * race against SecureStore — so a process killed in that window produced frames
+ * with no pointer and went uncounted, which is precisely the slow-device case
+ * the kill detector targets.
+ *
+ * The budget is what makes this safe to await: the race RESOLVES on timeout
+ * rather than rejecting, so a degraded Keystore delays the microphone by at most
+ * EXPO_PRESTART_POINTER_TIMEOUT_MS and never strands the handler. Durable
+ * capture is off in production, so extending this to the durable paths cannot
+ * affect the fleet's current tap latency; it applies to the pilot, where the
+ * device A/B must measure it.
+ */
+function racePreStartPointerWrite(p: Promise<void>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const bound = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, DURABLE_ACTIVE_WRITE_TIMEOUT_MS);
+    timer = setTimeout(resolve, EXPO_PRESTART_POINTER_TIMEOUT_MS);
   });
   return Promise.race([p.catch(() => {}), bound]).finally(() => {
     if (timer) clearTimeout(timer);
@@ -605,18 +722,90 @@ function slotSubmitDiagnostics(
   };
 }
 
+/**
+ * Tail of the serialized startup-sweep chain.
+ *
+ * The mount sweeps each walk every local draft, and one draft costs
+ * `1 + chunkCount` AndroidKeyStore round-trips. Run concurrently on the
+ * low-end Galaxy Tab A7 Lite fleet they starved the JS thread — Sentry showed
+ * slow_phase_fetchUser at 14 456 ms against a 10 000 ms threshold and
+ * init_watchdog_fired with 734 MB still free, i.e. contention, not memory.
+ *
+ * Serializing also FIXES an ordering bug: the 30-day eviction used to read its
+ * draft list concurrently with the orphan sweep, so it classified rows that
+ * cleanup was in the middle of deleting. Chained, eviction sees post-cleanup
+ * state.
+ *
+ * Deliberately module-scoped, not a ref: the chain must outlive a remount of
+ * the Record tab, and a rejected link must not poison the tail.
+ */
+let startupSweepTail: Promise<void> = Promise.resolve();
+
+/**
+ * Per-job ceiling for the serialized startup sweeps. Generous — these legitimately
+ * walk every local draft over the Keystore on a slow tablet (Sentry has seen
+ * local_draft_list past 5 s) — but finite, so one hung native read cannot
+ * permanently strand the queue.
+ */
+const STARTUP_SWEEP_TIMEOUT_MS = 60_000;
+
 function scheduleNonUrgentWork(
   label: string,
-  work: () => Promise<void>,
+  // `isExpired()` goes true once this job has passed its deadline and the queue
+  // has moved on. Serialized sweeps MUST fold it into their own scope predicate:
+  // withPromiseTimeout only settles the wrapper, so without it a slow orphan
+  // cleanup keeps running concurrently with the eviction pass that overtook it —
+  // reintroducing the overlapping Keystore load and the mid-deletion
+  // classification ordering that serializing them was added to prevent.
+  work: (isExpired: () => boolean) => Promise<void>,
   fallbackMs = 2_500,
-  warningThresholdMs: number | null = 10_000
+  warningThresholdMs: number | null = 10_000,
+  // Queue behind the other serialized sweeps instead of racing them. Only for
+  // the heavy mount-once sweeps — never for work that drives visible UI state,
+  // which must not sit behind a multi-second eviction pass.
+  serial = false
 ): () => void {
   let cancelled = false;
   let started = false;
   const run = () => {
     if (cancelled || started) return;
     started = true;
-    measurePhase(label, undefined, work, { warningThresholdMs }).catch(() => {});
+    let expired = false;
+    const isExpired = (): boolean => expired;
+    if (!serial) {
+      measurePhase(label, undefined, () => work(isExpired), { warningThresholdMs }).catch(() => {});
+      return;
+    }
+    startupSweepTail = startupSweepTail
+      // Re-check after the wait: the effect may have been torn down (unmount,
+      // user switch) while we were queued, and every sweep's own isScopeValid()
+      // guard also re-runs inside work().
+      .then(() =>
+        cancelled
+          ? undefined
+          : // Rule 24: these sweeps are made of SecureStore reads, which hang
+            // silently on a degraded Keystore. A never-settling job would leave
+            // this module-scoped tail pending forever, stranding every later
+            // orphan cleanup and eviction for the rest of the process — the
+            // rejection handler below only recovers from a SETTLED rejection.
+            // The deadline settles the queue so the next job still runs; the
+            // hung work is left to finish or not on its own, and its own
+            // isScopeValid() guard stops it acting on stale scope.
+            withPromiseTimeout(
+              measurePhase(label, undefined, () => work(isExpired), { warningThresholdMs }),
+              STARTUP_SWEEP_TIMEOUT_MS,
+              `startup_sweep_timeout:${label}`,
+            ),
+      )
+      .then(
+        () => {},
+        () => {
+          // Timed out (or failed). Mark it expired so the still-running work
+          // stops at its next scope check instead of racing the job that is
+          // about to start. A failed sweep must not break the chain either.
+          expired = true;
+        },
+      );
   };
   const task = InteractionManager.runAfterInteractions(() => {
     run();
@@ -836,6 +1025,17 @@ function RecordingSession() {
   const [submitIntentCount, setSubmitIntentCount] = useState(0);
   const [uploadRestartCount, setUploadRestartCount] = useState(0);
   const [finishingDraftSlotId, setFinishingDraftSlotId] = useState<string | null>(null);
+  // Slot whose Start tap has been acknowledged and whose start chain is in
+  // flight. Set synchronously on the tap frame (before any await) and cleared
+  // in startRecordingForSlot's finally, so the card's button reacts at once
+  // instead of looking idle until the hook's own isStarting flips.
+  const [startingSlotId, setStartingSlotId] = useState<string | null>(null);
+  // Render-visible mirror of pendingStartSlotQueueRef (stop-then-start queue):
+  // a slot waiting for the previous recording to stop shows the same spinner
+  // as a slot whose start chain is running. Cleared the moment the queue pops
+  // it — startRecordingForSlot then takes over via startingSlotId — so a
+  // popped start that early-returns can never strand a spinner.
+  const [queuedStartSlotIds, setQueuedStartSlotIds] = useState<string[]>([]);
   const [hasPendingDrafts, setHasPendingDrafts] = useState(false);
   // Set when an audio session interruption (incoming call, Siri, etc.) tore
   // down the recording mid-stream. The hook captures the partial segment and
@@ -854,16 +1054,18 @@ function RecordingSession() {
   // talking while nothing records.
   const [pauseToast, setPauseToast] = useState<string | null>(null);
   const hidePauseToast = useCallback(() => setPauseToast(null), []);
-  const netInfo = useNetInfo();
-  const isConnected = netInfo.isConnected;
-  // uploadSlot's dep array is pinned and excludes netInfo, so a closure over
-  // `netInfo` reports the transport as it was when the callback was created —
-  // which for a multi-minute upload is not the transport it died on. Mirror it
-  // into a ref (same pattern as sessionRef above) so the catch block can read
-  // the CURRENT value. A ref, not `await NetInfo.fetch()`: the catch must
-  // neither throw nor hang.
-  const netInfoRef = useRef(netInfo);
-  netInfoRef.current = netInfo;
+  // isConnected-only subscription: `useNetInfo()` re-rendered this 7,000-line
+  // screen (and every mounted slot card) on every connection-detail change.
+  // uploadSlot's dep array is pinned and excludes the network state, so a
+  // closure over it reports the transport as it was when the callback was
+  // created — which for a multi-minute upload is not the transport it died on.
+  // The hook mirrors the full state into this ref (same pattern as sessionRef
+  // above) so the catch block can read the CURRENT value. A ref, not
+  // `await NetInfo.fetch()`: the catch must neither throw nor hang. Declared
+  // HERE (not returned by the hook) so exhaustive-deps keeps treating it as a
+  // stable ref in the pinned callbacks below.
+  const netInfoRef = useRef<NetInfoState | null>(null);
+  const isConnected = useConnectivity(netInfoRef);
   // Derives a coarse connection descriptor for telemetry. Don't leak SSIDs or
   // carrier names — only the type bucket.
   const networkStateForTelemetry = (): NetworkState =>
@@ -885,11 +1087,13 @@ function RecordingSession() {
   const enqueuePendingStart = useCallback((slotId: string) => {
     const q = pendingStartSlotQueueRef.current;
     if (!q.includes(slotId)) q.push(slotId);
+    setQueuedStartSlotIds((ids) => (ids.includes(slotId) ? ids : [...ids, slotId]));
   }, []);
   const removePendingStart = useCallback((slotId: string) => {
     const q = pendingStartSlotQueueRef.current;
     const idx = q.indexOf(slotId);
     if (idx !== -1) q.splice(idx, 1);
+    setQueuedStartSlotIds((ids) => ids.filter((id) => id !== slotId));
   }, []);
   // Track pending stash for "stop recorder then stash" flow
   const pendingStashRef = useRef(false);
@@ -1174,6 +1378,20 @@ function RecordingSession() {
     if (skipNextAudioCaptureRef.current && !audioCaptureDoneRef.current) {
       audioCaptureDoneRef.current = true;
       skipNextAudioCaptureRef.current = false;
+      // This is the single choke point for every DELIBERATE discard — both
+      // discardCurrentSession and the active-slot Remove flow set the skip flag,
+      // stop the recorder and land here, bypassing the normal capture-done
+      // cleanup below. The capture pointer must go with them: a user who chose
+      // to throw a recording away must never be told on the next launch that
+      // Android killed the app and lost their audio.
+      //
+      // Both ids are cleared because a slot recording durably has no
+      // `slot.durable` yet (it is set in the finish branch), so the discard
+      // loop's own cleanup cannot reach a still-live durable capture.
+      const discardedSlotId = session.recorderBoundToSlotId;
+      const discardedDurableId = recorder.activeDurableRecordingId;
+      void clearCapturePointer(user?.id ?? null, discardedSlotId);
+      void clearCapturePointer(user?.id ?? null, discardedDurableId);
       unbindRecorder();
       recorder.reset();
       return () => { if (timerId) clearTimeout(timerId); };
@@ -1199,7 +1417,7 @@ function RecordingSession() {
         pendingDraftMinSegmentCountRef.current = 0;
         pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
         // Clean finish — clear the "was recording at exit" active pointer.
-        durableActiveStore.clearActive(snap.recordingId).catch(() => {});
+        void clearCapturePointer(user?.id ?? null, snap.recordingId);
       } else {
         unbindRecorder();
       }
@@ -1208,6 +1426,7 @@ function RecordingSession() {
         recorder.resetWithoutDelete();
       } else if (pendingStartSlotQueueRef.current.length > 0) {
         const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
+        setQueuedStartSlotIds((ids) => ids.filter((id) => id !== nextSlotId));
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -1238,6 +1457,8 @@ function RecordingSession() {
       if (persistedSlot) {
         pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
       }
+      // Segment captured and finalized — this was a clean exit for the expo path.
+      void clearCapturePointer(user?.id ?? null, slotId);
       recordingSegmentStartedAtMsRef.current = null;
 
       // If there's a pending stash, just reset the recorder here.
@@ -1250,6 +1471,7 @@ function RecordingSession() {
         // Pop the head of the queue. Subsequent queued slots will be drained
         // on later stop cycles — one stop, one start.
         const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
+        setQueuedStartSlotIds((ids) => ids.filter((id) => id !== nextSlotId));
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -1263,6 +1485,9 @@ function RecordingSession() {
       const boundSlotId = session.recorderBoundToSlotId;
       const boundSlot = session.slots.find((s) => s.id === boundSlotId);
       unbindRecorder();
+      // Native capture failed outright. The process is alive and handled it, so
+      // this is not an OS kill — drop the pointer or next launch misreports it.
+      void clearCapturePointer(user?.id ?? null, boundSlotId);
       recordingSegmentStartedAtMsRef.current = null;
 
       if (boundSlot) {
@@ -1280,6 +1505,7 @@ function RecordingSession() {
         );
       } else if (pendingStartSlotQueueRef.current.length > 0) {
         const nextSlotId = pendingStartSlotQueueRef.current.shift()!;
+        setQueuedStartSlotIds((ids) => ids.filter((id) => id !== nextSlotId));
         recorder.resetWithoutDelete();
         timerId = setTimeout(() => {
           startRecordingRef.current(nextSlotId);
@@ -1381,7 +1607,7 @@ function RecordingSession() {
         pendingDraftSlotIdRef.current = slotId;
         pendingDraftMinSegmentCountRef.current = 0;
         pendingDraftRecoveryReasonRef.current.set(slotId, 'draft_finish');
-        durableActiveStore.clearActive(snap.recordingId).catch(() => {});
+        void clearCapturePointer(user?.id ?? null, snap.recordingId);
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       breadcrumb('record', 'durable_interruption_finished', { slot_id: slotId });
@@ -1399,6 +1625,13 @@ function RecordingSession() {
       audioCaptureDoneRef.current = true;
       saveAudio(slotId, recorder.audioUri, recorder.duration, recorder.maxMetering);
       dispatch({ type: 'CONTINUE_RECORDING', slotId });
+      // The segment is finalized on disk and the interruption was HANDLED, so
+      // this is a clean exit for the pointer — mirroring the durable branch
+      // above, which already clears snap.recordingId. Without it, a user who
+      // submits the partial segment instead of resuming gets a false
+      // capture_ended_without_cleanup on their next launch. Resuming simply writes
+      // the pointer again under the same slot key.
+      void clearCapturePointer(user?.id ?? null, slotId);
     }
     setInterruptionPendingResume({ slotId });
     interruptionPendingResumeRef.current = { slotId };
@@ -1579,6 +1812,7 @@ function RecordingSession() {
     const durableUserId = user?.id;
 
     pendingStartSlotQueueRef.current = [];
+    setQueuedStartSlotIds([]);
     pendingStashRef.current = false;
     // Cancel every slot's scheduled server-draft debounce timer. Without this
     // cleanup, a timer queued before the user tapped "Load Draft" / "Discard"
@@ -1596,6 +1830,14 @@ function RecordingSession() {
 
     if (shouldResetRecorder) {
       skipNextAudioCaptureRef.current = true;
+      // Captured BEFORE stop/unbind/reset erase them. The stopped-state effect's
+      // skip branch cannot be relied on here: unbindRecorder() and
+      // recorder.reset() run synchronously below, so by the time that effect
+      // renders, recorderBoundToSlotId and activeDurableRecordingId are already
+      // null and it would clear nothing. A deliberate discard must never be
+      // reported as an OS kill on the next launch.
+      const discardedSlotId = session.recorderBoundToSlotId;
+      const discardedDurableId = recorder.activeDurableRecordingId;
       if (recorder.state === 'recording' || recorder.state === 'paused') {
         try {
           await recorder.stop();
@@ -1603,6 +1845,8 @@ function RecordingSession() {
           // stop() already performs internal cleanup
         }
       }
+      void clearCapturePointer(user?.id ?? null, discardedSlotId);
+      void clearCapturePointer(user?.id ?? null, discardedDurableId);
       unbindRecorder();
       recorder.reset();
     }
@@ -1640,7 +1884,7 @@ function RecordingSession() {
               .discard({ userId: durableUserId, recordingId: slot.durable.recordingId })
               .catch(() => {});
           }
-          durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+          void clearCapturePointer(durableUserId ?? null, slot.durable.recordingId);
           if (slot.durable.recoveredAudioUri) safeDeleteFile(slot.durable.recoveredAudioUri);
         }
         deleteSlotDraft(slot);
@@ -1827,12 +2071,35 @@ function RecordingSession() {
     [isSlotUploadActive, session.recorderBoundToSlotId, session.slots, recorder, user?.role]
   );
 
+
   const startRecordingForSlot = useCallback(
     (slotId: string) => {
       if (startInFlightRef.current) return;
       startInFlightRef.current = true;
+      // Acknowledge the tap on THIS frame, before any await. The haptic and
+      // the starting state used to sit behind the floor-hydration await, so on
+      // an older tablet the button looked idle — and re-tappable, with the
+      // second tap silently swallowed by startInFlightRef — for a visible beat.
+      const tappedAtMs = nowMs();
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+      setStartingSlotId(slotId);
+      // The user who tapped Start. Several awaits (floor hydration, free-space
+      // checks, native start) run before the pointer is written, and
+      // durableActiveStore can be rebound by a sign-out in that window —
+      // setActive captures scope when INVOKED, which is too late here. Verified
+      // immediately before each write so A's slot can never land in B's store.
+      const initiatingUserId = user?.id ?? null;
+      const scopeUnchanged = (): boolean =>
+        initiatingUserId !== null && durableActiveStore.getUserId() === initiatingUserId;
       (async () => {
         let resumeDurableRecordingId: string | null = null;
+        // Fresh durable start whose pointer write was dispatched alongside the
+        // native start, so a failed start can clear it again.
+        let freshDurableRecordingId: string | null = null;
+        // Expo capture pointer, written before recorder.start(). Cleared in the
+        // catch below for the same reason as the durable ids.
+        let expoPointerSlotId: string | null = null;
+        let startPath: 'durable_start' | 'durable_resume' | 'expo' = 'expo';
         try {
           // Server-enforced min-version floor: block STARTING new capture (fresh or
           // Resume→Continue — every mic start funnels through here) on a build known
@@ -1851,7 +2118,6 @@ function RecordingSession() {
             );
             return;
           }
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
           bindRecorder(slotId);
           const startSlot = sessionRef.current.slots.find((s) => s.id === slotId);
           const existingDurable = startSlot?.durable ?? null;
@@ -1882,14 +2148,71 @@ function RecordingSession() {
                 'Your device is low on free space. The recording may stop early if space runs out — free up space if you can.',
               );
             }
+            // The NATIVE start must be gated too, not just the pointer write.
+            // The engine is a process singleton, so a capture that begins for a
+            // user who has since signed out holds the microphone under the
+            // DEPARTED user's directory and rejects the next user's start with
+            // BUSY. The unmount teardown cannot rescue it: activeDurableRecordingId
+            // is only populated once native start RESOLVES, so a start still in
+            // flight is invisible there.
+            if (!scopeUnchanged()) {
+              unbindRecorder();
+              setAudioState(slotId, 'stopped');
+              return;
+            }
             resumeDurableRecordingId = existingDurable.recordingId;
-            await raceDurableActiveWrite(
-              durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
-            );
+            startPath = 'durable_resume';
+            // Dispatched before, joined after the native resume — see the
+            // fresh-start branch below for why.
+            // Same scope gate as the expo writes below. setActive binds the
+            // store's CURRENT user when invoked, and floor hydration plus the
+            // free-space checks above are awaited — so a sign-out in that window
+            // would file user A's pointer in user B's store, giving B a false
+            // unclean-exit report and losing A's breadcrumb (shared clinic
+            // tablets, rule 13).
+            // Awaited before the native resume — see the fresh-start branch.
+            if (scopeUnchanged()) {
+              await racePreStartPointerWrite(
+                durableActiveStore.setActive(existingDurable.recordingId, slotId, new Date().toISOString()),
+              );
+            }
+            // Rechecked after the await — see the fresh-start branch, including
+            // why the possibly-published pointer has to be cleared here.
+            if (!scopeUnchanged()) {
+              await clearCapturePointer(initiatingUserId, existingDurable.recordingId);
+              unbindRecorder();
+              setAudioState(slotId, 'stopped');
+              return;
+            }
             await withDurableOpWatchdog(
               recorder.resumeDurable({ userId: user.id, slotId, durable: existingDurable }),
               'resume',
             );
+            if (!scopeUnchanged()) {
+              // Sign-out landed DURING the native resume. Finalize — never
+              // discard: the manifest is how the departed user recovers this
+              // audio (rule 8) — and release the singleton for the next user.
+              const confirmed = initiatingUserId
+                ? await finalizeDepartedUserCapture(
+                    initiatingUserId,
+                    existingDurable.recordingId,
+                    recorder.getSelectedBackend() === 'durable',
+                  )
+                : false;
+              // Also stops the expo backend and settles hook state; a second
+              // stop of an already-finalized durable capture is swallowed.
+              await recorder.stop().catch(() => {});
+              if (confirmed && initiatingUserId) {
+                // Deliberately finalized, so the pointer would report a
+                // phantom interruption on the next launch. Cleared by EXPLICIT
+                // user: the ambient store scope is already null here.
+                await durableActiveStore
+                  .clearActiveForUser(initiatingUserId, existingDurable.recordingId)
+                  .catch(() => {});
+              }
+              unbindRecorder();
+              return;
+            }
           } else {
             // Durable capture only for a FRESH recording (no durable/segments yet)
             // when the server-driven flag is on and the native module is available.
@@ -1920,18 +2243,139 @@ function RecordingSession() {
                   'Your device is low on free space. The recording may stop early if space runs out — free up space if you can.',
                 );
               }
+              // Same gate as the resume branch above: the native start itself
+              // must not run for a departed user, and an in-flight start is
+              // invisible to the unmount teardown.
+              if (!scopeUnchanged()) {
+                unbindRecorder();
+                return;
+              }
               const recordingId = newDurableRecordingId();
-              // Write the active pointer BEFORE start (death-surviving breadcrumb),
-              // but bound the SecureStore write so a hung Keystore can't strand the
-              // start handler before the watchdog/finally — see raceDurableActiveWrite.
-              await raceDurableActiveWrite(
-                durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
-              );
+              startPath = 'durable_start';
+              // Awaited BEFORE the native start (Codex round 24): the breadcrumb
+              // must exist before the encoder can emit a frame, not merely be
+              // likely to. Bounded at 400 ms and resolving on timeout.
+              if (scopeUnchanged()) {
+                await racePreStartPointerWrite(
+                  durableActiveStore.setActive(recordingId, slotId, new Date().toISOString()),
+                );
+              }
+              // RECHECKED after the await. Making the pointer write awaited
+              // (round 24) put an await between the pre-start gate and the
+              // native call, so the gate above is stale by the time we get here
+              // — and the engine is a process singleton, so starting for a
+              // departed user holds the mic and fails the next user with BUSY.
+              if (!scopeUnchanged()) {
+                // The write above may already have PUBLISHED. Nothing else can
+                // remove it: the catch cleanup and the unmount teardown both key
+                // off a durable id that native start never got to attach, so the
+                // pointer would survive and report an attempt that never opened
+                // the microphone as an interrupted capture.
+                await clearCapturePointer(initiatingUserId, recordingId);
+                unbindRecorder();
+                return;
+              }
+              freshDurableRecordingId = recordingId;
               await withDurableOpWatchdog(
                 recorder.start({ userId: user.id, slotId, recordingId }),
                 'start',
               );
+              if (!scopeUnchanged()) {
+                // Sign-out landed DURING the native start — see the resume
+                // branch. Finalize, never discard.
+                const confirmed = initiatingUserId
+                  ? await finalizeDepartedUserCapture(
+                      initiatingUserId,
+                      recordingId,
+                      recorder.getSelectedBackend() === 'durable',
+                    )
+                  : false;
+                freshDurableRecordingId = null;
+                await recorder.stop().catch(() => {});
+                if (confirmed && initiatingUserId) {
+                  await durableActiveStore
+                    .clearActiveForUser(initiatingUserId, recordingId)
+                    .catch(() => {});
+                }
+                unbindRecorder();
+                return;
+              }
+              // start() SWALLOWS a durable failure and transparently continues on
+              // expo-audio, so it resolves successfully and nothing above can tell
+              // which backend actually won. If durable lost, the pointer we just
+              // wrote is keyed by the durable recordingId and tagged 'durable',
+              // while every expo cleanup path keys off slotId — so it would
+              // survive a perfectly good recording and report a phantom kill.
+              // Re-key it to match the backend that actually owns the capture.
+              if (recorder.getSelectedBackend() === 'expo' && scopeUnchanged()) {
+                freshDurableRecordingId = null;
+                expoPointerSlotId = slotId;
+                // ONE mutation, not a clear followed by a write. Serialized
+                // separately, the removal publishes first and the live capture
+                // has no pointer until the second lands — so a death in that
+                // window, or a failed second write, loses the only evidence of
+                // an unclean exit. The mic is already open here, so this cannot
+                // gate start latency; it is the same bounded helper used in
+                // front of the mic, simply on the far side of it.
+                await racePreStartPointerWrite(
+                  durableActiveStore.replaceActive(
+                    recordingId,
+                    slotId,
+                    slotId,
+                    new Date().toISOString(),
+                    'expo',
+                  ),
+                );
+              }
             } else {
+              // Expo fallback. It leaves no manifest and no recoverable file if
+              // the process dies (MediaRecorder writes the MP4 moov atom only on
+              // stop()), so this pointer is the ONLY evidence the capture ever
+              // existed — which is what makes an OS kill visible at all.
+              //
+              // Dispatched alongside the native start and joined after it, for
+              // the same reason as the durable branch above: awaiting serial
+              // Keystore round trips here gated the mic on older tablets. The
+              // slot cannot flip to 'recording' before the join, so a kill after
+              // that point is always attributable.
+              // Unlike the durable branch, this pointer is awaited BEFORE the
+              // mic opens. Durable can afford to overlap because a manifest can
+              // rebuild the recording either way; expo cannot — the pointer is
+              // the only evidence the capture ever existed, and an .m4a killed
+              // before stop() has no moov atom to recover. A kill in the gap
+              // would lose the audio AND the ability to report it. Bounded at
+              // 400 ms so a degraded Keystore delays the mic briefly instead of
+              // stalling the tap.
+              // Get the Android 13+ POST_NOTIFICATIONS dialog out of the way
+              // BEFORE publishing. start() runs this preflight internally, and
+              // it can put up a system dialog and wait on it — so publishing
+              // first meant an exit while that dialog was up left a pointer for
+              // a capture that never opened the microphone, reported as an
+              // interruption on the next launch. Idempotent and one-shot per
+              // process, so the in-start call is then a no-op.
+              await recorder.ensureRecordingNotificationPermission();
+              // Abort, don't merely skip the write: the preflight can sit on a
+              // system dialog, and calling start() afterwards would open the
+              // microphone for a user who has since signed out.
+              if (!scopeUnchanged()) {
+                unbindRecorder();
+                return;
+              }
+              expoPointerSlotId = slotId;
+              await racePreStartPointerWrite(
+                durableActiveStore.setActive(slotId, slotId, new Date().toISOString(), 'expo'),
+              );
+              // Rechecked again after the write, and the pointer it may already
+              // have PUBLISHED is cleared — the same shape as both durable
+              // branches. Without this the expo path could both open the mic
+              // post-logout and strand A's breadcrumb for a capture that never
+              // began.
+              if (!scopeUnchanged()) {
+                await clearCapturePointer(initiatingUserId, slotId);
+                expoPointerSlotId = null;
+                unbindRecorder();
+                return;
+              }
               await recorder.start();
             }
           }
@@ -1946,10 +2390,31 @@ function RecordingSession() {
           }
           recordingSegmentStartedAtMsRef.current = Date.now();
           setAudioState(slotId, 'recording');
+          // Tap→recording stopwatch: the number the owner actually feels. A
+          // breadcrumb only — the native phases carry their own slow warnings.
+          completePhaseFrom('record_tap_to_recording', tappedAtMs, { path: startPath }, { warningThresholdMs: null });
         } catch (error) {
+          completePhaseFrom('record_tap_to_recording', tappedAtMs, { path: startPath }, { warningThresholdMs: null, outcome: 'error' });
           unbindRecorder();
+          if (freshDurableRecordingId) {
+            // Nothing owns this id (the hook discards a late-resolving native
+            // start). durableActiveStore serializes its mutations, so this
+            // clear runs AFTER the overlapped pointer write lands — never
+            // racing it — and a start that captured no frame cannot read as
+            // "previous process died mid-capture" on the next launch.
+            void clearCapturePointer(initiatingUserId, freshDurableRecordingId);
+          }
+          if (expoPointerSlotId) {
+            // A start that never captured a frame must not read as "the OS killed
+            // us mid-capture" next launch. Denied mic permission, a busy mic and
+            // native init failure all land here — the three most common start
+            // failures — and each would otherwise tell the vet that Android
+            // truncated a recording that never began. Serialized in the store, so
+            // this clear lands after the overlapped write rather than racing it.
+            void clearCapturePointer(initiatingUserId, expoPointerSlotId);
+          }
           if (resumeDurableRecordingId) {
-            durableActiveStore.clearActive(resumeDurableRecordingId).catch(() => {});
+            void clearCapturePointer(initiatingUserId, resumeDurableRecordingId);
             setAudioState(slotId, 'stopped');
           }
           const errMsg = error instanceof Error ? error.message.toLowerCase() : '';
@@ -1963,9 +2428,11 @@ function RecordingSession() {
           Alert.alert('Recording Error', msg);
         } finally {
           startInFlightRef.current = false;
+          setStartingSlotId((cur) => (cur === slotId ? null : cur));
         }
       })().catch(() => {
         startInFlightRef.current = false;
+        setStartingSlotId((cur) => (cur === slotId ? null : cur));
       });
     },
     [recorder, bindRecorder, unbindRecorder, setAudioState, recordFirstEnabled, user?.id]
@@ -1973,6 +2440,69 @@ function RecordingSession() {
 
   // Keep the ref in sync for the effect
   startRecordingRef.current = startRecordingForSlot;
+
+  // Unmount teardown: a sign-out (or any teardown of the app group) while a
+  // capture is live runs none of the Finish / discard / interruption paths, so
+  // the pointer would survive. Durable pointer keys deliberately outlive
+  // secureStorage.clearAll(), so it would sit there until the next launch and
+  // report that Android stopped a recording the USER ended by logging out.
+  //
+  // Reads the live values from refs at teardown time. A real OS kill never runs
+  // this cleanup, so genuine evidence is untouched.
+  //
+  // The user id is captured too, and cleared through clearActiveForUser: sign-out
+  // rebinds durableActiveStore to null BEFORE clearing the React user state that
+  // unmounts this screen, so anything relying on the ambient scope here would
+  // capture null and silently do nothing.
+  const liveCaptureRef = useRef<{
+    userId: string | null;
+    slotId: string | null;
+    durableId: string | null;
+  }>({ userId: null, slotId: null, durableId: null });
+  liveCaptureRef.current = {
+    userId: user?.id ?? null,
+    slotId: session.recorderBoundToSlotId,
+    durableId: recorder.activeDurableRecordingId,
+  };
+  useEffect(() => {
+    return () => {
+      const { userId, slotId, durableId } = liveCaptureRef.current;
+      if (!userId) return;
+      if (durableId) {
+        // A live DURABLE capture must be FINALIZED before its breadcrumb goes.
+        // The Android engine is a process singleton and detach() only flushes —
+        // it deliberately leaves a running capture alive (DurableRecorderEngine
+        // .detach) — so an unstopped one keeps the microphone open, keeps
+        // appending under the DEPARTED user's directory, and makes the next
+        // user's start throw BUSY (`running` guard in start()) on a shared
+        // clinic tablet. expo-audio auto-releases on unmount; the durable
+        // recorder has no such path, so this is it.
+        void (async () => {
+          try {
+            await withPromiseTimeout(
+              durableRecorder.stop({ userId, recordingId: durableId }),
+              DURABLE_TEARDOWN_STOP_TIMEOUT_MS,
+              'durable_teardown_stop',
+            );
+          } catch {
+            // Could not finalize (broken, or the bridge never answered). KEEP
+            // both pointers: one extra "recording interrupted" report is much
+            // better than a microphone still running with nothing on disk
+            // recording who owned it.
+            return;
+          }
+          await durableActiveStore.clearActiveForUser(userId, durableId).catch(() => {});
+          if (slotId) await durableActiveStore.clearActiveForUser(userId, slotId).catch(() => {});
+        })().catch(() => {});
+        // Terminal catch at the fire-and-forget boundary (rule 4). The inner
+        // guards are narrow; a synchronous throw before the try, or a future
+        // await added outside them, would otherwise surface as a Hermes
+        // unhandled rejection and crash the release build during sign-out.
+        return;
+      }
+      if (slotId) durableActiveStore.clearActiveForUser(userId, slotId).catch(() => {});
+    };
+  }, []);
 
   const handlePause = useCallback(
     (slotId: string) => {
@@ -2019,9 +2549,15 @@ function RecordingSession() {
     (slotId: string) => {
       (async () => {
         const targetSlotId = sessionRef.current.recorderBoundToSlotId ?? slotId;
+        // Captured up front: the clears below run after autoSaveDraft, which is
+        // seconds of work, so the ambient store scope may have moved on.
+        const finishUserId = user?.id ?? null;
         if (manualFinishSlotIdRef.current) return;
         manualFinishSlotIdRef.current = targetSlotId;
         setFinishingDraftSlotId(targetSlotId);
+        // Captured before stop(): resetWithoutDelete() clears it, and the finally
+        // below has to clear whichever key this capture was written under.
+        const durableIdAtFinish = recorder.activeDurableRecordingId;
 
         try {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -2069,7 +2605,12 @@ function RecordingSession() {
             pendingDraftRecoveryReasonRef.current.set(targetSlotId, 'draft_finish');
             recordingSegmentStartedAtMsRef.current = null;
             setDurableRecording(targetSlotId, durableRef);
-            durableActiveStore.clearActive(snap.recordingId).catch(() => {});
+            // AWAITED, like the expo branch: autoSaveDraft below copies audio,
+            // writes chunked metadata and creates a server draft — seconds on a
+            // loaded tablet — and a process death in that window with the clear
+            // still in flight leaves a pointer for a recording that finished
+            // cleanly. Bounded by the store's own mutation timeout.
+            await clearCapturePointer(finishUserId, snap.recordingId);
             recorder.resetWithoutDelete();
             if (boundSlot) {
               const durableSlot: PatientSlot = {
@@ -2136,6 +2677,23 @@ function RecordingSession() {
           );
           recorder.resetWithoutDelete();
 
+          // Capture is over the moment the snapshot is in the slot, so the
+          // pointer is cleared HERE, not only in the finally below.
+          // autoSaveDraft copies the audio, writes chunked SecureStore metadata
+          // and creates a server draft — seconds on a loaded SM-T220 — and a
+          // process death inside that window would leave a pointer for a
+          // recording that ended cleanly, reporting a phantom interruption on
+          // the next launch and nagging the vet about battery settings for a
+          // recording that saved perfectly. Awaited so it lands before the slow
+          // work begins; bounded by the store's own 5s mutation timeout, so a
+          // degraded Keystore cannot stall Finish. The finally still repeats
+          // both clears — it covers the early returns and the catch, and a
+          // second clear is a no-op.
+          await clearCapturePointer(finishUserId, targetSlotId);
+          if (durableIdAtFinish) {
+            await clearCapturePointer(finishUserId, durableIdAtFinish);
+          }
+
           const saved = await autoSaveDraftRef.current(persistedSlot);
           if (!saved) {
             Alert.alert(
@@ -2146,12 +2704,25 @@ function RecordingSession() {
         } catch {
           Alert.alert('Recording Error', 'Failed to stop recording.');
         } finally {
+          // Manual Finish is how a recording NORMALLY ends, and it sets
+          // manualFinishSlotIdRef, which makes the stopped-state effect return
+          // before its own pointer cleanup. Without this every ordinary finish
+          // left a live pointer, so the next launch would tell essentially every
+          // user that Android truncated audio that saved perfectly — the detector
+          // would have been pure noise. Cleared in `finally` so the success path,
+          // both "could not be captured/linked" early returns and the catch are
+          // all covered. Both keys: expo captures are keyed by slot, durable by
+          // recording id.
+          void clearCapturePointer(finishUserId, targetSlotId);
+          if (durableIdAtFinish) {
+            void clearCapturePointer(finishUserId, durableIdAtFinish);
+          }
           manualFinishSlotIdRef.current = null;
           setFinishingDraftSlotId((current) => current === targetSlotId ? null : current);
         }
       })().catch(() => {});
     },
-    [buildPersistedSlot, recorder, saveAudio, setAudioState, unbindRecorder, setDurableRecording]
+    [buildPersistedSlot, recorder, saveAudio, setAudioState, unbindRecorder, setDurableRecording, user?.id]
   );
 
   const handleContinueRecording = useCallback(
@@ -2332,7 +2903,7 @@ function RecordingSession() {
                       .discard({ userId: user.id, recordingId: slot.durable.recordingId })
                       .catch(() => {});
                   }
-                  durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+                  void clearCapturePointer(user?.id ?? null, slot.durable.recordingId);
                   if (slot.durable.recoveredAudioUri) safeDeleteFile(slot.durable.recoveredAudioUri);
                 }
                 deleteOrphanServerRecording(slot);
@@ -2394,7 +2965,15 @@ function RecordingSession() {
                     // Stop recording if this slot owns the recorder
                     if (session.recorderBoundToSlotId === slotId) {
                       skipNextAudioCaptureRef.current = true;
+                      // Same reason as discardCurrentSession: captured before
+                      // stop/unbind/reset erase the lookup state the passive
+                      // stopped-state effect would have needed.
+                      const removedDurableId = recorder.activeDurableRecordingId;
                       try { await recorder.stop(); } catch {}
+                      void clearCapturePointer(user?.id ?? null, slotId);
+                      if (removedDurableId) {
+                        void clearCapturePointer(user?.id ?? null, removedDurableId);
+                      }
                       unbindRecorder();
                       recorder.reset();
                     }
@@ -2411,7 +2990,7 @@ function RecordingSession() {
                           .discard({ userId: user.id, recordingId: slot.durable.recordingId })
                           .catch(() => {});
                       }
-                      durableActiveStore.clearActive(slot.durable.recordingId).catch(() => {});
+                      void clearCapturePointer(user?.id ?? null, slot.durable.recordingId);
                       // Vault-restored durable audio is a loose recoveredAudioUri
                       // (no native manifest) — delete it too, else Remove leaves it.
                       if (slot.durable.recoveredAudioUri) safeDeleteFile(slot.durable.recoveredAudioUri);
@@ -6348,10 +6927,11 @@ function RecordingSession() {
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
-    const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async () => {
+    const cancelWork = scheduleNonUrgentWork('orphan_cleanup', async (isExpired) => {
       const userScopeVersion = draftStorage.getUserScopeVersion();
       const isScopeValid = () =>
         !cancelled &&
+        !isExpired() &&
         AppState.currentState === 'active' &&
         draftStorage.getUserId() === user.id &&
         draftStorage.getUserScopeVersion() === userScopeVersion;
@@ -6379,7 +6959,7 @@ function RecordingSession() {
       // own uniquely-timestamped subdir and are guarded by the orchestrator's
       // own try/catch — this only wipes leftovers.
       if (isScopeValid()) cleanupSplitTempDirs(user.id);
-    }, 3_000);
+    }, 3_000, 10_000, true);
     return () => {
       cancelled = true;
       cancelWork();
@@ -6405,11 +6985,12 @@ function RecordingSession() {
     evictionSweptUserRef.current = user.id;
     const online = isConnected !== false;
     let cancelled = false;
-    const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async () => {
+    const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async (isExpired) => {
       try {
         const userScopeVersion = draftStorage.getUserScopeVersion();
         const isScopeValid = () =>
           !cancelled &&
+          !isExpired() &&
           AppState.currentState === 'active' &&
           draftStorage.getUserId() === user.id &&
           draftStorage.getUserScopeVersion() === userScopeVersion;
@@ -6497,12 +7078,55 @@ function RecordingSession() {
       } catch (error) {
         if (__DEV__) console.error('[record] eviction sweep failed:', error);
       }
-    }, 4_000);
+    }, 4_000, 10_000, true);
     return () => {
       cancelled = true;
       cancelWork();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per user; isConnected read via closure at mount
+  }, [user?.id]);
+
+  // Effect: ask once per device whether to exempt Captivet from Android battery
+  // optimization. Samsung One UI app-sleep kills the app mid-recording, and that
+  // kill reaches no crash reporter at all. When this launch found a prior
+  // process ended mid-capture the copy reports THAT — it does not claim Android
+  // caused it, because a reboot looks identical from here.
+  //
+  // DECLARATION ORDER IS LOAD-BEARING: this must stay BELOW the orphan-cleanup
+  // and eviction effects. These jobs are `serial`, so they chain onto
+  // startupSweepTail in the order their effects register, which is declaration
+  // order. Declared above the sweeps, the prompt became the HEAD of the chain
+  // and fired before the screen had settled — and the eviction pass could then
+  // raise its own Alert over the open one-shot prompt, after this prompt's
+  // already-asked marker had been consumed.
+  useEffect(() => {
+    if (!user?.id) return;
+    const promptUserId = user.id;
+    const cancelWork = scheduleNonUrgentWork(
+      'battery_opt_prompt',
+      async (isExpired) => {
+        await maybePromptBatteryOptimization(
+          priorUncleanExitDetected(promptUserId),
+          // Re-evaluated inside, right before the Alert: this callback can be
+          // mid-await across a sign-out and cancelWork cannot stop it.
+          //
+          // startInFlightRef, not recordingActivity: a tap sets it synchronously,
+          // while recordingActivity only flips when the recorder BINDS — after
+          // floor hydration. Between those two points the prompt's own
+          // recordingActivity checks both read false, so the alert could land
+          // over an in-flight start and "Open Settings" would background the app
+          // exactly as capture began — the transition this nudge exists to avoid.
+          () =>
+            !isExpired() &&
+            !startInFlightRef.current &&
+            durableActiveStore.getUserId() === promptUserId,
+        );
+      },
+      5_000,
+      null,
+      true,
+    );
+    return cancelWork;
   }, [user?.id]);
 
   const handleResumeStash = useCallback(
@@ -6736,7 +7360,11 @@ function RecordingSession() {
           slotIndex={index}
           totalSlots={session.slots.length}
           isRecorderOwner={isRecorderOwner}
-          recorder={recorder}
+          recorderState={isRecorderOwner ? recorder.state : 'idle'}
+          recorderDuration={isRecorderOwner ? recorder.duration : 0}
+          getLiveStats={recorder.getLiveStats}
+          isStarting={startingSlotId === item.id || queuedStartSlotIds.includes(item.id) || (isRecorderOwner && recorder.isStarting)}
+          startInFlight={startingSlotId !== null || recorder.isStarting}
           recorderBusy={recorderBusy && !isRecorderOwner}
           isFinishSaving={finishingDraftSlotId === item.id}
           templates={templates}
@@ -6773,7 +7401,12 @@ function RecordingSession() {
       handleResubmitAsNew,
       session.recorderBoundToSlotId,
       session.slots.length,
-      recorder,
+      recorder.state,
+      recorder.duration,
+      recorder.getLiveStats,
+      recorder.isStarting,
+      startingSlotId,
+      queuedStartSlotIds,
       recorderBusy,
       templates,
       templatesLoading,
@@ -6805,6 +7438,92 @@ function RecordingSession() {
   const stableRenderSlotCard = useCallback(
     (info: { item: PatientSlot; index: number }) => renderSlotCardRef.current(info),
     []
+  );
+
+  /**
+   * Tells the FlatList that a cell's OUTPUT changed even though `data` did not.
+   *
+   * FlatList is a PureComponent, `data` is `session.slots`, and
+   * `stableRenderSlotCard` is deliberately identity-stable — so with no
+   * `extraData` the shallow prop compare saw nothing and the cells never
+   * re-rendered. Tapping Start sets only `startingSlotId`, so the spinner and
+   * the `startInFlight` lockout on the other Start buttons could not paint until
+   * `session.slots` itself changed, i.e. after the native start latency they
+   * exist to mask — reinstating the exact delayed-feedback and swallowed-retap
+   * behaviour the record-perf work removed (Codex round 13).
+   *
+   * Mirrors renderSlotCard's deps with two deliberate omissions: `recorder.duration`
+   * and `recorder.getLiveStats`. The live timer and metering re-render
+   * RecorderLiveReadout alone (see PatientSlotCard), so including duration would
+   * re-render every card twice a second — the render thrash that work removed.
+   */
+  const slotCardExtraData = useMemo(
+    () => ({
+      recorderBoundToSlotId: session.recorderBoundToSlotId,
+      slotCount: session.slots.length,
+      recorderState: recorder.state,
+      recorderIsStarting: recorder.isStarting,
+      startingSlotId,
+      queuedStartSlotIds,
+      recorderBusy,
+      finishingDraftSlotId,
+      reconcilingSlotId,
+      templates,
+      templatesLoading,
+      defaultTemplateId: effectiveDefaultTemplate?.id ?? null,
+      defaultTemplateSavingId,
+      screenWidth,
+      recordFirstEnabled,
+      handleUpdateForm,
+      handleStart,
+      handlePause,
+      handleResume,
+      handleStop,
+      handleRecordAgain,
+      handleContinueRecording,
+      handleRemove,
+      handleSubmitSingle,
+      handleEditRecording,
+      handleSetDefaultTemplate,
+      handleOpenDivergentRecording,
+      handleReleaseLocalCopy,
+      handleResubmitAsNew,
+      handleDismissDivergence,
+      slotHasLiveRecorder,
+    }),
+    [
+      session.recorderBoundToSlotId,
+      session.slots.length,
+      recorder.state,
+      recorder.isStarting,
+      startingSlotId,
+      queuedStartSlotIds,
+      recorderBusy,
+      finishingDraftSlotId,
+      reconcilingSlotId,
+      templates,
+      templatesLoading,
+      effectiveDefaultTemplate?.id,
+      defaultTemplateSavingId,
+      screenWidth,
+      recordFirstEnabled,
+      handleUpdateForm,
+      handleStart,
+      handlePause,
+      handleResume,
+      handleStop,
+      handleRecordAgain,
+      handleContinueRecording,
+      handleRemove,
+      handleSubmitSingle,
+      handleEditRecording,
+      handleSetDefaultTemplate,
+      handleOpenDivergentRecording,
+      handleReleaseLocalCopy,
+      handleResubmitAsNew,
+      handleDismissDivergence,
+      slotHasLiveRecorder,
+    ]
   );
 
   const getItemLayout = useCallback(
@@ -6953,6 +7672,7 @@ function RecordingSession() {
         ref={pagerRef}
         data={session.slots}
         renderItem={stableRenderSlotCard}
+        extraData={slotCardExtraData}
         keyExtractor={(item) => item.id}
         horizontal
         pagingEnabled

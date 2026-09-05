@@ -26,12 +26,164 @@ import { stashStorage } from '../stashStorage';
 import { recoveryIntent } from '../recoveryIntent';
 import { recordingsApi } from '../../api/recordings';
 import { breadcrumb, captureMessage } from '../monitoring';
+import { withPromiseTimeout } from '../promiseTimeout';
 import { trackEvent } from '../analytics';
 import { durableRecoveryStore } from './recoveryState';
 
 const MAX_OFFERED = 50;
 /** Rule 24 watchdog: a hung native scan must never stall app entry. */
 const SCAN_WATCHDOG_MS = 12_000;
+
+/**
+ * When THIS process started. Any active-capture pointer with an earlier
+ * `startedAt` was written by a process that never got to clear it — an unclean
+ * exit, whatever ended it. Entries at or after this instant belong to the live
+ * process (a sign-in mid-session re-runs the scan) and must never be reported.
+ */
+const PROCESS_START_ISO = new Date().toISOString();
+/**
+ * The unclean-exit probe is TELEMETRY. It must never delay or suppress a recovery offer:
+ * a hung durableActiveStore read would otherwise burn the 12 s scan watchdog,
+ * `Promise.race` would publish the watchdog's empty list, and the real offers
+ * could never be published afterwards — leaving recoverable audio unreachable
+ * for the whole session, since AuthProvider runs this scan once per user.
+ */
+const UNCLEAN_EXIT_PROBE_TIMEOUT_MS = 4_000;
+
+function reportPriorUncleanExitDetached(
+  userId: string,
+  manifestIds: ReadonlySet<string>,
+  isCancelled: () => boolean,
+): void {
+  void withPromiseTimeout(
+    reportPriorUncleanExit(userId, manifestIds, isCancelled),
+    UNCLEAN_EXIT_PROBE_TIMEOUT_MS,
+    'unclean_exit_probe_timeout',
+  ).catch(() => {});
+}
+/**
+ * Users whose unclean exit this process has already reported.
+ *
+ * Per-USER, not per-process: on a shared clinic tablet vet A signs in, theirs is
+ * reported, then vet B signs in — a process-global flag would silently suppress
+ * B's report for the rest of the session, which is exactly the fleet this
+ * detector exists for. Still capped per user so a scan re-run (sign-in
+ * mid-session) cannot double-report.
+ */
+const uncleanExitReportedUsers = new Set<string>();
+/** No manifests could be enumerated — nothing is recoverable from this exit. */
+const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * True once this launch has proven a prior process ended mid-capture FOR THIS
+ * USER. Read by the Record screen to select the battery-optimization copy that
+ * reports the observation rather than the generic ask.
+ *
+ * Proves an unclean exit, NOT an OS kill: callers must not phrase anything
+ * downstream as "Android stopped us" (see BATTERY_OPTIMIZATION_COPY).
+ *
+ * User-scoped for the same reason the report itself is: on a shared clinic
+ * tablet a process-wide answer would tell vet B about vet A's interrupted
+ * recording. Never resets within a process.
+ */
+export function priorUncleanExitDetected(userId: string | null | undefined): boolean {
+  return !!userId && uncleanExitReportedUsers.has(userId);
+}
+
+/**
+ * Detect and report "a prior process ended while capturing, without cleanup".
+ *
+ * This is the nearest signal we have for an OS process kill: an LMK / battery-
+ * optimizer / app-sleep kill raises no JS exception and no native signal, so
+ * Sentry records nothing at all. A capture pointer that outlived its process is
+ * the evidence, because every clean stop, discard and purge clears it.
+ *
+ * It is evidence of an unclean EXIT, not of a kill. A reboot, a swipe from
+ * Recents, a force-stop from Settings and a native crash all leave the very same
+ * pointer, and the client has no termination-cause signal to separate them —
+ * so the event, the Sentry message and every downstream string stay neutral.
+ *
+ * Reported entries are cleared afterwards so the same exit is not re-reported on
+ * every subsequent launch. Clearing is safe: recovery is driven by native
+ * manifests, never by this pointer.
+ *
+ * Never throws — this runs before the recovery work that actually saves audio.
+ */
+async function reportPriorUncleanExit(
+  userId: string,
+  manifestIds: ReadonlySet<string>,
+  isCancelled: () => boolean,
+): Promise<void> {
+  if (uncleanExitReportedUsers.has(userId)) return;
+  try {
+    const entries = await durableActiveStore.list();
+    // Re-verify scope AFTER the await. This read can straddle a sign-out: the
+    // store (and the analytics identity) may now belong to a different user, in
+    // which case `entries` describes whoever the store is scoped to now, not the
+    // user this scan was launched for. Attributing one vet's lost recording to
+    // another — and clearing the wrong pointers — is worse than not reporting.
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+    const stale = entries.filter((e) => typeof e.startedAt === 'string' && e.startedAt < PROCESS_START_ISO);
+    if (stale.length === 0) return;
+
+    let durable = 0;
+    let expo = 0;
+    // Recoverable = a durable pointer from THIS kill that still has a manifest
+    // to rebuild from. The total manifest count is not that number: it also
+    // holds finished recordings already surfaced as drafts or stashes, uploaded
+    // ones awaiting self-heal, and sessions that will be suppressed from the
+    // offer list — so one stale expo pointer could otherwise report "recovered
+    // many", making the loss telemetry unusable. Expo pointers never have a
+    // manifest, which is the whole reason their loss is unrecoverable.
+    let recovered = 0;
+    for (const e of stale) {
+      if (e.backend === 'expo') {
+        expo++;
+      } else {
+        durable++;
+        if (manifestIds.has(e.recordingId)) recovered++;
+      }
+    }
+
+    // PRUNE FIRST, and report only if the stale pointer is CONFIRMED gone.
+    // Emitting first and pruning after double-counted: a transient read failure
+    // left the pointer behind, and the next process — whose reported-user set
+    // starts empty — counted the very same interruption again, inflating the
+    // reliability metric these changes are judged by. Under-reporting once is
+    // recoverable; a metric that inflates on a degraded Keystore is not.
+    // Scope re-checked first: a sign-out must not prune the next user's pointers.
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+    const pruned = await durableActiveStore
+      .pruneStartedBefore(userId, PROCESS_START_ISO)
+      .catch(() => false);
+    if (!pruned) return;
+    // Re-verify AFTER the prune await, before marking or emitting. On a shared
+    // tablet A can sign out and B sign in while the prune is in SecureStore, and
+    // the analytics and Sentry identities are GLOBAL — already rebound to B by
+    // then. Emitting here would file A's interruption counts against B and
+    // corrupt per-user reliability data across an account boundary. The counts
+    // are worth less than the boundary.
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+    uncleanExitReportedUsers.add(userId);
+
+    trackEvent({
+      name: 'capture_ended_without_cleanup',
+      props: { durable_count: durable, expo_count: expo, recovered_count: recovered },
+    });
+    // Sentry sees no crash for an OS kill, so this message is the only trace of
+    // one — but it also fires for reboots and swipe-aways. Read it as an upper
+    // bound on kills, never as a count of them.
+    // Counts only — no ids, no slot ids, no paths.
+    captureMessage('capture_ended_without_cleanup', 'warning', {
+      tags: { phase: 'record' },
+      extra: { durable_count: durable, expo_count: expo, recovered_count: recovered },
+    });
+
+
+  } catch {
+    // Never let the unclean-exit probe block recovery.
+  }
+}
 
 /** Uploaded/processed = not one of the pre-upload states. null = unverifiable. */
 async function serverStatusIsUploaded(serverRecordingId: string): Promise<boolean | null> {
@@ -139,13 +291,28 @@ export async function scanDurableRecoveries(
   try {
     manifests = await durableRecorder.listRecoverableSessions(userId);
   } catch {
+    // Native enumeration failed, but the capture pointer lives in SecureStore
+    // and is still readable — report it before bailing.
+    if (!isCancelled()) reportPriorUncleanExitDetached(userId, EMPTY_MANIFEST_IDS, isCancelled);
     return [];
   }
   if (!manifests || manifests.length === 0) {
-    // Even with no recoverable capture, clear the active-recording pointer so a
-    // clean prior exit doesn't look like a crash next launch.
+    // No recoverable capture does NOT mean a clean prior exit. The expo fallback
+    // leaves no manifest at all, so this is exactly the unrecoverable-loss case
+    // this probe exists to catch. Reporting also clears the stale pointer.
+    if (!isCancelled()) reportPriorUncleanExitDetached(userId, EMPTY_MANIFEST_IDS, isCancelled);
     return [];
   }
+  // The probe READS AND CLEARS activeStore, so it is a mutating side effect and
+  // is bound by this scan's cancellation contract like every other one. A stale
+  // scan resuming past the watchdog after a sign-out would otherwise read, report
+  // and clear the NEXT user's pointers — labelling the event with this user's
+  // manifest count, and (because killSignalReported is process-global) stopping
+  // the new user's own scan from ever reporting it.
+  if (isCancelled()) return [];
+  // Detached AND bounded: recovery offers are the thing that actually saves a
+  // vet's audio, and must not wait on a telemetry read.
+  reportPriorUncleanExitDetached(userId, new Set(manifests.map((m) => m.recordingId)), isCancelled);
 
   // Reconcile created-but-unconfirmed recordings against the server BEFORE
   // selection: if already confirmed-uploaded, mark uploaded so it self-heals and

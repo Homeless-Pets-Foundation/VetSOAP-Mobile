@@ -124,6 +124,14 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: 'Home',
+          // Per-screen freeze (never the global react-native-screens switch, never
+          // screenOptions — both would also freeze this whole tab navigator when a
+          // stack screen is pushed over it mid-recording): while the
+          // user is on Record, cache invalidations from finish/draft-save/
+          // upload no longer re-render this tree behind it. The record tab is
+          // deliberately excluded — its AppState/audio-focus/recorder effects
+          // must keep committing while a recording runs from another tab.
+          freezeOnBlur: true,
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Home} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Home dashboard',
         }}
@@ -147,6 +155,15 @@ export default function TabsLayout() {
         name="recordings"
         options={{
           title: 'Recordings',
+          // Deliberately NOT frozen on blur, unlike the other non-record tabs.
+          // This tab hosts RecordingAudioPlayer, whose safety contract is a
+          // recordingActivity subscription: when the recorder takes the audio
+          // session, the state update must render the inert branch so
+          // ActiveAudioPlayer UNMOUNTS and releases the native player. A frozen
+          // screen cannot render that update, so playback would keep running
+          // with allowsRecording already flipped off under a live recorder —
+          // the rule-6 failure class that mechanism exists to prevent, on the
+          // path where it would corrupt a clinical recording.
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={FileText} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'View all recordings',
         }}
@@ -155,6 +172,7 @@ export default function TabsLayout() {
         name="patient"
         options={{
           title: 'Patients',
+          freezeOnBlur: true,
           tabBarIcon: ({ color, size, focused }) => <TabBarIcon Icon={Users} color={color} size={size} focused={focused} />,
           tabBarAccessibilityLabel: 'Browse patients',
         }}

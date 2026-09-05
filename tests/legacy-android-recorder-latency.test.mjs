@@ -17,10 +17,13 @@ test('legacy recorder times latency phases and ships concurrent service binding'
   ]);
 
   assert.match(record, /measurePhase\('record_floor_hydration', undefined, async \(\) => \{\s*await ensureFloorHydrated\(\);\s*\}, \{ warningThresholdMs: null \}/);
-  for (const phase of ['recorder_audio_prepare', 'recorder_native_start', 'recorder_native_pause', 'recorder_native_resume']) {
+  // `recorder_durable_start` observes the native durable start() the same way
+  // (a >1 s start on a legacy device is what prod should page on); the count
+  // below is one per measured native phase.
+  for (const phase of ['recorder_audio_prepare', 'recorder_native_start', 'recorder_native_pause', 'recorder_native_resume', 'recorder_durable_start']) {
     assert.match(recorder, new RegExp(`measurePhase\\('${phase}'`), phase);
   }
-  assert.equal((recorder.match(/warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS/g) ?? []).length, 4);
+  assert.equal((recorder.match(/warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS/g) ?? []).length, 5);
 
   const bind = audioRecorder.indexOf('async(start = CoroutineStart.UNDISPATCHED) { serviceConnection.bindWithService() }');
   const prepare = audioRecorder.indexOf('mediaRecorder.prepare()');

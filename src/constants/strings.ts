@@ -800,7 +800,8 @@ export const LONG_RECORDING_WARNING_COPY = {
 } as const;
 
 export const CONSULT_COPY = {
-  title: 'Consult AI',
+  // No `title`: the standalone ConsultAICard is gone and the chip label now comes
+  // from RECORDING_TOOLS_COPY.consult. Only the open-failure alert is left.
   openFailedTitle: 'Could Not Open Link',
   openFailedBody: 'Please try again in a moment.',
 } as const;

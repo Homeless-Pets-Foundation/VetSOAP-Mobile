@@ -88,7 +88,10 @@ test('home keeps Captivet branding above its personalized greeting', async () =>
   assert.notEqual(greetingIndex, -1, 'home should keep the personalized greeting');
   assert.ok(brandIndex < greetingIndex, 'brand row should appear above the greeting');
   assert.match(home, /accessibilityLabel="Captivet"/);
-  assert.match(home, /Math\.min\(scale\(132\), 168\)/);
+  // The wordmark now shares one row with the greeting and the gear (home layout
+  // reorg, 2026-09-02), so its ceiling dropped from 168dp to 132dp — still inside
+  // the 320dp @3x asset's density budget.
+  assert.match(home, /Math\.min\(scale\(104\), 132\)/);
   assert.match(home, /router\.push\('\/settings'\)/);
 });
 

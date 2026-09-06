@@ -25,10 +25,11 @@ index 72a6e9e..f98b5b1 100644
      }.createMediaSource(mediaItem)
    }
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt
-index 7752963..1b1636c 100644
+index 7752963..b772ed5 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt
-@@ -19,6 +19,9 @@ import expo.modules.kotlin.exception.CodedException
+@@ -18,7 +18,10 @@ import expo.modules.kotlin.AppContext
+ import expo.modules.kotlin.exception.CodedException
  import expo.modules.kotlin.exception.Exceptions
  import expo.modules.kotlin.sharedobjects.SharedObject
 +import kotlinx.coroutines.CoroutineStart
@@ -38,7 +39,9 @@ index 7752963..1b1636c 100644
  import kotlinx.coroutines.delay
  import kotlinx.coroutines.launch
  import java.io.File
-@@ -98,8 +100,13 @@ class AudioRecorder(
+@@ -96,10 +99,15 @@ class AudioRecorder(
+     recorder = mediaRecorder
+ 
      try {
 -      if (useForegroundService) {
 -        serviceConnection.bindWithService()
@@ -56,12 +59,17 @@ index 7752963..1b1636c 100644
      } catch (e: Exception) {
        mediaRecorder.release()
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
-index 5d0ae41..d6e1f8b 100644
+index 28be72f..2a552ed 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt
-@@ -107,4 +107,4 @@ class AudioRecordingServiceConnection(
+@@ -104,9 +104,9 @@ class AudioRecordingServiceConnection(
+     }
+     transitionToState(ServiceBindingState.BOUND)
+ 
 -    bindingContinuation?.resume(Unit)
      recordingServiceBinder = serviceBinder
      serviceBinder.service.appContext = appContext
 +    bindingContinuation?.resume(Unit)
    }
+ 
+   override fun onServiceDisconnected(componentName: ComponentName) {

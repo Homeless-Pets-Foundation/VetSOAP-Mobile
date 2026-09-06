@@ -46,7 +46,15 @@ test('waveform bars derive their scale from one SharedValue on the UI thread', a
   assert.doesNotMatch(bar, /height: height\.value/, 'bars must not animate layout');
   // The glow stays on the container: iOS draws legacy shadows from content
   // alpha, so moving it to an empty sibling silently removed it there.
-  assert.match(waveform, /\$\{live \? 'shadow-glow' : ''\}/);
+  //
+  // It is now an INLINE boxShadow rather than a `${live ? 'shadow-glow' : ''}`
+  // class. That conditional className changed at the exact moment capture
+  // started, which handed the plain host View a Reanimated animated style and
+  // threw ReanimatedError in dev, killing the Record screen on the first frame
+  // of every recording (emulator, 2026-09-05). See
+  // tests/audio-waveform-glow-guard.test.mjs for the bisect and the fence that
+  // keeps this className constant.
+  assert.match(waveform, /live \? \{ boxShadow:/);
 });
 
 test('readout drives the waveform through a SharedValue and re-renders only for the timer', async () => {

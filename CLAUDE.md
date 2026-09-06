@@ -353,6 +353,16 @@ Ordinary CI runs on repository-level runners while GitHub continues to provide w
 
 ## R2 Destination Governance
 
+The trusted `Self-hosted CI Attestation Bridge` also publishes the separate commit-status context **`R2 Current-Head Approval`** after R2 workflow events. Only its default-branch publisher job receives `statuses: write`; it checks out `github.workflow_sha`, verifies run/PR identity through GitHub's API, and recomputes the current head, protected paths and reviews. Approval publications are serialized separately from CI attestations. Protected changes without current approval stay pending; verification errors stay blocking. This publisher never reruns R2 or CI jobs and never changes application CI results.
+
+Staged migration from the legacy required `R2 Approval Gate` check:
+
+1. Land the publisher through the existing protected PR process, retaining every existing requirement. New publisher code still needs the designated review; approval on an unrelated PR does not authorize it.
+2. Verify the canonical status on a real current-head approval event, including pending/dismissed behavior. The old check may need one final approved bootstrap rerun to land the fix under its existing requirement.
+3. Snapshot branch protection. Add `R2 Current-Head Approval` with the existing GitHub Actions app pin, verify it is enforced, then remove only the legacy R2 required context. Preserve strict up-to-date and administrator enforcement, all CI checks, and reviewer rules. Restore the original requirement if validation fails. Keep the old workflow/job names and historical results for comparison.
+
+The old required context remains active until this staged cutover is explicitly recorded; adding the publisher alone does not repair duplicate historical checks in existing PRs.
+
 `R2 Destination Contract` and `R2 Approval Gate` are required on `main`. R2-protected paths in `.github/r2-protected-paths.txt` require `@philgooddvm-oss` approval on the current head SHA; a dismissal, a requested-changes review, or any push that **changes the diff** invalidates the approval. Invalidation is diff-scoped, NOT SHA-scoped: a push that leaves the tree identical (an empty commit, or a force-push to the same tree) does **not** invalidate it — GitHub carries the existing review forward and advances its `commit_id` to the new head, so the gate's `latest.state === 'APPROVED' && latest.commit_id === headSha` rule (`.github/scripts/r2-approval-gate.cjs:58`) legitimately passes; there is no new content to re-approve. Verified both ways on test-only PR #185 (2026-08-27) — an empty commit carried the approval forward, and the next commit changing a single comment byte held `commit_id` at the prior SHA and failed the gate. The global approving-review count stays zero so unrelated PRs remain automated, and administrator enforcement stays enabled.
 
 Contract files: `contracts/r2-production-destination-v1.json` (+ `.sha256`) pins the prod/staging destination byte-for-byte with Connect (objectPrefix `recordings/`, `serverAddressingStyle: virtual_hosted`, accountOrigin/bucketName/virtualHost); `contracts/r2-presigned-upload-v1.json` holds accept/reject fixture vectors. `src/lib/r2UploadUrl.ts` is the validator (engine behind `sslPinning.validateUploadUrl`); `tests/r2-presigned-upload-contract.test.mjs` is the enforcement.

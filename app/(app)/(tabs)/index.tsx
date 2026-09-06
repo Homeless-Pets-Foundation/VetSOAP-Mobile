@@ -300,18 +300,26 @@ export default function HomeScreen() {
   // One worst-first pill in the Recent Recordings header replaces the two stat
   // tiles: "✓ All Complete" never counted `failed`, so it rendered beside failed
   // rows, and "Total Recordings" was a vanity number (home layout reorg, 2026-09-02).
+  // Hidden, not neutral, when the list is UNKNOWN: a failed fetch with no cache
+  // arrives here as an empty array, and the error card renders directly below
+  // this row — a green "All complete" badge stacked on "Could not load
+  // recordings." is the contradiction the pill was introduced to remove.
+  const recordingsUnavailable = isError && recordings.length === 0;
   const statusPill = useMemo(
-    () => deriveRecentStatusPill({ recordings, draftCount }),
-    [recordings, draftCount]
+    () => (recordingsUnavailable ? null : deriveRecentStatusPill({ recordings, draftCount })),
+    [recordings, draftCount, recordingsUnavailable]
   );
-  const statusPillLabel =
-    statusPill.kind === 'failed'
+  const statusPillLabel = !statusPill
+    ? null
+    : statusPill.kind === 'failed'
       ? HOME_COPY.statusPill.failed(statusPill.count)
-      : statusPill.kind === 'processing'
-        ? HOME_COPY.statusPill.processing(statusPill.count)
-        : statusPill.kind === 'not_submitted'
-          ? HOME_COPY.statusPill.notSubmitted(statusPill.count)
-          : HOME_COPY.statusPill.allComplete;
+      : statusPill.kind === 'needs_details'
+        ? HOME_COPY.statusPill.needsDetails(statusPill.count)
+        : statusPill.kind === 'processing'
+          ? HOME_COPY.statusPill.processing(statusPill.count)
+          : statusPill.kind === 'not_submitted'
+            ? HOME_COPY.statusPill.notSubmitted(statusPill.count)
+            : HOME_COPY.statusPill.allComplete;
 
   const ctaAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: ctaScale.value }],
@@ -603,7 +611,7 @@ export default function HomeScreen() {
               Recordings" into "Recent Recordi…" at 1.3× font scale. The flex-row
               wrapper keeps the Badge shrink-wrapped (it bakes in clipSafe +
               CLIP_SAFE + numberOfLines={1}) instead of stretching full width. */}
-          {!isLoading ? (
+          {!isLoading && statusPill && statusPillLabel ? (
             <View className="flex-row mt-1.5">
               <Badge variant={statusPill.variant} accessibilityLabel={statusPillLabel}>
                 {statusPillLabel}

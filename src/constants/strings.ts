@@ -815,6 +815,9 @@ export const HOME_COPY = {
     failed: (count: number): string => `${count} failed`,
     processing: (count: number): string => `${count} processing`,
     notSubmitted: (count: number): string => `${count} not submitted`,
+    // "awaiting details", not "needs details": the count leads, so the phrase has
+    // to read for 1 and for 3 without a plural branch.
+    needsDetails: (count: number): string => `${count} awaiting details`,
     allComplete: 'All complete',
   },
 } as const;
@@ -824,10 +827,6 @@ export const ATTENTION_FEED_COPY = {
   openScreenAccessibilityLabel: 'Open Needs Attention',
   needsYouGroup: 'Needs you',
   acrossPracticeGroup: 'Across the practice',
-  acrossPracticeSummary: (count: number): string =>
-    `${count} across the practice`,
-  acrossPracticeExpandHint: 'Read-only items for other clinicians',
-  needsYouSummary: (count: number): string => `${count} need${count === 1 ? 's' : ''} you`,
   // Home's one-line summary row ("2 need you · 3 across the practice"); it opens
   // the full screen and never implies a deeper fetch than the bounded page.
   homeSummary: (needsYou: number, across: number): string =>

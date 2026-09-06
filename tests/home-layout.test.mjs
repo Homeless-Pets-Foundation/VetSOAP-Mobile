@@ -49,6 +49,53 @@ test('deriveRecentStatusPill never reads all-complete while a failed recording i
   assert.equal(drafts.kind, 'not_submitted');
 });
 
+test('deriveRecentStatusPill describes a list, so an empty account gets no pill', async () => {
+  const { deriveRecentStatusPill } = await loadTsModule('src/lib/homeRecordingStatus.ts');
+  // "All complete" above "Your patients are waiting." is a verdict about nothing.
+  assert.equal(deriveRecentStatusPill({ recordings: [], draftCount: 0 }), null);
+  // A draft alone is still a list worth describing.
+  assert.deepEqual(plain(deriveRecentStatusPill({ recordings: [], draftCount: 2 })), {
+    kind: 'not_submitted',
+    count: 2,
+    variant: 'warning',
+  });
+});
+
+test('deriveRecentStatusPill counts pending_metadata as awaiting details, never as processing', async () => {
+  const { deriveRecentStatusPill } = await loadTsModule('src/lib/homeRecordingStatus.ts');
+  // StatusBadge renders this as "Awaiting Details" — it is blocked on the vet's
+  // own input and never advances on its own, so "1 processing" told them to wait
+  // for work that would never happen.
+  assert.deepEqual(
+    plain(deriveRecentStatusPill({ recordings: [rec('pending_metadata'), rec('completed')], draftCount: 0 })),
+    { kind: 'needs_details', count: 1, variant: 'warning' }
+  );
+  // Outranks processing (needs a person) but never outranks failed.
+  assert.equal(
+    deriveRecentStatusPill({ recordings: [rec('pending_metadata'), rec('generating')], draftCount: 0 }).kind,
+    'needs_details'
+  );
+  assert.equal(
+    deriveRecentStatusPill({ recordings: [rec('pending_metadata'), rec('failed')], draftCount: 0 }).kind,
+    'failed'
+  );
+});
+
+test('Home hides the status pill when the recordings list is unknown', async () => {
+  const home = await read('app/(app)/(tabs)/index.tsx');
+  // A failed fetch with no cache reaches the helper as an EMPTY ARRAY, which is
+  // indistinguishable from a genuine zero — so the guard lives at the call site,
+  // matching the condition that swaps the list for the error card below it.
+  assert.match(home, /const recordingsUnavailable = isError && recordings\.length === 0;/);
+  assert.match(home, /recordingsUnavailable \? null : deriveRecentStatusPill\(/);
+  assert.match(home, /\{!isLoading && statusPill && statusPillLabel \?/);
+
+  const stripped = stripComments(home);
+  const pill = stripped.indexOf('<Badge variant={statusPill.variant}');
+  const errorCard = stripped.indexOf('Could not load recordings.');
+  assert.ok(pill > 0 && errorCard > pill, 'the error card still renders below the pill row');
+});
+
 test('Home renders the Record CTA above Needs Attention and Clinic Quality last', async () => {
   const home = stripComments(await read('app/(app)/(tabs)/index.tsx'));
   const cta = home.indexOf('Record Appointment');

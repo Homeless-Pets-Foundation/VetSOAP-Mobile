@@ -84,6 +84,7 @@ jobs:
               ['Typecheck', runsOnLinux],
               ['Lint', runsOnLinux],
               ['Test', runsOnLinux],
+              ['Expo SDK deps', runsOnLinux],
               ['Analyze (javascript-typescript)', runsOnLinux],
               ['Review', runsOnLinux],
               ['Swift typecheck (durable recorder)', localMacOS],
@@ -151,6 +152,7 @@ jobs:
           - Typecheck
           - Lint
           - Test
+          - Expo SDK deps
           - Analyze (javascript-typescript)
           - Review
           - Swift typecheck (durable recorder)

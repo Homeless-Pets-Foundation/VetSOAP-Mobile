@@ -53,6 +53,27 @@ run_tests() {
   npm test
 }
 
+run_expo_deps() {
+  # Guards against an SDK-BREAKING dependency bump reaching main.
+  #
+  # `expo install --check` compares the versions actually INSTALLED in
+  # node_modules against `bundledNativeModules.json` inside the installed expo
+  # package, and exits non-zero when they disagree. Since CI runs `npm ci` from
+  # the lockfile, that is exactly what the PR proposes.
+  #
+  # Why this exists: Dependabot #205 bundled the expo-* family (which
+  # expo@55.0.31 genuinely asks for) with react-native 0.83.10 -> 0.87.1,
+  # reanimated 4.2.1 -> 4.6.0 and worklets 0.7.4 -> 0.12.1, which it does not —
+  # Dependabot moved them purely because the semver ranges admitted it. Nothing
+  # in typecheck, lint or the Node suite can see a native-side SDK mismatch, so
+  # on content that PR was green; an RN upgrade would have landed under both
+  # local native modules and both patches, all built against RN 0.83.
+  #
+  # Deliberately hermetic: this reads the installed manifest, not the network,
+  # so it cannot make a required check flaky.
+  npx expo install --check
+}
+
 run_swift() {
   if [[ "$(uname -s)" != "Darwin" ]] || ! command -v xcrun >/dev/null 2>&1; then
     echo "The Swift typecheck requires macOS with Xcode command-line tools." >&2
@@ -76,6 +97,7 @@ run_linux_suite() {
   require_node_20
   install_dependencies
   run_r2
+  run_expo_deps
   run_typecheck
   run_lint
   run_tests
@@ -98,6 +120,10 @@ case "$MODE" in
     require_node_20
     run_tests
     ;;
+  expo-deps)
+    require_node_20
+    run_expo_deps
+    ;;
   swift)
     run_swift
     ;;
@@ -109,7 +135,7 @@ case "$MODE" in
     run_swift
     ;;
   *)
-    echo "Usage: $0 {r2|typecheck|lint|test|swift|linux|all}" >&2
+    echo "Usage: $0 {r2|typecheck|lint|test|expo-deps|swift|linux|all}" >&2
     exit 2
     ;;
 esac

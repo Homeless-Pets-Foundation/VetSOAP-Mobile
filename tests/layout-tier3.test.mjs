@@ -76,8 +76,14 @@ test('patient rows show client · species · breed and a last-visit date when th
   assert.match(row, /PATIENT_LIST_COPY\.lastVisit\(/);
   assert.match(row, /PATIENT_LIST_COPY\.visitCount\(/);
   const comparator = row.slice(row.indexOf('(prev, next) =>'));
+  // Escape EVERY regex metacharacter, not just `?` and `.`: a partial escape is
+  // an incomplete-escaping defect (CodeQL js/incomplete-sanitization) even where
+  // the inputs are literals, and it silently mis-matches the moment a field name
+  // grows a `$` or a bracket.
+  const escapeRe = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const field of ['clientName', 'species', 'breed', 'pimsPatientId', 'lastVisitAt', '_count?.recordings']) {
-    assert.match(comparator, new RegExp(`prev\\.patient\\.${field.replace(/[?.]/g, '\\$&')} === next\\.patient\\.${field.replace(/[?.]/g, '\\$&')}`), field);
+    const escaped = escapeRe(field);
+    assert.match(comparator, new RegExp(`prev\\.patient\\.${escaped} === next\\.patient\\.${escaped}`), field);
   }
   const display = await read('src/lib/recordingDisplay.ts');
   assert.match(display, /export function formatIsoShortDate\(iso: string \| null \| undefined, nowMs: number\): string/);

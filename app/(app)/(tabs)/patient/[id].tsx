@@ -21,13 +21,13 @@ import { Button } from '../../../../src/components/ui/Button';
 import { friendlyErrorMessage } from '../../../../src/lib/errorCopy';
 import { TextInputField } from '../../../../src/components/ui/TextInputField';
 import { Card } from '../../../../src/components/ui/Card';
+import { IconButton } from '../../../../src/components/ui/IconButton';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
 import { CLIP_SAFE, clipSafe } from '../../../../src/components/ui/styles';
+import { PATIENT_DETAIL_COPY } from '../../../../src/constants/strings';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
 import { useThemeColors } from '../../../../src/hooks/useThemeColors';
 import type { UpdatePatient } from '../../../../src/types';
-
-type Tab = 'summary' | 'visits' | 'profile';
 
 interface ProfileDraft {
   name?: string;
@@ -145,10 +145,9 @@ export default function PatientDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { iconSm } = useResponsive();
+  const { iconMd } = useResponsive();
   const colors = useThemeColors();
 
-  const [activeTab, setActiveTab] = useState<Tab>('summary');
   const [editMode, setEditMode] = useState(false);
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({});
   const [dobError, setDobError] = useState<string | null>(null);
@@ -196,11 +195,13 @@ export default function PatientDetailScreen() {
     isLoading: recordingsLoading,
     isFetching: recordingsFetching,
     isPlaceholderData: recordingsIsPlaceholder,
+    refetch: refetchVisits,
   } = useQuery({
     queryKey: ['patient', id, 'recordings', visitsLimit],
     gcTime: PERSIST_GC_TIME_MS,
     queryFn: () => patientsApi.listRecordings(id!, { limit: visitsLimit }),
-    enabled: !!id && activeTab === 'visits' && !accessRevoked,
+    // No tab gate: the screen is one scroll now, so the visits load with it.
+    enabled: !!id && !accessRevoked,
     placeholderData: keepPreviousData,
   });
 
@@ -267,64 +268,29 @@ export default function PatientDetailScreen() {
     setEditMode(true);
   }, [patient]);
 
-  const TABS: { key: Tab; label: string }[] = [
-    { key: 'summary', label: 'Summary' },
-    { key: 'visits', label: 'Visits' },
-    { key: 'profile', label: 'Profile' },
-  ];
-
   return (
     <SafeAreaView className="flex-1 bg-surface" edges={['top']}>
-      {/* Header */}
+      {/* Header — the settings/profile pattern (IconButton back + flex-1 title).
+          The old white bar plus three underline tabs spent three tabs on about
+          one screen of content (layout tier 3, 2026-09-02). */}
       <View
-        className="flex-row items-center px-5 py-3 bg-surface-raised border-b border-border-default"
+        className="flex-row items-center px-5 pt-5 mb-4"
         style={{ maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
       >
-        <Pressable
+        <IconButton
+          icon={<ChevronLeft color={colors.contentPrimary} size={iconMd} />}
+          label="Go back"
           onPress={() => router.back()}
-          hitSlop={12}
-          accessibilityRole="button"
-          accessibilityLabel="Go back"
           className="mr-3"
-        >
-          <ChevronLeft color={colors.brand500} size={iconSm} />
-        </Pressable>
+        />
         <View className="flex-1">
-          <Text className="text-body-lg font-semibold text-content-primary" numberOfLines={1}>
+          <Text className="text-title font-bold text-content-primary" numberOfLines={1}>
             {isLoading ? 'Loading...' : (patient?.name ?? 'Patient')}
           </Text>
           {patient?.pimsPatientId && (
             <Text className="text-caption text-content-tertiary">{patient.pimsPatientId}</Text>
           )}
         </View>
-      </View>
-
-      {/* Tab Bar */}
-      <View
-        className="flex-row bg-surface-raised border-b border-border-default"
-        style={{ maxWidth: CONTENT_MAX_WIDTH, width: '100%', alignSelf: 'center' }}
-      >
-        {TABS.map((tab) => {
-          const isActive = activeTab === tab.key;
-          return (
-            <Pressable
-              key={tab.key}
-              onPress={() => setActiveTab(tab.key)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: isActive }}
-              className="flex-1 py-3 items-center"
-              style={isActive ? { borderBottomWidth: 2, borderBottomColor: colors.brand500 } : undefined}
-            >
-              <Text
-                className={`text-body-sm font-medium ${
-                  isActive ? 'text-brand-600' : 'text-content-tertiary'
-                }`}
-              >
-                {tab.label}
-              </Text>
-            </Pressable>
-          );
-        })}
       </View>
 
       {isLoading ? (
@@ -374,17 +340,18 @@ export default function PatientDetailScreen() {
           refreshControl={
             <RefreshControl
               refreshing={isRefetching}
-              onRefresh={() => { refetch().catch(() => {}); }}
+              onRefresh={() => {
+                refetch().catch(() => {});
+                refetchVisits().catch(() => {});
+              }}
               tintColor={colors.brand500}
               colors={[colors.brand500]}
               progressBackgroundColor={colors.surfaceRaised}
             />
           }
         >
-          {/* SUMMARY TAB */}
-          {activeTab === 'summary' && (
-            <View>
-              {/* AI History Summary */}
+          {/* AI History Summary */}
+          <View>
               <Card className="mb-4">
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center flex-1 mr-2">
@@ -456,102 +423,11 @@ export default function PatientDetailScreen() {
                   </>
                 )}
               </Card>
+              {/* The standalone Known Allergies / Ongoing Medications cards were
+                  removed: the Patient Details card below lists both fields. */}
+          </View>
 
-              {/* Known Allergies */}
-              {patient.knownAllergies && (
-                <Card className="mb-4">
-                  <Text className="text-body-sm font-semibold text-content-body mb-2">Known Allergies</Text>
-                  <Text className="text-body text-content-body">{patient.knownAllergies}</Text>
-                </Card>
-              )}
-
-              {/* Ongoing Medications */}
-              {patient.ongoingMedications && (
-                <Card className="mb-4">
-                  <Text className="text-body-sm font-semibold text-content-body mb-2">Ongoing Medications</Text>
-                  <Text className="text-body text-content-body">{patient.ongoingMedications}</Text>
-                </Card>
-              )}
-            </View>
-          )}
-
-          {/* VISITS TAB */}
-          {activeTab === 'visits' && (
-            <View>
-              {recordingsLoading ? (
-                <ActivityIndicator color={colors.brand500} className="my-8" />
-              ) : !recordingsData?.data.length ? (
-                <View className="items-center py-12">
-                  <Text className="text-body text-content-tertiary text-center">No visit records found</Text>
-                </View>
-              ) : (
-                recordingsData.data.map((recording) => {
-                  const date = new Date(recording.createdAt);
-                  const dateStr = isNaN(date.getTime())
-                    ? ''
-                    : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                  return (
-                    <Pressable
-                      key={recording.id}
-                      onPress={() =>
-                        router.push(`/recordings/${recording.id}` as `/recordings/${string}`)
-                      }
-                      accessibilityRole="button"
-                      accessibilityLabel={`Visit on ${dateStr}`}
-                    >
-                      <Card className="mb-3">
-                        <View className="flex-row justify-between items-start">
-                          <View className="flex-1 mr-3">
-                            <Text className="text-body-sm font-semibold text-content-primary">{dateStr}</Text>
-                            {recording.appointmentType && (
-                              <Text className="text-body-sm text-content-secondary mt-0.5">
-                                {recording.appointmentType}
-                              </Text>
-                            )}
-                          </View>
-                          {/* Was a hand-rolled neutral pill rendering the raw
-                              `recording.status`. Two bugs in one: it printed the wire
-                              value (`pending_metadata`) instead of the copy, and it
-                              shrink-wrapped, so Android "Bold text" clipped that to
-                              "pending" — a note blocked on the vet's own input read as
-                              queued (CLAUDE.md > UI Gotchas). StatusBadge already owns
-                              the correct copy ("Awaiting Details", "Retry Scheduled")
-                              and the mitigation, so the fix is to stop hand-rolling it.
-                              Intentional visual change: neutral pill -> variant badge. */}
-                          <View style={{ flexShrink: 0 }}>
-                            <StatusBadge status={recording.status} />
-                          </View>
-                        </View>
-                      </Card>
-                    </Pressable>
-                  );
-                })
-              )}
-              {/* The flat limit silently truncated long-term patients' history
-                  (WP31) — surface the total and let the user load the rest. */}
-              {(recordingsData?.pagination?.total ?? 0) > (recordingsData?.data.length ?? 0) && (
-                <View className="items-center mb-3">
-                  {/* w-full — items-center shrink-wraps this to its measured width, so
-                      Android "Bold text" drops the trailing "visits" and the count
-                      reads as a total rather than a page (CLAUDE.md > UI Gotchas). */}
-                  <Text className="text-caption text-content-tertiary mb-2 text-center w-full">
-                    Showing {recordingsData?.data.length} of {recordingsData?.pagination?.total} visits
-                  </Text>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    loading={recordingsFetching}
-                    onPress={() => setVisitsLimit((limit) => limit + 20)}
-                  >
-                    Load more visits
-                  </Button>
-                </View>
-              )}
-            </View>
-          )}
-
-          {/* PROFILE TAB */}
-          {activeTab === 'profile' && (
+          {/* Patient Details / Edit */}
             <View>
               {!editMode ? (
                 <Card className="mb-4">
@@ -694,7 +570,82 @@ export default function PatientDetailScreen() {
                 </Card>
               )}
             </View>
-          )}
+
+          {/* Visits */}
+          <Text className="section-title mb-3">
+            {PATIENT_DETAIL_COPY.visitsHeading(recordingsData?.pagination?.total ?? null)}
+          </Text>
+          <View>
+              {recordingsLoading ? (
+                <ActivityIndicator color={colors.brand500} className="my-8" />
+              ) : !recordingsData?.data.length ? (
+                <View className="items-center py-12">
+                  <Text className="text-body text-content-tertiary text-center">No visit records found</Text>
+                </View>
+              ) : (
+                recordingsData.data.map((recording) => {
+                  const date = new Date(recording.createdAt);
+                  const dateStr = isNaN(date.getTime())
+                    ? ''
+                    : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                  return (
+                    <Pressable
+                      key={recording.id}
+                      onPress={() =>
+                        router.push(`/recordings/${recording.id}` as `/recordings/${string}`)
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel={`Visit on ${dateStr}`}
+                    >
+                      <Card className="mb-3">
+                        <View className="flex-row justify-between items-start">
+                          <View className="flex-1 mr-3">
+                            <Text className="text-body-sm font-semibold text-content-primary">{dateStr}</Text>
+                            {recording.appointmentType && (
+                              <Text className="text-body-sm text-content-secondary mt-0.5">
+                                {recording.appointmentType}
+                              </Text>
+                            )}
+                          </View>
+                          {/* Was a hand-rolled neutral pill rendering the raw
+                              `recording.status`. Two bugs in one: it printed the wire
+                              value (`pending_metadata`) instead of the copy, and it
+                              shrink-wrapped, so Android "Bold text" clipped that to
+                              "pending" — a note blocked on the vet's own input read as
+                              queued (CLAUDE.md > UI Gotchas). StatusBadge already owns
+                              the correct copy ("Awaiting Details", "Retry Scheduled")
+                              and the mitigation, so the fix is to stop hand-rolling it.
+                              Intentional visual change: neutral pill -> variant badge. */}
+                          <View style={{ flexShrink: 0 }}>
+                            <StatusBadge status={recording.status} />
+                          </View>
+                        </View>
+                      </Card>
+                    </Pressable>
+                  );
+                })
+              )}
+              {/* The flat limit silently truncated long-term patients' history
+                  (WP31) — surface the total and let the user load the rest. */}
+              {(recordingsData?.pagination?.total ?? 0) > (recordingsData?.data.length ?? 0) && (
+                <View className="items-center mb-3">
+                  {/* w-full — items-center shrink-wraps this to its measured width, so
+                      Android "Bold text" drops the trailing "visits" and the count
+                      reads as a total rather than a page (CLAUDE.md > UI Gotchas). */}
+                  <Text className="text-caption text-content-tertiary mb-2 text-center w-full">
+                    Showing {recordingsData?.data.length} of {recordingsData?.pagination?.total} visits
+                  </Text>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={recordingsFetching}
+                    onPress={() => setVisitsLimit((limit) => limit + 20)}
+                  >
+                    Load more visits
+                  </Button>
+                </View>
+              )}
+            </View>
         </ScrollView>
       )}
     </SafeAreaView>

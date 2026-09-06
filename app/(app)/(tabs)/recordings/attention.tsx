@@ -25,6 +25,8 @@ interface AttentionSection {
   data: AttentionFeedItem[];
   /** Row count actually LOADED for this group (never a server-page estimate). */
   count: number;
+  /** Said once under the header instead of on every row (layout tier 3). */
+  note?: string;
 }
 
 export default function AttentionScreen() {
@@ -66,6 +68,7 @@ export default function AttentionScreen() {
         title: ATTENTION_FEED_COPY.acrossPracticeGroup,
         data: feed.groups.acrossPractice,
         count: feed.groups.acrossPractice.length,
+        note: ATTENTION_FEED_COPY.readOnlyNote,
       });
     }
     return result;
@@ -189,12 +192,17 @@ export default function AttentionScreen() {
             const typed = section as unknown as AttentionSection;
             const label = `${typed.title} (${typed.count})`;
             // A label, never a control — the rows below it are always rendered.
-            // Each row already carries its own read-only note, so the group
-            // header does not repeat it.
+            // The read-only note is said here once for the whole group; it used
+            // to repeat on every across-practice row.
             return (
-              <Text className="section-title mt-4 mb-3" accessibilityRole="header">
-                {label}
-              </Text>
+              <View className="mt-4 mb-3">
+                <Text className="section-title" accessibilityRole="header">
+                  {label}
+                </Text>
+                {typed.note ? (
+                  <Text className="text-body-sm text-content-tertiary mt-0.5">{typed.note}</Text>
+                ) : null}
+              </View>
             );
           }}
           ListHeaderComponent={

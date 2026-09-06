@@ -3,6 +3,7 @@ import type { DraftMetadata } from './draftStorage';
 import { fileExists } from './fileOps';
 import { isValidDurableId } from './durableAudio/paths';
 import { clonePendingConfirm } from './pendingConfirm';
+import { getCreatedAtMs, getSubmittedAtMs } from './recordingDateGroups';
 
 const LOCAL_DRAFT_PREFIX = 'local-draft:';
 type RecordingSortOrder = 'asc' | 'desc';
@@ -88,19 +89,9 @@ export function draftMetadataToRecording(
   };
 }
 
-function getTimestampMs(value: string | null | undefined): number {
-  if (!value) return 0;
-  const parsed = new Date(value).getTime();
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function getCreatedAtMs(recording: Recording): number {
-  return getTimestampMs(recording.createdAt);
-}
-
-function getSubmittedAtMs(recording: Recording): number {
-  return getTimestampMs(recording.submittedAt) || getCreatedAtMs(recording);
-}
+// The timestamp precedence now lives beside the date grouping that must agree
+// with this sort (layout tier 3, 2026-09-02) — one definition, two consumers.
+export { getCreatedAtMs, getSubmittedAtMs, getTimestampMs } from './recordingDateGroups';
 
 export function sortRecordingsByCreatedAt(
   recordings: Recording[],

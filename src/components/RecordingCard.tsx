@@ -72,8 +72,12 @@ export const RecordingCard = React.memo(function RecordingCard({
   const router = useRouter();
   const colors = useThemeColors();
 
+  // Same timestamp the Recordings list sorts and groups by (`submittedAt` with a
+  // `createdAt` fallback). Printing `createdAt` here put "Sep 3, 10:14 AM" on a
+  // card sitting under a "Today" header — the section and the row disagreeing
+  // about the same recording.
   const formattedDate = React.useMemo(() => {
-    const parsedDate = new Date(recording.createdAt);
+    const parsedDate = new Date(recording.submittedAt ?? recording.createdAt);
     return isNaN(parsedDate.getTime())
       ? ''
       : parsedDate.toLocaleDateString('en-US', {
@@ -82,7 +86,7 @@ export const RecordingCard = React.memo(function RecordingCard({
           hour: '2-digit',
           minute: '2-digit',
         });
-  }, [recording.createdAt]);
+  }, [recording.submittedAt, recording.createdAt]);
 
   const description = React.useMemo(
     () => [
@@ -212,6 +216,7 @@ export const RecordingCard = React.memo(function RecordingCard({
   prev.recording.species === next.recording.species &&
   prev.recording.breed === next.recording.breed &&
   prev.recording.createdAt === next.recording.createdAt &&
+  prev.recording.submittedAt === next.recording.submittedAt &&
   // Without these, linking a recording to a patient (metadata confirm updates
   // cached lists in place) never surfaces the patient-history link until a
   // full refetch replaces object identity.

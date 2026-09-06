@@ -8,6 +8,16 @@ export function displayPatientName(
   return name ? name : UNTITLED_VISIT_LABEL;
 }
 
+/**
+ * Same short date as `formatShortDate`, from an ISO string. `Date.parse` of
+ * junk yields NaN, which `formatShortDate` already turns into '' — so rule 11
+ * is honoured in exactly one place.
+ */
+export function formatIsoShortDate(iso: string | null | undefined, nowMs: number): string {
+  if (typeof iso === 'string' && iso) return formatShortDate(Date.parse(iso), nowMs);
+  return '';
+}
+
 export function isUntitledVisit(
   recording: Pick<Recording, 'patientName'> | { patientName?: string | null } | null | undefined
 ): boolean {

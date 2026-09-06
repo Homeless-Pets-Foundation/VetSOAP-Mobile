@@ -34,7 +34,10 @@ test('patient detail treats 403/404 as terminal and evicts the cached profile', 
   assert.match(src, /const \[accessRevoked, setAccessRevoked\] = useState<\{ status: number \} \| null>\(null\)/);
   assert.match(src, /error\.status === 403 \|\| error\.status === 404/);
   assert.match(src, /enabled: !!id && !accessRevoked/);
-  assert.match(src, /enabled: !!id && activeTab === 'visits' && !accessRevoked/);
+  // Visits are always loaded now (no tab gate — the detail is one scroll,
+  // layout tier 3); the terminal latch still disables both queries.
+  assert.match(src, /queryKey: \['patient', id, 'recordings', visitsLimit\][\s\S]*?enabled: !!id && !accessRevoked/);
+  assert.doesNotMatch(src, /activeTab === 'visits'/);
   assert.match(src, /queryClient\.removeQueries\(\{ queryKey: \['patient', id\] \}\)/);
   // Terminal render branch comes right after the loading branch.
   assert.match(src, /\) : accessRevoked \? \(/);

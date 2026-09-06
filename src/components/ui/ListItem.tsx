@@ -21,6 +21,8 @@ interface ListItemProps extends Omit<PressableProps, 'children' | 'style' | 'onP
   titleClassName?: string;
   subtitleClassName?: string;
   metaClassName?: string;
+  /** Attention rows pass 3 — their descriptions ellipsized mid-sentence at 2. */
+  subtitleNumberOfLines?: number;
   onPress?: (event: GestureResponderEvent) => void | Promise<void>;
 }
 
@@ -56,6 +58,7 @@ export function ListItem({
   titleClassName,
   subtitleClassName,
   metaClassName,
+  subtitleNumberOfLines = 2,
   onPress,
   accessibilityLabel,
   ...rest
@@ -88,7 +91,11 @@ export function ListItem({
         </View>
         {subtitle ? (
           <View className="mt-0.5">
-            {renderText(subtitle, cx('text-body-sm text-content-tertiary', subtitleClassName), 2)}
+            {renderText(
+              subtitle,
+              cx('text-body-sm text-content-tertiary', subtitleClassName),
+              subtitleNumberOfLines
+            )}
           </View>
         ) : null}
         {meta ? (

@@ -1,9 +1,22 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
+
+/**
+ * Resolve the expo-audio patch by PACKAGE, never by version. The filename
+ * carries the version and is renamed on every bump; tests/patch-alignment-guard
+ * .test.mjs already owns the filename-matches-the-lock contract, so pinning the
+ * version here only turns a correct rename into a false failure.
+ */
+async function readExpoAudioPatch() {
+  const entries = await readdir(new URL('patches/', root));
+  const matches = entries.filter((name) => /^expo-audio\+.+\.patch$/.test(name));
+  assert.equal(matches.length, 1, `expected exactly one expo-audio patch, found: ${matches.join(', ') || '(none)'}`);
+  return read(`patches/${matches[0]}`);
+}
 
 test('recording detail duration enables single-part idle positioning without autoplay', async () => {
   const detail = await read('app/(app)/(tabs)/recordings/[id].tsx');
@@ -60,7 +73,7 @@ test('audio hook returns native-duration-clamped seek position and rejects failu
 });
 
 test('Android playback enables seeking in durable ADTS AAC recordings', async () => {
-  const patch = await read('patches/expo-audio+55.0.16.patch');
+  const patch = await readExpoAudioPatch();
   const packageJson = JSON.parse(await read('package.json'));
 
   assert.deepEqual(packageJson.expo.autolinking.android.buildFromSource, ['expo-audio']);

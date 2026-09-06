@@ -54,6 +54,42 @@ test('groupRecordingsByDate omits empty groups and keeps incoming order inside a
   assert.equal(groupRecordingsByDate([], now).length, 0);
 });
 
+test('dateGroupKeyFor walks calendar days, so DST cannot shift the boundaries', async () => {
+  const { dateGroupKeyFor } = await load();
+  // US fall-back 2026-11-01 (a 25h local day) and spring-forward 2026-03-08 (23h).
+  // Subtracting a fixed 24h from start-of-today lands an hour off on both.
+  const afterFallBack = new Date(2026, 10, 2, 12, 0, 0, 0).getTime();
+  const yesterday0030 = new Date(2026, 10, 1, 0, 30, 0, 0).getTime();
+  assert.equal(dateGroupKeyFor(yesterday0030, afterFallBack), 'yesterday');
+
+  const afterSpringForward = new Date(2026, 2, 9, 12, 0, 0, 0).getTime();
+  const twoDaysAgo2330 = new Date(2026, 2, 7, 23, 30, 0, 0).getTime();
+  assert.equal(dateGroupKeyFor(twoDaysAgo2330, afterSpringForward), 'this_week');
+  const yesterday2330 = new Date(2026, 2, 8, 23, 30, 0, 0).getTime();
+  assert.equal(dateGroupKeyFor(yesterday2330, afterSpringForward), 'yesterday');
+});
+
+test('groupRecordingsByDate forces pinned just-submitted rows into Today', async () => {
+  const { groupRecordingsByDate } = await load();
+  const iso = (ms) => new Date(ms).toISOString();
+  // A resumed three-day-old draft: no submittedAt, so the createdAt fallback
+  // would file it under "This week", several sections below the banner.
+  const resumedDraft = { id: 'resumed', submittedAt: null, createdAt: iso(now - 3 * DAY) };
+  const older = { id: 'older', submittedAt: iso(now - 20 * DAY), createdAt: null };
+
+  const unpinned = groupRecordingsByDate([resumedDraft, older], now);
+  assert.deepEqual(JSON.parse(JSON.stringify(unpinned.map((s) => s.key))), ['this_week', 'earlier']);
+
+  const pinnedSections = groupRecordingsByDate([resumedDraft, older], now, ['resumed']);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(pinnedSections.map((s) => ({ key: s.key, ids: s.data.map((r) => r.id) })))),
+    [
+      { key: 'today', ids: ['resumed'] },
+      { key: 'earlier', ids: ['older'] },
+    ]
+  );
+});
+
 test('group titles come from the copy catalog', async () => {
   const { groupRecordingsByDate } = await load();
   const [section] = groupRecordingsByDate([{ id: 'x', createdAt: new Date(now).toISOString() }], now);

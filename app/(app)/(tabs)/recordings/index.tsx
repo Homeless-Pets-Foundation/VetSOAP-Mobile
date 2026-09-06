@@ -329,9 +329,12 @@ export default function RecordingsListScreen() {
   // new page just grows "Earlier". `nowTick` is bumped on focus so a tab left
   // open across midnight regroups instead of filing today under "Yesterday".
   const dateSections = useMemo(
-    () => groupRecordingsByDate(displayRecordings, Date.now()),
+    // `submittedIds` are the rows pinSubmitted put at the top; they are forced
+    // into "Today" so grouping cannot file the highlighted row several sections
+    // below the banner that names it.
+    () => groupRecordingsByDate(displayRecordings, Date.now(), submittedIds),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nowTick is the midnight/refocus trigger
-    [displayRecordings, nowTick]
+    [displayRecordings, nowTick, submittedIds]
   );
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
   const handleRefresh = useCallback(() => {

@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View } from 'react-native';
 import { Text } from './ui/Text';
-import { CheckCircle, Copy, FileText, Share2 } from 'lucide-react-native';
+import { CheckCircle, ChevronDown, ChevronUp, Copy, FileText, Share2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useQueryClient } from '@tanstack/react-query';
 import { soapNotesApi, type ExportTarget } from '../api/soapNotes';
@@ -151,7 +151,24 @@ export function ExportSheet({
       </View>
 
       <View className="mt-3">
-        <Button variant="ghost" size="sm" onPress={() => setShowPims((value) => !value)}>
+        {/* Bordered, not ghost: as plain text this did not read as tappable
+            (layout assessment, 2026-09-02). Button spreads rest props last, so
+            the expanded state replaces its own disabled/busy state — fine here,
+            this button is never disabled. */}
+        <Button
+          variant="secondary"
+          size="sm"
+          className="w-full"
+          onPress={() => setShowPims((value) => !value)}
+          accessibilityState={{ expanded: showPims }}
+          icon={
+            showPims ? (
+              <ChevronUp color={colors.contentBody} size={14} />
+            ) : (
+              <ChevronDown color={colors.contentBody} size={14} />
+            )
+          }
+        >
           {EXPORT_COPY.markPims}
         </Button>
         {showPims && (

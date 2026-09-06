@@ -11,6 +11,12 @@ export function groupRecordingTasks(tasks: RecordingTask[]) {
     .filter((g) => g.tasks.length > 0);
 }
 
+// Still waiting on the vet — drives the collapsed Suggested Tasks badge
+// ("5 suggestions" → "All reviewed").
+export function countSuggestedTasks(tasks: RecordingTask[]): number {
+  return tasks.filter((t) => t.status === 'suggested').length;
+}
+
 // Task IDs are server UUIDs. Rejecting anything else here also blocks
 // path-traversal ids ('.', '..', 'a/b') from ever reaching the PATCH URL.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

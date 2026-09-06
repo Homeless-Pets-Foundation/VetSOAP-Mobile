@@ -208,6 +208,38 @@ jobs:
       - name: Run tests
         run: ./scripts/ci.sh test
 
+  expo-deps:
+    name: Expo SDK deps
+    needs: confirm-pr-head
+    runs-on: "runs-on=${{ github.run_id }}-expo-deps-${{ github.run_attempt }}/runner=linux-ci"
+    timeout-minutes: 30
+    steps:
+      - name: Checkout confirmed PR head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.confirm-pr-head.outputs.head-sha }}
+          clean: true
+          persist-credentials: false
+      - name: Report and verify commit
+        env:
+          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "git rev-parse HEAD=$checked_out_sha"
+          test "$GITHUB_SHA" = "$CONFIRMED_SHA"
+          test "$checked_out_sha" = "$CONFIRMED_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Check installed versions against the Expo SDK
+        run: ./scripts/ci.sh expo-deps
+
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: confirm-pr-head

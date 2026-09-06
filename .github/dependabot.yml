@@ -18,6 +18,49 @@ updates:
         update-types:
           - "version-update:semver-major"
 
+      # The Expo SDK owns these versions; Dependabot cannot see that.
+      #
+      # `expo@<version>/bundledNativeModules.json` pins the whole native surface,
+      # and these packages move ONLY when `expo` itself moves and that manifest
+      # advances them. Dependabot has no way to consult it, so it bumps whatever
+      # the semver range admits.
+      #
+      # On 2026-09-06 that shipped PR #205 as "39 updates": the expo-* half was
+      # exactly what expo@55.0.31 asks for, but welded to it was
+      # react-native 0.83.10 -> 0.87.1, reanimated 4.2.1 -> 4.6.0 and
+      # worklets 0.7.4 -> 0.12.1 — none of which 55.0.31 sanctions; it still pins
+      # 0.83.10 / 4.2.1 / 0.7.4, unchanged from 55.0.28. That is an SDK upgrade
+      # wearing a dependency bump's clothes, and it would have landed underneath
+      # modules/captivet-audio-focus, modules/captivet-durable-recorder and both
+      # patches, all built against RN 0.83. Only the semver-major rule above stood
+      # in the way, and 0.83 -> 0.87 is a MINOR, so nothing did.
+      #
+      # These are exact-pinned (react, react-dom, react-native, reanimated,
+      # worklets, svg) or ~-pinned by the SDK, so ANY bump here is unsanctioned
+      # until the SDK moves. They come back as part of a deliberate SDK upgrade
+      # with a device pass, never as an automated PR.
+      #
+      # `./scripts/ci.sh expo-deps` is the belt to this braces: it runs
+      # `expo install --check` as a required CI job, so an unsanctioned version
+      # that arrives by any other route still fails.
+      - dependency-name: "react"
+      - dependency-name: "react-dom"
+      - dependency-name: "@types/react"
+      - dependency-name: "react-native"
+      - dependency-name: "react-native-reanimated"
+      - dependency-name: "react-native-worklets"
+      - dependency-name: "react-native-screens"
+      - dependency-name: "react-native-safe-area-context"
+      - dependency-name: "react-native-gesture-handler"
+      - dependency-name: "react-native-svg"
+
+      # Also SDK-pinned (~7.11.0), and expo-doctor fails the 7.13.0 bump #205
+      # proposed. Patches inside 7.11.x still flow — those stay in range.
+      - dependency-name: "@sentry/react-native"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

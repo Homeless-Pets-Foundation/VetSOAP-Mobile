@@ -1,0 +1,80 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import { loadTsModule } from './helpers/loadTs.mjs';
+const { getRecordingFailureAction: action, getRecordingFailureRemedyCategory: category, isRecordingPermanentFailure, RECORDING_PERMANENT_ERROR_CODES } = await loadTsModule('src/lib/recordingRetryState.ts');
+const cat = (...ids) => ({ default: ids[0] ?? null, options: ids.map(id => ({ id, label: id })) });
+const models = { transcription: cat('gemini-3.5-transcribe', 'nova-3-medical', 'nova-3'), soap: cat('gemini-a', 'claude-a') };
+const failure = (errorCode, extra = {}) => ({ status: 'failed', errorCode, ...extra });
+
+test('verified permanent codes and remedy categories stay separate', () => {
+  const permanent = ['INVALID_AUDIO', 'AUDIO_TOO_LONG', 'MISSING_AUDIO', 'MISSING_DEEPGRAM_KEY', 'INVALID_DEEPGRAM_KEY', 'MISSING_TRANSCRIPTION_KEY', 'INVALID_TRANSCRIPTION_KEY', 'MISSING_LLM_KEY', 'INVALID_LLM_KEY', 'PAYMENT_REQUIRED', 'CREDENTIALS_REQUIRED', 'TRIAL_SOAP_LIMIT_REACHED', 'R2_NOT_CONFIGURED', 'IMPORT_FAILED'];
+  assert.equal(RECORDING_PERMANENT_ERROR_CODES.size, 14);
+  for (const code of permanent) assert.equal(isRecordingPermanentFailure(code), true);
+  for (const code of ['AUDIO_TOO_LONG', 'MISSING_DEEPGRAM_KEY', 'INVALID_DEEPGRAM_KEY', 'MISSING_TRANSCRIPTION_KEY', 'INVALID_TRANSCRIPTION_KEY']) assert.equal(category(code), 'transcription');
+  for (const code of ['MISSING_LLM_KEY', 'INVALID_LLM_KEY']) assert.equal(category(code), 'soap');
+  for (const code of permanent.filter(code => !code.endsWith('_KEY') && code !== 'AUDIO_TOO_LONG')) {
+    assert.equal(category(code), null);
+    assert.equal(action(failure(code), models), 'retry');
+  }
+  for (const code of ['TRANSCRIPTION_FAILED', 'UNKNOWN', null, undefined]) {
+    assert.equal(isRecordingPermanentFailure(code), false);
+    assert.equal(action(failure(code), models), 'retry');
+  }
+});
+
+test('failure action table covers status, missing models and unusable categories', () => {
+  assert.equal(action(failure('AUDIO_TOO_LONG'), models), 'reprocess');
+  for (const status of ['retry_scheduled', 'transcribing', 'generating', 'completed']) assert.equal(action(failure('AUDIO_TOO_LONG', { status }), models), 'retry');
+  for (const input of [null, undefined]) assert.equal(action(failure('AUDIO_TOO_LONG'), input), 'retry');
+  for (const failing of ['AUDIO_TOO_LONG', 'INVALID_LLM_KEY']) {
+    for (const empty of ['transcription', 'soap']) assert.equal(action(failure(failing), { ...models, [empty]: cat() }), 'reprocess_blocked');
+  }
+  assert.equal(action(failure('AUDIO_TOO_LONG'), { ...models, transcription: cat('gemini-3.5-transcribe') }), 'reprocess_blocked');
+});
+
+test('key failures need recognized distinct providers in the failing category', () => {
+  for (const code of ['INVALID_DEEPGRAM_KEY', 'MISSING_TRANSCRIPTION_KEY']) {
+    assert.equal(action(failure(code), models), 'reprocess');
+    assert.equal(action(failure(code), { ...models, transcription: cat('nova-3', 'nova-3-medical', 'unknown') }), 'reprocess_blocked');
+  }
+  assert.equal(action(failure('INVALID_LLM_KEY'), { ...models, soap: cat('gemini-a', 'gemini-b', 'unknown') }), 'reprocess_blocked');
+  assert.equal(action(failure('INVALID_LLM_KEY'), models), 'reprocess');
+  assert.equal(action(failure('INVALID_TRANSCRIPTION_KEY', { foreignLanguage: true }), { ...models, transcription: cat('nova-3-medical', 'nova-3') }), 'reprocess_blocked');
+  assert.equal(action(failure('INVALID_LLM_KEY', { foreignLanguage: true }), { ...models, transcription: cat('gemini-3.5-transcribe') }), 'reprocess');
+});
+
+test('detail wires gated inline remedy, shared query, secondary Retry and clipboard-only details', async () => {
+  const detail = await readFile(new URL('../app/(app)/(tabs)/recordings/[id].tsx', import.meta.url), 'utf8');
+  assert.match(detail, /queryKey: \['orgAiModels'\]/);
+  assert.match(detail, /refetchOnMount: 'always',[\s\S]*?enabled: !!user && canRecordAppointments/);
+  assert.match(detail, /getRecordingFailureAction\(recording, aiModels\)/);
+  assert.match(detail, /showFailureRemedy = canRetryProcessing && retryPresentation === 'retry'/);
+  assert.match(detail, /remedyCategory=\{offerRemedy \? remedyCategory/);
+  assert.match(detail, /remedyErrorCode=\{offerRemedy \? recording.errorCode/);
+  const failed = detail.slice(detail.indexOf('{/* Failed */}'), detail.indexOf('{/* Transcript Quality'));
+  assert.match(failed, /variant=\{showFailureRemedy \? 'secondary' : 'primary'\}/);
+  assert.match(failed, /<\/Card>\s*\{offerRemedy && reprocessSheet\}/);
+  assert.match(failed, /copyWithAutoClear\(recording.errorMessage/);
+  assert.doesNotMatch(failed, /\{recording.errorMessage\}/);
+  assert.match(failed, /recording.errorCode === 'AUDIO_TOO_LONG'/);
+  assert.match(failed, /user\?\.role === 'owner' \|\| user\?\.role === 'admin'/);
+  assert.match(detail, /canReprocess && !showFailureRemedy/);
+  assert.match(detail, /!showFailureRemedy && reprocessSheet/);
+});
+
+test('sheet validates refreshed selections, normalizes changes and keeps safe errors and MFA', async () => {
+  const sheet = await readFile(new URL('../src/components/ReprocessSheet.tsx', import.meta.url), 'utf8');
+  assert.match(sheet, /getInitialReprocessSelection\(models, selectionOptions\)/);
+  assert.match(sheet, /reconcileReprocessSelection\(models, previous, selectionOptions\)/);
+  assert.match(sheet, /normalizeForForeignLanguage\(v, recordingForeignLanguage\)/);
+  assert.match(sheet, /isReprocessSelectionValid\(current.effectiveModels, submitted\)/);
+  assert.match(sheet, /disabled=\{mutation.isPending \|\| !selectionValid\}/);
+  assert.match(sheet, /mutation.mutate\(latest.current.resolvedSelection\)/);
+  assert.match(sheet, /error.code === 'MFA_REQUIRED'/);
+  assert.doesNotMatch(sheet, /error.message/);
+  assert.match(sheet, /friendlyErrorMessage\(error\)/);
+  assert.match(sheet, /REPROCESS_MODELS_COPY.foreignLanguage/);
+  assert.match(sheet, /getCurrentModelLabel\(transcriptionModelId, effectiveModels.transcription\)/);
+  assert.match(sheet, /getCurrentModelLabel\(soapModel, effectiveModels.soap\)/);
+});

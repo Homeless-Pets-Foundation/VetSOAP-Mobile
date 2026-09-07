@@ -72,8 +72,8 @@ test('auth init defers token validation to the first authed request (no blocking
 test('sync_server_draft network failures are breadcrumbed, not captured as Sentry errors', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
 
-  assert.match(src, /function isNetworkRequestFailed\(error: unknown\): boolean/);
-  assert.match(src, /if \(isNetworkRequestFailed\(error\)\) \{/);
+  assert.match(src, /import \{ isDraftSyncTransportError \} from '.*\/draftSyncErrors'/);
+  assert.match(src, /if \(isDraftSyncTransportError\(error\)\) \{/);
   assert.match(src, /breadcrumb\('draft', 'sync_server_draft_transient_network'/);
 
   const catchMatch = src.match(

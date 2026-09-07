@@ -98,10 +98,11 @@ test('tools row gates each chip on the same permission as the card it reveals', 
   assert.match(tools, /RECORDING_TOOLS_COPY\.heading/);
   assert.match(tools, /openTools\.has\('email'\) && recording\.status === 'completed' && recordingPermissions\.canExport/);
   assert.match(tools, /openTools\.has\('translate'\) && recording\.status === 'completed' && recordingPermissions\.canCopy/);
-  assert.match(tools, /openTools\.has\('reprocess'\) && canReprocess/);
+  assert.match(detail, /openTools\.has\('reprocess'\) && canReprocess/);
+  assert.match(tools, /!showFailureRemedy && reprocessSheet/);
   assert.match(tools, /<ClientEmailCard recordingId=\{id\} \/>/);
   assert.match(tools, /<TranslationCard recordingId=\{id\} \/>/);
-  assert.match(tools, /<ReprocessSheet[\s\S]*?defaultExpanded[\s\S]*?onDismiss=\{/);
+  assert.match(detail, /<ReprocessSheet[\s\S]*?defaultExpanded[\s\S]*?onDismiss=\{/);
   assert.match(tools, /onPress=\{openConsultAI\}/);
   // The reprocess gate keeps the literal the recording-retry-state guard greps.
   assert.match(detail, /const canReprocess =[\s\S]*?!!recording\.audioFileUrl &&\s*retryPresentation !== 'audio_unavailable' &&\s*aiModels/);

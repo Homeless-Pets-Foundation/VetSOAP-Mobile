@@ -309,6 +309,7 @@ export const ERROR_COPY = {
   uploadGeneric: 'Upload failed. Please try again.',
   processingFailedBody:
     'Something went wrong while generating this note. Retry processing, or copy the details for support.',
+  audioTooLongRemedy: 'Gemini’s one-hour recording limit was exceeded; reprocess with Deepgram Nova 3 Medical, or Nova 3 for foreign-language recordings.',
   copyDetails: 'Copy details for support',
   detailsCopied: 'Details copied',
 } as const;
@@ -770,6 +771,12 @@ export const REGENERATE_SOAP_COPY = {
 
 export const REPROCESS_MODELS_COPY = {
   entryButton: 'Reprocess with different models',
+  remedyButton: 'Choose a different model',
+  transcriptionBlocked: 'No alternative transcription provider or model is available for this recording.',
+  soapBlocked: 'No alternative SOAP provider or model is available for this recording.',
+  adminProviders: 'Review providers in the web app’s Settings → API Keys.',
+  vetProviders: 'Ask a practice admin to review providers.',
+  foreignLanguage: 'Deepgram uses Nova 3 for foreign-language recordings.',
   sheetTitle: 'Reprocess Recording',
   sheetBody:
     'Choose the transcription and SOAP models, then reprocess. This replaces the current ' +
@@ -780,6 +787,7 @@ export const REPROCESS_MODELS_COPY = {
   transcriptionLabel: 'Transcription model',
   soapLabel: 'SOAP note model',
   currentPrefix: 'Last used: ',
+  selectedPrefix: 'Selected: ',
   confirm: 'Reprocess', // clipping mitigation now lives inside ui/Button — plain label here
   cancel: 'Cancel',
   failure: 'Could not start reprocessing. Please try again.',

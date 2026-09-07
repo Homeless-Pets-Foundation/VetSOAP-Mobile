@@ -66,6 +66,7 @@ import {
   AUDIO_PLAYER_COPY,
   ATTENTION_FEED_COPY,
   RECORDING_TOOLS_COPY,
+  REPROCESS_MODELS_COPY,
   DELETE_RECORDING_COPY,
   ERROR_COPY,
   METADATA_REVIEW_COPY,
@@ -103,7 +104,7 @@ import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
 import { canRecordAppointments } from '../../../../src/lib/recordingPermissions';
 import { hasVisibleReprocessModelChoice } from '../../../../src/lib/aiModels';
 import { getTasksRefetchInterval } from '../../../../src/lib/recordingTasks';
-import { getRecordingRetryPresentation } from '../../../../src/lib/recordingRetryState';
+import { getRecordingRetryPresentation, getRecordingFailureAction, getRecordingFailureRemedyCategory } from '../../../../src/lib/recordingRetryState';
 import { useAuthUser } from '../../../../src/hooks/useAuth';
 import { displayPatientName, isUntitledVisit } from '../../../../src/lib/recordingDisplay';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
@@ -1096,6 +1097,7 @@ export default function RecordingDetailScreen() {
   // seeds status='uploaded' → the existing poller + ProcessingStepper take over.
   const canReprocess = Boolean(
     id &&
+      canRetryProcessing &&
       (recording.status === 'completed' || recording.status === 'failed') &&
       !!recording.audioFileUrl &&
       retryPresentation !== 'audio_unavailable' &&
@@ -1104,6 +1106,29 @@ export default function RecordingDetailScreen() {
         recordingForeignLanguage: recording.foreignLanguage,
       })
   );
+  const failureAction = getRecordingFailureAction(recording, aiModels);
+  const remedyCategory = getRecordingFailureRemedyCategory(recording.errorCode);
+  const showFailureRemedy = canRetryProcessing && retryPresentation === 'retry' && failureAction !== 'retry';
+  const offerRemedy = showFailureRemedy && failureAction === 'reprocess';
+  const reprocessSheet = id && openTools.has('reprocess') && canReprocess && aiModels ? (
+    <ReprocessSheet
+      key={id}
+      recordingId={id}
+      models={aiModels}
+      canManage={canRecordAppointments(user?.role)}
+      currentTranscriptionModel={recording.costBreakdown?.transcriptionModel}
+      currentSoapModel={recording.costBreakdown?.modelUsed}
+      recordingForeignLanguage={recording.foreignLanguage}
+      remedyCategory={offerRemedy ? remedyCategory : undefined}
+      remedyErrorCode={offerRemedy ? recording.errorCode : undefined}
+      defaultExpanded
+      onDismiss={() => closeTool('reprocess')}
+      onReprocessStarted={() => {
+        pollingStartedAtRef.current = Date.now();
+        setOpenTools(new Set());
+      }}
+    />
+  ) : null;
   const renderInfoField = (
     field: RecordingMetadataField | null,
     label: string,
@@ -1553,13 +1578,36 @@ export default function RecordingDetailScreen() {
                 {RECORDING_DETAIL_COPY.processingFailedTitle}
               </Text>
               <Text className="text-body-sm text-status-danger mb-3">
-                {ERROR_COPY.processingFailedBody}
+                {recording.errorCode === 'AUDIO_TOO_LONG'
+                  ? ERROR_COPY.audioTooLongRemedy : ERROR_COPY.processingFailedBody}
               </Text>
-              <View className="self-start flex-row gap-2">
+              {showFailureRemedy && (
+                <Text className="text-body-sm text-content-tertiary mb-3">
+                  {failureAction === 'reprocess_blocked' && (
+                    remedyCategory === 'transcription'
+                      ? REPROCESS_MODELS_COPY.transcriptionBlocked + ' '
+                      : REPROCESS_MODELS_COPY.soapBlocked + ' '
+                  )}
+                  {user?.role === 'owner' || user?.role === 'admin'
+                    ? REPROCESS_MODELS_COPY.adminProviders : REPROCESS_MODELS_COPY.vetProviders}
+                </Text>
+              )}
+              {offerRemedy && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={retryMutation.isPending || openTools.has('reprocess')}
+                  onPress={() => toggleTool('reprocess')}
+                >
+                  {REPROCESS_MODELS_COPY.remedyButton}
+                </Button>
+              )}
+              <View className="flex-row flex-wrap gap-2 mt-2">
                 {retryPresentation === 'retry' && canRetryProcessing && (
                   <Button
-                    variant="primary"
+                    variant={showFailureRemedy ? 'secondary' : 'primary'}
                     size="sm"
+                    disabled={offerRemedy && openTools.has('reprocess')}
                     onPress={() => retryMutation.mutate()}
                     loading={retryMutation.isPending}
                     accessibilityLabel="Retry processing"
@@ -1582,6 +1630,7 @@ export default function RecordingDetailScreen() {
                 ) : null}
               </View>
             </Card>
+            {offerRemedy && reprocessSheet}
           </Animated.View>
         )}
 
@@ -1786,7 +1835,7 @@ export default function RecordingDetailScreen() {
               >
                 {RECORDING_TOOLS_COPY.consult}
               </Button>
-              {canReprocess && (
+              {canReprocess && !showFailureRemedy && (
                 <Button
                   size="sm"
                   variant={openTools.has('reprocess') ? 'primary' : 'secondary'}
@@ -1806,22 +1855,7 @@ export default function RecordingDetailScreen() {
         {id && openTools.has('translate') && recording.status === 'completed' && recordingPermissions.canCopy && (
           <TranslationCard recordingId={id} />
         )}
-        {id && openTools.has('reprocess') && canReprocess && aiModels && (
-          <ReprocessSheet
-            recordingId={id}
-            models={aiModels}
-            canManage={canRecordAppointments(user?.role)}
-            currentTranscriptionModel={recording.costBreakdown?.transcriptionModel}
-            currentSoapModel={recording.costBreakdown?.modelUsed}
-            recordingForeignLanguage={recording.foreignLanguage}
-            defaultExpanded
-            onDismiss={() => closeTool('reprocess')}
-            onReprocessStarted={() => {
-              pollingStartedAtRef.current = Date.now();
-              setOpenTools(new Set());
-            }}
-          />
-        )}
+        {!showFailureRemedy && reprocessSheet}
         <View className="h-4" />
         </View>
       </ScrollView>

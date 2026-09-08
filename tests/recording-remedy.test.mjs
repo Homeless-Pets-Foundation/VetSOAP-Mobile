@@ -68,7 +68,7 @@ test('sheet validates refreshed selections, normalizes changes and keeps safe er
   assert.match(sheet, /getInitialReprocessSelection\(models, selectionOptions\)/);
   assert.match(sheet, /reconcileReprocessSelection\(models, previous, selectionOptions\)/);
   assert.match(sheet, /normalizeForForeignLanguage\(v, recordingForeignLanguage\)/);
-  assert.match(sheet, /isReprocessSelectionValid\(current.effectiveModels, submitted\)/);
+  assert.match(sheet, /isReprocessSelectionValid\(current.effectiveModels, submitted, current.selectionOptions\)/);
   assert.match(sheet, /disabled=\{mutation.isPending \|\| !selectionValid\}/);
   assert.match(sheet, /mutation.mutate\(confirmedSelection\)/);
   assert.match(sheet, /error.code === 'MFA_REQUIRED'/);

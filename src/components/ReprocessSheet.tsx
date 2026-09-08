@@ -65,15 +65,15 @@ export function ReprocessSheet({
   useEffect(() => {
     setSelection((previous) => reconcileReprocessSelection(models, previous, selectionOptions));
   }, [models, selectionOptions]);
-  const selectionValid = isReprocessSelectionValid(effectiveModels, resolvedSelection);
+  const selectionValid = isReprocessSelectionValid(effectiveModels, resolvedSelection, selectionOptions);
   // Alert callbacks may outlive an options refresh. Recheck the latest membership at submission.
-  const latest = useRef({ effectiveModels, resolvedSelection, canManage, recordingForeignLanguage });
-  latest.current = { effectiveModels, resolvedSelection, canManage, recordingForeignLanguage };
+  const latest = useRef({ effectiveModels, resolvedSelection, canManage, recordingForeignLanguage, selectionOptions });
+  latest.current = { effectiveModels, resolvedSelection, canManage, recordingForeignLanguage, selectionOptions };
 
   const mutation = useMutation({
     mutationFn: (submitted: ReprocessSelection) => {
       const current = latest.current;
-      if (!current.canManage || !isReprocessSelectionValid(current.effectiveModels, submitted) ||
+      if (!current.canManage || !isReprocessSelectionValid(current.effectiveModels, submitted, current.selectionOptions) ||
           normalizeForForeignLanguage(submitted.transcriptionModelId, current.recordingForeignLanguage) !== submitted.transcriptionModelId) {
         return Promise.reject(new ApiError(REPROCESS_MODELS_COPY.invalidModel, 400, false, undefined, 'INVALID_MODEL'));
       }

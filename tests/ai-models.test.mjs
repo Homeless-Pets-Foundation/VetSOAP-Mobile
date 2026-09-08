@@ -289,3 +289,20 @@ test('legacy bare provider IDs select a distinct provider for invalid credential
     assert.equal(ai.getInitialReprocessSelection(models, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel }).soapModel, expected);
   }
 });
+
+
+test('manual reselection cannot submit the model or provider responsible for the remedy failure', () => {
+  const options = { remedyCategory: 'transcription', remedyErrorCode: 'AUDIO_TOO_LONG' };
+  const safe = ai.getInitialReprocessSelection(models, options);
+  assert.equal(ai.isReprocessSelectionValid(models, safe, options), true);
+  const reselected = { ...safe, transcriptionModelId: gemini };
+  assert.equal(ai.isReprocessSelectionValid(models, reselected, options), false);
+  // Ordinary reprocessing still permits Gemini; the restriction belongs to the failure remedy.
+  assert.equal(ai.isReprocessSelectionValid(models, reselected), true);
+  const keyOptions = { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel: 'gemini' };
+  assert.equal(ai.isReprocessSelectionValid(models, { ...safe, soapModel: 'gemini-3.7-flash' }, keyOptions), false);
+  assert.equal(ai.isReprocessSelectionValid(models, { ...safe, soapModel: 'claude-opus-4-7' }, keyOptions), true);
+  const available = { transcription: cat(gemini), soap: cat('claude-a') };
+  const missing = { remedyCategory: 'soap', remedyErrorCode: 'MISSING_LLM_KEY' };
+  assert.equal(ai.isReprocessSelectionValid(available, ai.getInitialReprocessSelection(available, missing), missing), true);
+});

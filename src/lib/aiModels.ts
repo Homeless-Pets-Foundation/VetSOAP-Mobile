@@ -161,9 +161,17 @@ export function getInitialReprocessSelection(models: OrgAiModels, options: Repro
   return selection;
 }
 
-export function isReprocessSelectionValid(models: OrgAiModels, selection: ReprocessSelection): boolean {
-  return models.transcription.options.some((o) => o.id === selection.transcriptionModelId) &&
+export function isReprocessSelectionValid(models: OrgAiModels, selection: ReprocessSelection,
+  options: ReprocessSelectionOptions = {}): boolean {
+  const available = models.transcription.options.some((o) => o.id === selection.transcriptionModelId) &&
     models.soap.options.some((o) => o.id === selection.soapModel);
+  if (!available || !options.remedyCategory) return available;
+  const selected = options.remedyCategory === 'transcription' ? selection.transcriptionModelId : selection.soapModel;
+  return remedyCandidates(models[options.remedyCategory], {
+    excludeModelId: getFailedRemedyModel(options),
+    allowUnknownMissingProvider: isGenericMissingModelKey(options.remedyErrorCode),
+    requireDistinctProvider: remedyRequiresDistinctProvider(options.remedyErrorCode),
+  }).some((o) => o.id === selected);
 }
 
 // Reconcile refreshes without overwriting a still-valid manual choice.

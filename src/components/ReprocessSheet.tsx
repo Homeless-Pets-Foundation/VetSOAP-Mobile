@@ -55,8 +55,8 @@ export function ReprocessSheet({
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(defaultExpanded ?? false);
 
-  const selectionOptions = useMemo(() => ({ recordingForeignLanguage, remedyCategory, remedyErrorCode }),
-    [recordingForeignLanguage, remedyCategory, remedyErrorCode]);
+  const selectionOptions = useMemo(() => ({ recordingForeignLanguage, remedyCategory, remedyErrorCode, currentTranscriptionModel, currentSoapModel }),
+    [recordingForeignLanguage, remedyCategory, remedyErrorCode, currentTranscriptionModel, currentSoapModel]);
   const effectiveModels = useMemo(() => getEffectiveReprocessModels(models, recordingForeignLanguage),
     [models, recordingForeignLanguage]);
   const [selection, setSelection] = useState(() => getInitialReprocessSelection(models, selectionOptions));
@@ -177,7 +177,7 @@ export function ReprocessSheet({
         </Text>
       )}
 
-      {showTranscriptionPicker && (
+      {(showTranscriptionPicker || remedyCategory === 'transcription') && (
         <View className="mb-3">
           <SegmentedControl
             label={REPROCESS_MODELS_COPY.transcriptionLabel}
@@ -199,7 +199,7 @@ export function ReprocessSheet({
         </View>
       )}
 
-      {showSoapPicker && (
+      {(showSoapPicker || remedyCategory === 'soap') && (
         <View className="mb-3">
           <SegmentedControl
             label={REPROCESS_MODELS_COPY.soapLabel}

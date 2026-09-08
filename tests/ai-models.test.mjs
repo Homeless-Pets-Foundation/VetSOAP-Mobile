@@ -176,9 +176,9 @@ test('remedy selection excludes defaults or explicit IDs with safe fallback', ()
   assert.equal(ai.pickRemedyModel(models.transcription), 'nova-3-medical');
   assert.equal(ai.pickRemedyModel(models.transcription, { excludeModelId: 'nova-3-medical' }), gemini);
   assert.equal(ai.pickRemedyModel(cat()), null);
-  assert.equal(ai.pickRemedyModel(cat('nova-3')), 'nova-3');
+  assert.equal(ai.pickRemedyModel(cat('nova-3')), null);
   assert.equal(ai.pickRemedyModel(models.soap, { requireDistinctProvider: true }), 'claude-opus-4-7');
-  assert.equal(ai.pickRemedyModel(cat('gemini-a', 'gemini-b'), { requireDistinctProvider: true }), 'gemini-b');
+  assert.equal(ai.pickRemedyModel(cat('gemini-a', 'gemini-b'), { requireDistinctProvider: true }), null);
 });
 
 test('provider mapping recognizes supported families and ignores unknown IDs', () => {
@@ -210,7 +210,7 @@ test('initial selection changes only the remedy category, including changed org 
     assert.equal(selected.soapModel, models.soap.default);
     assert.equal(ai.getInitialReprocessSelection(input, { ...options, recordingForeignLanguage: true }).transcriptionModelId, 'nova-3');
   }
-  const soap = ai.getInitialReprocessSelection(models, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY' });
+  const soap = ai.getInitialReprocessSelection(models, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel: 'gemini-3.8-flash' });
   assert.equal(soap.soapModel, 'claude-opus-4-7');
   assert.equal(soap.transcriptionModelId, gemini);
   const tx = ai.getInitialReprocessSelection({ ...models, transcription: cat('nova-3-medical', 'nova-3', gemini) }, { remedyCategory: 'transcription', remedyErrorCode: 'INVALID_DEEPGRAM_KEY' });
@@ -218,7 +218,7 @@ test('initial selection changes only the remedy category, including changed org 
 });
 
 test('refresh preserves valid manual choices and reconciles removed or hidden selections', () => {
-  const options = { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', recordingForeignLanguage: true };
+  const options = { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel: 'gemini-3.8-flash', recordingForeignLanguage: true };
   const selection = { transcriptionModelId: gemini, soapModel: 'gemini-3.7-flash' };
   assert.equal(JSON.stringify(ai.reconcileReprocessSelection(models, selection, options)), JSON.stringify(selection));
   const removed = { ...models, soap: cat('gemini-3.8-flash', 'gpt-5.5') };
@@ -243,4 +243,27 @@ test('refreshing defaults preserves valid choices and removed transcription uses
   assert.equal(fixed.soapModel, selection.soapModel);
   const disclosure = { ...models, transcription: { default: gemini, options: [{ id: gemini, label: 'Gemini (free tier may train on audio)' }, { id: 'nova-3', label: 'Nova 3' }] } };
   assert.equal(ai.getEffectiveReprocessModels(disclosure, true).transcription.options[0].label, disclosure.transcription.options[0].label);
+});
+
+
+test('remedies use failed providers instead of changed organization defaults', () => {
+  for (const errorCode of ['INVALID_DEEPGRAM_KEY', 'MISSING_DEEPGRAM_KEY']) {
+    const options = { remedyCategory: 'transcription', remedyErrorCode: errorCode };
+    assert.equal(ai.getInitialReprocessSelection(models, options).transcriptionModelId, gemini);
+  }
+  const options = { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel: 'claude-opus-4-7' };
+  assert.equal(ai.getInitialReprocessSelection(models, options).soapModel, 'gemini-3.8-flash');
+  assert.equal(ai.getInitialReprocessSelection(models, { remedyCategory: 'transcription', remedyErrorCode: 'INVALID_TRANSCRIPTION_KEY', currentTranscriptionModel: 'nova-3-medical' }).transcriptionModelId, gemini);
+});
+
+test('a single remaining model remedies an absent failed provider', () => {
+  const available = { transcription: cat(gemini), soap: cat('gemini-a') };
+  const options = { remedyCategory: 'transcription', remedyErrorCode: 'MISSING_DEEPGRAM_KEY' };
+  assert.equal(ai.hasReprocessRemedyForCategory(available, 'transcription', { excludeModelId: ai.getFailedRemedyModel(options), requireDistinctProvider: true }), true);
+  const selection = ai.getInitialReprocessSelection(available, options);
+  assert.equal(selection.transcriptionModelId, gemini);
+  assert.equal(ai.isReprocessSelectionValid(available, selection), true);
+  assert.equal(ai.pickRemedyModel(cat('nova-3-medical'), { excludeModelId: 'nova-3', requireDistinctProvider: true }), null);
+  assert.equal(ai.pickRemedyModel(cat('unknown'), { excludeModelId: 'nova-3', requireDistinctProvider: true }), null);
+  assert.equal(ai.getInitialReprocessSelection(available, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY' }).soapModel, null);
 });

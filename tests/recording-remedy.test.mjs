@@ -5,7 +5,7 @@ import { loadTsModule } from './helpers/loadTs.mjs';
 const { getRecordingFailureAction: action, getRecordingFailureRemedyCategory: category, isRecordingPermanentFailure, RECORDING_PERMANENT_ERROR_CODES } = await loadTsModule('src/lib/recordingRetryState.ts');
 const cat = (...ids) => ({ default: ids[0] ?? null, options: ids.map(id => ({ id, label: id })) });
 const models = { transcription: cat('gemini-3.5-transcribe', 'nova-3-medical', 'nova-3'), soap: cat('gemini-a', 'claude-a') };
-const failure = (errorCode, extra = {}) => ({ status: 'failed', errorCode, ...extra });
+const failure = (errorCode, extra = {}) => ({ status: 'failed', errorCode, costBreakdown: { transcriptionModel: 'nova-3', modelUsed: 'gemini-a' }, ...extra });
 
 test('verified permanent codes and remedy categories stay separate', () => {
   const permanent = ['INVALID_AUDIO', 'AUDIO_TOO_LONG', 'MISSING_AUDIO', 'MISSING_DEEPGRAM_KEY', 'INVALID_DEEPGRAM_KEY', 'MISSING_TRANSCRIPTION_KEY', 'INVALID_TRANSCRIPTION_KEY', 'MISSING_LLM_KEY', 'INVALID_LLM_KEY', 'PAYMENT_REQUIRED', 'CREDENTIALS_REQUIRED', 'TRIAL_SOAP_LIMIT_REACHED', 'R2_NOT_CONFIGURED', 'IMPORT_FAILED'];
@@ -77,4 +77,23 @@ test('sheet validates refreshed selections, normalizes changes and keeps safe er
   assert.match(sheet, /REPROCESS_MODELS_COPY.foreignLanguage/);
   assert.match(sheet, /getCurrentModelLabel\(transcriptionModelId, effectiveModels.transcription\)/);
   assert.match(sheet, /getCurrentModelLabel\(soapModel, effectiveModels.soap\)/);
+});
+
+
+test('single alternatives remain actionable after the failed provider is filtered out', () => {
+  const onlyGemini = { transcription: cat('gemini-3.5-transcribe'), soap: cat('gemini-a') };
+  assert.equal(action(failure('MISSING_DEEPGRAM_KEY', { costBreakdown: null }), onlyGemini), 'reprocess');
+  assert.equal(action(failure('INVALID_LLM_KEY', { costBreakdown: { modelUsed: 'claude-a' } }), onlyGemini), 'reprocess');
+  assert.equal(action(failure('AUDIO_TOO_LONG'), { transcription: cat('nova-3'), soap: cat('gemini-a') }), 'reprocess');
+  assert.equal(action(failure('INVALID_LLM_KEY', { costBreakdown: null }), onlyGemini), 'reprocess_blocked');
+});
+
+test('detail and sheet expose a single remedy and limit setup advice to blocked remedies', async () => {
+  const detail = await readFile(new URL('../app/(app)/(tabs)/recordings/[id].tsx', import.meta.url), 'utf8');
+  assert.match(detail, /failureAction === 'reprocess' \|\| hasVisibleReprocessModelChoice/);
+  assert.match(detail, /showFailureRemedy && failureAction === 'reprocess_blocked' && \(/);
+  const sheet = await readFile(new URL('../src/components/ReprocessSheet.tsx', import.meta.url), 'utf8');
+  assert.match(sheet, /selectionOptions = useMemo[\s\S]*?currentTranscriptionModel, currentSoapModel/);
+  assert.match(sheet, /showTranscriptionPicker \|\| remedyCategory === 'transcription'/);
+  assert.match(sheet, /showSoapPicker \|\| remedyCategory === 'soap'/);
 });

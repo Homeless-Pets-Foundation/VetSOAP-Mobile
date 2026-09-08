@@ -1095,6 +1095,7 @@ export default function RecordingDetailScreen() {
   // completed and failed (with audio); hidden until the backend returns a real,
   // key/allow-list-filtered model list with a visible actual choice. The 202 body
   // seeds status='uploaded' → the existing poller + ProcessingStepper take over.
+  const failureAction = getRecordingFailureAction(recording, aiModels);
   const canReprocess = Boolean(
     id &&
       canRetryProcessing &&
@@ -1102,11 +1103,10 @@ export default function RecordingDetailScreen() {
       !!recording.audioFileUrl &&
       retryPresentation !== 'audio_unavailable' &&
       aiModels &&
-      hasVisibleReprocessModelChoice(aiModels, {
+      (failureAction === 'reprocess' || hasVisibleReprocessModelChoice(aiModels, {
         recordingForeignLanguage: recording.foreignLanguage,
-      })
+      }))
   );
-  const failureAction = getRecordingFailureAction(recording, aiModels);
   const remedyCategory = getRecordingFailureRemedyCategory(recording.errorCode);
   const showFailureRemedy = canRetryProcessing && retryPresentation === 'retry' && failureAction !== 'retry';
   const offerRemedy = showFailureRemedy && failureAction === 'reprocess';
@@ -1581,7 +1581,7 @@ export default function RecordingDetailScreen() {
                 {recording.errorCode === 'AUDIO_TOO_LONG'
                   ? ERROR_COPY.audioTooLongRemedy : ERROR_COPY.processingFailedBody}
               </Text>
-              {showFailureRemedy && (
+              {showFailureRemedy && failureAction === 'reprocess_blocked' && (
                 <Text className="text-body-sm text-content-tertiary mb-3">
                   {failureAction === 'reprocess_blocked' && (
                     remedyCategory === 'transcription'

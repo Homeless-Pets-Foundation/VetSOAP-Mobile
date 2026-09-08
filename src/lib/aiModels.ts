@@ -91,30 +91,37 @@ export function remedyRequiresDistinctProvider(errorCode?: string | null): boole
     'INVALID_TRANSCRIPTION_KEY', 'MISSING_LLM_KEY', 'INVALID_LLM_KEY'].includes(errorCode ?? '');
 }
 
+/** Error-specific provider evidence wins over historical cost metadata. */
+export function getFailedRemedyModel(options: ReprocessSelectionOptions): string | null {
+  if (options.remedyErrorCode === 'AUDIO_TOO_LONG') return GEMINI_TRANSCRIPTION_MODEL;
+  if (['MISSING_DEEPGRAM_KEY', 'INVALID_DEEPGRAM_KEY'].includes(options.remedyErrorCode ?? '')) return 'nova-3';
+  return (options.remedyCategory === 'transcription'
+    ? options.currentTranscriptionModel : options.currentSoapModel) ?? null;
+}
+
+function remedyCandidates(category: AiModelCategory, options: {
+  excludeModelId?: string | null; requireDistinctProvider?: boolean;
+}): AiModelOption[] {
+  const excluded = options.excludeModelId === undefined ? category.default : options.excludeModelId;
+  const provider = deriveModelProvider(excluded);
+  return category.options.filter((o) => options.requireDistinctProvider
+    ? !!provider && !!deriveModelProvider(o.id) && deriveModelProvider(o.id) !== provider
+    : !!excluded && o.id !== excluded);
+}
+
 export function pickRemedyModel(category: AiModelCategory, options: {
   excludeModelId?: string | null; requireDistinctProvider?: boolean;
 } = {}): string | null {
-  const excluded = options.excludeModelId === undefined ? category.default : options.excludeModelId;
-  const provider = deriveModelProvider(excluded);
-  if (options.requireDistinctProvider && provider) {
-    const alternative = category.options.find((o) => {
-      const candidate = deriveModelProvider(o.id);
-      return candidate && candidate !== provider;
-    });
-    if (alternative) return alternative.id;
-  }
-  return category.options.find((o) => o.id !== excluded)?.id ?? category.default ?? category.options[0]?.id ?? null;
+  return remedyCandidates(category, options)[0]?.id ?? null;
 }
 
 export function hasReprocessRemedyForCategory(models: OrgAiModels, category: RecordingFailureRemedyCategory,
-  options: { recordingForeignLanguage?: boolean; requireDistinctProvider?: boolean } = {}
+  options: { recordingForeignLanguage?: boolean; requireDistinctProvider?: boolean; excludeModelId?: string | null } = {}
 ): boolean {
   const effective = getEffectiveReprocessModels(models, options.recordingForeignLanguage);
-  if (!hasSelectableModels(effective)) return false;
-  const choices = effective[category].options;
-  return options.requireDistinctProvider
-    ? new Set(choices.map((o) => deriveModelProvider(o.id)).filter(Boolean)).size > 1
-    : new Set(choices.map((o) => o.id)).size > 1;
+  const usable = [effective.transcription, effective.soap].every((c) =>
+    c.default != null && c.options.some((o) => o.id === c.default));
+  return usable && remedyCandidates(effective[category], options).length > 0;
 }
 
 export interface ReprocessSelection {
@@ -126,6 +133,8 @@ export interface ReprocessSelectionOptions {
   recordingForeignLanguage?: boolean;
   remedyCategory?: RecordingFailureRemedyCategory | null;
   remedyErrorCode?: string | null;
+  currentTranscriptionModel?: string | null;
+  currentSoapModel?: string | null;
 }
 
 export function getInitialReprocessSelection(models: OrgAiModels, options: ReprocessSelectionOptions = {}): ReprocessSelection {
@@ -133,7 +142,7 @@ export function getInitialReprocessSelection(models: OrgAiModels, options: Repro
   const selection = { transcriptionModelId: effective.transcription.default, soapModel: effective.soap.default };
   if (options.remedyCategory) {
     const model = pickRemedyModel(effective[options.remedyCategory], {
-      excludeModelId: options.remedyErrorCode === 'AUDIO_TOO_LONG' ? GEMINI_TRANSCRIPTION_MODEL : undefined,
+      excludeModelId: getFailedRemedyModel(options),
       requireDistinctProvider: remedyRequiresDistinctProvider(options.remedyErrorCode),
     });
     if (options.remedyCategory === 'transcription') selection.transcriptionModelId = model;

@@ -99,24 +99,31 @@ export function getFailedRemedyModel(options: ReprocessSelectionOptions): string
     ? options.currentTranscriptionModel : options.currentSoapModel) ?? null;
 }
 
+export function isGenericMissingModelKey(errorCode?: string | null): boolean {
+  return errorCode === 'MISSING_LLM_KEY' || errorCode === 'MISSING_TRANSCRIPTION_KEY';
+}
+
 function remedyCandidates(category: AiModelCategory, options: {
-  excludeModelId?: string | null; requireDistinctProvider?: boolean;
+  excludeModelId?: string | null; requireDistinctProvider?: boolean; allowUnknownMissingProvider?: boolean;
 }): AiModelOption[] {
   const excluded = options.excludeModelId === undefined ? category.default : options.excludeModelId;
   const provider = deriveModelProvider(excluded);
+  // The model endpoint omits providers with missing keys. With no failed-provider
+  // evidence, its returned options are still actionable for missing-key errors.
+  if (!provider && options.allowUnknownMissingProvider) return category.options;
   return category.options.filter((o) => options.requireDistinctProvider
     ? !!provider && !!deriveModelProvider(o.id) && deriveModelProvider(o.id) !== provider
     : !!excluded && o.id !== excluded);
 }
 
 export function pickRemedyModel(category: AiModelCategory, options: {
-  excludeModelId?: string | null; requireDistinctProvider?: boolean;
+  excludeModelId?: string | null; requireDistinctProvider?: boolean; allowUnknownMissingProvider?: boolean;
 } = {}): string | null {
   return remedyCandidates(category, options)[0]?.id ?? null;
 }
 
 export function hasReprocessRemedyForCategory(models: OrgAiModels, category: RecordingFailureRemedyCategory,
-  options: { recordingForeignLanguage?: boolean; requireDistinctProvider?: boolean; excludeModelId?: string | null } = {}
+  options: { recordingForeignLanguage?: boolean; requireDistinctProvider?: boolean; excludeModelId?: string | null; allowUnknownMissingProvider?: boolean } = {}
 ): boolean {
   const effective = getEffectiveReprocessModels(models, options.recordingForeignLanguage);
   const usable = [effective.transcription, effective.soap].every((c) =>
@@ -143,6 +150,7 @@ export function getInitialReprocessSelection(models: OrgAiModels, options: Repro
   if (options.remedyCategory) {
     const model = pickRemedyModel(effective[options.remedyCategory], {
       excludeModelId: getFailedRemedyModel(options),
+      allowUnknownMissingProvider: isGenericMissingModelKey(options.remedyErrorCode),
       requireDistinctProvider: remedyRequiresDistinctProvider(options.remedyErrorCode),
     });
     if (options.remedyCategory === 'transcription') selection.transcriptionModelId = model;

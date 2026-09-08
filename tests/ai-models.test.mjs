@@ -267,3 +267,15 @@ test('a single remaining model remedies an absent failed provider', () => {
   assert.equal(ai.pickRemedyModel(cat('unknown'), { excludeModelId: 'nova-3', requireDistinctProvider: true }), null);
   assert.equal(ai.getInitialReprocessSelection(available, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY' }).soapModel, null);
 });
+
+test('generic missing-key selections can use the sole configured provider without failed-model metadata', () => {
+  const available = { transcription: cat(gemini), soap: cat('claude-a') };
+  for (const [remedyCategory, remedyErrorCode] of [['soap', 'MISSING_LLM_KEY'], ['transcription', 'MISSING_TRANSCRIPTION_KEY']]) {
+    const selected = ai.getInitialReprocessSelection(available, { remedyCategory, remedyErrorCode });
+    assert.equal(ai.isReprocessSelectionValid(available, selected), true);
+    assert.equal(selected.transcriptionModelId, gemini);
+    assert.equal(selected.soapModel, 'claude-a');
+  }
+  const selected = ai.getInitialReprocessSelection(models, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel: 'claude-opus-4-7' });
+  assert.equal(selected.soapModel, 'gemini-3.8-flash');
+});

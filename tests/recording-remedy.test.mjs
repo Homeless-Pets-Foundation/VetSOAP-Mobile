@@ -97,3 +97,34 @@ test('detail and sheet expose a single remedy and limit setup advice to blocked 
   assert.match(sheet, /showTranscriptionPicker \|\| remedyCategory === 'transcription'/);
   assert.match(sheet, /showSoapPicker \|\| remedyCategory === 'soap'/);
 });
+
+test('persisted failed-run pins win over cost metadata from an older success', () => {
+  const onlyGemini = { transcription: cat('gemini-3.5-transcribe'), soap: cat('gemini-a') };
+  assert.equal(action(failure('INVALID_LLM_KEY', {
+    reprocessSoapModel: 'claude-a',
+    costBreakdown: { modelUsed: 'gemini-a' },
+  }), onlyGemini), 'reprocess');
+  assert.equal(action(failure('INVALID_TRANSCRIPTION_KEY', {
+    reprocessTranscriptionModel: 'nova-3',
+    costBreakdown: { transcriptionModel: 'gemini-3.5-transcribe' },
+  }), onlyGemini), 'reprocess');
+});
+
+test('first-run generic missing-key errors allow configured models without cost metadata', () => {
+  const available = { transcription: cat('gemini-3.5-transcribe'), soap: cat('claude-a') };
+  for (const code of ['MISSING_LLM_KEY', 'MISSING_TRANSCRIPTION_KEY']) {
+    assert.equal(action(failure(code, { costBreakdown: null }), available), 'reprocess');
+    for (const empty of ['transcription', 'soap']) {
+      assert.equal(action(failure(code, { costBreakdown: null }), { ...available, [empty]: cat() }), 'reprocess_blocked');
+    }
+  }
+  for (const code of ['INVALID_LLM_KEY', 'INVALID_TRANSCRIPTION_KEY']) {
+    assert.equal(action(failure(code, { costBreakdown: null }), available), 'reprocess_blocked');
+  }
+});
+
+test('detail passes persisted reprocess pins to the chooser ahead of historical costs', async () => {
+  const detail = await readFile(new URL('../app/(app)/(tabs)/recordings/[id].tsx', import.meta.url), 'utf8');
+  assert.match(detail, /currentSoapModel=\{recording.reprocessSoapModel \?\? recording.costBreakdown\?\.modelUsed\}/);
+  assert.match(detail, /currentTranscriptionModel=\{recording.reprocessTranscriptionModel \?\? recording.costBreakdown\?\.transcriptionModel\}/);
+});

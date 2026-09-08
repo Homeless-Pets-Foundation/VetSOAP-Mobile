@@ -1,4 +1,4 @@
-import { getFailedRemedyModel, hasReprocessRemedyForCategory, remedyRequiresDistinctProvider, type RecordingFailureRemedyCategory } from './aiModels';
+import { isGenericMissingModelKey, getFailedRemedyModel, hasReprocessRemedyForCategory, remedyRequiresDistinctProvider, type RecordingFailureRemedyCategory } from './aiModels';
 import type { OrgAiModels, RecordingStatus } from '../types';
 
 export type RecordingRetryPresentation = 'hidden' | 'retry' | 'audio_unavailable';
@@ -49,6 +49,8 @@ export function getRecordingFailureRemedyCategory(errorCode?: string | null): Re
 
 export function getRecordingFailureAction(recording: {
   status: RecordingStatus; errorCode?: string | null; foreignLanguage?: boolean;
+  reprocessTranscriptionModel?: string | null;
+  reprocessSoapModel?: string | null;
   costBreakdown?: { transcriptionModel?: string | null; modelUsed?: string | null } | null;
 }, models?: OrgAiModels | null): 'retry' | 'reprocess' | 'reprocess_blocked' {
   const category = getRecordingFailureRemedyCategory(recording.errorCode);
@@ -57,9 +59,10 @@ export function getRecordingFailureAction(recording: {
     recordingForeignLanguage: recording.foreignLanguage,
     excludeModelId: getFailedRemedyModel({
       remedyCategory: category, remedyErrorCode: recording.errorCode,
-      currentTranscriptionModel: recording.costBreakdown?.transcriptionModel,
-      currentSoapModel: recording.costBreakdown?.modelUsed,
+      currentTranscriptionModel: recording.reprocessTranscriptionModel ?? recording.costBreakdown?.transcriptionModel,
+      currentSoapModel: recording.reprocessSoapModel ?? recording.costBreakdown?.modelUsed,
     }),
+    allowUnknownMissingProvider: isGenericMissingModelKey(recording.errorCode),
     requireDistinctProvider: remedyRequiresDistinctProvider(recording.errorCode),
   }) ? 'reprocess' : 'reprocess_blocked';
 }

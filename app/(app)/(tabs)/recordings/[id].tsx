@@ -1116,8 +1116,8 @@ export default function RecordingDetailScreen() {
       recordingId={id}
       models={aiModels}
       canManage={canRecordAppointments(user?.role)}
-      currentTranscriptionModel={recording.costBreakdown?.transcriptionModel}
-      currentSoapModel={recording.costBreakdown?.modelUsed}
+      currentTranscriptionModel={recording.reprocessTranscriptionModel ?? recording.costBreakdown?.transcriptionModel}
+      currentSoapModel={recording.reprocessSoapModel ?? recording.costBreakdown?.modelUsed}
       recordingForeignLanguage={recording.foreignLanguage}
       remedyCategory={offerRemedy ? remedyCategory : undefined}
       remedyErrorCode={offerRemedy ? recording.errorCode : undefined}

@@ -70,7 +70,7 @@ test('sheet validates refreshed selections, normalizes changes and keeps safe er
   assert.match(sheet, /normalizeForForeignLanguage\(v, recordingForeignLanguage\)/);
   assert.match(sheet, /isReprocessSelectionValid\(current.effectiveModels, submitted\)/);
   assert.match(sheet, /disabled=\{mutation.isPending \|\| !selectionValid\}/);
-  assert.match(sheet, /mutation.mutate\(latest.current.resolvedSelection\)/);
+  assert.match(sheet, /mutation.mutate\(confirmedSelection\)/);
   assert.match(sheet, /error.code === 'MFA_REQUIRED'/);
   assert.doesNotMatch(sheet, /error.message/);
   assert.match(sheet, /friendlyErrorMessage\(error\)/);
@@ -127,4 +127,32 @@ test('detail passes persisted reprocess pins to the chooser ahead of historical 
   const detail = await readFile(new URL('../app/(app)/(tabs)/recordings/[id].tsx', import.meta.url), 'utf8');
   assert.match(detail, /currentSoapModel=\{recording.reprocessSoapModel \?\? recording.costBreakdown\?\.modelUsed\}/);
   assert.match(detail, /currentTranscriptionModel=\{recording.reprocessTranscriptionModel \?\? recording.costBreakdown\?\.transcriptionModel\}/);
+});
+
+
+test('legacy cost provider IDs still expose alternatives', () => {
+  const available = { transcription: cat('nova-3'), soap: cat('gemini-a', 'claude-a') };
+  for (const modelUsed of ['gemini', 'anthropic']) {
+    assert.equal(action(failure('INVALID_LLM_KEY', { costBreakdown: { modelUsed } }), available), 'reprocess');
+  }
+});
+
+test('confirmation submits its captured choice even after selection reconciliation', async () => {
+  const { isReprocessSelectionValid } = await loadTsModule('src/lib/aiModels.ts');
+  const sheet = await readFile(new URL('../src/components/ReprocessSheet.tsx', import.meta.url), 'utf8');
+  const handler = sheet.match(/onPress=\{\(\) => \{\s*(if \(!selectionValid\) return;[\s\S]*?)\n          \}\}/)?.[1];
+  assert.ok(handler, 'execute the real confirmation-opening handler');
+  let buttons;
+  let submitted;
+  const resolvedSelection = { transcriptionModelId: 'nova-3', soapModel: 'gemini-a' };
+  const current = { resolvedSelection };
+  const run = new Function('selectionValid', 'resolvedSelection', 'Alert', 'mutation', 'REPROCESS_MODELS_COPY', 'latest', handler);
+  run(true, resolvedSelection, { alert: (_title, _body, actions) => { buttons = actions; } },
+    { mutate: (selection) => { submitted = selection; } }, {}, { current });
+  // Simulate an options refresh while the native alert stays open.
+  resolvedSelection.soapModel = 'claude-a';
+  current.resolvedSelection = { transcriptionModelId: 'nova-3', soapModel: 'claude-a' };
+  buttons[1].onPress();
+  assert.deepEqual(submitted, { transcriptionModelId: 'nova-3', soapModel: 'gemini-a' });
+  assert.equal(isReprocessSelectionValid({ transcription: cat('nova-3'), soap: cat('claude-a') }, submitted), false);
 });

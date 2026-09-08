@@ -279,3 +279,13 @@ test('generic missing-key selections can use the sole configured provider withou
   const selected = ai.getInitialReprocessSelection(models, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel: 'claude-opus-4-7' });
   assert.equal(selected.soapModel, 'gemini-3.8-flash');
 });
+
+
+test('legacy bare provider IDs select a distinct provider for invalid credentials', () => {
+  for (const provider of ['gemini', 'openai', 'anthropic', 'z_ai', 'meta', 'deepgram']) {
+    assert.equal(ai.deriveModelProvider(provider), provider);
+  }
+  for (const [currentSoapModel, expected] of [['gemini', 'claude-opus-4-7'], ['anthropic', 'gemini-3.8-flash']]) {
+    assert.equal(ai.getInitialReprocessSelection(models, { remedyCategory: 'soap', remedyErrorCode: 'INVALID_LLM_KEY', currentSoapModel }).soapModel, expected);
+  }
+});

@@ -229,9 +229,10 @@ export function ReprocessSheet({
           disabled={mutation.isPending || !selectionValid}
           onPress={() => {
             if (!selectionValid) return;
+            const confirmedSelection = { ...resolvedSelection };
             Alert.alert(REPROCESS_MODELS_COPY.confirmTitle, REPROCESS_MODELS_COPY.confirmBody, [
               { text: REPROCESS_MODELS_COPY.cancel, style: 'cancel' },
-              { text: REPROCESS_MODELS_COPY.confirm, onPress: () => mutation.mutate(latest.current.resolvedSelection) },
+              { text: REPROCESS_MODELS_COPY.confirm, onPress: () => mutation.mutate(confirmedSelection) },
             ]);
           }}
         >

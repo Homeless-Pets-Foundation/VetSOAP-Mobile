@@ -59,6 +59,8 @@ export const GEMINI_TRANSCRIPTION_MODEL = 'gemini-3.5-transcribe';
 // Unknown IDs never supply evidence of a distinct provider.
 export function deriveModelProvider(modelId: string | null | undefined): string | null {
   if (!modelId) return null;
+  // Older cost breakdowns stored provider IDs instead of concrete model IDs.
+  if (['gemini', 'openai', 'anthropic', 'z_ai', 'meta', 'deepgram'].includes(modelId)) return modelId;
   if (modelId === 'nova-3' || modelId === 'nova-3-medical') return 'deepgram';
   if (modelId === GEMINI_TRANSCRIPTION_MODEL) return 'gemini';
   const prefixes = {

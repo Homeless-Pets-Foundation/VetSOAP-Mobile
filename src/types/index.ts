@@ -73,6 +73,9 @@ export interface Recording {
   // Recording review column, list filter, or PATCH /:id/review route; the old
   // mobile-only fields were contract drift and were removed with the attention
   // feed (2026-07-29 plan). Reintroduce only alongside a real server contract.
+  // Persisted reprocess choices survive failed runs; costBreakdown may be from an older success.
+  reprocessTranscriptionModel?: string | null;
+  reprocessSoapModel?: string | null;
   costBreakdown: CostBreakdown | null;
   importSource: 'google_drive' | null;
   aiExtractedMetadata?: AiExtractedMetadata | null;

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { Text } from './ui/Text';
 import { RefreshCw } from 'lucide-react-native';
@@ -9,7 +9,12 @@ import { ApiError } from '../api/client';
 import type { OrgAiModels } from '../types';
 import { REPROCESS_MODELS_COPY } from '../constants/strings';
 import { trackEvent } from '../lib/analytics';
-import { FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL, getCurrentModelLabel } from '../lib/aiModels';
+import {
+  getCurrentModelLabel, getEffectiveReprocessModels, getInitialReprocessSelection,
+  reconcileReprocessSelection, isReprocessSelectionValid, normalizeForForeignLanguage,
+  type RecordingFailureRemedyCategory, type ReprocessSelection,
+} from '../lib/aiModels';
+import { friendlyErrorMessage } from '../lib/errorCopy';
 import { invalidateRecordingCaches } from '../lib/recordingQueryCache';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
@@ -22,7 +27,9 @@ interface ReprocessSheetProps {
   canManage: boolean; // canRecordAppointments(user?.role)
   currentTranscriptionModel?: string | null; // costBreakdown.transcriptionModel
   currentSoapModel?: string | null; // costBreakdown.modelUsed
-  recordingForeignLanguage?: boolean; // hides transcription picker, pins 'nova-3' (Connect item 3 edge)
+  recordingForeignLanguage?: boolean;
+  remedyCategory?: RecordingFailureRemedyCategory | null;
+  remedyErrorCode?: string | null;
   onReprocessStarted?: () => void; // parent resets pollingStartedAtRef
   /** Open straight into the pickers (the detail Tools row already asked). */
   defaultExpanded?: boolean;
@@ -38,6 +45,8 @@ export function ReprocessSheet({
   currentTranscriptionModel,
   currentSoapModel,
   recordingForeignLanguage,
+  remedyCategory,
+  remedyErrorCode,
   onReprocessStarted,
   defaultExpanded,
   onDismiss,
@@ -46,23 +55,35 @@ export function ReprocessSheet({
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(defaultExpanded ?? false);
 
-  // Defaults = org defaults (not the current* display-only props). Foreign-language recordings pin
-  // transcription to 'nova-3' (backend runs Deepgram language='multi', which rejects nova-3-medical).
-  const [transcriptionModelId, setTranscriptionModelId] = useState<string | null>(
-    recordingForeignLanguage ? FOREIGN_LANGUAGE_TRANSCRIPTION_MODEL : models.transcription.default
-  );
-  const [soapModel, setSoapModel] = useState<string | null>(models.soap.default);
+  const selectionOptions = useMemo(() => ({ recordingForeignLanguage, remedyCategory, remedyErrorCode, currentTranscriptionModel, currentSoapModel }),
+    [recordingForeignLanguage, remedyCategory, remedyErrorCode, currentTranscriptionModel, currentSoapModel]);
+  const effectiveModels = useMemo(() => getEffectiveReprocessModels(models, recordingForeignLanguage),
+    [models, recordingForeignLanguage]);
+  const [selection, setSelection] = useState(() => getInitialReprocessSelection(models, selectionOptions));
+  const resolvedSelection = reconcileReprocessSelection(models, selection, selectionOptions);
+  const { transcriptionModelId, soapModel } = resolvedSelection;
+  useEffect(() => {
+    setSelection((previous) => reconcileReprocessSelection(models, previous, selectionOptions));
+  }, [models, selectionOptions]);
+  const selectionValid = isReprocessSelectionValid(effectiveModels, resolvedSelection, selectionOptions);
+  // Alert callbacks may outlive an options refresh. Recheck the latest membership at submission.
+  const latest = useRef({ effectiveModels, resolvedSelection, canManage, recordingForeignLanguage, selectionOptions });
+  latest.current = { effectiveModels, resolvedSelection, canManage, recordingForeignLanguage, selectionOptions };
 
   const mutation = useMutation({
-    // `?? undefined`: state is `string | null` (AiModelCategory.default); reprocessRecording takes
-    // `string | undefined`. The call-site visible-choice gate guarantees non-null at runtime — this
-    // only satisfies the typechecker.
-    mutationFn: () =>
-      recordingsApi.reprocessRecording(recordingId, {
-        transcriptionModelId: transcriptionModelId ?? undefined,
-        soapModel: soapModel ?? undefined,
-      }),
-    onSuccess: async (updated) => {
+    mutationFn: (submitted: ReprocessSelection) => {
+      const current = latest.current;
+      if (!current.canManage || !isReprocessSelectionValid(current.effectiveModels, submitted, current.selectionOptions) ||
+          normalizeForForeignLanguage(submitted.transcriptionModelId, current.recordingForeignLanguage) !== submitted.transcriptionModelId) {
+        return Promise.reject(new ApiError(REPROCESS_MODELS_COPY.invalidModel, 400, false, undefined, 'INVALID_MODEL'));
+      }
+      return recordingsApi.reprocessRecording(recordingId, {
+        transcriptionModelId: submitted.transcriptionModelId ?? undefined,
+        soapModel: submitted.soapModel ?? undefined,
+      });
+    },
+    onSuccess: async (updated, submitted) => {
+      const { transcriptionModelId, soapModel } = submitted;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       // Clear caches tied to the OLD run before the status flip disables active observers.
       try {
@@ -109,7 +130,8 @@ export function ReprocessSheet({
       if (error instanceof ApiError && error.code === 'MFA_REQUIRED') return;
       Alert.alert(
         REPROCESS_MODELS_COPY.sheetTitle,
-        error instanceof ApiError ? error.message : REPROCESS_MODELS_COPY.failure
+        error instanceof ApiError && error.code === 'INVALID_MODEL'
+          ? REPROCESS_MODELS_COPY.invalidModel : friendlyErrorMessage(error)
       );
     },
   });
@@ -117,8 +139,8 @@ export function ReprocessSheet({
   if (!canManage) return null;
 
   const showTranscriptionPicker =
-    !recordingForeignLanguage && models.transcription.options.length > 1;
-  const showSoapPicker = models.soap.options.length > 1;
+    effectiveModels.transcription.options.length > 1;
+  const showSoapPicker = effectiveModels.soap.options.length > 1;
   const currentTranscriptionLabel = getCurrentModelLabel(
     currentTranscriptionModel,
     models.transcription
@@ -145,18 +167,29 @@ export function ReprocessSheet({
       <Text className="text-body-lg font-semibold text-content-primary mb-1">
         {REPROCESS_MODELS_COPY.sheetTitle}
       </Text>
-      <Text className="text-body-sm text-content-tertiary mb-3" numberOfLines={3}>
+      <Text className="text-body-sm text-content-tertiary mb-3">
         {REPROCESS_MODELS_COPY.sheetBody}
       </Text>
 
-      {showTranscriptionPicker && (
+      {recordingForeignLanguage && (
+        <Text className="text-body-sm text-content-tertiary mb-3">
+          {REPROCESS_MODELS_COPY.foreignLanguage}
+        </Text>
+      )}
+
+      {(showTranscriptionPicker || remedyCategory === 'transcription') && (
         <View className="mb-3">
           <SegmentedControl
             label={REPROCESS_MODELS_COPY.transcriptionLabel}
-            options={models.transcription.options.map((o) => ({ label: o.label, value: o.id }))}
+            scrollable
+            options={effectiveModels.transcription.options.map((o) => ({ label: o.label, value: o.id }))}
             value={transcriptionModelId}
-            onValueChange={(v) => setTranscriptionModelId(v)}
+            onValueChange={(v) => setSelection({ ...resolvedSelection, transcriptionModelId: normalizeForForeignLanguage(v, recordingForeignLanguage) })}
           />
+          <Text className="text-caption text-content-body mt-1">
+            {REPROCESS_MODELS_COPY.selectedPrefix}
+            {getCurrentModelLabel(transcriptionModelId, effectiveModels.transcription)}
+          </Text>
           {!!currentTranscriptionLabel && (
             <Text className="text-caption text-content-tertiary mt-1" numberOfLines={1}>
               {REPROCESS_MODELS_COPY.currentPrefix}
@@ -166,15 +199,19 @@ export function ReprocessSheet({
         </View>
       )}
 
-      {showSoapPicker && (
+      {(showSoapPicker || remedyCategory === 'soap') && (
         <View className="mb-3">
           <SegmentedControl
             label={REPROCESS_MODELS_COPY.soapLabel}
             scrollable // 4 long provider labels wrap/truncate on narrow Android otherwise
-            options={models.soap.options.map((o) => ({ label: o.label, value: o.id }))}
+            options={effectiveModels.soap.options.map((o) => ({ label: o.label, value: o.id }))}
             value={soapModel}
-            onValueChange={(v) => setSoapModel(v)}
+            onValueChange={(v) => setSelection({ ...resolvedSelection, soapModel: v })}
           />
+          <Text className="text-caption text-content-body mt-1">
+            {REPROCESS_MODELS_COPY.selectedPrefix}
+            {getCurrentModelLabel(soapModel, effectiveModels.soap)}
+          </Text>
           {!!currentSoapLabel && (
             <Text className="text-caption text-content-tertiary mt-1" numberOfLines={1}>
               {REPROCESS_MODELS_COPY.currentPrefix}
@@ -184,16 +221,18 @@ export function ReprocessSheet({
         </View>
       )}
 
-      <View className="flex-row gap-2 mt-1">
+      <View className="flex-row flex-wrap gap-2 mt-1">
         <Button
           variant="primary"
           size="sm"
           loading={mutation.isPending}
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || !selectionValid}
           onPress={() => {
+            if (!selectionValid) return;
+            const confirmedSelection = { ...resolvedSelection };
             Alert.alert(REPROCESS_MODELS_COPY.confirmTitle, REPROCESS_MODELS_COPY.confirmBody, [
               { text: REPROCESS_MODELS_COPY.cancel, style: 'cancel' },
-              { text: REPROCESS_MODELS_COPY.confirm, onPress: () => mutation.mutate() },
+              { text: REPROCESS_MODELS_COPY.confirm, onPress: () => mutation.mutate(confirmedSelection) },
             ]);
           }}
         >

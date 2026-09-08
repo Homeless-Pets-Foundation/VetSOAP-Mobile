@@ -100,6 +100,7 @@ import {
   linkedServerDraftIds,
 } from '../../../src/api/draftPresence';
 import { ApiError } from '../../../src/api/client';
+import { isDraftSyncTransportError } from '../../../src/lib/draftSyncErrors';
 import { patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import {
   trackEvent,
@@ -395,10 +396,6 @@ function isSlotActivelyRecording(slot: PatientSlot): boolean {
  */
 function isDraftOwnedUri(uri: string): boolean {
   return uri.includes('/drafts/');
-}
-
-function isNetworkRequestFailed(error: unknown): boolean {
-  return error instanceof TypeError && /network request failed/i.test(error.message);
 }
 
 // -35 dBFS: covers soft speech close to the mic without missing dead-mic recordings
@@ -4595,7 +4592,7 @@ function RecordingSession() {
               if (!scopeIsCurrent()) return;
               dispatch({ type: 'MARK_DRAFT_METADATA_DIRTY', slotId });
             }
-            if (isNetworkRequestFailed(error)) {
+            if (isDraftSyncTransportError(error)) {
               breadcrumb('draft', 'sync_server_draft_transient_network', {
                 slot_id: slotId,
                 had_server_draft: hadServerDraft,

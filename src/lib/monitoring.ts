@@ -84,7 +84,15 @@ function breadcrumbIdentity(breadcrumb: MinimalBreadcrumb): string {
   // cannot make two different breadcrumbs hash to the same identity.
   return JSON.stringify([
     breadcrumb.category ?? '',
-    breadcrumb.type ?? '',
+    // Normalize to Sentry's default breadcrumb type. This is what made the whole
+    // dedupe a no-op in production: `addBreadcrumb` omits `type`, while the
+    // native copy round-trips through the Android scope and comes back with an
+    // explicit `type: 'default'` (`breadcrumbFromObject` copies it through). An
+    // un-normalized compare read `''` vs `'default'` and kept both. It was
+    // invisible from the outside because Relay defaults the missing `type` on
+    // ingest, so BOTH copies read `"type":"default"` in a fetched event while
+    // only one carried it in memory.
+    breadcrumb.type ?? 'default',
     breadcrumb.level ?? '',
     breadcrumb.message ?? '',
     dataKey,

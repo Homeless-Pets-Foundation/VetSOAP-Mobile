@@ -100,7 +100,8 @@ import {
   linkedServerDraftIds,
 } from '../../../src/api/draftPresence';
 import { ApiError } from '../../../src/api/client';
-import { isDraftSyncTransportError } from '../../../src/lib/draftSyncErrors';
+import { isDraftSyncConflictError, isDraftSyncTransportError } from '../../../src/lib/draftSyncErrors';
+import { isApiError } from '../../../src/api/apiErrors';
 import { patchDraftMetadataWithRetry } from '../../../src/lib/retryableCleanup';
 import {
   trackEvent,
@@ -665,10 +666,17 @@ const EXPO_PRESTART_POINTER_TIMEOUT_MS = 400;
  *
  * The budget is what makes this safe to await: the race RESOLVES on timeout
  * rather than rejecting, so a degraded Keystore delays the microphone by at most
- * EXPO_PRESTART_POINTER_TIMEOUT_MS and never strands the handler. Durable
- * capture is off in production, so extending this to the durable paths cannot
- * affect the fleet's current tap latency; it applies to the pilot, where the
- * device A/B must measure it.
+ * EXPO_PRESTART_POINTER_TIMEOUT_MS and never strands the handler.
+ *
+ * This paragraph previously justified extending the await to the durable paths
+ * with "durable capture is off in production." That is no longer true — the
+ * server flag turned durable capture ON for the fleet around 2026-09-08, and
+ * Sentry has measured `recorder_durable_start` on every Galaxy Tab model since.
+ * The bound still stands on its own: it RESOLVES, so the worst case is 400 ms of
+ * added tap latency on a degraded Keystore, and capturing audio matters more
+ * than being able to attribute its loss. But it is now paid by real vets on
+ * every start, so treat it as a live cost, not a pilot-only one — see the
+ * `recorder_durable_start` latency work before loosening it.
  */
 function racePreStartPointerWrite(p: Promise<void>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -4596,6 +4604,19 @@ function RecordingSession() {
               breadcrumb('draft', 'sync_server_draft_transient_network', {
                 slot_id: slotId,
                 had_server_draft: hadServerDraft,
+              });
+              return;
+            }
+            if (isDraftSyncConflictError(error)) {
+              // A 409 proves the server already HAS a row for this recording, so
+              // this is not the "local draft never reached the server" failure
+              // the capture below exists to report — it is the opposite. Local
+              // state is deliberately left as-is: choosing which side of a
+              // conflict wins needs the server contract, not a guess here.
+              breadcrumb('draft', 'sync_server_draft_conflict', {
+                slot_id: slotId,
+                had_server_draft: hadServerDraft,
+                error_code: isApiError(error) ? error.code ?? 'none' : 'none',
               });
               return;
             }

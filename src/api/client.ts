@@ -240,6 +240,18 @@ export class ApiClient {
     }
     if (status === 403) return 'You do not have permission to perform this action.';
     if (status === 404) return 'The requested resource was not found.';
+    // 409 used to fall through to the generic fallback, so every conflict — the
+    // typed ones the upload path classifies AND the untyped ones nothing catches
+    // — reached the vet as 'Something went wrong. Please try again.' (Sentry
+    // REACT-NATIVE-1Z: a 409 on POST /api/recordings, captured as an untyped
+    // exception). Say what a conflict actually proves and point at the list; a
+    // retry that re-sends the same state earns the same 409 forever.
+    if (status === 409) {
+      if (errorBody.code === 'IDEMPOTENCY_KEY_MISMATCH') {
+        return 'This recording was already submitted from this device. Check Recordings before trying again.';
+      }
+      return 'This recording was already updated on the server. Check Recordings for its current status before trying again.';
+    }
     if (status === 400 && details.length) return details.map((d) => d.message).join(', ');
     if (status === 422 && details.length) return details.map((d) => d.message).join(', ');
     if (status === 429) return 'Too many requests. Please try again shortly.';
@@ -366,6 +378,12 @@ export class ApiClient {
     const requestId = getIdempotencyUuid();
     const fetchStartedAt = Date.now();
     let retried = false;
+    // Snapshot the token this request is about to be sent with. A background
+    // refresh can land WHILE the request is in flight, and the 401 handling
+    // below reads `currentToken` only after the fetch returns — by then it is
+    // already the new token, so the "did the token change?" retry check below
+    // compares the new token against itself and never fires.
+    const tokenBeforeFetch = this.currentToken;
     let response = await this.doFetch(
       url,
       method,
@@ -449,6 +467,36 @@ export class ApiClient {
           throwIfRequestAborted(signal);
         }
       }
+    }
+
+    // A 401 whose token is ALREADY stale: the session refreshed between this
+    // request being sent and its response arriving, so the server judged a token
+    // that is no longer the one we hold. Re-send with the current token before
+    // involving onUnauthorized — the refresh it would perform has already
+    // happened. Without this the request dies as a hard 401: onUnauthorized's
+    // "session too fresh" guard is keyed on the refresh timestamp the refresh
+    // itself just reset, so it returns without refreshing, `newToken` then equals
+    // `oldToken`, and no retry runs (Sentry REACT-NATIVE-1J — a submit failing
+    // with `prepare:HTTP_401` on the foreground-resume refresh, rule 18).
+    if (
+      allowAuthSideEffects &&
+      response.status === 401 &&
+      this.currentToken &&
+      this.currentToken !== tokenBeforeFetch
+    ) {
+      if (__DEV__) console.log('[ApiClient]', method, path, 'retrying 401 sent with a pre-refresh token');
+      retried = true;
+      response = await this.doFetch(
+        url,
+        method,
+        path,
+        serializedBody,
+        timeoutMs,
+        idempotencyKey,
+        requestId,
+        signal,
+      );
+      throwIfRequestAborted(signal);
     }
 
     // On 401, check for device revocation before attempting refresh

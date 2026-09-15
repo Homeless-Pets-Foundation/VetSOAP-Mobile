@@ -530,3 +530,91 @@ test('readChunkedValueStrict separates absence from unavailability', async () =>
   secureMock.__store.set('captivet_durable_bad_count', 'not-a-number');
   assert.equal((await mod.readChunkedValueStrict('captivet_durable_bad')).status, 'unavailable');
 });
+
+/**
+ * Concurrent sweeps of the SAME list — the half the bounded chunk reader above
+ * does not cover.
+ *
+ * `listDraftsForUser` memoized on exit but had no in-flight guard, so callers
+ * that started while a sweep was already running all missed the memo and all
+ * walked the Keystore themselves. Three of them exist and fire together on a
+ * Record-tab open: the React Query `queryFn` (`local_draft_list source=query`),
+ * the reconciliation pass it kicks off (`source=reconcile`), and
+ * `record_pending_draft_scan`. Production Sentry caught exactly that — two
+ * `local_draft_list` sweeps (9 779 ms, 10 693 ms) and one
+ * `record_pending_draft_scan` (10 013 ms) finishing within one second of each
+ * other for an index of TWO drafts, which is ~5 reads of real work.
+ *
+ * On a serialized AndroidKeyStore the sweeps do not just duplicate work, they
+ * contend, so N callers cost far more than N times one sweep.
+ */
+test('concurrent listDraftsForUser callers share a single storage sweep', async () => {
+  // Measure one cold sweep on its own module instance, so the expectation is
+  // derived from the reader rather than hardcoded.
+  const solo = await loadDraftStorageWithDrafts(2);
+  await solo.draftStorage.listDraftsForUser(solo.userId);
+  const readsForOneSweep = solo.secure.__stats.reads;
+  assert.ok(readsForOneSweep > 0, 'sanity: a cold sweep must read storage');
+
+  const shared = await loadDraftStorageWithDrafts(2);
+  const [a, b, c] = await Promise.all([
+    shared.draftStorage.listDraftsForUser(shared.userId),
+    shared.draftStorage.listDraftsForUser(shared.userId),
+    shared.draftStorage.listDraftsForUser(shared.userId),
+  ]);
+
+  assert.equal(
+    shared.secure.__stats.reads,
+    readsForOneSweep,
+    `three concurrent callers must cost one sweep, saw ${shared.secure.__stats.reads} reads vs ${readsForOneSweep}`
+  );
+  assert.deepEqual(a.map((d) => d.slotId), shared.slotIds);
+  assert.deepEqual(b.map((d) => d.slotId), shared.slotIds);
+  assert.deepEqual(c.map((d) => d.slotId), shared.slotIds);
+  // Each caller owns its own copy. Sharing one array across three callers is a
+  // hazard the single-flight introduces and the memo path never had — the
+  // cache hit has always cloned.
+  assert.notEqual(a, b, 'callers must not share one mutable array');
+  assert.notEqual(a[0], b[0], 'callers must not share one mutable draft object');
+});
+
+test('a write during an in-flight sweep is not served from that sweep', async () => {
+  // The hazard the single-flight adds: a caller arriving after a write must not
+  // be handed the result of a read that started before it. The memo already
+  // guards this with `draftsCacheVersion`; the in-flight share needs the same
+  // stamp.
+  const { draftStorage, secure, userId, slotIds } = await loadDraftStorageWithDrafts(2);
+
+  // Hold the first sweep open after it has read the index, so a write can land
+  // strictly inside it.
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const passThrough = secure.getItemAsync.bind(secure);
+  let gated = false;
+  secure.getItemAsync = async (key) => {
+    if (!gated && key.includes('_chunk_')) {
+      gated = true;
+      await gate;
+    }
+    return passThrough(key);
+  };
+
+  const first = draftStorage.listDraftsForUser(userId);
+  // Let it reach the gate.
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+
+  await draftStorage.deleteDraftForUser(userId, slotIds[0]);
+
+  const readsBeforeJoiner = secure.__stats.reads;
+  const second = draftStorage.listDraftsForUser(userId);
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  assert.ok(
+    secure.__stats.reads > readsBeforeJoiner,
+    'a caller arriving after a write must start its own sweep, not join the pre-write one'
+  );
+
+  release();
+  await Promise.all([first, second]);
+});

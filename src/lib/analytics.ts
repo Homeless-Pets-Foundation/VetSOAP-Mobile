@@ -146,7 +146,19 @@ export type AnalyticsEvent =
    */
   | {
       name: 'capture_ended_without_cleanup';
-      props: { durable_count: number; expo_count: number; recovered_count: number };
+      props: {
+        durable_count: number;
+        expo_count: number;
+        recovered_count: number;
+        /**
+         * Stale pointers whose recording is tombstoned — confirmed uploaded and
+         * purged. NOT a loss. Before this existed they were counted as
+         * `durable_count` with `recovered_count` unchanged, because a purged
+         * manifest can never appear in the recoverable-session list, so a
+         * perfectly uploaded recording looked exactly like an unrecoverable one.
+         */
+        uploaded_count: number;
+      };
     }
   | { name: 'durable_battery_opt_exemption'; props: { granted: boolean } }
   /**

@@ -74,7 +74,7 @@ test('the PR gate both verifies and publishes the job — never only one', async
   // 1. verified: present in the `expected` Map the gate checks the manual run against
   assert.match(
     gate,
-    new RegExp(`\\['${JOB_NAME}', runsOnLinux\\]`),
+    new RegExp(`\\['${JOB_NAME}', hostedLinux\\]`),
     `${JOB_NAME} must be in the gate's expected-jobs map, or the gate never confirms it ran`,
   );
 

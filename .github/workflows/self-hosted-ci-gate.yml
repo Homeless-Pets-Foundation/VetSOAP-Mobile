@@ -73,20 +73,18 @@ jobs:
               filter: 'latest',
               per_page: 100,
             });
-            // The Linux jobs run on the organization's RunsOn linux-ci profile. Their
-            // label carries a per-run unique id, so it is matched by shape rather
-            // than by an exact string. Swift stays on the local macOS runner.
-            const runsOnLinux = { kind: 'runs-on', runner: 'linux-ci' };
+            // Public Linux CI uses free standard runners; Swift keeps its local hardware.
+            const hostedLinux = { kind: 'github-hosted', labels: ['ubuntu-24.04'] };
             const localMacOS = { kind: 'labels', labels: ['self-hosted', 'local-ci', 'macOS', 'ARM64'] };
             const expected = new Map([
-              ['Confirm PR head', runsOnLinux],
-              ['R2 Destination Contract', runsOnLinux],
-              ['Typecheck', runsOnLinux],
-              ['Lint', runsOnLinux],
-              ['Test', runsOnLinux],
-              ['Expo SDK deps', runsOnLinux],
-              ['Analyze (javascript-typescript)', runsOnLinux],
-              ['Review', runsOnLinux],
+              ['Confirm PR head', hostedLinux],
+              ['R2 Destination Contract', hostedLinux],
+              ['Typecheck', hostedLinux],
+              ['Lint', hostedLinux],
+              ['Test', hostedLinux],
+              ['Expo SDK deps', hostedLinux],
+              ['Analyze (javascript-typescript)', hostedLinux],
+              ['Review', hostedLinux],
               ['Swift typecheck (durable recorder)', localMacOS],
             ]);
             const failures = [];
@@ -101,20 +99,11 @@ jobs:
               const job = matching[0];
               const labels = new Set(job.labels ?? []);
               let labelFailure = null;
-              if (requirement.kind === 'runs-on') {
-                const onProfile = [...labels].some(
-                  (label) =>
-                    label.startsWith('runs-on=') &&
-                    label.includes(`/runner=${requirement.runner}`)
-                );
-                if (!onProfile) {
-                  labelFailure = `not on the RunsOn ${requirement.runner} profile`;
-                }
-              } else {
-                const missingLabels = requirement.labels.filter((label) => !labels.has(label));
-                if (missingLabels.length > 0) {
-                  labelFailure = `missing labels ${missingLabels.join(', ')}`;
-                }
+              const missingLabels = requirement.labels.filter((label) => !labels.has(label));
+              if (missingLabels.length > 0) {
+                labelFailure = `missing labels ${missingLabels.join(', ')}`;
+              } else if (requirement.kind === 'github-hosted' && job.runner_group_name !== 'GitHub Actions') {
+                labelFailure = 'not assigned to a standard GitHub Actions runner';
               }
               if (job.status !== 'completed' || job.conclusion !== 'success') {
                 failures.push(`${name}: ${job.status}/${job.conclusion}`);

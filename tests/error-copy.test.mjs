@@ -37,3 +37,25 @@ test('display sites route through the mapper, raw detail via clipboard only', as
   assert.match(record, /getUploadPhase\(error\) !== 'unknown'/);
   assert.match(record, /friendlyErrorMessage\(error, 'upload'\)/);
 });
+
+test('a 409 maps to conflict copy in both the mapper and the API message builder', async () => {
+  // Before this branch existed every 409 — typed or untyped — reached the vet as
+  // ERROR_COPY.uploadGeneric / loadFailed via the mapper, and as
+  // 'Something went wrong. Please try again.' via buildErrorMessage
+  // (Sentry REACT-NATIVE-1Z: a 409 on POST /api/recordings).
+  const src = await read('src/lib/errorCopy.ts');
+  assert.match(src, /error\.status === 409/);
+  assert.match(src, /ERROR_COPY\.conflict/);
+
+  const strings = await read('src/constants/strings.ts');
+  assert.match(strings, /conflict:\s*\n?\s*'This recording was already updated on the server/);
+
+  // The API layer needs its own branch: ApiError.message is what reaches Sentry
+  // and the clipboard, and the mapper never sees it.
+  const client = await read('src/api/client.ts');
+  assert.match(client, /if \(status === 409\) \{/);
+  assert.match(client, /errorBody\.code === 'IDEMPOTENCY_KEY_MISMATCH'/);
+  // Status/code only — the mapper guard above already forbids message matching.
+  assert.ok(!/status === 409[\s\S]{0,400}errorBody\.error/.test(client),
+    'a 409 must not echo raw server text');
+});

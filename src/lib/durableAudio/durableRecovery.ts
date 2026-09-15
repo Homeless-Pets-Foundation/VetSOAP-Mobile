@@ -16,7 +16,12 @@
  */
 import * as durableRecorder from '../../../modules/captivet-durable-recorder';
 import type { DurableRecordingManifest } from './manifest';
-import { selectRecoverableSessions, needsServerReconcile } from './recoveryLogic';
+import {
+  classifyUncleanExitPointers,
+  needsServerReconcile,
+  selectRecoverableSessions,
+  uncleanExitIsReportable,
+} from './recoveryLogic';
 import { isValidDurableId } from './paths';
 import { durableTombstone } from './tombstone';
 import { durableReconcileHold } from './reconcileHold';
@@ -126,24 +131,34 @@ async function reportPriorUncleanExit(
     const stale = entries.filter((e) => typeof e.startedAt === 'string' && e.startedAt < PROCESS_START_ISO);
     if (stale.length === 0) return;
 
-    let durable = 0;
-    let expo = 0;
-    // Recoverable = a durable pointer from THIS kill that still has a manifest
-    // to rebuild from. The total manifest count is not that number: it also
-    // holds finished recordings already surfaced as drafts or stashes, uploaded
-    // ones awaiting self-heal, and sessions that will be suppressed from the
-    // offer list — so one stale expo pointer could otherwise report "recovered
-    // many", making the loss telemetry unusable. Expo pointers never have a
-    // manifest, which is the whole reason their loss is unrecoverable.
-    let recovered = 0;
-    for (const e of stale) {
-      if (e.backend === 'expo') {
-        expo++;
-      } else {
-        durable++;
-        if (manifestIds.has(e.recordingId)) recovered++;
-      }
-    }
+    // A recording that uploaded successfully has its manifest PURGED, so its id
+    // can never appear in `manifestIds` — which made a stale pointer for a
+    // perfectly uploaded recording score `durable++` with `recovered` unchanged,
+    // i.e. indistinguishable from audio we actually lost. The tombstone is the
+    // record of "confirmed uploaded, then purged", so consult it before
+    // classifying. Read once rather than per entry: `has()` walks the same list.
+    //
+    // An unreadable tombstone list resolves `[]`, which puts those entries back
+    // in `durable` — the behaviour this replaces, so a degraded Keystore is no
+    // worse than before, just no better.
+    const tombstoned =
+      durableTombstone.getUserId() === userId
+        ? new Set(await durableTombstone.list())
+        : new Set<string>();
+    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+
+    const { durable, expo, recovered, uploaded } = classifyUncleanExitPointers({
+      stale,
+      manifestIds,
+      tombstonedRecordingIds: tombstoned,
+    });
+    // `recovered` counts only durable pointers from THIS exit that still have a
+    // manifest to rebuild from. The total manifest count is not that number: it
+    // also holds finished recordings already surfaced as drafts or stashes,
+    // uploaded ones awaiting self-heal, and sessions that will be suppressed
+    // from the offer list — so one stale expo pointer could otherwise report
+    // "recovered many", making the loss telemetry unusable. Expo pointers never
+    // have a manifest, which is the whole reason their loss is unrecoverable.
 
     // PRUNE FIRST, and report only if the stale pointer is CONFIRMED gone.
     // Emitting first and pruning after double-counted: a transient read failure
@@ -164,11 +179,24 @@ async function reportPriorUncleanExit(
     // corrupt per-user reliability data across an account boundary. The counts
     // are worth less than the boundary.
     if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+
+    // Every stale pointer belonged to a recording that uploaded and purged.
+    // Nothing ended uncleanly — these are leftovers from successful submits, so
+    // the prune above was the whole job. Reporting here would be a pure false
+    // positive, and marking the user reported would additionally arm the
+    // battery-optimization nudge for an interruption that never happened.
+    if (!uncleanExitIsReportable({ durable, expo, recovered, uploaded })) return;
+
     uncleanExitReportedUsers.add(userId);
 
     trackEvent({
       name: 'capture_ended_without_cleanup',
-      props: { durable_count: durable, expo_count: expo, recovered_count: recovered },
+      props: {
+        durable_count: durable,
+        expo_count: expo,
+        recovered_count: recovered,
+        uploaded_count: uploaded,
+      },
     });
     // Sentry sees no crash for an OS kill, so this message is the only trace of
     // one — but it also fires for reboots and swipe-aways. Read it as an upper
@@ -176,7 +204,12 @@ async function reportPriorUncleanExit(
     // Counts only — no ids, no slot ids, no paths.
     captureMessage('capture_ended_without_cleanup', 'warning', {
       tags: { phase: 'record' },
-      extra: { durable_count: durable, expo_count: expo, recovered_count: recovered },
+      extra: {
+        durable_count: durable,
+        expo_count: expo,
+        recovered_count: recovered,
+        uploaded_count: uploaded,
+      },
     });
 
 

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   confirm-pr-head:
     name: Confirm PR head
-    runs-on: "runs-on=${{ github.run_id }}-confirm-pr-head-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       base-sha: ${{ steps.confirm.outputs.base-sha }}
@@ -83,7 +83,7 @@ jobs:
   r2-destination-contract:
     name: R2 Destination Contract
     needs: confirm-pr-head
-    runs-on: "runs-on=${{ github.run_id }}-r2-destination-contract-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout confirmed PR head
@@ -115,7 +115,7 @@ jobs:
   typecheck:
     name: Typecheck
     needs: confirm-pr-head
-    runs-on: "runs-on=${{ github.run_id }}-typecheck-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout confirmed PR head
@@ -147,7 +147,7 @@ jobs:
   lint:
     name: Lint
     needs: confirm-pr-head
-    runs-on: "runs-on=${{ github.run_id }}-lint-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout confirmed PR head
@@ -179,7 +179,7 @@ jobs:
   test:
     name: Test
     needs: confirm-pr-head
-    runs-on: "runs-on=${{ github.run_id }}-test-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout confirmed PR head
@@ -211,7 +211,7 @@ jobs:
   expo-deps:
     name: Expo SDK deps
     needs: confirm-pr-head
-    runs-on: "runs-on=${{ github.run_id }}-expo-deps-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout confirmed PR head
@@ -243,7 +243,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: confirm-pr-head
-    runs-on: "runs-on=${{ github.run_id }}-analyze-${{ strategy.job-index }}-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       actions: read
@@ -272,15 +272,15 @@ jobs:
           test "$GITHUB_SHA" = "$CONFIRMED_SHA"
           test "$checked_out_sha" = "$CONFIRMED_SHA"
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           languages: ${{ matrix.language }}
           trap-caching: false
           dependency-caching: false
       - name: Autobuild
-        uses: github/codeql-action/autobuild@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        uses: github/codeql-action/autobuild@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           category: /language:${{ matrix.language }}
           upload: always
@@ -289,7 +289,7 @@ jobs:
   dependency-review:
     name: Review
     needs: confirm-pr-head
-    runs-on: "runs-on=${{ github.run_id }}-dependency-review-${{ github.run_attempt }}/runner=linux-ci"
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout confirmed PR head

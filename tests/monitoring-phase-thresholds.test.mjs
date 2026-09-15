@@ -177,6 +177,41 @@ test('dedupeMergedBreadcrumbs collapses the pair even though only the native cop
   assert.equal(deduped[0].timestamp, 200.0);
 });
 
+test('dedupeMergedBreadcrumbs collapses a phase that sets NEITHER optional tag', async () => {
+  // The case the two fixtures above both miss, and the reason the `type` fix
+  // alone was not enough. `completePhase` writes `skipped` and `count` into
+  // EVERY phase_complete payload; for the phases that set neither — `fetchUser`,
+  // `local_draft_list`, `recorder_native_start`, nearly all of them — the values
+  // are `undefined`.
+  //
+  // Sentry's `normalize()` runs before `beforeSend` and keeps those keys on the
+  // object (verified: `Object.keys` returns all five; only `JSON.stringify`
+  // drops them), while the bridge round trip loses them because `undefined` has
+  // no representation there. So the JS copy hashed `count=undefined&
+  // skipped=undefined` and the native copy hashed neither.
+  //
+  // The earlier fixtures passed because they handed both copies the SAME `data`
+  // object and used a phase that happens to carry `count`.
+  const harness = await loadMonitoringHarness();
+  const { dedupeMergedBreadcrumbs } = harness.monitoring;
+
+  const common = {
+    phase: 'local_draft_list',
+    duration_ms: 10693,
+    duration_bucket: '5000ms_plus',
+    outcome: 'success',
+  };
+  const deduped = dedupeMergedBreadcrumbs([
+    // native: the absent tags never crossed the bridge
+    { timestamp: 400.0, type: 'default', level: 'info', category: 'performance', message: 'phase_complete', data: { ...common } },
+    // JS: completePhase put them there as undefined and normalize kept them
+    { timestamp: 400.001, level: 'info', category: 'performance', message: 'phase_complete', data: { ...common, skipped: undefined, count: undefined } },
+  ]);
+
+  assert.equal(deduped.length, 1, 'absent-valued data keys must not defeat the dedupe');
+  assert.equal(deduped[0].timestamp, 400.0);
+});
+
 test('dedupeMergedBreadcrumbs keeps genuine repeats and distinct payloads', async () => {
   const harness = await loadMonitoringHarness();
   const { dedupeMergedBreadcrumbs } = harness.monitoring;

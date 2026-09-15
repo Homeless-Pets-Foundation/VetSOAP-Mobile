@@ -4608,15 +4608,40 @@ function RecordingSession() {
               return;
             }
             if (isDraftSyncConflictError(error)) {
-              // A 409 proves the server already HAS a row for this recording, so
-              // this is not the "local draft never reached the server" failure
-              // the capture below exists to report — it is the opposite. Local
-              // state is deliberately left as-is: choosing which side of a
-              // conflict wins needs the server contract, not a guess here.
+              // A 409 proves the server already HAS a row, so this is not the
+              // "local draft never reached the server" failure the capture below
+              // exists to report — it is the opposite, and reporting it as an
+              // exception was backwards.
+              //
+              // Scope note: this matches ANY 409 raised in the try above — the
+              // create, the metadata patch, and the orphan-delete probe. That is
+              // deliberate, because all of them mean the same thing here, but it
+              // does mean `had_server_draft` is what distinguishes the create
+              // path from the patch path in triage.
+              //
+              // What this branch does NOT do is leave local state untouched: on
+              // the patch path the `hadServerDraft` block above has already run
+              // `markDraftMetadataDirty` + dispatched MARK_DRAFT_METADATA_DIRTY,
+              // so the draft is flagged for re-patch and will earn the same 409
+              // next time. Deciding which side of a conflict wins needs the
+              // server contract, so the state is left as that block left it.
+              //
+              // Reported as a WARNING rather than a breadcrumb alone: a
+              // breadcrumb only ships attached to some other captured event, and
+              // a permanent 409 leaves the draft `pendingSync` forever — the
+              // reconnect queue retries it on every reconnect and
+              // `draftStorage.syncPending` swallows the failure, so without this
+              // the vet sits on "Not Submitted" with zero signal. Rate-limited to
+              // 3/60s per message by `rateLimitMonitoring`.
+              const conflictCode = isApiError(error) ? error.code ?? 'none' : 'none';
               breadcrumb('draft', 'sync_server_draft_conflict', {
                 slot_id: slotId,
                 had_server_draft: hadServerDraft,
-                error_code: isApiError(error) ? error.code ?? 'none' : 'none',
+                error_code: conflictCode,
+              });
+              captureMessage('draft_sync_conflict', 'warning', {
+                tags: { phase: 'sync_server_draft', error_code: conflictCode },
+                extra: { had_server_draft: hadServerDraft },
               });
               return;
             }

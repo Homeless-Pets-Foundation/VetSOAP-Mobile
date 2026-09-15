@@ -76,6 +76,17 @@ function breadcrumbIdentity(breadcrumb: MinimalBreadcrumb): string {
   let dataKey = '';
   if (breadcrumb.data) {
     const entries = Object.entries(breadcrumb.data)
+      // Drop absent values before comparing. `completePhase` always writes
+      // `skipped` and `count` into every `phase_complete` payload, `undefined`
+      // for the phases that do not set those tags — which is nearly all of them.
+      // Sentry's `normalize()` runs before `beforeSend` and KEEPS those keys on
+      // the object (only `JSON.stringify` drops them on the wire), while the copy
+      // that round-trips through the Android bridge loses them entirely, since
+      // `undefined` has no representation there. So the JS copy hashed
+      // `count=undefined&skipped=undefined` and the native copy hashed neither,
+      // the identities never matched, and the dedupe silently did nothing for the
+      // most numerous breadcrumb in the ring.
+      .filter(([, value]) => value !== undefined && value !== null)
       .map(([key, value]) => `${key}=${String(value)}`)
       .sort();
     dataKey = entries.join('&');

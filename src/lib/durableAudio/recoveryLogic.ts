@@ -174,12 +174,25 @@ export function classifyUncleanExitPointers(input: {
   for (const entry of input.stale) {
     if (entry.backend === 'expo') {
       counts.expo++;
-    } else if (input.tombstonedRecordingIds.has(entry.recordingId)) {
-      counts.uploaded++;
-    } else {
-      counts.durable++;
-      if (input.manifestIds.has(entry.recordingId)) counts.recovered++;
+      continue;
     }
+    // MANIFEST FIRST, tombstone second. `selfHealUploaded` purges, THEN
+    // tombstones, THEN clears the pointer — so "tombstoned but the manifest is
+    // still on disk" means the purge failed and the process died before
+    // finishing cleanup. That is a real unclean exit whose audio the durability
+    // guarantee actually saved, and scoring it `uploaded` both under-counted
+    // `recovered` and, when it was the only stale pointer, suppressed the report
+    // entirely — dropping the one signal an LMK kill ever produces.
+    if (input.manifestIds.has(entry.recordingId)) {
+      counts.durable++;
+      counts.recovered++;
+      continue;
+    }
+    if (input.tombstonedRecordingIds.has(entry.recordingId)) {
+      counts.uploaded++;
+      continue;
+    }
+    counts.durable++;
   }
   return counts;
 }

@@ -6,6 +6,7 @@ import { setMinVersionFloor, UPGRADE_REQUIRED_CODE } from '../lib/minVersion';
 import { setDurableCaptureFlag } from '../lib/durableFlag';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
 import { ApiError, RequestTimeoutError, StorageUnavailableError } from './apiErrors';
+import { ERROR_COPY } from '../constants/strings';
 
 const REQUEST_TIMEOUT_MS = 30000;
 
@@ -135,6 +136,8 @@ export class ApiClient {
   private onSessionExpired?: () => void | Promise<void>;
   /** In-memory token — primary source of truth. SecureStore is a fallback. */
   private currentToken: string | null = null;
+  /** Incremented whenever the token is cleared — see `setToken`. */
+  private tokenEpoch = 0;
   /**
    * True once setToken() has been called at least once. Once initialized, the
    * in-memory token is authoritative and SecureStore is NOT consulted — this
@@ -183,6 +186,13 @@ export class ApiClient {
    * read can't resurrect a signed-out token.
    */
   setToken(token: string | null) {
+    // Clearing the token ends the current auth epoch. `ApiClient` has no user
+    // identity of its own, and every sign-out path clears the token before the
+    // next sign-in sets one (`handleSignOut`, and the SIGNED_OUT branch of
+    // `onAuthStateChange`), so this is the signal that "the token changed"
+    // means a DIFFERENT USER rather than a refreshed session. A refresh only
+    // ever replaces one non-null token with another and leaves the epoch alone.
+    if (token === null) this.tokenEpoch++;
     this.currentToken = token;
     this.tokenInitialized = true;
     if (token) {
@@ -210,7 +220,8 @@ export class ApiClient {
   private buildErrorMessage(
     status: number,
     errorBody: Record<string, unknown>,
-    details: { message: string }[]
+    details: { message: string }[],
+    path: string,
   ): string {
     if (__DEV__) {
       return (
@@ -248,9 +259,14 @@ export class ApiClient {
     // retry that re-sends the same state earns the same 409 forever.
     if (status === 409) {
       if (errorBody.code === 'IDEMPOTENCY_KEY_MISMATCH') {
-        return 'This recording was already submitted from this device. Check Recordings before trying again.';
+        return ERROR_COPY.conflictAlreadySubmitted;
       }
-      return 'This recording was already updated on the server. Check Recordings for its current status before trying again.';
+      // Recording wording only where the route actually is one — a 409 from
+      // device registration or any org/settings route must not tell the vet to
+      // go check Recordings.
+      return endpointKindOf(path) === 'recordings'
+        ? ERROR_COPY.conflictRecording
+        : ERROR_COPY.conflict;
     }
     if (status === 400 && details.length) return details.map((d) => d.message).join(', ');
     if (status === 422 && details.length) return details.map((d) => d.message).join(', ');
@@ -378,23 +394,35 @@ export class ApiClient {
     const requestId = getIdempotencyUuid();
     const fetchStartedAt = Date.now();
     let retried = false;
-    // Snapshot the token this request is about to be sent with. A background
-    // refresh can land WHILE the request is in flight, and the 401 handling
-    // below reads `currentToken` only after the fetch returns — by then it is
-    // already the new token, so the "did the token change?" retry check below
-    // compares the new token against itself and never fires.
-    const tokenBeforeFetch = this.currentToken;
-    let response = await this.doFetch(
-      url,
-      method,
-      path,
-      serializedBody,
-      timeoutMs,
-      idempotencyKey,
-      requestId,
-      signal,
-    );
-    throwIfRequestAborted(signal);
+    // Snapshot the auth state each attempt is actually sent with. A background
+    // refresh can land WHILE a request is in flight, and the 401 handling below
+    // reads `currentToken` only after the fetch returns — by then it is already
+    // the new token, so a check against `currentToken` would compare the new
+    // token against itself and never fire.
+    //
+    // Re-snapshotted per attempt, not once per request: after a 428
+    // device-registration retry the second attempt already carries the new
+    // token, and comparing it against the pre-first-attempt value would fire a
+    // third identical request on a genuine 401.
+    let tokenAtFetch = this.currentToken;
+    let epochAtFetch = this.tokenEpoch;
+    const send = async (): Promise<Response> => {
+      tokenAtFetch = this.currentToken;
+      epochAtFetch = this.tokenEpoch;
+      const sent = await this.doFetch(
+        url,
+        method,
+        path,
+        serializedBody,
+        timeoutMs,
+        idempotencyKey,
+        requestId,
+        signal,
+      );
+      throwIfRequestAborted(signal);
+      return sent;
+    };
+    let response = await send();
 
     // Cache the min-app-version floor + durable flag from a response and handle a
     // 426 as terminal-non-auth. Runs on the INITIAL response AND (below) on the
@@ -454,49 +482,9 @@ export class ApiClient {
         if (registered) {
           if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after device registration');
           retried = true;
-          response = await this.doFetch(
-            url,
-            method,
-            path,
-            serializedBody,
-            timeoutMs,
-            idempotencyKey,
-            requestId,
-            signal,
-          );
-          throwIfRequestAborted(signal);
+          response = await send();
         }
       }
-    }
-
-    // A 401 whose token is ALREADY stale: the session refreshed between this
-    // request being sent and its response arriving, so the server judged a token
-    // that is no longer the one we hold. Re-send with the current token before
-    // involving onUnauthorized — the refresh it would perform has already
-    // happened. Without this the request dies as a hard 401: onUnauthorized's
-    // "session too fresh" guard is keyed on the refresh timestamp the refresh
-    // itself just reset, so it returns without refreshing, `newToken` then equals
-    // `oldToken`, and no retry runs (Sentry REACT-NATIVE-1J — a submit failing
-    // with `prepare:HTTP_401` on the foreground-resume refresh, rule 18).
-    if (
-      allowAuthSideEffects &&
-      response.status === 401 &&
-      this.currentToken &&
-      this.currentToken !== tokenBeforeFetch
-    ) {
-      if (__DEV__) console.log('[ApiClient]', method, path, 'retrying 401 sent with a pre-refresh token');
-      retried = true;
-      response = await this.doFetch(
-        url,
-        method,
-        path,
-        serializedBody,
-        timeoutMs,
-        idempotencyKey,
-        requestId,
-        signal,
-      );
-      throwIfRequestAborted(signal);
     }
 
     // On 401, check for device revocation before attempting refresh
@@ -521,42 +509,64 @@ export class ApiClient {
         );
       }
 
-      const oldToken = this.currentToken;
-
-      try {
-        await this.onUnauthorized?.();
-      } catch {
-        // onUnauthorized handler failed — fall through to error
-      }
-      throwIfRequestAborted(signal);
-      const newToken = this.currentToken;
-
-      // If the token changed after refresh, retry the request once
-      if (newToken && newToken !== oldToken) {
-        if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
+      // A 401 whose token was ALREADY stale when the server judged it: a refresh
+      // landed between this attempt going out and its response arriving. Re-send
+      // with the token we now hold before involving onUnauthorized — the refresh
+      // it would perform has already happened. Without this the request dies as a
+      // hard 401, because onUnauthorized's "session too fresh" guard is keyed on
+      // the refresh timestamp the refresh itself just reset (Sentry
+      // REACT-NATIVE-1J — a submit failing `prepare:HTTP_401` after the
+      // foreground-resume refresh, rule 18).
+      //
+      // The EPOCH is what makes this safe. A changed token alone does not mean
+      // "the session refreshed" — on a shared clinic tablet it also means one vet
+      // signed out and another signed in while this request was in flight, and
+      // re-sending would file the first vet's recording under the second vet's
+      // identity, with the same body and the same Idempotency-Key. ApiClient has
+      // no user identity of its own, so the sign-out is the signal: `setToken`
+      // bumps the epoch whenever the token is CLEARED, which a refresh never
+      // does. Placed after the device-code checks so a revoked device forces
+      // sign-out immediately instead of paying an extra authenticated request.
+      if (
+        this.tokenEpoch === epochAtFetch &&
+        this.currentToken &&
+        this.currentToken !== tokenAtFetch
+      ) {
+        if (__DEV__) console.log('[ApiClient]', method, path, 'retrying 401 sent with a pre-refresh token');
         retried = true;
-        response = await this.doFetch(
-          url,
-          method,
-          path,
-          serializedBody,
-          timeoutMs,
-          idempotencyKey,
-          requestId,
-          signal,
-        );
-        throwIfRequestAborted(signal);
+        response = await send();
       }
 
-      // Still 401 after the refresh attempt → the session can't authenticate
-      // (refresh failed, or produced a token the server still rejects). Tell the
-      // auth layer to route to sign-in rather than stranding the user in a zombie
-      // session. Fires only after a refresh already ran; transient network blips
-      // surface as throws (not clean 401s) so they don't trip it.
+      // The stale-token retry may have already succeeded; a refresh and a
+      // possible sign-out are only warranted while the response is still 401.
       if (response.status === 401) {
+        const oldToken = this.currentToken;
+
+        try {
+          await this.onUnauthorized?.();
+        } catch {
+          // onUnauthorized handler failed — fall through to error
+        }
         throwIfRequestAborted(signal);
-        try { await this.onSessionExpired?.(); } catch { /* ignore */ }
-        throwIfRequestAborted(signal);
+        const newToken = this.currentToken;
+
+        // If the token changed after refresh, retry the request once
+        if (newToken && newToken !== oldToken) {
+          if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
+          retried = true;
+          response = await send();
+        }
+
+        // Still 401 after the refresh attempt → the session can't authenticate
+        // (refresh failed, or produced a token the server still rejects). Tell the
+        // auth layer to route to sign-in rather than stranding the user in a zombie
+        // session. Fires only after a refresh already ran; transient network blips
+        // surface as throws (not clean 401s) so they don't trip it.
+        if (response.status === 401) {
+          throwIfRequestAborted(signal);
+          try { await this.onSessionExpired?.(); } catch { /* ignore */ }
+          throwIfRequestAborted(signal);
+        }
       }
     }
 
@@ -588,7 +598,7 @@ export class ApiClient {
                 detail !== null
             )
         : [];
-      const message = this.buildErrorMessage(response.status, errorBody, details);
+      const message = this.buildErrorMessage(response.status, errorBody, details, path);
       const code = typeof errorBody.code === 'string' ? errorBody.code : undefined;
 
       if (allowAuthSideEffects && response.status === 403 && code === 'MFA_REQUIRED') {

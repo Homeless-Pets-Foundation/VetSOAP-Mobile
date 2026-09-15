@@ -43,11 +43,28 @@ test('the probe re-verifies scope after its await and before every clear', () =>
   const listAwait = body.indexOf('await durableActiveStore.list()');
   const recheck = body.indexOf('durableActiveStore.getUserId() !== userId');
   assert.ok(listAwait > 0 && recheck > listAwait, 'must re-verify AFTER the read');
-  // And again inside the destructive loop — a sign-out mid-loop must not delete
-  // the next user's pointers.
-  const loop = body.slice(body.indexOf('for (const e of stale) {'));
-  assert.match(loop, /durableActiveStore\.getUserId\(\) !== userId/);
-  assert.match(loop, /isCancelled\(\)/);
+  // And again before the DESTRUCTIVE step — a sign-out landing between the read
+  // and the prune must not delete the next user's pointers. (The counting that
+  // used to sit here is now a pure call in recoveryLogic.ts; it awaits nothing
+  // and destroys nothing, so the re-checks that matter bracket the prune.)
+  const prune = body.indexOf('.pruneStartedBefore(userId, PROCESS_START_ISO)');
+  assert.ok(prune > listAwait, 'sanity: the prune follows the read');
+  const beforePrune = body.slice(0, prune);
+  const afterPrune = body.slice(prune);
+  assert.match(
+    beforePrune.slice(beforePrune.lastIndexOf('if (isCancelled()')),
+    /durableActiveStore\.getUserId\(\) !== userId/,
+    'the last guard before the prune must re-verify scope',
+  );
+  assert.match(afterPrune, /isCancelled\(\) \|\| durableActiveStore\.getUserId\(\) !== userId/);
+  // The tombstone read is an await too, so it needs its own re-verification.
+  const tombstoneAwait = body.indexOf('await durableTombstone.list()');
+  assert.ok(tombstoneAwait > 0, 'the probe must consult the tombstone');
+  assert.match(
+    body.slice(tombstoneAwait, prune),
+    /isCancelled\(\) \|\| durableActiveStore\.getUserId\(\) !== userId/,
+    'must re-verify scope after the tombstone await',
+  );
 });
 
 test('activeStore exposes its current scope for that re-verification', async () => {

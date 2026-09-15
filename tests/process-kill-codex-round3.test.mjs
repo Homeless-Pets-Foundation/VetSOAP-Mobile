@@ -60,8 +60,10 @@ test('the durable pointer write is awaited BEFORE native start', () => {
   // the native start made the before-first-frame ordering probabilistic: it
   // relied on encoder priming beating SecureStore, so a kill in that window
   // produced frames with no breadcrumb and went uncounted. Safe to await only
-  // because the bound RESOLVES on timeout, and durable capture is off in
-  // production so the fleet's tap latency is unaffected.
+  // because the bound RESOLVES on timeout. (The original note here added "and
+  // durable capture is off in production so the fleet's tap latency is
+  // unaffected" — no longer true since the server flag turned durable capture on
+  // around 2026-09-08. The bound is now paid on every real start.)
   const fn = startHandler(read(RECORD));
   assert.doesNotMatch(fn, /raceDurableActiveWrite/);
   assert.doesNotMatch(fn, /const activePointerWrite/);
@@ -79,12 +81,76 @@ test('recovered_count intersects stale durable pointers with actual manifests', 
   // The old `manifests.length` also counted finished recordings already shown as
   // drafts/stashes, uploaded ones awaiting self-heal, and suppressed sessions.
   assert.doesNotMatch(src, /reportPriorUncleanExit\(manifests\.length\)/);
-  assert.match(src, /if \(manifestIds\.has\(e\.recordingId\)\) recovered\+\+/);
-  // Expo pointers can never be recoverable — no manifest exists for them.
-  const probe = src.slice(src.indexOf('async function reportPriorUncleanExit'));
-  const body = probe.slice(0, probe.indexOf('\n}\n'));
-  const expoBranch = body.slice(body.indexOf("if (e.backend === 'expo')"), body.indexOf('} else {'));
-  assert.doesNotMatch(expoBranch, /recovered\+\+/);
+  // The counting itself now lives in the pure module so it can be executed (see
+  // the behavioural tests below) — the probe must still feed it both sets.
+  assert.match(src, /classifyUncleanExitPointers\(\{/);
+  assert.match(src, /manifestIds,/);
+  const logic = read('src/lib/durableAudio/recoveryLogic.ts');
+  assert.match(logic, /if \(input\.manifestIds\.has\(entry\.recordingId\)\) counts\.recovered\+\+/);
+});
+
+test('the counting rule: expo is never recoverable, uploaded is never a loss', async () => {
+  // Behavioural, not regex: this is the logic that was wrong in production
+  // (REACT-NATIVE-1X reported recovered_count 0 for recordings that had
+  // uploaded perfectly), so it is worth executing rather than pattern-matching.
+  const { classifyUncleanExitPointers, uncleanExitIsReportable } = await loadTsModule(
+    'src/lib/durableAudio/recoveryLogic.ts',
+  );
+
+  const counts = classifyUncleanExitPointers({
+    stale: [
+      { recordingId: 'dr-kept', backend: 'durable' },   // manifest survives -> recoverable
+      { recordingId: 'dr-lost', backend: 'durable' },   // no manifest, no tombstone -> lost
+      { recordingId: 'dr-legacy' },                     // missing backend reads as durable
+      { recordingId: 'dr-sent', backend: 'durable' },   // tombstoned -> uploaded, not lost
+      { recordingId: 'slot-7', backend: 'expo' },       // never has a manifest
+    ],
+    manifestIds: new Set(['dr-kept']),
+    tombstonedRecordingIds: new Set(['dr-sent']),
+  });
+
+  assert.deepEqual({ ...counts }, { durable: 3, expo: 1, recovered: 1, uploaded: 1 });
+  assert.ok(uncleanExitIsReportable(counts));
+});
+
+test('an all-uploaded set of stale pointers is not reported as an unclean exit', async () => {
+  // A successful upload PURGES its manifest, so an uploaded recording can never
+  // appear in manifestIds. Without the tombstone check these scored
+  // `durable_count: 1, recovered_count: 0` — a perfect submit reported as lost
+  // audio, which is what made the reliability metric unusable.
+  const { classifyUncleanExitPointers, uncleanExitIsReportable } = await loadTsModule(
+    'src/lib/durableAudio/recoveryLogic.ts',
+  );
+
+  const counts = classifyUncleanExitPointers({
+    stale: [
+      { recordingId: 'dr-a', backend: 'durable' },
+      { recordingId: 'dr-b', backend: 'durable' },
+    ],
+    manifestIds: new Set(),
+    tombstonedRecordingIds: new Set(['dr-a', 'dr-b']),
+  });
+
+  assert.deepEqual({ ...counts }, { durable: 0, expo: 0, recovered: 0, uploaded: 2 });
+  assert.equal(uncleanExitIsReportable(counts), false, 'nothing ended uncleanly here');
+});
+
+test('an unreadable tombstone list degrades to the old behaviour, never to silence', async () => {
+  // durableTombstone.list() resolves [] when the Keystore cannot be read. That
+  // must put the entries back in `durable` (over-report a loss) rather than
+  // suppress the report entirely.
+  const { classifyUncleanExitPointers, uncleanExitIsReportable } = await loadTsModule(
+    'src/lib/durableAudio/recoveryLogic.ts',
+  );
+
+  const counts = classifyUncleanExitPointers({
+    stale: [{ recordingId: 'dr-a', backend: 'durable' }],
+    manifestIds: new Set(),
+    tombstonedRecordingIds: new Set(),
+  });
+
+  assert.deepEqual({ ...counts }, { durable: 1, expo: 0, recovered: 0, uploaded: 0 });
+  assert.ok(uncleanExitIsReportable(counts), 'an unprovable upload must still be reported');
 });
 
 test('a failed manifest enumeration reports zero recoverable, not an unknown count', () => {

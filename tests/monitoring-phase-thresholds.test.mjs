@@ -146,6 +146,37 @@ test('dedupeMergedBreadcrumbs collapses the Android native/JS duplicate of each 
   assert.equal(deduped[1].timestamp, 101.0);
 });
 
+test('dedupeMergedBreadcrumbs collapses the pair even though only the native copy carries `type`', async () => {
+  // The fixture above gave BOTH copies the same shape, which is why it stayed
+  // green while production kept shipping doubled breadcrumbs: `addBreadcrumb`
+  // omits `type`, but the native copy round-trips through the Android scope and
+  // `breadcrumbFromObject` hands it back with an explicit `type: 'default'`.
+  // The identity compared '' against 'default' and kept both.
+  //
+  // Verified against a real 1.13.20 event (REACT-NATIVE-1J): two
+  // `draft_presence_batch_request` entries 1ms apart with byte-identical data.
+  // It was invisible from the outside because Relay defaults the missing `type`
+  // on ingest, so a fetched event shows `"type":"default"` on both copies.
+  const harness = await loadMonitoringHarness();
+  const { dedupeMergedBreadcrumbs } = harness.monitoring;
+
+  const data = {
+    count: '4',
+    duration_bucket: '5000ms_plus',
+    duration_ms: 28553,
+    outcome: 'error',
+    phase: 'draft_presence_batch_request',
+  };
+  const deduped = dedupeMergedBreadcrumbs([
+    // native copy sorts first — it is the one that carries `type`
+    { timestamp: 200.0, type: 'default', level: 'info', category: 'performance', message: 'phase_complete', data },
+    { timestamp: 200.001, level: 'info', category: 'performance', message: 'phase_complete', data },
+  ]);
+
+  assert.equal(deduped.length, 1, 'a `type`-only difference must not defeat the dedupe');
+  assert.equal(deduped[0].timestamp, 200.0);
+});
+
 test('dedupeMergedBreadcrumbs keeps genuine repeats and distinct payloads', async () => {
   const harness = await loadMonitoringHarness();
   const { dedupeMergedBreadcrumbs } = harness.monitoring;

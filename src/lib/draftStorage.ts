@@ -147,6 +147,26 @@ const pendingDraftSyncSlotIds = new Set<string>();
 let draftsListCache: { userId: string; drafts: DraftMetadata[] } | null = null;
 let draftsCacheVersion = 0;
 
+// The memo above only helps callers that arrive AFTER a sweep finished. Three
+// callers routinely start while one is still running — the React Query
+// `queryFn` (`local_draft_list source=query`), the reconciliation pass that
+// `queryFn` itself kicks off (`source=reconcile`), and
+// `record_pending_draft_scan` — so all three missed the memo and all three
+// walked the Keystore. Production Sentry caught two `local_draft_list` sweeps
+// (9 779 ms / 10 693 ms) and one `record_pending_draft_scan` (10 013 ms)
+// finishing within one second of each other over an index of TWO drafts. On a
+// serialized AndroidKeyStore those sweeps contend, so the cost is worse than
+// linear in the number of callers.
+//
+// Stamped with the cache version so this shares work without ever sharing
+// STALE work: a caller arriving after a write starts its own sweep rather than
+// joining one that began before it. (A write landing mid-sweep still leaves the
+// joiner with pre-write data — exactly as it leaves the original caller, which
+// is why the memo below re-checks the version before caching.)
+let draftsListInFlight:
+  | { userId: string; version: number; promise: Promise<DraftMetadata[]> }
+  | null = null;
+
 // Bumped on every write, so a mounted screen can re-read after a change it did
 // not itself dispatch. `usePendingDraftSync` runs outside the record screen's
 // reducer and flips `pendingSync` in storage without touching any slot, so
@@ -1880,45 +1900,64 @@ export const draftStorage = {
       return draftsListCache.drafts.map(cloneDraftMetadata);
     }
 
-    try {
-      const versionAtReadStart = draftsCacheVersion;
-      // The lenient readers collapse a transient Keystore fault into the same
-      // `[]`/`null` a genuine absence produces. Returning that is fine — every
-      // caller already treats this list leniently — but CACHING it pinned an
-      // empty or partial snapshot for the rest of the user scope, so Home and
-      // Records kept hiding recoverable drafts long after the Keystore
-      // recovered. Track present-but-unreadable separately and skip the memo;
-      // the returned value is unchanged.
-      let unreadable = false;
-      const markUnreadable = () => {
-        unreadable = true;
-      };
-      const slotIds = await readDraftIndexForUser(userId, markUnreadable);
-      // Per-draft reads are independent. Serially this was the dominant cost of
-      // `local_draft_list` / `record_pending_draft_scan` (production Sentry:
-      // 11.7s and 11.6s), since every draft costs 1 + chunk-count Keystore
-      // round trips. Index order is preserved by `mapDraftReadsBounded`.
-      const read = await mapDraftReadsBounded(slotIds.length, (i) =>
-        readDraftChunks(userId, slotIds[i], markUnreadable),
-      );
-      const drafts: DraftMetadata[] = read.filter(
-        (draft): draft is DraftMetadata => draft !== null,
-      );
+    const joinable = draftsListInFlight;
+    if (joinable && joinable.userId === userId && joinable.version === draftsCacheVersion) {
+      return (await joinable.promise).map(cloneDraftMetadata);
+    }
 
-      // Only populate if nothing was unreadable AND no write invalidated
-      // mid-read — a slow sweep must not resurrect pre-write data as the cache.
-      if (!unreadable && draftsCacheVersion === versionAtReadStart) {
-        draftsListCache = { userId, drafts: drafts.map(cloneDraftMetadata) };
+    const versionAtReadStart = draftsCacheVersion;
+    const sweep = (async (): Promise<DraftMetadata[]> => {
+      try {
+        // The lenient readers collapse a transient Keystore fault into the same
+        // `[]`/`null` a genuine absence produces. Returning that is fine — every
+        // caller already treats this list leniently — but CACHING it pinned an
+        // empty or partial snapshot for the rest of the user scope, so Home and
+        // Records kept hiding recoverable drafts long after the Keystore
+        // recovered. Track present-but-unreadable separately and skip the memo;
+        // the returned value is unchanged.
+        let unreadable = false;
+        const markUnreadable = () => {
+          unreadable = true;
+        };
+        const slotIds = await readDraftIndexForUser(userId, markUnreadable);
+        // Per-draft reads are independent. Serially this was the dominant cost of
+        // `local_draft_list` / `record_pending_draft_scan` (production Sentry:
+        // 11.7s and 11.6s), since every draft costs 1 + chunk-count Keystore
+        // round trips. Index order is preserved by `mapDraftReadsBounded`.
+        const read = await mapDraftReadsBounded(slotIds.length, (i) =>
+          readDraftChunks(userId, slotIds[i], markUnreadable),
+        );
+        const drafts: DraftMetadata[] = read.filter(
+          (draft): draft is DraftMetadata => draft !== null,
+        );
+
+        // Only populate if nothing was unreadable AND no write invalidated
+        // mid-read — a slow sweep must not resurrect pre-write data as the cache.
+        if (!unreadable && draftsCacheVersion === versionAtReadStart) {
+          draftsListCache = { userId, drafts: drafts.map(cloneDraftMetadata) };
+        }
+
+        draftBreadcrumb('list_complete', {
+          indexed_slots: slotIds.length,
+          returned_drafts: drafts.length,
+          unreadable_reads: unreadable ? 1 : 0,
+        });
+        return drafts;
+      } catch {
+        return [];
       }
+    })();
 
-      draftBreadcrumb('list_complete', {
-        indexed_slots: slotIds.length,
-        returned_drafts: drafts.length,
-        unreadable_reads: unreadable ? 1 : 0,
-      });
-      return drafts;
-    } catch {
-      return [];
+    // The sweep swallows its own failures, so this promise never rejects and
+    // cannot strand a joiner or surface as an unhandled rejection (rule 4).
+    const entry = { userId, version: versionAtReadStart, promise: sweep };
+    draftsListInFlight = entry;
+    try {
+      // Clone per caller: the sweep hands the same array to everyone joining it,
+      // and the memo path has always returned private copies.
+      return (await sweep).map(cloneDraftMetadata);
+    } finally {
+      if (draftsListInFlight === entry) draftsListInFlight = null;
     }
   },
 

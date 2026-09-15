@@ -90,7 +90,13 @@ function runPendingDraftSync(userId: string): Promise<DraftSyncResult> | null {
       lastFailedAtByUser.set(userId, Date.now());
       throw error;
     }
-  });
+  // 10s, not the 5s default: this walks every local draft over a serialized
+  // AndroidKeyStore AND creates the missing server rows, so it is the same
+  // Keystore-plus-network shape as `fetchUser` / `registerDevice` /
+  // `draft_presence_batch_request`, which all sit at 10s. At 5s it reported
+  // 9 688 ms and 16 094 ms on the Galaxy Tab fleet as if they were anomalies
+  // while its siblings stayed quiet at the same latency.
+  }, { warningThresholdMs: 10_000 });
 
   inFlightByUser.set(userId, job);
   job.finally(() => {

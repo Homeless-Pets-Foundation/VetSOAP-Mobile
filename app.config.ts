@@ -12,6 +12,7 @@ import packageJson from './package.json';
  * and a reviewer waving through "just a version bump" is exactly how a weakened
  * bucket guard would slip past. Reading the version from `package.json` keeps
  * the guard protected while taking release bumps off the protected path.
+ * (The R2 human-approval requirement has since been removed at the owner's request; the single-sourcing stays because it keeps release bumps one-line.)
  *
  * CLAUDE.md still requires bumping all three files (`package.json`,
  * `package-lock.json`, and — before this change — `app.config.ts`) for a store

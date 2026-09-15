@@ -38,7 +38,6 @@ run_r2() {
     fi
   )
   node --test tests/r2-presigned-upload-contract.test.mjs
-  node --test .github/scripts/r2-approval-gate.test.cjs
 }
 
 run_typecheck() {

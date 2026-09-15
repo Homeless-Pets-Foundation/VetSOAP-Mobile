@@ -263,15 +263,33 @@ export async function signInWithGoogleNative(): Promise<AuthResult> {
     }
     return { error: null };
   } catch (error) {
-    const { statusCodes } = getGoogleSignin();
+    // `getGoogleSignin()` is the lazy require, and reaching this catch is one of
+    // the ways it can have FAILED — an old dev-client APK built before the
+    // dependency existed is the exact scenario the lazy require was added for
+    // (rule 19). Calling it again here would throw the same module error straight
+    // out of this function, breaking the "never throws" contract above at the one
+    // moment it matters. Degrade to an empty code table instead: every branch
+    // below then misses and the failure is reported, which is correct.
+    let statusCodes: Partial<Record<string, string>> = {};
+    try {
+      statusCodes = getGoogleSignin().statusCodes;
+    } catch {
+      // Native module unavailable — nothing to compare against.
+    }
     const code = (error as { code?: string })?.code;
-    if (code === statusCodes.SIGN_IN_CANCELLED) {
+    // Require a code on BOTH sides. With the table empty (above) or a member
+    // missing, a bare `code === statusCodes.X` is `undefined === undefined` for
+    // any error that carries no code — which would report a hard native failure
+    // as a user cancellation and silently swallow it.
+    const matches = (expected: string | undefined): boolean =>
+      typeof code === 'string' && typeof expected === 'string' && code === expected;
+    if (matches(statusCodes.SIGN_IN_CANCELLED)) {
       return { error: null, cancelled: true };
     }
-    if (code === statusCodes.IN_PROGRESS) {
+    if (matches(statusCodes.IN_PROGRESS)) {
       return { error: 'Sign-in is already in progress.' };
     }
-    if (code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+    if (matches(statusCodes.PLAY_SERVICES_NOT_AVAILABLE)) {
       return { error: 'Google Play Services is not available on this device.' };
     }
     reportGoogleAuthFailure('native_sign_in', error);

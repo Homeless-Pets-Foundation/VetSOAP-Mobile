@@ -132,3 +132,66 @@ export function selectRecoverableSessions(input: RecoverySelectionInput): Recove
   offer.sort(compareByUpdatedAtDesc);
   return { offer, selfHeal, suppressed };
 }
+
+/** One stale "was capturing at last exit" pointer, as the probe reads it. */
+export interface UncleanExitPointer {
+  recordingId: string;
+  /** Absent means durable — legacy entries predate the field. */
+  backend?: string;
+}
+
+export interface UncleanExitCounts {
+  /** Durable captures from the prior process with no proof they survived. */
+  durable: number;
+  /** Expo-fallback captures. Never have a manifest, so never recoverable. */
+  expo: number;
+  /** Subset of `durable` that still has a manifest to rebuild from. */
+  recovered: number;
+  /** Tombstoned — confirmed uploaded then purged. Not a loss at all. */
+  uploaded: number;
+}
+
+/**
+ * Classify the stale capture pointers found at launch.
+ *
+ * Extracted from the probe so it can be tested by EXECUTION: the probe itself
+ * pulls the native recorder bridge and the recordings API, so every fence on it
+ * has to be a source regex, and this counting is exactly the part that was
+ * wrong.
+ *
+ * The bug it fixes: a successful upload PURGES its manifest, so an uploaded
+ * recording's id can never be in `manifestIds`. Counting it as `durable` with
+ * `recovered` unchanged made a perfect submit indistinguishable from lost audio,
+ * and `recovered_count: 0` unusable as a reliability metric. The tombstone is
+ * the record of "confirmed uploaded, then purged", so it is consulted first.
+ */
+export function classifyUncleanExitPointers(input: {
+  stale: readonly UncleanExitPointer[];
+  manifestIds: ReadonlySet<string>;
+  tombstonedRecordingIds: ReadonlySet<string>;
+}): UncleanExitCounts {
+  const counts: UncleanExitCounts = { durable: 0, expo: 0, recovered: 0, uploaded: 0 };
+  for (const entry of input.stale) {
+    if (entry.backend === 'expo') {
+      counts.expo++;
+    } else if (input.tombstonedRecordingIds.has(entry.recordingId)) {
+      counts.uploaded++;
+    } else {
+      counts.durable++;
+      if (input.manifestIds.has(entry.recordingId)) counts.recovered++;
+    }
+  }
+  return counts;
+}
+
+/**
+ * True when the stale pointers are worth reporting as an unclean exit.
+ *
+ * All-uploaded means every pointer was a leftover from a successful submit:
+ * nothing ended uncleanly, so reporting would be a pure false positive and
+ * would additionally arm the battery-optimization nudge for an interruption
+ * that never happened. Pruning them is still the right thing to do.
+ */
+export function uncleanExitIsReportable(counts: UncleanExitCounts): boolean {
+  return counts.durable > 0 || counts.expo > 0;
+}

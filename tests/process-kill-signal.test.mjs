@@ -193,5 +193,10 @@ test('the Sentry config no longer claims Android ANR coverage', () => {
 test('capture_ended_without_cleanup is declared in the analytics union', () => {
   const src = read('src/lib/analytics.ts');
   assert.match(src, /name: 'capture_ended_without_cleanup'/);
-  assert.match(src, /durable_count: number; expo_count: number; recovered_count: number/);
+  // Field-by-field rather than one pinned line: the props outgrew a single line
+  // when `uploaded_count` landed, and the formatting was never the invariant.
+  const props = src.slice(src.indexOf("name: 'capture_ended_without_cleanup'"));
+  for (const field of ['durable_count', 'expo_count', 'recovered_count', 'uploaded_count']) {
+    assert.match(props.slice(0, 900), new RegExp(`${field}: number`), `${field} must stay declared`);
+  }
 });

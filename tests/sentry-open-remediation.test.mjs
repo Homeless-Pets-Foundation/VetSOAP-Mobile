@@ -72,9 +72,15 @@ test('auth init defers token validation to the first authed request (no blocking
 test('sync_server_draft network failures are breadcrumbed, not captured as Sentry errors', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
 
-  assert.match(src, /import \{ isDraftSyncTransportError \} from '.*\/draftSyncErrors'/);
+  assert.match(src, /import \{[^}]*\bisDraftSyncTransportError\b[^}]*\} from '.*\/draftSyncErrors'/);
   assert.match(src, /if \(isDraftSyncTransportError\(error\)\) \{/);
   assert.match(src, /breadcrumb\('draft', 'sync_server_draft_transient_network'/);
+
+  // A server 409 is the same class of non-error: it proves the row EXISTS, so
+  // reporting it as "the draft never reached the server" is backwards.
+  assert.match(src, /import \{[^}]*\bisDraftSyncConflictError\b[^}]*\} from '.*\/draftSyncErrors'/);
+  assert.match(src, /if \(isDraftSyncConflictError\(error\)\) \{/);
+  assert.match(src, /breadcrumb\('draft', 'sync_server_draft_conflict'/);
 
   const catchMatch = src.match(
     /const syncServerDraft = useCallback\([\s\S]*?catch \(error\) \{([\s\S]*?)if \(__DEV__\) console\.warn\('\[Record\] syncServerDraft failed:/
@@ -85,6 +91,11 @@ test('sync_server_draft network failures are breadcrumbed, not captured as Sentr
     catchBody.indexOf("breadcrumb('draft', 'sync_server_draft_transient_network'") <
       catchBody.indexOf('captureException(error'),
     'transient network branch must run before captureException'
+  );
+  assert.ok(
+    catchBody.indexOf("breadcrumb('draft', 'sync_server_draft_conflict'") <
+      catchBody.indexOf('captureException(error'),
+    'conflict branch must run before captureException'
   );
 });
 

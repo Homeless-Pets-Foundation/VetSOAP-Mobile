@@ -313,8 +313,18 @@ export const ERROR_COPY = {
   // state earns the same 409 forever. Before this existed every 409 fell through
   // to the generic 'Something went wrong. Please try again.' (Sentry
   // REACT-NATIVE-1Z: a 409 on POST /api/recordings).
+  // Domain-NEUTRAL, like every other entry here. A 409 is not recording-specific
+  // — device registration, org and settings routes can all raise one — and
+  // `friendlyErrorMessage` branches on status, so recording wording would render
+  // on endpoints that have nothing to do with recordings.
   conflict:
+    'This was already updated on the server. Check its current status before trying again.',
+  /** Recording-specific variant, used only where the route is known to be one. */
+  conflictRecording:
     'This recording was already updated on the server. Check Recordings for its current status before trying again.',
+  /** 409 IDEMPOTENCY_KEY_MISMATCH — the row is already claimed by another key. */
+  conflictAlreadySubmitted:
+    'This recording was already submitted from this device. Check Recordings before trying again.',
   processingFailedBody:
     'Something went wrong while generating this note. Retry processing, or copy the details for support.',
   audioTooLongRemedy: 'Gemini’s one-hour recording limit was exceeded; reprocess with Deepgram Nova 3 Medical, or Nova 3 for foreign-language recordings.',

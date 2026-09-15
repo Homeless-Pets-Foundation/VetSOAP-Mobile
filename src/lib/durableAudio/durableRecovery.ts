@@ -76,6 +76,14 @@ function reportPriorUncleanExitDetached(
  * mid-session) cannot double-report.
  */
 const uncleanExitReportedUsers = new Set<string>();
+/**
+ * Subset of the above whose stale pointers actually evidenced an unclean exit.
+ *
+ * Kept apart from "already processed" so the battery-optimization nudge is not
+ * armed for a user whose only stale pointers were leftovers from successful
+ * uploads — while that user's probe still short-circuits on a second scan.
+ */
+const uncleanExitReportableUsers = new Set<string>();
 /** No manifests could be enumerated — nothing is recoverable from this exit. */
 const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>();
 
@@ -92,7 +100,7 @@ const EMPTY_MANIFEST_IDS: ReadonlySet<string> = new Set<string>();
  * recording. Never resets within a process.
  */
 export function priorUncleanExitDetected(userId: string | null | undefined): boolean {
-  return !!userId && uncleanExitReportedUsers.has(userId);
+  return !!userId && uncleanExitReportableUsers.has(userId);
 }
 
 /**
@@ -135,17 +143,30 @@ async function reportPriorUncleanExit(
     // can never appear in `manifestIds` — which made a stale pointer for a
     // perfectly uploaded recording score `durable++` with `recovered` unchanged,
     // i.e. indistinguishable from audio we actually lost. The tombstone is the
-    // record of "confirmed uploaded, then purged", so consult it before
-    // classifying. Read once rather than per entry: `has()` walks the same list.
+    // record of "confirmed uploaded, then purged", so consult it.
     //
-    // An unreadable tombstone list resolves `[]`, which puts those entries back
-    // in `durable` — the behaviour this replaces, so a degraded Keystore is no
-    // worse than before, just no better.
-    const tombstoned =
-      durableTombstone.getUserId() === userId
-        ? new Set(await durableTombstone.list())
-        : new Set<string>();
-    if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+    // Read ONLY when it can change the answer. This whole probe is bounded at
+    // UNCLEAN_EXIT_PROBE_TIMEOUT_MS on the launch path, and the tombstone is a
+    // chunked SecureStore value (up to MAX_TOMBSTONES entries) with a cold cache
+    // at launch — on the same contended Keystore that produced the 10s draft
+    // sweeps this file's siblings document, an unconditional read can push the
+    // probe past its deadline and lose the report entirely. Expo pointers are
+    // never tombstoned, and a durable pointer that still HAS its manifest is
+    // already classified `recovered` without consulting the tombstone at all.
+    const mayBeTombstoned = stale.some(
+      (e) => e.backend !== 'expo' && !manifestIds.has(e.recordingId),
+    );
+    let tombstoned: ReadonlySet<string> = EMPTY_MANIFEST_IDS;
+    if (mayBeTombstoned) {
+      // An unreadable tombstone list resolves `[]`, which puts those entries back
+      // in `durable` — the behaviour this replaces, so a degraded Keystore is no
+      // worse than before, just no better.
+      tombstoned =
+        durableTombstone.getUserId() === userId
+          ? new Set(await durableTombstone.list())
+          : EMPTY_MANIFEST_IDS;
+      if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
+    }
 
     const { durable, expo, recovered, uploaded } = classifyUncleanExitPointers({
       stale,
@@ -180,15 +201,24 @@ async function reportPriorUncleanExit(
     // are worth less than the boundary.
     if (isCancelled() || durableActiveStore.getUserId() !== userId) return;
 
-    // Every stale pointer belonged to a recording that uploaded and purged.
-    // Nothing ended uncleanly — these are leftovers from successful submits, so
-    // the prune above was the whole job. Reporting here would be a pure false
-    // positive, and marking the user reported would additionally arm the
-    // battery-optimization nudge for an interruption that never happened.
-    if (!uncleanExitIsReportable({ durable, expo, recovered, uploaded })) return;
+    const reportable = uncleanExitIsReportable({ durable, expo, recovered, uploaded });
 
+    // Mark the user either way. This probe runs once per user per process, and a
+    // mid-session sign-in re-triggers the scan; returning WITHOUT marking meant
+    // a second pass redid `durableActiveStore.list()` and the chunked tombstone
+    // read on the launch path for an answer already known.
+    //
+    // `priorUncleanExitDetected()` — which arms the battery-optimization nudge —
+    // reads this set, so it is now gated on `reportable` instead, keeping the
+    // nudge off for an interruption that never happened.
     uncleanExitReportedUsers.add(userId);
+    if (reportable) uncleanExitReportableUsers.add(userId);
 
+    // Analytics gets the all-uploaded case too. Suppressing it entirely left
+    // `uploaded_count` observable only in MIXED events, so there was no way to
+    // measure how often the false positive this replaced was actually firing —
+    // which is the number that justifies the change. Sentry does NOT get it: a
+    // warning with nothing lost is exactly the false alarm being removed.
     trackEvent({
       name: 'capture_ended_without_cleanup',
       props: {
@@ -198,6 +228,7 @@ async function reportPriorUncleanExit(
         uploaded_count: uploaded,
       },
     });
+    if (!reportable) return;
     // Sentry sees no crash for an OS kill, so this message is the only trace of
     // one — but it also fires for reboots and swipe-aways. Read it as an upper
     // bound on kills, never as a count of them.

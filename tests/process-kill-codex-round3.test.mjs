@@ -86,7 +86,7 @@ test('recovered_count intersects stale durable pointers with actual manifests', 
   assert.match(src, /classifyUncleanExitPointers\(\{/);
   assert.match(src, /manifestIds,/);
   const logic = read('src/lib/durableAudio/recoveryLogic.ts');
-  assert.match(logic, /if \(input\.manifestIds\.has\(entry\.recordingId\)\) counts\.recovered\+\+/);
+  assert.match(logic, /if \(input\.manifestIds\.has\(entry\.recordingId\)\) \{\s*\n\s*counts\.durable\+\+;\s*\n\s*counts\.recovered\+\+;/);
 });
 
 test('the counting rule: expo is never recoverable, uploaded is never a loss', async () => {
@@ -178,4 +178,26 @@ test('capturesAtLastExit still separates the two backends after the changes', as
   const counts = await s.capturesAtLastExit();
   assert.equal(counts.durable, 1);
   assert.equal(counts.expo, 1);
+});
+
+test('a tombstoned pointer whose manifest survives counts as recovered, not as nothing-happened', async () => {
+  // selfHealUploaded purges -> tombstones -> clears the pointer. When the purge
+  // fails (the documented "idempotent, next launch retries" path) the manifest
+  // survives AND the id is tombstoned. Checking the tombstone first scored that
+  // `uploaded`, so `recovered` under-counted the case durability actually saved
+  // — and if it was the only stale pointer the probe reported nothing at all,
+  // dropping the one signal an OS kill ever produces and disarming the
+  // battery-optimization nudge for a user who genuinely was killed.
+  const { classifyUncleanExitPointers, uncleanExitIsReportable } = await loadTsModule(
+    'src/lib/durableAudio/recoveryLogic.ts',
+  );
+
+  const counts = classifyUncleanExitPointers({
+    stale: [{ recordingId: 'dr-purge-failed', backend: 'durable' }],
+    manifestIds: new Set(['dr-purge-failed']),
+    tombstonedRecordingIds: new Set(['dr-purge-failed']),
+  });
+
+  assert.deepEqual({ ...counts }, { durable: 1, expo: 0, recovered: 1, uploaded: 0 });
+  assert.ok(uncleanExitIsReportable(counts), 'a real unclean exit must still be reported');
 });

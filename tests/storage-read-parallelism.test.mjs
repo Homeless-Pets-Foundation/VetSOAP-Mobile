@@ -568,9 +568,9 @@ test('concurrent listDraftsForUser callers share a single storage sweep', async 
     readsForOneSweep,
     `three concurrent callers must cost one sweep, saw ${shared.secure.__stats.reads} reads vs ${readsForOneSweep}`
   );
-  assert.deepEqual(a.map((d) => d.slotId), shared.slotIds);
-  assert.deepEqual(b.map((d) => d.slotId), shared.slotIds);
-  assert.deepEqual(c.map((d) => d.slotId), shared.slotIds);
+  assert.deepEqual([...a.map((d) => d.slotId)], shared.slotIds);
+  assert.deepEqual([...b.map((d) => d.slotId)], shared.slotIds);
+  assert.deepEqual([...c.map((d) => d.slotId)], shared.slotIds);
   // Each caller owns its own copy. Sharing one array across three callers is a
   // hazard the single-flight introduces and the memo path never had — the
   // cache hit has always cloned.

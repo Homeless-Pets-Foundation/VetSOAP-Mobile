@@ -163,9 +163,15 @@ let draftsCacheVersion = 0;
 // joining one that began before it. (A write landing mid-sweep still leaves the
 // joiner with pre-write data — exactly as it leaves the original caller, which
 // is why the memo below re-checks the version before caching.)
-let draftsListInFlight:
-  | { userId: string; version: number; promise: Promise<DraftMetadata[]> }
-  | null = null;
+// Keyed by user, not a single slot: support-staff recovery scanners call
+// `listDraftsForUser` for a user who is not the current one, and with one slot
+// their sweep evicted the record-tab sweep's entry — so the next same-user
+// caller missed and started a third sweep, reintroducing the very contention
+// this exists to remove.
+const draftsListInFlight = new Map<
+  string,
+  { version: number; promise: Promise<DraftMetadata[]> }
+>();
 
 // Bumped on every write, so a mounted screen can re-read after a change it did
 // not itself dispatch. `usePendingDraftSync` runs outside the record screen's
@@ -177,6 +183,11 @@ const draftChangeListeners = new Set<() => void>();
 function invalidateDraftsCache(): void {
   draftsListCache = null;
   draftsCacheVersion++;
+  // Drop the in-flight entries too. The version bump alone already stops a
+  // stale JOIN (a joiner compares against the current version), so this is
+  // about not holding a completed sweep's DraftMetadata[] reachable from a
+  // module global after the data it describes has been invalidated.
+  draftsListInFlight.clear();
   for (const listener of draftChangeListeners) {
     try {
       listener();
@@ -187,6 +198,30 @@ function invalidateDraftsCache(): void {
 }
 
 // Clone on cache read/write so callers can never mutate cached entries.
+/**
+ * Clone a list for one caller without giving up `listDraftsForUser`'s
+ * never-rejects contract.
+ *
+ * The sweep swallows its own failures, but the per-caller clone runs OUTSIDE
+ * that catch, and `cloneDraftMetadata` dereferences `d.formData` and calls
+ * `d.segments.map(...)`. One structurally corrupt draft would therefore throw
+ * out of a function every caller treats as total — through `syncPending`, whose
+ * `finally` restores the user scope but does not catch, into
+ * `runPendingDraftSync`, which stamps a 2-minute failure backoff. A single bad
+ * draft would block ALL pending-draft syncing instead of being skipped.
+ */
+function cloneDraftList(drafts: DraftMetadata[]): DraftMetadata[] {
+  const out: DraftMetadata[] = [];
+  for (const draft of drafts) {
+    try {
+      out.push(cloneDraftMetadata(draft));
+    } catch {
+      // Unclonable entry — skip it rather than failing the whole list.
+    }
+  }
+  return out;
+}
+
 function cloneDraftMetadata(d: DraftMetadata): DraftMetadata {
   return {
     ...d,
@@ -1897,12 +1932,12 @@ export const draftStorage = {
     if (!userId) return [];
 
     if (draftsListCache && draftsListCache.userId === userId) {
-      return draftsListCache.drafts.map(cloneDraftMetadata);
+      return cloneDraftList(draftsListCache.drafts);
     }
 
-    const joinable = draftsListInFlight;
-    if (joinable && joinable.userId === userId && joinable.version === draftsCacheVersion) {
-      return (await joinable.promise).map(cloneDraftMetadata);
+    const joinable = draftsListInFlight.get(userId);
+    if (joinable && joinable.version === draftsCacheVersion) {
+      return cloneDraftList(await joinable.promise);
     }
 
     const versionAtReadStart = draftsCacheVersion;
@@ -1934,7 +1969,7 @@ export const draftStorage = {
         // Only populate if nothing was unreadable AND no write invalidated
         // mid-read — a slow sweep must not resurrect pre-write data as the cache.
         if (!unreadable && draftsCacheVersion === versionAtReadStart) {
-          draftsListCache = { userId, drafts: drafts.map(cloneDraftMetadata) };
+          draftsListCache = { userId, drafts: cloneDraftList(drafts) };
         }
 
         draftBreadcrumb('list_complete', {
@@ -1950,14 +1985,14 @@ export const draftStorage = {
 
     // The sweep swallows its own failures, so this promise never rejects and
     // cannot strand a joiner or surface as an unhandled rejection (rule 4).
-    const entry = { userId, version: versionAtReadStart, promise: sweep };
-    draftsListInFlight = entry;
+    const entry = { version: versionAtReadStart, promise: sweep };
+    draftsListInFlight.set(userId, entry);
     try {
       // Clone per caller: the sweep hands the same array to everyone joining it,
       // and the memo path has always returned private copies.
-      return (await sweep).map(cloneDraftMetadata);
+      return cloneDraftList(await sweep);
     } finally {
-      if (draftsListInFlight === entry) draftsListInFlight = null;
+      if (draftsListInFlight.get(userId) === entry) draftsListInFlight.delete(userId);
     }
   },
 

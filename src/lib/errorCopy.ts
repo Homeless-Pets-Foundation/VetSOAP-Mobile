@@ -16,7 +16,11 @@ export function friendlyErrorMessage(
     if (error.status === 408 || error.code === 'TIMEOUT') return ERROR_COPY.timeout;
     if (error.status === 429) return ERROR_COPY.rateLimited;
     if (error.status === 403) return ERROR_COPY.permission;
-    if (error.status === 409) return ERROR_COPY.conflict;
+    // Honour the caller's context: the upload path IS a recording, everything
+    // else must get the domain-neutral wording.
+    if (error.status === 409) {
+      return context === 'upload' ? ERROR_COPY.conflictRecording : ERROR_COPY.conflict;
+    }
     if (error.status >= 500) return ERROR_COPY.server;
   }
   // JS-level fetch failure (no response at all) — a runtime signal, not

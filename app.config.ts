@@ -131,6 +131,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // with our self-hosted podspec (mirrors the Android Maven self-host).
     // Required post arthenica sunset — see plugins/with-ffmpeg-ios-pod-source.js.
     './plugins/with-ffmpeg-ios-pod-source.js',
+    // iOS-only: Xcode 27 hard-errors on pods whose deployment target is below
+    // the SDK's supported floor (several still declare 9.0). Raises every pod
+    // target to 16.0 in post_install — see plugins/with-min-pod-deployment-target.js.
+    './plugins/with-min-pod-deployment-target.js',
     // Native share sheet for generated PDF exports.
     'expo-sharing',
     // Native Apple Sign-In (iOS only at runtime; plugin adds the capability).
@@ -156,7 +160,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           useLegacyPackaging: false, // Required for 16 KB memory page alignment (Android 15+)
         },
         ios: {
-          deploymentTarget: '15.1', // Drop support for older insecure iOS
+          deploymentTarget: '16.0', // Xcode 27: SDK 55 Expo/expo-router need iOS 16 — see plugins/with-min-pod-deployment-target.js
         },
       },
     ],

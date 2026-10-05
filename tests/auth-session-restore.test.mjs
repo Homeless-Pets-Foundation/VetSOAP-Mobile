@@ -1,0 +1,218 @@
+/**
+ * Guards the offline-first cold-start session restore (Sentry REACT-NATIVE-1K).
+ *
+ * `supabase.auth.getSession()` awaits GoTrue's initialize(), which refreshes an
+ * access token within 90s of expiry over the network and retries a retryable
+ * failure for up to 30s. After the 1h token lifetime that put the network on
+ * every cold start: offline, getSession() resolved `session: null` with an
+ * AuthRetryableFetchError (GoTrue keeps the session in storage), and on a slow
+ * link it outlived the 10s deadline. Either way a signed-in vet landed on the
+ * sign-in screen — and offline could not get back to their drafts.
+ *
+ * The decision is executed here; the AuthProvider wiring is fenced by regex
+ * because tests/helpers/loadTs.mjs cannot load `.tsx`.
+ */
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { loadTsModule } from './helpers/loadTs.mjs';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const read = (file) => readFile(path.join(root, file), 'utf8');
+const load = () => loadTsModule('src/auth/sessionRestore.ts');
+
+const NOW_S = 1_790_000_000;
+function persisted(overrides = {}) {
+  return JSON.stringify({
+    access_token: 'access',
+    refresh_token: 'refresh',
+    expires_at: NOW_S - 60,
+    expires_in: 3600,
+    token_type: 'bearer',
+    user: { id: 'user-a', aud: 'authenticated' },
+    ...overrides,
+  });
+}
+
+test('restores only when GoTrue could not answer for a transient reason', async () => {
+  const { sessionRestoreTrigger } = await load();
+
+  // withTimeout yields null when the deadline fired or getSession rejected.
+  assert.equal(sessionRestoreTrigger(null), 'unanswered');
+  assert.equal(sessionRestoreTrigger(undefined), 'unanswered');
+
+  // Offline: GoTrue kept the session in storage and reported a retryable error.
+  const retryable = { name: 'AuthRetryableFetchError', status: 0, message: 'Network request failed' };
+  assert.equal(
+    sessionRestoreTrigger({ data: { session: null }, error: retryable }),
+    'retryable_error'
+  );
+
+  // Authoritative answers are honored. No error means signed out; a
+  // non-retryable error means GoTrue already removed a dead session.
+  assert.equal(sessionRestoreTrigger({ data: { session: null }, error: null }), null);
+  assert.equal(
+    sessionRestoreTrigger({
+      data: { session: null },
+      error: { name: 'AuthApiError', status: 400, message: 'Invalid Refresh Token' },
+    }),
+    null
+  );
+  assert.equal(
+    sessionRestoreTrigger({ data: { session: null }, error: { name: 'AuthSessionMissingError' } }),
+    null
+  );
+  // A delivered session is the normal path, never a restore.
+  assert.equal(
+    sessionRestoreTrigger({ data: { session: { access_token: 'x' } }, error: retryable }),
+    null
+  );
+  // Look-alikes without the exact name fail toward "no restore".
+  assert.equal(
+    sessionRestoreTrigger({ data: { session: null }, error: { message: 'AuthRetryableFetchError' } }),
+    null
+  );
+  assert.equal(sessionRestoreTrigger({ data: { session: null }, error: 'AuthRetryableFetchError' }), null);
+});
+
+test('parses the session GoTrue persisted and rejects anything it cannot attribute', async () => {
+  const { parsePersistedSession } = await load();
+
+  const session = parsePersistedSession(persisted());
+  assert.ok(session);
+  assert.equal(session.user.id, 'user-a');
+  assert.equal(session.access_token, 'access');
+  assert.equal(session.refresh_token, 'refresh');
+
+  for (const raw of [
+    null,
+    undefined,
+    '',
+    '{not json',
+    'null',
+    '[]',
+    '"a string"',
+    persisted({ access_token: '' }),
+    persisted({ access_token: 42 }),
+    persisted({ refresh_token: '' }),
+    persisted({ refresh_token: null }),
+    persisted({ expires_at: 'soon' }),
+    persisted({ expires_at: null }),
+    persisted({ user: null }),
+    persisted({ user: { id: '' } }),
+    persisted({ user: { email: 'no-id@example.test' } }),
+    persisted({ user: [] }),
+  ]) {
+    assert.equal(parsePersistedSession(raw), null, `must reject ${String(raw).slice(0, 60)}`);
+  }
+  // A non-finite expiry (JSON cannot carry Infinity/NaN, but a corrupt value can
+  // arrive as a huge exponent) is rejected rather than treated as never-expiring.
+  assert.equal(parsePersistedSession(persisted().replace(`${NOW_S - 60}`, '1e400')), null);
+});
+
+test('access-token expiry is judged on the real expiry, not GoTrue\'s 90s margin', async () => {
+  const { isAccessTokenExpired } = await load();
+  const nowMs = NOW_S * 1000;
+  assert.equal(isAccessTokenExpired({ expires_at: NOW_S - 1 }, nowMs), true);
+  assert.equal(isAccessTokenExpired({ expires_at: NOW_S }, nowMs), true);
+  assert.equal(isAccessTokenExpired({ expires_at: NOW_S + 30 }, nowMs), false);
+  assert.equal(isAccessTokenExpired({ expires_at: undefined }, nowMs), true);
+});
+
+test('the restore read fits inside the init watchdog budget', async () => {
+  const { SESSION_RESTORE_READ_TIMEOUT_MS } = await load();
+  const provider = await read('src/auth/AuthProvider.tsx');
+
+  const getSessionMs = Number(
+    provider
+      .match(/withTimeout\(supabase\.auth\.getSession\(\), ([\d_]+), 'auth_init_get_session'\)/)?.[1]
+      ?.replace(/_/g, '')
+  );
+  const watchdogMs = Number(
+    provider
+      .match(/const initWatchdog = setTimeout\(\(\) => \{[\s\S]*?\}, ([\d_]+)\);/)?.[1]
+      ?.replace(/_/g, '')
+  );
+  assert.ok(Number.isFinite(getSessionMs) && getSessionMs > 0);
+  assert.ok(Number.isFinite(watchdogMs) && watchdogMs > 0);
+  // If the restore could outlive the watchdog, the watchdog would show the
+  // sign-in screen first and the restore guard would then skip — the fix would
+  // silently stop working on exactly the slow devices it exists for.
+  assert.ok(
+    getSessionMs + SESSION_RESTORE_READ_TIMEOUT_MS < watchdogMs,
+    `${getSessionMs} + ${SESSION_RESTORE_READ_TIMEOUT_MS} must stay under ${watchdogMs}`
+  );
+});
+
+test('AuthProvider restores only through the guarded, bounded path', async () => {
+  const provider = await read('src/auth/AuthProvider.tsx');
+
+  // Wired into the no-session branch of the cold-start getSession result.
+  assert.match(
+    provider,
+    /\} else \{\s*const trigger = sessionRestoreTrigger\(result\);\s*if \(trigger\) await restorePersistedSession\(trigger\);\s*\}/
+  );
+
+  // Rule 24 + rule 3: the read goes through the secureStorage wrapper and is bounded.
+  assert.match(
+    provider,
+    /withPromiseTimeout\(\s*secureStorage\.getSession\(\),\s*SESSION_RESTORE_READ_TIMEOUT_MS,/
+  );
+
+  // Every reason GoTrue's own answer must win is re-checked after the await.
+  assert.match(provider, /: initWatchdogFired\s*\?\s*'init_watchdog_fired'/);
+  assert.match(
+    provider,
+    /: authEventSeen \|\| disposed \|\| authGenerationRef\.current !== initGeneration\s*\?\s*'superseded'/
+  );
+  assert.match(provider, /disposed = true;\s*clearTimeout\(initWatchdog\);\s*subscription\.unsubscribe\(\);/);
+  assert.match(provider, /initWatchdogFired = true;\s*captureMessage\('auth_init_watchdog_fired'/);
+  assert.match(provider, /if \(event === 'INITIAL_SESSION'\) return;\s*authEventSeen = true;/);
+
+  // Adoption mirrors the normal restore path: lazy validation, never a
+  // blocking getUser/refresh on the cold-start path.
+  const restoreBody = provider.slice(
+    provider.indexOf('const restorePersistedSession = async'),
+    provider.indexOf('// Restore existing session on startup.')
+  );
+  assert.ok(restoreBody.length > 0);
+  assert.match(restoreBody, /setSession\(restored\);/);
+  assert.match(restoreBody, /sessionTimestampRef\.current = Date\.now\(\);/);
+  assert.match(restoreBody, /apiClient\.setToken\(restored\.access_token\);/);
+  assert.match(restoreBody, /fetchUser\(\)\.catch\(\(\) => \{\}\);/);
+  assert.doesNotMatch(restoreBody, /refreshSession\(|getUser\(|signOut\(/);
+});
+
+test('the profile-cache fallback can find a restored user, but never across a sign-out', async () => {
+  const { restoredUserIdFor } = await load();
+  assert.equal(restoredUserIdFor({ userId: 'user-a', generation: 3 }, 3), 'user-a');
+  // A sign-out bumped the generation: the stamp is retired.
+  assert.equal(restoredUserIdFor({ userId: 'user-a', generation: 3 }, 4), undefined);
+  assert.equal(restoredUserIdFor(null, 0), undefined);
+  assert.equal(restoredUserIdFor(undefined, 0), undefined);
+  assert.equal(restoredUserIdFor({ userId: '', generation: 0 }, 0), undefined);
+
+  const provider = await read('src/auth/AuthProvider.tsx');
+  assert.match(provider, /const restoredSessionRef = useRef<RestoredSessionStamp \| null>\(null\);/);
+  assert.match(
+    provider,
+    /restoredSessionRef\.current = \{\s*userId: restored\.user\.id,\s*generation: authGenerationRef\.current,\s*\};/
+  );
+  // GoTrue's own session still wins; the restored id is only the fallback.
+  assert.match(
+    provider,
+    /const sessionUserId =\s*sessionResult\?\.data\?\.session\?\.user\?\.id \?\?\s*restoredUserIdFor\(restoredSessionRef\.current, authGenerationRef\.current\);/
+  );
+  // Both sign-out paths bump the generation that retires the stamp.
+  assert.ok((provider.match(/authGenerationRef\.current \+= 1;/g) ?? []).length >= 2);
+});
+
+test('the restore event is in the analytics catalog with PHI-free props', async () => {
+  const analytics = await read('src/lib/analytics.ts');
+  assert.match(
+    analytics,
+    /name: 'session_restored_from_storage';\s*props: \{ trigger: 'unanswered' \| 'retryable_error'; access_token_expired: boolean \};/
+  );
+});

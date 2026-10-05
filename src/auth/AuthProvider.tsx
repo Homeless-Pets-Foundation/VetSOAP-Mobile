@@ -25,6 +25,14 @@ import {
   isRetryableFetchUserError,
   fetchUserErrorMessage,
 } from './fetchUserErrors';
+import {
+  SESSION_RESTORE_READ_TIMEOUT_MS,
+  isAccessTokenExpired,
+  parsePersistedSession,
+  restoredUserIdFor,
+  sessionRestoreTrigger,
+  type RestoredSessionStamp,
+} from './sessionRestore';
 import type { DeviceCapacity, DeviceSession } from '../api/devices';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
@@ -697,6 +705,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * names for B to look at.
    */
   const authGenerationRef = useRef(0);
+  // The user a cold start restored from storage because GoTrue could not answer
+  // (src/auth/sessionRestore.ts). GoTrue's own getSession() still reports no
+  // session while its refresh is failing offline, so fetchUser's profile-cache
+  // fallback reads this to find the vet's profile. Stamped with the auth
+  // generation: every sign-out path bumps it, which retires the entry without a
+  // separate clear on each path (restoredUserIdFor).
+  const restoredSessionRef = useRef<RestoredSessionStamp | null>(null);
   // Single-flight guard for fetchUser — see the comment at its definition.
   const fetchUserInFlightRef = useRef<Promise<boolean> | null>(null);
   // Distinguishes user-initiated sign-out from session expiry in onAuthStateChange.
@@ -1182,7 +1197,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         3000,
         'profile_cache_get_session'
       );
-      const sessionUserId = sessionResult?.data?.session?.user?.id;
+      const sessionUserId =
+        sessionResult?.data?.session?.user?.id ??
+        restoredUserIdFor(restoredSessionRef.current, authGenerationRef.current);
       if (sessionUserId) {
         const cached = await withTimeout(
           getCachedProfile(sessionUserId),
@@ -1743,7 +1760,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // `(auth)/_layout.tsx` until they force-stop the app. Firing this
     // watchdog flips `isLoading=false` so the Sign-In screen renders, and
     // captures a Sentry message so we can see how often it happens.
+    let initWatchdogFired = false;
     const initWatchdog = setTimeout(() => {
+      initWatchdogFired = true;
       captureMessage('auth_init_watchdog_fired', 'warning', {
         tags: { phase: 'init_watchdog', op: 'auth_init' },
         extra: { timeout_ms: 15_000 },
@@ -1751,11 +1770,68 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
     }, 15_000);
 
+    // Set by onAuthStateChange for every event except INITIAL_SESSION. Once
+    // GoTrue has said anything authoritative — a session, a refresh, a
+    // sign-out — a storage restore must defer to it.
+    let authEventSeen = false;
+    // Set by this effect's cleanup. The restore must not touch the apiClient
+    // singleton on behalf of a run that has already been torn down.
+    let disposed = false;
+    const initGeneration = authGenerationRef.current;
+
+    // Offline-first restore (src/auth/sessionRestore.ts — Sentry
+    // REACT-NATIVE-1K). Runs only when GoTrue could not answer for a transient
+    // reason; adopts the session GoTrue itself persisted and keeps the lazy
+    // validation contract of the normal path below.
+    const restorePersistedSession = async (
+      trigger: 'unanswered' | 'retryable_error'
+    ): Promise<void> => {
+      const raw = await withPromiseTimeout(
+        secureStorage.getSession(),
+        SESSION_RESTORE_READ_TIMEOUT_MS,
+        'auth_storage_read_timeout:session_restore'
+      ).catch(() => null);
+      const restored = parsePersistedSession(raw);
+      // Re-check after the await. The top-level watchdog may already have
+      // released the gate onto the sign-in screen (adopting now would yank a
+      // vet out of a form they are typing into), and GoTrue may have delivered
+      // its own answer while the read was in flight.
+      const skipReason = !restored
+        ? 'no_persisted_session'
+        : initWatchdogFired
+        ? 'init_watchdog_fired'
+        : authEventSeen || disposed || authGenerationRef.current !== initGeneration
+        ? 'superseded'
+        : null;
+      if (!restored || skipReason) {
+        breadcrumb('auth', 'session_restore_skipped', { trigger, reason: skipReason });
+        return;
+      }
+      const accessTokenExpired = isAccessTokenExpired(restored, Date.now());
+      breadcrumb('auth', 'session_restored_from_storage', {
+        trigger,
+        access_token_expired: accessTokenExpired,
+      });
+      trackEvent({
+        name: 'session_restored_from_storage',
+        props: { trigger, access_token_expired: accessTokenExpired },
+      });
+      restoredSessionRef.current = {
+        userId: restored.user.id,
+        generation: authGenerationRef.current,
+      };
+      setSession(restored);
+      sessionTimestampRef.current = Date.now();
+      apiClient.setToken(restored.access_token);
+      fetchUser().catch(() => {});
+    };
+
     // Restore existing session on startup. `getSession` is wrapped in a
     // narrower 10s timeout so the common-case hang (poisoned AbortController
-    // post-update) recovers to "no session" 5s before the top-level watchdog
-    // fires — gives the user the Sign-In screen rather than a captured
-    // warning with no recovery action.
+    // post-update) settles 5s before the top-level watchdog fires. If GoTrue
+    // could not answer (deadline, or a retryable refresh failure while
+    // offline), restorePersistedSession() falls back to the persisted session
+    // instead of dropping a signed-in vet onto the Sign-In screen.
     measurePhase(
       'auth_init_get_session',
       undefined,
@@ -1783,6 +1859,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } else {
           setSession(existingSession);
         }
+      } else {
+        const trigger = sessionRestoreTrigger(result);
+        if (trigger) await restorePersistedSession(trigger);
       }
     }).catch((error) => {
       if (__DEV__) console.error('[Auth] Failed to restore session:', error);
@@ -1798,6 +1877,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           'expires_at:', newSession?.expires_at);
 
         if (event === 'INITIAL_SESSION') return;
+        authEventSeen = true;
 
         try {
           // Password recovery: establish the session but skip the rest of the
@@ -1923,6 +2003,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       clearTimeout(cacheCleanupTimer);
+      disposed = true;
       clearTimeout(initWatchdog);
       subscription.unsubscribe();
     };

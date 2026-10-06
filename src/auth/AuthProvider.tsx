@@ -29,6 +29,7 @@ import {
   SESSION_RESTORE_READ_TIMEOUT_MS,
   isAccessTokenExpired,
   parsePersistedSession,
+  restoredExpiryExplains,
   restoredUserIdFor,
   sessionRestoreTrigger,
   type RestoredSessionStamp,
@@ -1179,14 +1180,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (__DEV__) console.log('[Auth] fetchUser: all attempts failed', lastError);
 
     // 1B startup resilience: before stranding the user on the error screen,
-    // fall back to the cached minimal profile. Only applies when the cached id
-    // matches the current session's user id (user-swap safety on shared
-    // tablets — keeps rule-13 storage scoping correct) AND the failure was
-    // retryable (network/timeout/5xx). A terminal 401/403 means the API
-    // refused this account (role/org revoked) — rendering the app from cache
-    // would bypass that refusal. Both reads are bounded (rule 24): a hung
-    // SecureStore/GoTrue bridge must not stall the error UI.
-    if (!isRetryableFetchUserError(lastError)) {
+    // fall back to the cached minimal profile. Only when the cached id matches
+    // the session's user (rule 13, shared tablets) AND the failure was
+    // retryable (network/timeout/5xx) or a restored token's own expiry. Any
+    // other 401/403 means the API refused this account (role/org revoked);
+    // serving the cache would bypass that. Both reads are bounded (rule 24):
+    // a hung SecureStore/GoTrue bridge must not stall the error UI.
+    if (!isRetryableFetchUserError(lastError) && !restoredExpiryExplains(lastError, restoredSessionRef.current, authGenerationRef.current)) {
       breadcrumb('auth', 'profile_cache_skipped_terminal_error', {});
       setUserFetchState('error');
       setUserFetchError(fetchUserErrorMessage(lastError));
@@ -1824,6 +1824,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       restoredSessionRef.current = {
         userId: restored.user.id,
         generation: authGenerationRef.current,
+        accessTokenExpired,
       };
       setSession(restored);
       sessionTimestampRef.current = Date.now();
@@ -1883,6 +1884,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (event === 'INITIAL_SESSION') return;
         authEventSeen = true;
+        // A real session supersedes a cold-start restore, so a 401 on it is a
+        // refusal again, not the restored token's expiry (sessionRestore.ts).
+        if (newSession?.access_token) restoredSessionRef.current = null;
 
         try {
           // Password recovery: establish the session but skip the rest of the

@@ -109,6 +109,35 @@ export function parsePersistedSession(raw: unknown): Session | null {
 export interface RestoredSessionStamp {
   userId: string;
   generation: number;
+  /** The adopted access token had already expired (see restoredExpiryExplains). */
+  accessTokenExpired: boolean;
+}
+
+/**
+ * Whether a terminal `/auth/me` failure is only the restored token's own
+ * expiry. A 401 normally means the API refused the account, so `fetchUser`
+ * skips the profile cache. But a restore runs exactly when GoTrue cannot
+ * refresh (offline, or its fetch stalled), and the token it adopts has usually
+ * expired. With the API still reachable, `/auth/me` answers 401 for that expiry
+ * alone, and treating it as a refusal stranded the vet on "Can't Load Account"
+ * (Codex review on VetSOAP-Mobile#234). The 10 s fresh-session guard keeps the
+ * 401 handlers from refreshing into the same stalled GoTrue; GoTrue's own
+ * background refresh still decides, through TOKEN_REFRESHED or SIGNED_OUT.
+ *
+ * Any real session event clears the stamp, so a 401 on a refreshed token is a
+ * refusal again. Matched by `name` like the rest of this module.
+ *
+ * Scoped to `/auth/me`: there a 401 only ever means a missing or invalid token
+ * (Connect `routes/auth.ts`). On `/api` routes a 401 can also mean a revoked
+ * device, so do not reuse this for them.
+ */
+export function restoredExpiryExplains(
+  error: unknown,
+  stamp: RestoredSessionStamp | null | undefined,
+  currentGeneration: number,
+): boolean {
+  if (!stamp || !stamp.accessTokenExpired || stamp.generation !== currentGeneration) return false;
+  return isRecord(error) && error.name === 'ApiError' && error.status === 401;
 }
 
 /**

@@ -187,18 +187,19 @@ test('AuthProvider restores only through the guarded, bounded path', async () =>
 
 test('the profile-cache fallback can find a restored user, but never across a sign-out', async () => {
   const { restoredUserIdFor } = await load();
-  assert.equal(restoredUserIdFor({ userId: 'user-a', generation: 3 }, 3), 'user-a');
+  const stamp = { userId: 'user-a', generation: 3, accessTokenExpired: true };
+  assert.equal(restoredUserIdFor(stamp, 3), 'user-a');
   // A sign-out bumped the generation: the stamp is retired.
-  assert.equal(restoredUserIdFor({ userId: 'user-a', generation: 3 }, 4), undefined);
+  assert.equal(restoredUserIdFor(stamp, 4), undefined);
   assert.equal(restoredUserIdFor(null, 0), undefined);
   assert.equal(restoredUserIdFor(undefined, 0), undefined);
-  assert.equal(restoredUserIdFor({ userId: '', generation: 0 }, 0), undefined);
+  assert.equal(restoredUserIdFor({ ...stamp, userId: '', generation: 0 }, 0), undefined);
 
   const provider = await read('src/auth/AuthProvider.tsx');
   assert.match(provider, /const restoredSessionRef = useRef<RestoredSessionStamp \| null>\(null\);/);
   assert.match(
     provider,
-    /restoredSessionRef\.current = \{\s*userId: restored\.user\.id,\s*generation: authGenerationRef\.current,\s*\};/
+    /restoredSessionRef\.current = \{\s*userId: restored\.user\.id,\s*generation: authGenerationRef\.current,\s*accessTokenExpired,\s*\};/
   );
   // GoTrue's own session still wins; the restored id is only the fallback.
   assert.match(
@@ -207,6 +208,41 @@ test('the profile-cache fallback can find a restored user, but never across a si
   );
   // Both sign-out paths bump the generation that retires the stamp.
   assert.ok((provider.match(/authGenerationRef\.current \+= 1;/g) ?? []).length >= 2);
+});
+
+test('a 401 that only the restored token\'s expiry explains still reaches the profile cache', async () => {
+  // Codex review on VetSOAP-Mobile#234. The restore adopts an expired access
+  // token exactly when GoTrue cannot refresh (offline, or its fetch stalled).
+  // With the API reachable, /auth/me answered 401 for that expiry alone,
+  // fetchUser read it as the API refusing the account, and the vet landed on
+  // "Can't Load Account" instead of their drafts.
+  const { restoredExpiryExplains } = await load();
+  const { ApiError, RequestTimeoutError } = await loadTsModule('src/api/apiErrors.ts');
+  const expired = { userId: 'user-a', generation: 3, accessTokenExpired: true };
+  const unauthorized = new ApiError('Unauthorized', 401);
+
+  assert.equal(restoredExpiryExplains(unauthorized, expired, 3), true);
+  // Everything else stays a refusal: another status, a token that was still
+  // valid when restored, a stamp from before a sign-out, or no restore at all.
+  assert.equal(restoredExpiryExplains(new ApiError('Forbidden', 403), expired, 3), false);
+  assert.equal(restoredExpiryExplains(unauthorized, { ...expired, accessTokenExpired: false }, 3), false);
+  assert.equal(restoredExpiryExplains(unauthorized, expired, 4), false);
+  assert.equal(restoredExpiryExplains(unauthorized, null, 3), false);
+  assert.equal(restoredExpiryExplains(new RequestTimeoutError('deadline'), expired, 3), false);
+  assert.equal(restoredExpiryExplains({ status: 401 }, expired, 3), false, 'only an ApiError');
+
+  const provider = await read('src/auth/AuthProvider.tsx');
+  // fetchUser lets that 401 through to the cache fallback...
+  assert.match(
+    provider,
+    /if \(!isRetryableFetchUserError\(lastError\) && !restoredExpiryExplains\(lastError, restoredSessionRef\.current, authGenerationRef\.current\)\) \{/
+  );
+  // ...and any real session clears the stamp, so a 401 on a refreshed token
+  // is a refusal again.
+  assert.match(
+    provider,
+    /authEventSeen = true;\s*(?:\/\/[^\n]*\n\s*)*if \(newSession\?\.access_token\) restoredSessionRef\.current = null;/
+  );
 });
 
 test('the restore event is in the analytics catalog with PHI-free props', async () => {

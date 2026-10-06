@@ -43,8 +43,11 @@ const FLAG_STORAGE_KEY = 'captivet_durable_capture_flag';
 
 /** `null` = nothing known in this process yet (never learned, not hydrated). */
 let captureEnabled: boolean | null = forceCapture ? true : null;
-/** The value last handed to storage, so an unchanged flag costs no Keystore write. */
+/** What storage is known to hold: the last write that succeeded, or what hydration read. */
 let persistedValue: boolean | null = null;
+/** The newest value an API response stated; storage must end up holding this. */
+let desiredValue: boolean | null = null;
+let writeInFlight = false;
 
 function parseFlag(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;
@@ -56,25 +59,39 @@ function parseFlag(value: unknown): boolean | null {
  * Best-effort, only on change: every API response passes through here, and on
  * the Galaxy Tab A7 Lite fleet each Keystore write is a round trip on the one
  * thread all Expo module calls share. Lazy-required (rule 1); wrapped (rule 3).
+ *
+ * One write at a time, always of the newest value. Two writes in flight could
+ * land out of order (setRawItem retries a failed write, which can then finish
+ * after a newer one), leaving a stale `true` in storage that the next offline
+ * cold start would hydrate after the server turned capture off (Codex review
+ * on VetSOAP-Mobile#234). A failed write stops the loop; the next response
+ * retries. A hung write blocks only persistence: the in-memory flag still
+ * follows every response.
  */
 function persist(value: boolean): void {
-  if (persistedValue === value) return;
-  persistedValue = value;
-  const forget = () => {
-    // A failed write must not suppress the retry on the next response.
-    if (persistedValue === value) persistedValue = null;
-  };
+  desiredValue = value;
+  if (writeInFlight || persistedValue === value) return;
+  writeInFlight = true;
+  void drainWrites();
+}
+
+async function drainWrites(): Promise<void> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
-    secureStorage
-      .setRawItem(FLAG_STORAGE_KEY, value ? 'true' : 'false', 'durableFlag.persist')
-      .then((ok) => {
-        if (!ok) forget();
-      })
-      .catch(forget);
-  } catch {
-    forget();
+    while (desiredValue !== null && desiredValue !== persistedValue) {
+      const value = desiredValue;
+      let ok = false;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+        ok = await secureStorage.setRawItem(FLAG_STORAGE_KEY, value ? 'true' : 'false', 'durableFlag.persist');
+      } catch {
+        ok = false;
+      }
+      if (!ok) return;
+      persistedValue = value;
+    }
+  } finally {
+    writeInFlight = false;
   }
 }
 
@@ -161,6 +178,8 @@ export function isDurableCaptureEnabled(): boolean {
 export function __resetDurableCaptureFlag(): void {
   captureEnabled = forceCapture ? true : null;
   persistedValue = null;
+  desiredValue = null;
+  writeInFlight = false;
   hydrationPromise = null;
   hydrationSettled = false;
 }

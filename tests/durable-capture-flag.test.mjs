@@ -137,6 +137,53 @@ test('a failed write is retried on the next response instead of being remembered
   assert.equal(store.map.get(KEY), 'true');
 });
 
+test('writes are serialized, so storage keeps the newest value', async () => {
+  // Codex review on VetSOAP-Mobile#234. Two writes in flight could complete out
+  // of order (setRawItem retries a failed write, which can then land after a
+  // newer one), leaving a stale `true` that the next offline cold start would
+  // hydrate after the server turned durable capture off.
+  const map = new Map();
+  const pending = [];
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    setItemAsync(key, value) {
+      return new Promise((resolve) => {
+        pending.push(() => {
+          map.set(key, value);
+          resolve();
+        });
+      });
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+  const flag = await load(store);
+
+  flag.applyDurableCaptureHeader('true', true);
+  await flush();
+  flag.applyDurableCaptureHeader(null, true);
+  await flush();
+  assert.equal(flag.isDurableCaptureEnabled(), false, 'memory follows the newest response at once');
+  assert.equal(pending.length, 1, 'the newer value waits for the write in flight');
+
+  // Settle in the worst order the old code allowed: newest first.
+  while (pending.length > 0) {
+    pending.pop()();
+    await flush();
+    await flush();
+  }
+  assert.equal(map.get(KEY), 'false');
+
+  // Storage and bookkeeping agree, so the next change is written, not skipped.
+  flag.applyDurableCaptureHeader('true', true);
+  await flush();
+  assert.equal(pending.length, 1);
+});
+
 test('hydration is bounded and settles to a synchronous fast path', async () => {
   let timers = 0;
   const countingTimers = {

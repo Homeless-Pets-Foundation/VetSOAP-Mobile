@@ -187,7 +187,7 @@ test('AuthProvider restores only through the guarded, bounded path', async () =>
 
 test('the profile-cache fallback can find a restored user, but never across a sign-out', async () => {
   const { restoredUserIdFor } = await load();
-  const stamp = { userId: 'user-a', generation: 3, accessTokenExpired: true };
+  const stamp = { userId: 'user-a', generation: 3, expiresAt: NOW_S - 60 };
   assert.equal(restoredUserIdFor(stamp, 3), 'user-a');
   // A sign-out bumped the generation: the stamp is retired.
   assert.equal(restoredUserIdFor(stamp, 4), undefined);
@@ -199,7 +199,7 @@ test('the profile-cache fallback can find a restored user, but never across a si
   assert.match(provider, /const restoredSessionRef = useRef<RestoredSessionStamp \| null>\(null\);/);
   assert.match(
     provider,
-    /restoredSessionRef\.current = \{\s*userId: restored\.user\.id,\s*generation: authGenerationRef\.current,\s*accessTokenExpired,\s*\};/
+    /restoredSessionRef\.current = \{\s*userId: restored\.user\.id,\s*generation: authGenerationRef\.current,\s*expiresAt: restored\.expires_at \?\? 0,\s*\};/
   );
   // GoTrue's own session still wins; the restored id is only the fallback.
   assert.match(
@@ -218,24 +218,32 @@ test('a 401 that only the restored token\'s expiry explains still reaches the pr
   // "Can't Load Account" instead of their drafts.
   const { restoredExpiryExplains } = await load();
   const { ApiError, RequestTimeoutError } = await loadTsModule('src/api/apiErrors.ts');
-  const expired = { userId: 'user-a', generation: 3, accessTokenExpired: true };
+  const nowMs = NOW_S * 1000;
+  const expired = { userId: 'user-a', generation: 3, expiresAt: NOW_S - 60 };
   const unauthorized = new ApiError('Unauthorized', 401);
 
-  assert.equal(restoredExpiryExplains(unauthorized, expired, 3), true);
-  // Everything else stays a refusal: another status, a token that was still
-  // valid when restored, a stamp from before a sign-out, or no restore at all.
-  assert.equal(restoredExpiryExplains(new ApiError('Forbidden', 403), expired, 3), false);
-  assert.equal(restoredExpiryExplains(unauthorized, { ...expired, accessTokenExpired: false }, 3), false);
-  assert.equal(restoredExpiryExplains(unauthorized, expired, 4), false);
-  assert.equal(restoredExpiryExplains(unauthorized, null, 3), false);
-  assert.equal(restoredExpiryExplains(new RequestTimeoutError('deadline'), expired, 3), false);
-  assert.equal(restoredExpiryExplains({ status: 401 }, expired, 3), false, 'only an ApiError');
+  assert.equal(restoredExpiryExplains(unauthorized, expired, 3, nowMs), true);
+  // Judged when the 401 arrives (second Codex review): a token restored with
+  // 30 s to spare that has since expired, or is inside GoTrue's own 90 s
+  // margin, still explains the 401.
+  const nearExpiry = { ...expired, expiresAt: NOW_S + 30 };
+  assert.equal(restoredExpiryExplains(unauthorized, nearExpiry, 3, nowMs + 45_000), true);
+  assert.equal(restoredExpiryExplains(unauthorized, nearExpiry, 3, nowMs), true);
+  // Everything else stays a refusal: a token with real life left, another
+  // status, a stamp from before a sign-out, or no restore at all.
+  const fresh = { ...expired, expiresAt: NOW_S + 600 };
+  assert.equal(restoredExpiryExplains(unauthorized, fresh, 3, nowMs), false);
+  assert.equal(restoredExpiryExplains(new ApiError('Forbidden', 403), expired, 3, nowMs), false);
+  assert.equal(restoredExpiryExplains(unauthorized, expired, 4, nowMs), false);
+  assert.equal(restoredExpiryExplains(unauthorized, null, 3, nowMs), false);
+  assert.equal(restoredExpiryExplains(new RequestTimeoutError('deadline'), expired, 3, nowMs), false);
+  assert.equal(restoredExpiryExplains({ status: 401 }, expired, 3, nowMs), false, 'only an ApiError');
 
   const provider = await read('src/auth/AuthProvider.tsx');
   // fetchUser lets that 401 through to the cache fallback...
   assert.match(
     provider,
-    /if \(!isRetryableFetchUserError\(lastError\) && !restoredExpiryExplains\(lastError, restoredSessionRef\.current, authGenerationRef\.current\)\) \{/
+    /if \(!isRetryableFetchUserError\(lastError\) && !restoredExpiryExplains\(lastError, restoredSessionRef\.current, authGenerationRef\.current, Date\.now\(\)\)\) \{/
   );
   // ...and any real session clears the stamp, so a 401 on a refreshed token
   // is a refusal again.

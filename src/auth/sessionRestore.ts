@@ -109,9 +109,16 @@ export function parsePersistedSession(raw: unknown): Session | null {
 export interface RestoredSessionStamp {
   userId: string;
   generation: number;
-  /** The adopted access token had already expired (see restoredExpiryExplains). */
-  accessTokenExpired: boolean;
+  /** The adopted access token's `expires_at`, in seconds (see restoredExpiryExplains). */
+  expiresAt: number;
 }
+
+/**
+ * GoTrue's own EXPIRY_MARGIN_MS. A token this close to expiry is already being
+ * refreshed, and the margin absorbs the request's time in flight plus modest
+ * device-server clock skew.
+ */
+const RESTORED_EXPIRY_MARGIN_MS = 90_000;
 
 /**
  * Whether a terminal `/auth/me` failure is only the restored token's own
@@ -127,6 +134,9 @@ export interface RestoredSessionStamp {
  * Any real session event clears the stamp, so a 401 on a refreshed token is a
  * refusal again. Matched by `name` like the rest of this module.
  *
+ * Expiry is judged when the 401 arrives, not when the token was adopted: a
+ * token restored with seconds to spare can expire on its way to the server.
+ *
  * Scoped to `/auth/me`: there a 401 only ever means a missing or invalid token
  * (Connect `routes/auth.ts`). On `/api` routes a 401 can also mean a revoked
  * device, so do not reuse this for them.
@@ -135,8 +145,10 @@ export function restoredExpiryExplains(
   error: unknown,
   stamp: RestoredSessionStamp | null | undefined,
   currentGeneration: number,
+  nowMs: number,
 ): boolean {
-  if (!stamp || !stamp.accessTokenExpired || stamp.generation !== currentGeneration) return false;
+  if (!stamp || stamp.generation !== currentGeneration) return false;
+  if (stamp.expiresAt * 1000 - RESTORED_EXPIRY_MARGIN_MS > nowMs) return false;
   return isRecord(error) && error.name === 'ApiError' && error.status === 401;
 }
 

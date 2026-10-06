@@ -249,6 +249,75 @@ test('a hydration read that outlives its bound is retried by the next record-sta
   assert.equal(flag.isDurableCaptureEnabled(), true);
 });
 
+test('a hung write is abandoned at the deadline, so the next response writes again', async () => {
+  // Codex review on VetSOAP-Mobile#234, third round. A write that never
+  // settled left the writer busy forever: later responses changed only the
+  // in-memory flag, and the stale stored value reached the next cold start.
+  const map = new Map();
+  let writes = 0;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    setItemAsync(key, value) {
+      writes += 1;
+      if (writes === 1) return new Promise(() => {});
+      map.set(key, value);
+      return Promise.resolve();
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+  // Shrink only the 5 s persistence deadline.
+  const fastDeadline = {
+    setTimeout: (fn, ms) => setTimeout(fn, ms >= 5_000 ? 10 : ms),
+    clearTimeout,
+  };
+  const flag = await load(store, fastDeadline);
+  flag.applyDurableCaptureHeader('true', true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(map.has(KEY), false, 'the first write is still hung');
+
+  flag.applyDurableCaptureHeader('true', true);
+  await flush();
+  await flush();
+  assert.equal(writes, 2, 'the next response starts a new write');
+  assert.equal(map.get(KEY), 'true');
+});
+
+test('a retired hydration read that fails late does not cancel the retry', async () => {
+  // Codex review on VetSOAP-Mobile#234, third round. The retired read's
+  // `finally` still marked hydration done, so a late failure stopped every
+  // later record-start from retrying.
+  let reads = 0;
+  let failFirstRead;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    getItemAsync() {
+      reads += 1;
+      if (reads === 1) {
+        return new Promise((_, reject) => {
+          failFirstRead = () => reject(new Error('keystore unavailable'));
+        });
+      }
+      return Promise.resolve('true');
+    },
+    async setItemAsync() {},
+    async deleteItemAsync() {},
+  };
+  const flag = await load(store);
+  await flag.ensureDurableCaptureFlagHydrated(20);
+  failFirstRead();
+  await flush();
+  await flush();
+
+  await flag.ensureDurableCaptureFlagHydrated(20);
+  assert.equal(reads, 2, 'the retry still happens');
+  assert.equal(flag.isDurableCaptureEnabled(), true);
+});
+
 test('hydration is bounded and settles to a synchronous fast path', async () => {
   let timers = 0;
   const countingTimers = {

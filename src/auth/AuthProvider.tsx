@@ -1186,7 +1186,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // other 401/403 means the API refused this account (role/org revoked);
     // serving the cache would bypass that. Both reads are bounded (rule 24):
     // a hung SecureStore/GoTrue bridge must not stall the error UI.
-    if (!isRetryableFetchUserError(lastError) && !restoredExpiryExplains(lastError, restoredSessionRef.current, authGenerationRef.current)) {
+    if (!isRetryableFetchUserError(lastError) && !restoredExpiryExplains(lastError, restoredSessionRef.current, authGenerationRef.current, Date.now())) {
       breadcrumb('auth', 'profile_cache_skipped_terminal_error', {});
       setUserFetchState('error');
       setUserFetchError(fetchUserErrorMessage(lastError));
@@ -1824,7 +1824,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       restoredSessionRef.current = {
         userId: restored.user.id,
         generation: authGenerationRef.current,
-        accessTokenExpired,
+        expiresAt: restored.expires_at ?? 0,
       };
       setSession(restored);
       sessionTimestampRef.current = Date.now();

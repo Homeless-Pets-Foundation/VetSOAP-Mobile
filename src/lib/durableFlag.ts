@@ -38,8 +38,12 @@
  * extends it across a restart.
  */
 
+import { withPromiseTimeout } from './promiseTimeout';
+
 const forceCapture = process.env.EXPO_PUBLIC_FORCE_DURABLE_CAPTURE === 'true';
 const FLAG_STORAGE_KEY = 'captivet_durable_capture_flag';
+/** Bound for one write plus its read-back (rule 24). */
+const PERSIST_TIMEOUT_MS = 5_000;
 
 /** `null` = nothing known in this process yet (never learned, not hydrated). */
 let captureEnabled: boolean | null = forceCapture ? true : null;
@@ -65,9 +69,10 @@ function parseFlag(value: unknown): boolean | null {
  * after a newer one), leaving a stale `true` in storage that the next offline
  * cold start would hydrate after the server turned capture off (Codex review
  * on VetSOAP-Mobile#234). A write counts only once a read-back returns it:
- * SecureStore can drop a write while resolving (rule 17). A failed or
- * unverified write stops the loop; the next response retries. A hung write
- * blocks only persistence: the in-memory flag still follows every response.
+ * SecureStore can drop a write while resolving (rule 17). A failed,
+ * unverified, or hung write (bounded at PERSIST_TIMEOUT_MS) stops the loop and
+ * marks storage unknown, so the next response writes and verifies again. A
+ * hung write is abandoned, not cancelled; the native bridge offers no cancel.
  */
 function persist(value: boolean): void {
   desiredValue = value;
@@ -85,13 +90,20 @@ async function drainWrites(): Promise<void> {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
-        ok =
-          (await secureStorage.setRawItem(FLAG_STORAGE_KEY, stored, 'durableFlag.persist')) &&
-          (await secureStorage.getRawItem(FLAG_STORAGE_KEY, 'durableFlag.verify')) === stored;
+        ok = await withPromiseTimeout(
+          (async () =>
+            (await secureStorage.setRawItem(FLAG_STORAGE_KEY, stored, 'durableFlag.persist')) &&
+            (await secureStorage.getRawItem(FLAG_STORAGE_KEY, 'durableFlag.verify')) === stored)(),
+          PERSIST_TIMEOUT_MS,
+          'durable_flag_persist_timeout',
+        );
       } catch {
         ok = false;
       }
-      if (!ok) return;
+      if (!ok) {
+        persistedValue = null;
+        return;
+      }
       persistedValue = value;
     }
   } finally {
@@ -126,6 +138,10 @@ let hydrationPromise: Promise<void> | null = null;
 // Set once the memoized read has settled (either way), so every record-start
 // after the first takes a synchronous fast path instead of arming a timer.
 let hydrationSettled = false;
+// Identifies the read currently in charge. A read retired for outliving its
+// bound may still settle later, possibly as a failure; it must not mark
+// hydration done and so cancel the retry (Codex review on VetSOAP-Mobile#234).
+let hydrationGeneration = 0;
 
 /**
  * Hydrate the flag from storage at app startup, before any record-start check.
@@ -133,6 +149,7 @@ let hydrationSettled = false;
  */
 export function hydrateDurableCaptureFlag(): Promise<void> {
   if (!hydrationPromise) {
+    const generation = ++hydrationGeneration;
     hydrationPromise = (async () => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -146,7 +163,7 @@ export function hydrateDurableCaptureFlag(): Promise<void> {
       } catch {
         /* best-effort: an unknown flag stays OFF */
       } finally {
-        hydrationSettled = true;
+        if (generation === hydrationGeneration) hydrationSettled = true;
       }
     })();
   }
@@ -180,7 +197,10 @@ export async function ensureDurableCaptureFlagHydrated(timeoutMs = 2000): Promis
     .finally(() => {
       if (timer) clearTimeout(timer);
     });
-  if (timedOut && !hydrationSettled && hydrationPromise === attempt) hydrationPromise = null;
+  if (timedOut && !hydrationSettled && hydrationPromise === attempt) {
+    hydrationPromise = null;
+    hydrationGeneration += 1;
+  }
 }
 
 /** Whether NEW durable capture is enabled (server-driven; OFF while unknown). */
@@ -196,4 +216,5 @@ export function __resetDurableCaptureFlag(): void {
   writeInFlight = false;
   hydrationPromise = null;
   hydrationSettled = false;
+  hydrationGeneration += 1;
 }

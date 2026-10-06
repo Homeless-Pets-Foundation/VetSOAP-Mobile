@@ -7,14 +7,76 @@
  * The flag must be owned by the same deploy that ships ADTS acceptance, so a
  * client cannot enable ADTS capture against a server that cannot process it.
  *
- * Fail-safe: defaults OFF. The client caches the value from normal API responses
- * (header/body). RECOVERY/LISTING/UPLOAD/DISCARD/PURGE of EXISTING durable
- * manifests are NOT gated by this flag — only new capture + Resume->Continue.
+ * Fail-safe: OFF until a server has said otherwise. The client caches the value
+ * from normal API responses (header/body). RECOVERY/LISTING/UPLOAD/DISCARD/PURGE
+ * of EXISTING durable manifests are NOT gated by this flag — only new capture +
+ * Resume->Continue.
+ *
+ * Persisted + provenance-checked (Sentry REACT-NATIVE-1X). The value used to
+ * live only in memory, start OFF in every process, and flip OFF on any response
+ * without the header. So a fresh recording silently took the expo-audio path —
+ * whose MPEG-4 file does not survive a process death — on every cold start
+ * until the first API response, for an entire offline session, and after any
+ * edge-proxy 502/503 page during a deploy. Production showed exactly that: a
+ * frozen-then-killed process on a clinic tablet left an EXPO capture behind
+ * while the server had durable capture enabled. Now:
+ *
+ * - The last value an API response stated is persisted and hydrated at startup.
+ *   A stored value only fills an UNKNOWN in-memory state; it never overrides a
+ *   value learned this session.
+ * - Only a response that came through the Captivet API may move the flag
+ *   (`applyDurableCaptureHeader`). The API echoes the request's X-Request-Id
+ *   from middleware that predates this flag; a proxy error page, captive
+ *   portal, or other non-API response does not echo it and leaves the flag
+ *   alone. An API response WITHOUT the header still fails closed — that is the
+ *   deploy that cannot process ADTS.
+ *
+ * What persistence widens: after a server rollback to a pre-ADTS deploy, a
+ * device could capture durable audio from the stored value until its first
+ * API response of the new process. A rollback within the same process already
+ * had that window (between the last good response and the rollback); this
+ * extends it across a restart.
  */
 
 const forceCapture = process.env.EXPO_PUBLIC_FORCE_DURABLE_CAPTURE === 'true';
+const FLAG_STORAGE_KEY = 'captivet_durable_capture_flag';
 
-let captureEnabled = forceCapture;
+/** `null` = nothing known in this process yet (never learned, not hydrated). */
+let captureEnabled: boolean | null = forceCapture ? true : null;
+/** The value last handed to storage, so an unchanged flag costs no Keystore write. */
+let persistedValue: boolean | null = null;
+
+function parseFlag(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value === 'true' || value === '1';
+  return null;
+}
+
+/**
+ * Best-effort, only on change: every API response passes through here, and on
+ * the Galaxy Tab A7 Lite fleet each Keystore write is a round trip on the one
+ * thread all Expo module calls share. Lazy-required (rule 1); wrapped (rule 3).
+ */
+function persist(value: boolean): void {
+  if (persistedValue === value) return;
+  persistedValue = value;
+  const forget = () => {
+    // A failed write must not suppress the retry on the next response.
+    if (persistedValue === value) persistedValue = null;
+  };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+    secureStorage
+      .setRawItem(FLAG_STORAGE_KEY, value ? 'true' : 'false', 'durableFlag.persist')
+      .then((ok) => {
+        if (!ok) forget();
+      })
+      .catch(forget);
+  } catch {
+    forget();
+  }
+}
 
 /** Update the cached capture flag from a server-provided value. */
 export function setDurableCaptureFlag(value: unknown): void {
@@ -22,19 +84,83 @@ export function setDurableCaptureFlag(value: unknown): void {
     captureEnabled = true;
     return;
   }
-  if (typeof value === 'boolean') {
-    captureEnabled = value;
-  } else if (typeof value === 'string') {
-    captureEnabled = value === 'true' || value === '1';
-  }
+  const parsed = parseFlag(value);
+  if (parsed === null) return;
+  captureEnabled = parsed;
+  persist(parsed);
 }
 
-/** Whether NEW durable capture is enabled (server-driven; default false). */
+/**
+ * Apply the `X-Durable-Capture-Enabled` header from an ApiClient response.
+ * `fromApi` must be true only when the response provably passed through the
+ * Captivet API (its X-Request-Id echo matches the request's). From the API, an
+ * ABSENT header fails closed; from anything else, the flag is left untouched.
+ */
+export function applyDurableCaptureHeader(headerValue: string | null, fromApi: boolean): void {
+  if (!fromApi) return;
+  setDurableCaptureFlag(headerValue !== null ? headerValue : false);
+}
+
+let hydrationPromise: Promise<void> | null = null;
+// Set once the memoized read has settled (either way), so every record-start
+// after the first takes a synchronous fast path instead of arming a timer.
+let hydrationSettled = false;
+
+/**
+ * Hydrate the flag from storage at app startup, before any record-start check.
+ * Memoized: repeated calls share one SecureStore read.
+ */
+export function hydrateDurableCaptureFlag(): Promise<void> {
+  if (!hydrationPromise) {
+    hydrationPromise = (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+        const stored = await secureStorage.getRawItem(FLAG_STORAGE_KEY, 'durableFlag.hydrate');
+        const parsed = stored === 'true' ? true : stored === 'false' ? false : null;
+        if (parsed !== null) {
+          if (persistedValue === null) persistedValue = parsed;
+          if (captureEnabled === null) captureEnabled = parsed;
+        }
+      } catch {
+        /* best-effort: an unknown flag stays OFF */
+      } finally {
+        hydrationSettled = true;
+      }
+    })();
+  }
+  return hydrationPromise;
+}
+
+/**
+ * Await hydration (bounded) before a record-start decision, so a cold start
+ * cannot race past a stored flag that has not loaded yet. Times out toward the
+ * fail-safe OFF rather than blocking record-start on a hung Keystore (rule 24).
+ */
+export async function ensureDurableCaptureFlagHydrated(timeoutMs = 2000): Promise<void> {
+  if (hydrationSettled) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    hydrateDurableCaptureFlag(),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ])
+    .catch(() => {})
+    .finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+}
+
+/** Whether NEW durable capture is enabled (server-driven; OFF while unknown). */
 export function isDurableCaptureEnabled(): boolean {
-  return captureEnabled;
+  return captureEnabled === true;
 }
 
 /** Test-only reset. */
 export function __resetDurableCaptureFlag(): void {
-  captureEnabled = forceCapture;
+  captureEnabled = forceCapture ? true : null;
+  persistedValue = null;
+  hydrationPromise = null;
+  hydrationSettled = false;
 }

@@ -80,8 +80,9 @@ test('client.ts: 426 is a dedicated terminal-non-auth branch (no refresh/retry)'
 test('durable capture flag is server-driven, default off', async () => {
   const src = await read('src/lib/durableFlag.ts');
   assert.match(src, /const forceCapture = process\.env\.EXPO_PUBLIC_FORCE_DURABLE_CAPTURE === 'true'/);
-  assert.match(src, /let captureEnabled = forceCapture/);
-  assert.match(src, /export function isDurableCaptureEnabled/);
+  // Unknown (never learned, not hydrated) is OFF; only a stated `true` enables.
+  assert.match(src, /let captureEnabled: boolean \| null = forceCapture \? true : null;/);
+  assert.match(src, /export function isDurableCaptureEnabled\(\): boolean \{\s*return captureEnabled === true;/);
 });
 
 test('uploadSlot durable order: markUploaded -> deleteDraft -> purge+tombstone', async () => {
@@ -566,8 +567,13 @@ test('deleteDraft removes a recovered durable AAC but not shared native audio', 
 });
 
 test('durable-capture flag fails closed when the header is absent', async () => {
+  // An API response without the header still disables capture; only a response
+  // that did not come through the API (no request-id echo) is ignored.
+  // Executed in tests/durable-capture-flag.test.mjs.
+  const flag = await read('src/lib/durableFlag.ts');
+  assert.match(flag, /if \(!fromApi\) return;\s*setDurableCaptureFlag\(headerValue !== null \? headerValue : false\);/);
   const src = await read('src/api/client.ts');
-  assert.match(src, /setDurableCaptureFlag\(durableFlag !== null \? durableFlag : false\)/);
+  assert.match(src, /applyDurableCaptureHeader\(durableFlag, resp\.headers\.get\('x-request-id'\) === requestId\)/);
 });
 
 test('Android durable service stops itself if foreground promotion fails', async () => {

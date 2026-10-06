@@ -45,6 +45,7 @@ import { durableReconcileHold } from '../lib/durableAudio/reconcileHold';
 import { durableActiveStore } from '../lib/durableAudio/activeStore';
 import { runDurableRecoveryScan, invalidateDurableRecoveries } from '../lib/durableAudio/durableRecovery';
 import { hydrateMinVersionFloor } from '../lib/minVersion';
+import { hydrateDurableCaptureFlag } from '../lib/durableFlag';
 import { durableRecoveryStore } from '../lib/durableAudio/recoveryState';
 import { audioTempFiles } from '../lib/audioTempFiles';
 import { queryClient } from '../lib/queryClient';
@@ -1751,6 +1752,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // so a KNOWN-below-floor build blocks new recordings even on an OFFLINE cold
     // start (before the first API response re-learns the floor). Best-effort.
     hydrateMinVersionFloor().catch(() => {});
+    // Same for the durable-capture flag: without the stored value, every cold
+    // start captured on the non-crash-safe expo path until the first API
+    // response (src/lib/durableFlag.ts, Sentry REACT-NATIVE-1X).
+    hydrateDurableCaptureFlag().catch(() => {});
 
     // Belt-and-suspenders watchdog against hung native bridges in the cold-
     // start path (CLAUDE.md rule 29). Supabase GoTrue's auto-refresh timer

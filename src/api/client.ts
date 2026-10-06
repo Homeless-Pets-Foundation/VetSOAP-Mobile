@@ -3,7 +3,7 @@ import { secureStorage } from '../lib/secureStorage';
 import { validateRequestUrl } from '../lib/sslPinning';
 import { getIdempotencyUuid } from '../lib/random';
 import { setMinVersionFloor, UPGRADE_REQUIRED_CODE } from '../lib/minVersion';
-import { setDurableCaptureFlag } from '../lib/durableFlag';
+import { applyDurableCaptureHeader } from '../lib/durableFlag';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
 import { ApiError, RequestTimeoutError, StorageUnavailableError } from './apiErrors';
 import { ERROR_COPY } from '../constants/strings';
@@ -443,8 +443,11 @@ export class ApiClient {
         // would keep the client capturing + upload/confirm/purge AAC against an
         // incompatible backend. The durable-capable deploy sets this header on its
         // responses, so absent == not-durable-capable == disable new capture.
+        // That inference only holds for a response the API produced: its
+        // request-id middleware echoes ours, while an edge-proxy error page
+        // does not and must leave the flag alone (src/lib/durableFlag.ts).
         const durableFlag = resp.headers.get('x-durable-capture-enabled');
-        setDurableCaptureFlag(durableFlag !== null ? durableFlag : false);
+        applyDurableCaptureHeader(durableFlag, resp.headers.get('x-request-id') === requestId);
       } catch { /* headers may be unavailable on some RN fetch polyfills */ }
 
       // 426 Upgrade Required is terminal-non-auth: no token refresh, no sign-out,

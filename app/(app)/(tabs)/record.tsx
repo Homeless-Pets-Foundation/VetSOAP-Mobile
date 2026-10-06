@@ -51,7 +51,7 @@ import {
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as audioFocus from '../../../modules/captivet-audio-focus';
 import * as durableRecorder from '../../../modules/captivet-durable-recorder';
-import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
+import { ensureDurableCaptureFlagHydrated, isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
 import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
@@ -2115,6 +2115,10 @@ function RecordingSession() {
           await measurePhase('record_floor_hydration', undefined, async () => {
             await ensureFloorHydrated();
           }, { warningThresholdMs: null });
+          // The stored durable-capture flag must be loaded before the fresh vs
+          // resume decision below reads it; bounded, and a settled read is a
+          // synchronous fast path (src/lib/durableFlag.ts).
+          await ensureDurableCaptureFlagHydrated();
           if (getRecordStartGate() === 'block') {
             breadcrumb('record', 'record_start_blocked_min_version', {});
             Alert.alert(

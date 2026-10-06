@@ -186,6 +186,10 @@ export type AnalyticsEvent =
   | { name: 'api_request_failed'; props: { endpoint_kind: EndpointKind; status: number; latency_ms: number; retried: boolean } }
   // Startup resilience
   | { name: 'profile_cache_used'; props: { age_s: number } }
+  | {
+      name: 'session_restored_from_storage';
+      props: { trigger: 'unanswered' | 'retryable_error'; access_token_expired: boolean };
+    }
   // Recording detail (transcript + playback)
   | { name: 'transcript_viewed'; props: { recording_id: string } }
   | { name: 'audio_playback_started'; props: { recording_id: string } }

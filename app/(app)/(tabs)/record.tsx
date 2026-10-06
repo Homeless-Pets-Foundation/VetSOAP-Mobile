@@ -51,7 +51,7 @@ import {
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as audioFocus from '../../../modules/captivet-audio-focus';
 import * as durableRecorder from '../../../modules/captivet-durable-recorder';
-import { isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
+import { ensureDurableCaptureFlagHydrated, isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
 import { checkPreRecordFreeSpace, getFreeDiskBytes } from '../../../src/lib/freeSpace';
 import { getRecordStartGate, ensureFloorHydrated } from '../../../src/lib/minVersion';
 import { durableActiveStore } from '../../../src/lib/durableAudio/activeStore';
@@ -2115,6 +2115,10 @@ function RecordingSession() {
           await measurePhase('record_floor_hydration', undefined, async () => {
             await ensureFloorHydrated();
           }, { warningThresholdMs: null });
+          // The stored durable-capture flag must be loaded before the fresh vs
+          // resume decision below reads it; bounded, and a settled read is a
+          // synchronous fast path (src/lib/durableFlag.ts).
+          await ensureDurableCaptureFlagHydrated();
           if (getRecordStartGate() === 'block') {
             breadcrumb('record', 'record_start_blocked_min_version', {});
             Alert.alert(
@@ -2333,6 +2337,17 @@ function RecordingSession() {
                 );
               }
             } else {
+              // The only start path that is not crash-safe, so record which gate
+              // sent us here. Production showed an expo start 54 s after a
+              // durable one in the same process (Sentry REACT-NATIVE-1W) with
+              // nothing in the trail to say why. Booleans only — no PHI.
+              breadcrumb('record', 'record_start_expo_path', {
+                flag_on: isDurableCaptureEnabled(),
+                module_available: durableRecorder.isAvailable(),
+                has_user: !!user?.id,
+                has_slot: !!startSlot,
+                has_segments: (startSlot?.segments.length ?? 0) > 0,
+              });
               // Expo fallback. It leaves no manifest and no recoverable file if
               // the process dies (MediaRecorder writes the MP4 moov atom only on
               // stop()), so this pointer is the ONLY evidence the capture ever
@@ -4501,6 +4516,14 @@ function RecordingSession() {
               if (uploadRestartSlotIdsRef.current.has(slotId)) return;
               const latestDraft = await awaitScoped(() => draftStorage.getDraft(draftSlotId));
               if (latestDraft?.supersededUploadKey || latestDraft?.uploadRestartPending) return;
+              // Re-checked after the read: Submit can claim the slot while it is
+              // in flight, and markSubmitIntent only cancels a SCHEDULED create.
+              // In production (Sentry REACT-NATIVE-21) this create was issued
+              // 1.6 s after Submit started and lost the shared idempotency key to
+              // Submit's prepare-upload. The catch below handles the window that
+              // remains between this check and the server.
+              if (submitIntentSlotIdsRef.current.has(slotId)) return;
+              if (uploadRestartSlotIdsRef.current.has(slotId)) return;
               // A durable slot MUST create with a deterministic idempotency key
               // derived from its on-disk durable recordingId, so a later Submit
               // (which reuses `durable-${recordingId}`) promotes THIS row instead of
@@ -4590,6 +4613,26 @@ function RecordingSession() {
             // slot sync or awaited storage/network. Never inspect, mutate, or
             // report the replacement user's state on behalf of the old scope.
             if (!scopeIsCurrent()) return;
+            // Submit claimed the slot while the create above was in flight, and
+            // its prepare-upload took the shared idempotency key first, so the
+            // server refuses a DRAFT create on a row that is no longer a draft.
+            // That is the race, not a conflict (Sentry REACT-NATIVE-21). Submit
+            // sent form data at least as new as ours and reports its own
+            // failures. It has usually also anchored the draft to its prepared
+            // row and cleared the dirty flag (onRecordingPrepared); the dirty
+            // mark below would undo that and send a retry of this Submit down
+            // the metadata-patch path. So: no dirty mark, no capture.
+            if (
+              isDraftSyncConflictError(error) &&
+              (submitIntentSlotIdsRef.current.has(slotId) ||
+                completedUploadSlotIdsRef.current.has(slotId))
+            ) {
+              breadcrumb('draft', 'sync_server_draft_conflict_submit_owned', {
+                slot_id: slotId,
+                error_code: isApiError(error) ? error.code ?? 'none' : 'none',
+              });
+              return;
+            }
             const hadServerDraft = !!sessionRef.current.slots.find((s) => s.id === slotId)?.serverDraftId;
             if (hadServerDraft) {
               try {
@@ -4613,18 +4656,19 @@ function RecordingSession() {
               // exists to report — it is the opposite, and reporting it as an
               // exception was backwards.
               //
-              // Scope note: this matches ANY 409 raised in the try above — the
-              // create, the metadata patch, and the orphan-delete probe. That is
-              // deliberate, because all of them mean the same thing here, but it
-              // does mean `had_server_draft` is what distinguishes the create
-              // path from the patch path in triage.
+              // Scope note: only the create can raise a 409 here —
+              // patchDraftMetadataWithRetry and deleteOrphanDraftIfUnclaimed
+              // return outcomes instead of throwing. `had_server_draft` is read
+              // at catch time, so a row Submit attached while the create was in
+              // flight also reads as true; it does not tell the paths apart.
               //
-              // What this branch does NOT do is leave local state untouched: on
-              // the patch path the `hadServerDraft` block above has already run
+              // What this branch does NOT do is leave local state untouched: when
+              // the slot has a server draft by the time the error lands, the
+              // `hadServerDraft` block above has already run
               // `markDraftMetadataDirty` + dispatched MARK_DRAFT_METADATA_DIRTY,
-              // so the draft is flagged for re-patch and will earn the same 409
-              // next time. Deciding which side of a conflict wins needs the
-              // server contract, so the state is left as that block left it.
+              // so the draft is flagged for re-patch. Deciding which side of a
+              // conflict wins needs the server contract, so the state is left as
+              // that block left it.
               //
               // Reported as a WARNING rather than a breadcrumb alone: a
               // breadcrumb only ships attached to some other captured event, and

@@ -99,6 +99,42 @@ test('sync_server_draft network failures are breadcrumbed, not captured as Sentr
   );
 });
 
+test('a background draft create that loses its upload intent to Submit is the race, not a conflict', async () => {
+  // Sentry REACT-NATIVE-21 (server side: NODE-1D, create/existing_recording_mismatch).
+  // Finish queued a draft create; the vet tapped Submit 4 s later. The create
+  // passed its submit-intent check, then awaited a SecureStore read; Submit
+  // started during that read, and the create was issued 1.6 s after Submit
+  // began. Submit's prepare-upload took the shared idempotency key first and
+  // cleared the draft's dirty flag; the create's 409 was then reported as a
+  // conflict and marked the draft dirty again.
+  const src = await read('app/(app)/(tabs)/record.tsx');
+  const start = src.indexOf('const syncServerDraft = useCallback(');
+  assert.ok(start > -1, 'syncServerDraft must be findable');
+  const body = src.slice(start, src.indexOf("if (__DEV__) console.warn('[Record] syncServerDraft failed:", start));
+
+  // The submit-intent check is repeated after the last await before the create.
+  const readStmt = 'const latestDraft = await awaitScoped(() => draftStorage.getDraft(draftSlotId));';
+  const iRead = body.indexOf(readStmt);
+  const iCreate = body.indexOf('const result = await awaitScoped(() =>\n                recordingsApi.create(slot.formData, {');
+  assert.ok(iRead > -1 && iCreate > iRead, 'the create follows the draft read');
+  const gap = body.slice(iRead + readStmt.length, iCreate);
+  assert.match(gap, /if \(submitIntentSlotIdsRef\.current\.has\(slotId\)\) return;/);
+  assert.match(gap, /if \(uploadRestartSlotIdsRef\.current\.has\(slotId\)\) return;/);
+  assert.doesNotMatch(gap, /\bawait\b/, 'no await may separate the re-check from the create');
+
+  // A 409 that arrives after Submit claimed the slot is classified before the
+  // dirty mark and before any capture, and returns.
+  const catchBody = body.slice(body.lastIndexOf('} catch (error) {'));
+  const iOwned = catchBody.indexOf("breadcrumb('draft', 'sync_server_draft_conflict_submit_owned'");
+  assert.ok(iOwned > -1, 'the submit-owned conflict is breadcrumbed');
+  const condition = catchBody.slice(0, iOwned);
+  assert.match(condition, /isDraftSyncConflictError\(error\) &&/);
+  assert.match(condition, /submitIntentSlotIdsRef\.current\.has\(slotId\) \|\|\s+completedUploadSlotIdsRef\.current\.has\(slotId\)/);
+  assert.ok(iOwned < catchBody.indexOf('draftStorage.markDraftMetadataDirty(slotId)'), 'before the dirty mark');
+  const ownedBranch = catchBody.slice(iOwned, catchBody.indexOf('return;', iOwned));
+  assert.doesNotMatch(ownedBranch, /captureMessage|captureException|markDraftMetadataDirty/);
+});
+
 test('recoverable submit failures (expected + server 5xx + transient + abort) are telemetry warnings, not Sentry exceptions', async () => {
   const src = await read('app/(app)/(tabs)/record.tsx');
 

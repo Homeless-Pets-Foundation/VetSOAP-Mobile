@@ -3,7 +3,7 @@ import { secureStorage } from '../lib/secureStorage';
 import { validateRequestUrl } from '../lib/sslPinning';
 import { getIdempotencyUuid } from '../lib/random';
 import { setMinVersionFloor, UPGRADE_REQUIRED_CODE } from '../lib/minVersion';
-import { setDurableCaptureFlag } from '../lib/durableFlag';
+import { applyDurableCaptureHeader } from '../lib/durableFlag';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
 import { ApiError, RequestTimeoutError, StorageUnavailableError } from './apiErrors';
 import { ERROR_COPY } from '../constants/strings';
@@ -121,8 +121,16 @@ export interface MfaRequiredRequest {
   maxAgeSeconds?: number;
 }
 
+/**
+ * What `onUnauthorized` reports back. `'unresolved'`: the auth layer could not
+ * reach a verdict in time (GoTrue still starting up, or its refresh outlived
+ * its bound). That is not proof the session is dead, so the request fails as
+ * retryable and `onSessionExpired` is not consulted (src/auth/sessionRefresh.ts).
+ */
+export type UnauthorizedOutcome = 'unresolved' | void;
+
 export class ApiClient {
-  private onUnauthorized?: () => void | Promise<void>;
+  private onUnauthorized?: () => UnauthorizedOutcome | Promise<UnauthorizedOutcome>;
   private onDeviceRevoked?: () => void | Promise<void>;
   private onDeviceRegistrationRequired?: () => Promise<boolean>;
   private onMfaRequired?: (request: MfaRequiredRequest) => void | Promise<void>;
@@ -148,12 +156,15 @@ export class ApiClient {
   /** Cached device ID — read from SecureStore once, then reused. Only caches non-null values. */
   private cachedDeviceId: string | undefined = undefined; // undefined = not yet loaded/not yet successful
 
-  constructor(opts?: { onUnauthorized?: () => void | Promise<void>; onDeviceRevoked?: () => void | Promise<void> }) {
+  constructor(opts?: {
+    onUnauthorized?: () => UnauthorizedOutcome | Promise<UnauthorizedOutcome>;
+    onDeviceRevoked?: () => void | Promise<void>;
+  }) {
     this.onUnauthorized = opts?.onUnauthorized;
     this.onDeviceRevoked = opts?.onDeviceRevoked;
   }
 
-  setOnUnauthorized(callback: () => void | Promise<void>) {
+  setOnUnauthorized(callback: () => UnauthorizedOutcome | Promise<UnauthorizedOutcome>) {
     this.onUnauthorized = callback;
   }
 
@@ -443,8 +454,11 @@ export class ApiClient {
         // would keep the client capturing + upload/confirm/purge AAC against an
         // incompatible backend. The durable-capable deploy sets this header on its
         // responses, so absent == not-durable-capable == disable new capture.
+        // That inference only holds for a response the API produced: its
+        // request-id middleware echoes ours, while an edge-proxy error page
+        // does not and must leave the flag alone (src/lib/durableFlag.ts).
         const durableFlag = resp.headers.get('x-durable-capture-enabled');
-        setDurableCaptureFlag(durableFlag !== null ? durableFlag : false);
+        applyDurableCaptureHeader(durableFlag, resp.headers.get('x-request-id') === requestId);
       } catch { /* headers may be unavailable on some RN fetch polyfills */ }
 
       // 426 Upgrade Required is terminal-non-auth: no token refresh, no sign-out,
@@ -542,8 +556,9 @@ export class ApiClient {
       if (response.status === 401) {
         const oldToken = this.currentToken;
 
+        let outcome: UnauthorizedOutcome = undefined;
         try {
-          await this.onUnauthorized?.();
+          outcome = await this.onUnauthorized?.();
         } catch {
           // onUnauthorized handler failed — fall through to error
         }
@@ -555,6 +570,14 @@ export class ApiClient {
           if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
           retried = true;
           response = await send();
+        } else if (outcome === 'unresolved') {
+          // The refresh could not run or finish. Fail this request as
+          // retryable, and leave the session alone: onSessionExpired would
+          // sign the vet out on what may only be a stalled auth server. The
+          // copy is "timed out", which the upload classifier deliberately
+          // fails fast on rather than retrying into the same stall.
+          emitApiRequestFailed(endpointKindOf(path), 401, Date.now() - fetchStartedAt, retried);
+          throw new RequestTimeoutError(ERROR_COPY.timeout);
         }
 
         // Still 401 after the refresh attempt → the session can't authenticate

@@ -184,6 +184,71 @@ test('writes are serialized, so storage keeps the newest value', async () => {
   assert.equal(pending.length, 1);
 });
 
+test('a write counts only after reading it back', async () => {
+  // Codex review on VetSOAP-Mobile#234. SecureStore can drop a write while
+  // resolving (CLAUDE.md rule 17). Trusting the resolve recorded `false` as
+  // stored while storage still held `true`, so later `false` responses skipped
+  // the write and the next cold start hydrated the stale `true`.
+  const map = new Map();
+  let dropNextWrite = false;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    async setItemAsync(key, value) {
+      if (dropNextWrite) {
+        dropNextWrite = false;
+        return;
+      }
+      map.set(key, value);
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+  const flag = await load(store);
+  flag.applyDurableCaptureHeader('true', true);
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'true');
+
+  dropNextWrite = true;
+  flag.applyDurableCaptureHeader(null, true);
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'true', 'the dropped write left the old value behind');
+
+  // The next response finds the value unverified and writes it again.
+  flag.applyDurableCaptureHeader(null, true);
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'false');
+});
+
+test('a hydration read that outlives its bound is retried by the next record-start', async () => {
+  // Codex review on VetSOAP-Mobile#234. The memoized read never settled, so
+  // every later record-start waited out the bound against the same dead
+  // promise and chose the non-crash-safe path for the rest of the process.
+  let reads = 0;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    getItemAsync() {
+      reads += 1;
+      return reads === 1 ? new Promise(() => {}) : Promise.resolve('true');
+    },
+    async setItemAsync() {},
+    async deleteItemAsync() {},
+  };
+  const flag = await load(store);
+  await flag.ensureDurableCaptureFlagHydrated(20);
+  assert.equal(flag.isDurableCaptureEnabled(), false, 'unknown while the first read hangs');
+
+  await flag.ensureDurableCaptureFlagHydrated(20);
+  assert.equal(reads, 2, 'the second record-start issues a fresh read');
+  assert.equal(flag.isDurableCaptureEnabled(), true);
+});
+
 test('hydration is bounded and settles to a synchronous fast path', async () => {
   let timers = 0;
   const countingTimers = {

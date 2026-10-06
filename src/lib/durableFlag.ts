@@ -64,9 +64,10 @@ function parseFlag(value: unknown): boolean | null {
  * land out of order (setRawItem retries a failed write, which can then finish
  * after a newer one), leaving a stale `true` in storage that the next offline
  * cold start would hydrate after the server turned capture off (Codex review
- * on VetSOAP-Mobile#234). A failed write stops the loop; the next response
- * retries. A hung write blocks only persistence: the in-memory flag still
- * follows every response.
+ * on VetSOAP-Mobile#234). A write counts only once a read-back returns it:
+ * SecureStore can drop a write while resolving (rule 17). A failed or
+ * unverified write stops the loop; the next response retries. A hung write
+ * blocks only persistence: the in-memory flag still follows every response.
  */
 function persist(value: boolean): void {
   desiredValue = value;
@@ -79,11 +80,14 @@ async function drainWrites(): Promise<void> {
   try {
     while (desiredValue !== null && desiredValue !== persistedValue) {
       const value = desiredValue;
+      const stored = value ? 'true' : 'false';
       let ok = false;
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
-        ok = await secureStorage.setRawItem(FLAG_STORAGE_KEY, value ? 'true' : 'false', 'durableFlag.persist');
+        ok =
+          (await secureStorage.setRawItem(FLAG_STORAGE_KEY, stored, 'durableFlag.persist')) &&
+          (await secureStorage.getRawItem(FLAG_STORAGE_KEY, 'durableFlag.verify')) === stored;
       } catch {
         ok = false;
       }
@@ -153,20 +157,30 @@ export function hydrateDurableCaptureFlag(): Promise<void> {
  * Await hydration (bounded) before a record-start decision, so a cold start
  * cannot race past a stored flag that has not loaded yet. Times out toward the
  * fail-safe OFF rather than blocking record-start on a hung Keystore (rule 24).
+ *
+ * A read that outlives the bound may never settle. It is retired, so the next
+ * record-start issues a fresh read instead of racing the same dead promise for
+ * the rest of the process (Codex review on VetSOAP-Mobile#234).
  */
 export async function ensureDurableCaptureFlagHydrated(timeoutMs = 2000): Promise<void> {
   if (hydrationSettled) return;
+  const attempt = hydrateDurableCaptureFlag();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   await Promise.race([
-    hydrateDurableCaptureFlag(),
+    attempt,
     new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, timeoutMs);
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs);
     }),
   ])
     .catch(() => {})
     .finally(() => {
       if (timer) clearTimeout(timer);
     });
+  if (timedOut && !hydrationSettled && hydrationPromise === attempt) hydrationPromise = null;
 }
 
 /** Whether NEW durable capture is enabled (server-driven; OFF while unknown). */

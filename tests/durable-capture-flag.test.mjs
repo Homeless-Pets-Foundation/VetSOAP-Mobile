@@ -249,6 +249,12 @@ test('a hydration read that outlives its bound is retried by the next record-sta
   assert.equal(flag.isDurableCaptureEnabled(), true);
 });
 
+// Shrinks only the 5 s persistence deadline.
+const fastDeadline = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms >= 5_000 ? 10 : ms),
+  clearTimeout,
+};
+
 test('a hung write is abandoned at the deadline, so the next response writes again', async () => {
   // Codex review on VetSOAP-Mobile#234, third round. A write that never
   // settled left the writer busy forever: later responses changed only the
@@ -270,11 +276,6 @@ test('a hung write is abandoned at the deadline, so the next response writes aga
       map.delete(key);
     },
   };
-  // Shrink only the 5 s persistence deadline.
-  const fastDeadline = {
-    setTimeout: (fn, ms) => setTimeout(fn, ms >= 5_000 ? 10 : ms),
-    clearTimeout,
-  };
   const flag = await load(store, fastDeadline);
   flag.applyDurableCaptureHeader('true', true);
   await new Promise((resolve) => setTimeout(resolve, 40));
@@ -285,6 +286,224 @@ test('a hung write is abandoned at the deadline, so the next response writes aga
   await flush();
   assert.equal(writes, 2, 'the next response starts a new write');
   assert.equal(map.get(KEY), 'true');
+});
+
+test('an abandoned write that lands late is overwritten with the newest value', async () => {
+  // An abandoned write is not cancelled. Landing after a newer verified write,
+  // it left `true` stored while the bookkeeping said `false`, so later `false`
+  // responses skipped the write and the next cold start hydrated `true`.
+  const map = new Map();
+  let landFirstWrite;
+  let writes = 0;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    setItemAsync(key, value) {
+      writes += 1;
+      if (writes === 1) {
+        return new Promise((resolve) => {
+          landFirstWrite = () => {
+            map.set(key, value);
+            resolve();
+          };
+        });
+      }
+      map.set(key, value);
+      return Promise.resolve();
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+  const flag = await load(store, fastDeadline);
+  flag.applyDurableCaptureHeader('true', true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  flag.applyDurableCaptureHeader(null, true);
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'false');
+
+  // Codex review on VetSOAP-Mobile#234, fourth round: repaired when the late
+  // write settles, not left for a response that an offline tablet never gets.
+  landFirstWrite();
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'false', 'the newest value is written again');
+  assert.equal(writes, 3);
+});
+
+test('a Keystore that keeps outliving the deadline does not chain writes', async () => {
+  // Every write lands, but only after the deadline. Rewriting after every late
+  // settle would never stop; only a late value that is not the newest is fixed.
+  const map = new Map();
+  let writes = 0;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    setItemAsync(key, value) {
+      writes += 1;
+      // Past a few writes, never answer: a chain must fail this test, not hang it.
+      if (writes > 5) return new Promise(() => {});
+      return new Promise((resolve) =>
+        setTimeout(() => {
+          map.set(key, value);
+          resolve();
+        }, 30),
+      );
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+  const flag = await load(store, fastDeadline);
+  flag.applyDurableCaptureHeader('true', true);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  flag.applyDurableCaptureHeader(null, true);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(writes, 3, 'true, false, then false again after the late true');
+  assert.equal(map.get(KEY), 'false');
+});
+
+test('a verification in flight when an abandoned write settles is not trusted', async () => {
+  // Native calls can run on concurrent threads, so a read-back can be served
+  // before the abandoned write lands yet answer after it has settled. That
+  // read proves nothing about what storage holds now.
+  const map = new Map();
+  let landFirstWrite;
+  let answerVerify;
+  let writes = 0;
+  let reads = 0;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    getItemAsync(key) {
+      reads += 1;
+      const value = map.has(key) ? map.get(key) : null;
+      // The first read-back verifies the newer write: served now, answered later.
+      if (reads === 1) return new Promise((resolve) => (answerVerify = () => resolve(value)));
+      return Promise.resolve(value);
+    },
+    setItemAsync(key, value) {
+      writes += 1;
+      if (writes === 1) {
+        return new Promise((resolve) => {
+          landFirstWrite = () => {
+            map.set(key, value);
+            resolve();
+          };
+        });
+      }
+      map.set(key, value);
+      return Promise.resolve();
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+  const flag = await load(store, fastDeadline);
+  flag.applyDurableCaptureHeader('true', true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  flag.applyDurableCaptureHeader(null, true);
+  await flush();
+  assert.equal(typeof answerVerify, 'function', 'the newer write is being verified');
+
+  landFirstWrite();
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'true', 'the abandoned write landed last');
+
+  answerVerify();
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'false', 'the newest value is written again');
+});
+
+test('a hydration read that answers after writes began cannot vouch for storage', async () => {
+  // A read served before an abandoned write landed can answer after it settled.
+  // Taking that answer as what storage holds matched the newest value, so the
+  // write in flight stopped and the stale value stayed stored.
+  const map = new Map([[KEY, 'false']]);
+  const held = [];
+  let landFirstWrite;
+  let reads = 0;
+  let writes = 0;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    getItemAsync(key) {
+      reads += 1;
+      const value = map.has(key) ? map.get(key) : null;
+      // Hydration, then the newer write's read-back: served now, answered later.
+      if (reads <= 2) return new Promise((resolve) => held.push(() => resolve(value)));
+      return Promise.resolve(value);
+    },
+    setItemAsync(key, value) {
+      writes += 1;
+      if (writes === 1) {
+        return new Promise((resolve) => {
+          landFirstWrite = () => {
+            map.set(key, value);
+            resolve();
+          };
+        });
+      }
+      map.set(key, value);
+      return Promise.resolve();
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+  const flag = await load(store, fastDeadline);
+  void flag.hydrateDurableCaptureFlag();
+  flag.applyDurableCaptureHeader('true', true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  flag.applyDurableCaptureHeader(null, true);
+  await flush();
+  assert.equal(held.length, 2, 'hydration and the read-back are both served');
+
+  landFirstWrite();
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'true', 'the abandoned write landed last');
+
+  held[0]();
+  await flush();
+  held[1]();
+  await flush();
+  await flush();
+  assert.equal(map.get(KEY), 'false', 'the newest value is written again');
+});
+
+test('a hydration read that fails is retried by the next record-start', async () => {
+  // Codex review on VetSOAP-Mobile#234, fourth round. The lenient read turned
+  // a Keystore failure into "nothing stored" and marked hydration done, so a
+  // stored `true` was ignored for the rest of the process.
+  let reads = 0;
+  const store = {
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync() {
+      reads += 1;
+      if (reads === 1) throw new Error('keystore unavailable');
+      return 'true';
+    },
+    async setItemAsync() {},
+    async deleteItemAsync() {},
+  };
+  const flag = await load(store);
+  await flag.ensureDurableCaptureFlagHydrated(20);
+  assert.equal(flag.isDurableCaptureEnabled(), false, 'unknown after a failed read');
+
+  await flag.ensureDurableCaptureFlagHydrated(20);
+  assert.equal(reads, 2, 'the next record-start reads again');
+  assert.equal(flag.isDurableCaptureEnabled(), true);
+
+  await flag.ensureDurableCaptureFlagHydrated(20);
+  assert.equal(reads, 2, 'a successful read settles hydration');
 });
 
 test('a retired hydration read that fails late does not cancel the retry', async () => {

@@ -52,6 +52,8 @@ let persistedValue: boolean | null = null;
 /** The newest value an API response stated; storage must end up holding this. */
 let desiredValue: boolean | null = null;
 let writeInFlight = false;
+/** Bumped when an abandoned write settles; a verification that spans the bump proves nothing. */
+let storageEpoch = 0;
 
 function parseFlag(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;
@@ -71,8 +73,18 @@ function parseFlag(value: unknown): boolean | null {
  * on VetSOAP-Mobile#234). A write counts only once a read-back returns it:
  * SecureStore can drop a write while resolving (rule 17). A failed,
  * unverified, or hung write (bounded at PERSIST_TIMEOUT_MS) stops the loop and
- * marks storage unknown, so the next response writes and verifies again. A
- * hung write is abandoned, not cancelled; the native bridge offers no cancel.
+ * marks storage unknown, so the next response writes and verifies again.
+ *
+ * A hung write is abandoned, not cancelled; the native bridge offers no
+ * cancel. It can still land after a newer write was verified, including
+ * through setRawItem's retry, leaving the stale value stored while the
+ * bookkeeping says otherwise (Codex review on VetSOAP-Mobile#234). So when an
+ * abandoned write settles, storage is marked unknown, a verification in
+ * flight across that settle is not trusted, and if the late write's value is
+ * not the newest one, the newest is written again at once. Only in that case:
+ * on a Keystore that keeps outliving the deadline, rewriting after every
+ * settle would chain one abandoned write into the next with no response to
+ * pace it.
  */
 function persist(value: boolean): void {
   desiredValue = value;
@@ -81,30 +93,44 @@ function persist(value: boolean): void {
   void drainWrites();
 }
 
+async function writeAndVerify(stored: string): Promise<boolean> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+  return (
+    (await secureStorage.setRawItem(FLAG_STORAGE_KEY, stored, 'durableFlag.persist')) &&
+    (await secureStorage.getRawItem(FLAG_STORAGE_KEY, 'durableFlag.verify')) === stored
+  );
+}
+
 async function drainWrites(): Promise<void> {
   try {
     while (desiredValue !== null && desiredValue !== persistedValue) {
       const value = desiredValue;
-      const stored = value ? 'true' : 'false';
+      const epoch = storageEpoch;
+      let abandoned = false;
+      const attempt = writeAndVerify(value ? 'true' : 'false');
+      // Registered before the deadline's own handlers, so a write that settles
+      // in time runs this while `abandoned` is still false.
+      const settleLate = () => {
+        if (!abandoned) return;
+        storageEpoch += 1;
+        persistedValue = null;
+        if (writeInFlight || desiredValue === null || desiredValue === value) return;
+        writeInFlight = true;
+        void drainWrites();
+      };
+      attempt.then(settleLate, settleLate);
       let ok = false;
       try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
-        ok = await withPromiseTimeout(
-          (async () =>
-            (await secureStorage.setRawItem(FLAG_STORAGE_KEY, stored, 'durableFlag.persist')) &&
-            (await secureStorage.getRawItem(FLAG_STORAGE_KEY, 'durableFlag.verify')) === stored)(),
-          PERSIST_TIMEOUT_MS,
-          'durable_flag_persist_timeout',
-        );
+        ok = await withPromiseTimeout(attempt, PERSIST_TIMEOUT_MS, 'durable_flag_persist_timeout');
       } catch {
-        ok = false;
+        abandoned = true;
       }
       if (!ok) {
         persistedValue = null;
         return;
       }
-      persistedValue = value;
+      if (epoch === storageEpoch) persistedValue = value;
     }
   } finally {
     writeInFlight = false;
@@ -135,37 +161,50 @@ export function applyDurableCaptureHeader(headerValue: string | null, fromApi: b
 }
 
 let hydrationPromise: Promise<void> | null = null;
-// Set once the memoized read has settled (either way), so every record-start
-// after the first takes a synchronous fast path instead of arming a timer.
+// Set once a read has succeeded, so every record-start after it takes a
+// synchronous fast path instead of arming a timer.
 let hydrationSettled = false;
 // Identifies the read currently in charge. A read retired for outliving its
-// bound may still settle later, possibly as a failure; it must not mark
-// hydration done and so cancel the retry (Codex review on VetSOAP-Mobile#234).
+// bound may still settle later; it must not mark hydration done and so cancel
+// the retry (Codex review on VetSOAP-Mobile#234).
 let hydrationGeneration = 0;
+
+async function readStoredFlag(): Promise<boolean | null> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
+  // Strict: a Keystore failure rejects instead of reading as "nothing stored".
+  const stored = await secureStorage.getRawItemStrict(FLAG_STORAGE_KEY, 'durableFlag.hydrate');
+  return stored === 'true' ? true : stored === 'false' ? false : null;
+}
 
 /**
  * Hydrate the flag from storage at app startup, before any record-start check.
  * Memoized: repeated calls share one SecureStore read.
+ *
+ * Only a successful read settles hydration; a key proven absent counts. A read
+ * that fails is retired so the next record-start reads again: the lenient read
+ * returned `null` for a Keystore failure, which marked hydration done and left
+ * a stored `true` ignored for the rest of the process (Codex review on
+ * VetSOAP-Mobile#234).
  */
 export function hydrateDurableCaptureFlag(): Promise<void> {
   if (!hydrationPromise) {
     const generation = ++hydrationGeneration;
-    hydrationPromise = (async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { secureStorage } = require('./secureStorage') as typeof import('./secureStorage');
-        const stored = await secureStorage.getRawItem(FLAG_STORAGE_KEY, 'durableFlag.hydrate');
-        const parsed = stored === 'true' ? true : stored === 'false' ? false : null;
+    hydrationPromise = readStoredFlag().then(
+      (parsed) => {
         if (parsed !== null) {
-          if (persistedValue === null) persistedValue = parsed;
+          // Once a response has started writes, this read may predate a write
+          // that landed since; the write path alone vouches for storage then.
+          if (persistedValue === null && desiredValue === null) persistedValue = parsed;
           if (captureEnabled === null) captureEnabled = parsed;
         }
-      } catch {
-        /* best-effort: an unknown flag stays OFF */
-      } finally {
         if (generation === hydrationGeneration) hydrationSettled = true;
-      }
-    })();
+      },
+      () => {
+        // Unreadable, not absent. An unknown flag stays OFF meanwhile.
+        if (generation === hydrationGeneration) hydrationPromise = null;
+      },
+    );
   }
   return hydrationPromise;
 }

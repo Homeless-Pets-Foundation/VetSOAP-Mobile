@@ -192,3 +192,16 @@ test('wiring: provenance from the request-id echo, hydration before the record-s
   assert.ok(iHydrate > 0, 'record-start awaits flag hydration');
   assert.ok(iHydrate < iResume && iHydrate < iFresh, 'hydration lands before both durable decisions read the flag');
 });
+
+test('the non-crash-safe start path records which gate chose it, with booleans only', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const iCrumb = record.indexOf("breadcrumb('record', 'record_start_expo_path', {");
+  const iFresh = record.indexOf('if (freshDurable && user?.id) {');
+  assert.ok(iCrumb > iFresh, 'emitted in the branch freshDurable did not take');
+  const payload = record.slice(iCrumb, record.indexOf('});', iCrumb));
+  for (const key of ['flag_on', 'module_available', 'has_user', 'has_slot', 'has_segments']) {
+    assert.match(payload, new RegExp(`${key}: `), key);
+  }
+  // Never form data, ids, or file paths in telemetry (Monitoring & Analytics).
+  assert.doesNotMatch(payload, /formData|recordingId|slotId|uri|patient|client/i);
+});

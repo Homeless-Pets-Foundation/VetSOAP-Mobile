@@ -12,27 +12,44 @@ Every REACT-NATIVE-1X event comes from one clinic organization: five Galaxy
 Tab A7 Lite tablets (SM-T220 ×3, SM-T227U, SM-T225N) on one account, plus an
 emulator on a second account.
 
-| Issue | Signal | Events / last seen | Disposition |
-|---|---|---|---|
-| REACT-NATIVE-1X | `capture_ended_without_cleanup` | 12 / Oct 5 | **Fixed** 08b4ad4 (durable flag); see below |
-| REACT-NATIVE-22 | ANR (fatal, AppExitInfo) | 1 / Oct 5 | **Analyzed**; recreation fix needs a device pass |
-| REACT-NATIVE-1Y | `slow_phase_recorder_durable_start` | 168 / Oct 5 | **Open** — native latency, deferred by #222 |
-| REACT-NATIVE-1K | `init_watchdog_fired` | 1 (regression) / Oct 5 | **Fixed** 4f7b999 (session restore) |
-| REACT-NATIVE-1W | slow recorder prepare (Sep 7 triage) | 2 / Oct 3 | Latency warning; details pending |
-| REACT-NATIVE-21 | captureMessage | 1 / Oct 1 | Details pending |
-| REACT-NATIVE-1T | slow draft-presence reconciliation (Sep 7 triage) | 21 / Sep 29 | Latency warning; details pending |
-| REACT-NATIVE-1B | `slow_phase_fetchUser` (Sep 7 triage) | 6 / Sep 28 | Latency warning; details pending |
-| REACT-NATIVE-1P | captureMessage | 3 / Sep 19 | Details pending |
-| REACT-NATIVE-1S | slow pending-draft sync (Sep 7 triage) | 2 / Sep 19 | Latency warning; details pending |
-| REACT-NATIVE-20 | captureMessage | 1 / Sep 16 | Details pending |
-| REACT-NATIVE-1G | slow record pending-draft scan | 2 / Sep 14 | Fixed by #222 (single-flight); no events since |
-| REACT-NATIVE-1D | slow draft list | 2 / Sep 14 | Fixed by #222 (single-flight); no events since |
-| REACT-NATIVE-1Z | `ApiError` on a 409 | 1 / Sep 14 | #222 added 409 copy; no events since |
-| REACT-NATIVE-1A | captureMessage | 2 / Sep 14 | Details pending |
-| REACT-NATIVE-1J | `recording_submit_failed:prepare:HTTP_401` | 1 / Sep 14 | Fixed by #222/#223 (stale-token retry); no events since |
+Sentry keeps about 30 days of events (the oldest left is 2026-09-08), so an
+issue's lifetime total is larger than what can be tied to a release. "Older"
+below counts kept 1.13.20 events plus aged-out ones; every aged-out event
+predates 1.13.21, whose first event anywhere is 2026-09-16. All three tablet
+models were sending 1.13.21 events by 2026-10-02.
 
-"Details pending" rows are being pulled per release; this table is updated in a
-follow-up commit.
+| Issue | Signal | 1.13.21 | Older | Last seen | Disposition |
+|---|---|---:|---:|---|---|
+| REACT-NATIVE-1X | `capture_ended_without_cleanup` | 6 | 6 | Oct 5 | **Fixed** 08b4ad4 (durable flag); see below |
+| REACT-NATIVE-22 | ANR (fatal, AppExitInfo) | 1 | 0 | Oct 5 | **Analyzed**; recreation fix needs a device pass |
+| REACT-NATIVE-1Y | `slow_phase_recorder_durable_start` | 85 | 83 | Oct 5 | **Open**: native latency, deferred by #222 |
+| REACT-NATIVE-1K | `init_watchdog_fired` (regressed) | 1 | 40 | Oct 5 | **Fixed** 4f7b999 (session restore) |
+| REACT-NATIVE-1W | `slow_phase_recorder_audio_prepare` | 1 | 3 | Oct 3 | Latency warning, but each event is a non-crash-safe start; see below |
+| REACT-NATIVE-21 | `draft_sync_conflict` (new) | 1 | 0 | Oct 1 | **Fixed** in this commit (draft-create vs Submit race); see below |
+| REACT-NATIVE-1T | `slow_phase_draft_presence_batch_request` | 9 | 19 | Sep 29 | Latency warning: 10.2 s vs 10 s threshold |
+| REACT-NATIVE-1B | `slow_phase_fetchUser` | 1 | 87 | Sep 28 | Latency warning: 12.4 s vs 10 s |
+| REACT-NATIVE-1P | `google_sign_in_failed` (iOS only) | 2 | 8 | Sep 19 | Native Google sign-in, error `-1`; the latest event is from an iPhone on an iOS 27 development build, not a clinic tablet |
+| REACT-NATIVE-1S | `slow_phase_pending_draft_sync` | 2 | 8 | Sep 19 | Latency warning: 10.3 s vs 10 s |
+| REACT-NATIVE-20 | `durable_recorder_op_watchdog` (op `resume`) | 0 | 1 | Sep 16 | One event ever; no evidence either way |
+| REACT-NATIVE-1G | `slow_phase_record_pending_draft_scan` | 0 | 8 | Sep 14 | #222 single-flight; none since |
+| REACT-NATIVE-1D | `slow_phase_local_draft_list` | 0 | 39 | Sep 14 | #222 single-flight; none since |
+| REACT-NATIVE-1Z | `ApiError` on a draft-sync 409 | 0 | 1 | Sep 14 | Reclassified by #222; its successor is REACT-NATIVE-21 |
+| REACT-NATIVE-1A | `slow_phase_registerDevice` | 0 | 17 | Sep 14 | Latency warning; none since |
+| REACT-NATIVE-1J | `recording_submit_failed:{prepare,confirm}:HTTP_401` | 0 | 22 | Sep 14 | #222/#223 stale-token retry; none since |
+
+One 1X event and one 1Y event in the 1.13.21 column come from a separate
+`+83` build seen only on 2026-09-21; the rest are the clinic build `+101`.
+
+"None since" is evidence, not proof: 1.13.21 has been in use for three weeks on
+the same tablets, but 20 and 1Z each fired once in their whole history.
+
+The three network-phase warnings still firing (1T, 1B, 1S) ran 10.2, 12.4 and
+10.3 s in their latest events against 10 s thresholds. On the server, the
+slowest `POST /api/device-sessions/register` requests over the same 30 days
+spent nearly all their time in `requireAuth`'s Supabase `GET /auth/v1/user`
+call (p99 4.3 s, max 10.5 s; see the Connect triage). That is a candidate
+cause for the mobile 10 s phases, not yet matched to these events. They are
+left as signals.
 
 ## REACT-NATIVE-22 + 1X: an ANR killed a recording that was not crash-safe
 
@@ -160,6 +177,77 @@ refresh. `init_watchdog_fired` will keep firing — it measures a slow cold
 start, which is now recoverable rather than shorter; recoveries are counted by
 the PostHog event `session_restored_from_storage`.
 
+## REACT-NATIVE-21: a background draft create raced Submit
+
+The server logged the other side of the same request (Connect NODE-1D, matched
+by request id): an upload-intent conflict on `POST /api/recordings`, stage
+`create`, reason `existing_recording_mismatch`. Timeline (UTC, 2026-10-01, one
+clinic tablet):
+
+| Time | Event |
+|---|---|
+| 21:45:48.5 | Draft saved on the device, no server draft yet (`pending_sync: true`) |
+| 21:45:52.8 | Submit starts (`has_existing_draft: false`) |
+| 21:45:54.4 | The background draft create is issued (`POST /api/recordings`, `isDraft: true`) |
+| 21:45:55.5 | Submit's prepare-upload, issued about 0.45 s after the create, answers 200 |
+| 21:45:56.6 | The draft create answers 409 after 2.2 s |
+| 21:45:57.0 | `draft_sync_conflict` reported with `had_server_draft: true` |
+
+Both requests carry the slot's single idempotency key (`uploadKeyForSlot`).
+Prepare-upload was issued second but answered first, leaving the row in
+`uploading`; the draft create then found that key on a row that was not a
+draft, and the server refused it. Nothing was lost: the row is Submit's.
+
+Cause: Submit marks the slot (`markSubmitIntent`), which cancels a scheduled
+draft create but not one already running. The background sync checked the
+mark, read the draft from SecureStore, then created. On this tablet that read
+spanned Submit's start, so the create went out 1.6 s after Submit began.
+
+The cost went beyond a misleading warning. When the 409 arrived, Submit had
+already anchored the local draft to its prepared row and cleared the draft's
+dirty flag; the 409 handler then marked it dirty again, in memory and in
+storage. A retry of a failed Submit would have carried a metadata update it did
+not need. Sentry does not record whether this Submit succeeded.
+
+**Fixed** in this commit: the sync re-checks the submit and restart marks after
+the read, immediately before the create; and a 409 that lands once Submit owns
+the slot is recorded as the breadcrumb `sync_server_draft_conflict_submit_owned`
+with no dirty mark and no warning. A 409 outside a Submit still reports
+`draft_sync_conflict`. Guard: `tests/sentry-open-remediation.test.mjs`, checked
+to fail under four mutations.
+
+Unchanged: a 409 with no Submit involved leaves the draft unsynced, and the
+reconnect queue keeps retrying it; which side wins such a conflict is still a
+server-contract question (#223).
+
+## REACT-NATIVE-1W: an expo-audio start 54 s after a durable one
+
+`recorder_audio_prepare` is measured only on the expo-audio path, so each 1W
+event is a recording that started without crash protection, the precondition
+for the 1X data loss. The warning fires only when that prepare takes over a
+second, so 1W undercounts those starts.
+
+The 1.13.21 event, Oct 3 (UTC), one process:
+
+| Time | Event |
+|---|---|
+| 13:21:36.4 | Record start (`record_floor_hydration`) |
+| 13:21:38.3 | `recorder_durable_start` succeeds in 910 ms |
+| 13:22:24.2 | `GET /api/patients/lookup` 200 |
+| 13:22:32.1 | Next record start (`record_floor_hydration`) |
+| 13:22:35.5 | `recorder_audio_prepare` 1.5 s, on expo-audio |
+
+Any durable attempt leaves a `recorder_durable_start` phase, failed or not, and
+none precedes the second start, so record.tsx never tried durable
+(`freshDurable` was false). The native module and the signed-in user did not
+change between the two starts. That leaves mainly two explanations: the flag
+had gone off (before 08b4ad4, any response without the header turned it off),
+or the slot already had audio segments (continuing a non-durable recording uses
+expo-audio by design). The one response recorded in that window came from the
+API, which sends the header, so the flag explanation needs a response the trail
+did not record. This commit adds a `record_start_expo_path` breadcrumb that
+records each gate as a boolean, so the next occurrence will show which.
+
 ## REACT-NATIVE-1Y: durable start latency (168 events)
 
 `slow_phase_recorder_durable_start` fires on nearly every recording start on
@@ -179,7 +267,7 @@ work, neither verifiable without a device:
 
 ## Validation
 
-Mobile: full Node suite 1318/1318, `tsc --noEmit`, `expo lint`, R2 contract under
+Mobile: full Node suite 1320/1320, `tsc --noEmit`, `expo lint`, R2 contract under
 Node 20. Connect: `durable-capture-header.test.ts` 6/6, api typecheck,
 Prettier. New tests were checked to fail under mutation. Nothing here was
 validated on a device.

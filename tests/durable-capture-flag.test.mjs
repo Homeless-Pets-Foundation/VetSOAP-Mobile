@@ -338,7 +338,9 @@ test('an abandoned write that lands late is overwritten with the newest value', 
 test('a Keystore that keeps outliving the deadline does not chain writes', async () => {
   // Every write lands, but only after the deadline. Rewriting after every late
   // settle would never stop; only a late value that is not the newest is fixed.
+  // Writes land when the test says so, so the order cannot drift under load.
   const map = new Map();
+  const landing = [];
   let writes = 0;
   const store = {
     AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
@@ -347,25 +349,37 @@ test('a Keystore that keeps outliving the deadline does not chain writes', async
     },
     setItemAsync(key, value) {
       writes += 1;
-      // Past a few writes, never answer: a chain must fail this test, not hang it.
-      if (writes > 5) return new Promise(() => {});
-      return new Promise((resolve) =>
-        setTimeout(() => {
+      return new Promise((resolve) => {
+        landing.push(() => {
           map.set(key, value);
           resolve();
-        }, 30),
-      );
+        });
+      });
     },
     async deleteItemAsync(key) {
       map.delete(key);
     },
   };
   const flag = await load(store, fastDeadline);
+  const outliveDeadline = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const landOldest = async () => {
+    landing.shift()();
+    await flush();
+    await flush();
+  };
+
   flag.applyDurableCaptureHeader('true', true);
-  await new Promise((resolve) => setTimeout(resolve, 15));
+  await outliveDeadline();
   flag.applyDurableCaptureHeader(null, true);
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  assert.equal(writes, 3, 'true, false, then false again after the late true');
+  await outliveDeadline();
+  await landOldest();
+  assert.equal(writes, 3, 'the late `true` is followed by the newest value');
+
+  await outliveDeadline();
+  await landOldest();
+  await landOldest();
+  await outliveDeadline();
+  assert.equal(writes, 3, 'late values that are already the newest start nothing');
   assert.equal(map.get(KEY), 'false');
 });
 

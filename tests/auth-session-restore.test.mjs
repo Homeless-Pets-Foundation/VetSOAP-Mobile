@@ -22,6 +22,8 @@ import { loadTsModule } from './helpers/loadTs.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const read = (file) => readFile(path.join(root, file), 'utf8');
 const load = () => loadTsModule('src/auth/sessionRestore.ts');
+// Results come from the module's own VM realm; compare them as plain data.
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 const NOW_S = 1_790_000_000;
 function persisted(overrides = {}) {
@@ -155,11 +157,17 @@ test('AuthProvider restores only through the guarded, bounded path', async () =>
     /\} else \{\s*const trigger = sessionRestoreTrigger\(result\);\s*if \(trigger\) await restorePersistedSession\(trigger\);\s*\}/
   );
 
-  // Rule 24 + rule 3: the read goes through the secureStorage wrapper and is bounded.
+  // Rule 24 + rule 3: the read goes through the secureStorage wrapper, is
+  // strict, and stays inside its budget; an unreadable store is not "no session".
   assert.match(
     provider,
-    /withPromiseTimeout\(\s*secureStorage\.getSession\(\),\s*SESSION_RESTORE_READ_TIMEOUT_MS,/
+    /const read = await readPersistedSession\(\s*\(\) => secureStorage\.getSessionStrict\(\),\s*SESSION_RESTORE_READ_TIMEOUT_MS\s*\);/
   );
+  assert.match(
+    provider,
+    /const restored = read\.status === 'found' \? parsePersistedSession\(read\.raw\) : null;/
+  );
+  assert.match(provider, /const skipReason = read\.status === 'unreadable'\s*\?\s*'storage_unreadable'/);
 
   // Every reason GoTrue's own answer must win is re-checked after the await.
   assert.match(provider, /: initWatchdogFired\s*\?\s*'init_watchdog_fired'/);
@@ -183,6 +191,56 @@ test('AuthProvider restores only through the guarded, bounded path', async () =>
   assert.match(restoreBody, /apiClient\.setToken\(restored\.access_token\);/);
   assert.match(restoreBody, /fetchUser\(\)\.catch\(\(\) => \{\}\);/);
   assert.doesNotMatch(restoreBody, /refreshSession\(|getUser\(|signOut\(/);
+  assert.doesNotMatch(restoreBody, /secureStorage\.getSession\(\)/, 'the lenient read hides a failure');
+});
+
+test('a restore read tells a failing Keystore from a device with no session', async () => {
+  // Codex review on VetSOAP-Mobile#234. The lenient read returned null for a
+  // Keystore failure and the deadline did the same for a hang, so a transient
+  // fault read as "no stored session" and the restore was abandoned.
+  const { readPersistedSession } = await load();
+  assert.deepEqual(plain(await readPersistedSession(async () => 'stored', 1_000)), {
+    status: 'found',
+    raw: 'stored',
+  });
+
+  let reads = 0;
+  assert.deepEqual(
+    plain(await readPersistedSession(async () => {
+      reads += 1;
+      return null;
+    }, 1_000)),
+    { status: 'absent' }
+  );
+  assert.equal(reads, 1, 'a proven absence is final');
+
+  reads = 0;
+  const flaky = async () => {
+    reads += 1;
+    if (reads === 1) throw new Error('keystore unavailable');
+    return 'stored';
+  };
+  assert.deepEqual(plain(await readPersistedSession(flaky, 10_000)), { status: 'found', raw: 'stored' });
+  assert.equal(reads, 2, 'a failure is retried inside the budget');
+});
+
+test('a restore read that keeps failing or hangs is unreadable, and stays inside its budget', async () => {
+  const { readPersistedSession } = await load();
+  let reads = 0;
+  assert.deepEqual(
+    plain(await readPersistedSession(async () => {
+      reads += 1;
+      throw new Error('keystore unavailable');
+    }, 10_000)),
+    { status: 'unreadable' }
+  );
+  assert.equal(reads, 3, 'retries are capped, not stretched to fill the budget');
+
+  const started = Date.now();
+  assert.deepEqual(plain(await readPersistedSession(() => new Promise(() => {}), 40)), {
+    status: 'unreadable',
+  });
+  assert.ok(Date.now() - started < 1_000, 'a hung read ends with its budget');
 });
 
 test('the profile-cache fallback can find a restored user, but never across a sign-out', async () => {

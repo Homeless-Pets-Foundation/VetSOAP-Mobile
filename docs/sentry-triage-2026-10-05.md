@@ -171,6 +171,15 @@ any non-INITIAL_SESSION auth event arrived, the effect was torn down, or the
 auth generation moved. `fetchUser`'s cache fallback can use the restored user
 id, generation-stamped so it never survives a sign-out.
 
+Follow-ups from review. The read is strict (`getSessionStrict`), so a failing
+Keystore no longer looks like a signed-out device; a failure is retried inside
+the same 4 s budget, but never once the sign-in screen is showing. And while
+GoTrue's startup is still pending, a 401 no longer refreshes into it: the
+refresh would queue behind the same stall and hang every request that needed
+one (`src/auth/sessionRefresh.ts`). Refreshes on the 401 and foreground paths
+are bounded at 15 s, and one that cannot finish fails its request as retryable
+without signing the vet out.
+
 Policy consequence to confirm: an offline device now keeps its signed-in session
 until it next reaches the network, instead of lapsing an hour after its last
 refresh. `init_watchdog_fired` will keep firing — it measures a slow cold

@@ -33,6 +33,7 @@
  * dead refresh token surfaces as SIGNED_OUT, which onAuthStateChange handles.
  */
 import type { Session } from '@supabase/supabase-js';
+import { withPromiseTimeout } from '../lib/promiseTimeout';
 
 /**
  * Bound for the direct storage read behind a restore (rule 24). The 10s
@@ -42,6 +43,58 @@ import type { Session } from '@supabase/supabase-js';
  * asserts the budget against the literals in AuthProvider.tsx.
  */
 export const SESSION_RESTORE_READ_TIMEOUT_MS = 4_000;
+
+/** Pause between strict reads after a Keystore failure, inside the same budget. */
+export const SESSION_RESTORE_RETRY_DELAY_MS = 300;
+const SESSION_RESTORE_MAX_READS = 3;
+
+/** What the restore's storage read established. `unreadable` is never `absent`. */
+export type PersistedSessionRead =
+  | { status: 'found'; raw: string }
+  | { status: 'absent' }
+  | { status: 'unreadable' };
+
+/**
+ * Read the persisted session for a restore: strictly, and within one budget.
+ *
+ * The lenient read returned `null` for a Keystore failure as well as for an
+ * empty key, and the deadline did the same for a hang, so a transient fault
+ * read as "this device has no session" and the restore was abandoned (Codex
+ * review on VetSOAP-Mobile#234). A strict read rejects instead, and a failure
+ * is retried while the budget lasts. A read still failing, or still hung, when
+ * the budget runs out reports `unreadable`.
+ *
+ * Retried only within the budget, never later: by then the loading gate has
+ * released onto the sign-in screen, and a late restore could put a different
+ * vet on a shared tablet into the previous vet's account. That is the same
+ * reason the restore skips once the init watchdog has fired.
+ */
+export async function readPersistedSession(
+  read: () => Promise<string | null>,
+  budgetMs: number = SESSION_RESTORE_READ_TIMEOUT_MS,
+  now: () => number = Date.now,
+): Promise<PersistedSessionRead> {
+  const deadline = now() + budgetMs;
+  for (let attempt = 0; attempt < SESSION_RESTORE_MAX_READS; attempt += 1) {
+    if (attempt > 0) {
+      const pause = Math.min(SESSION_RESTORE_RETRY_DELAY_MS, deadline - now());
+      if (pause > 0) await new Promise<void>((resolve) => setTimeout(resolve, pause));
+    }
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    try {
+      const raw = await withPromiseTimeout(
+        read(),
+        remaining,
+        'auth_storage_read_timeout:session_restore',
+      );
+      return raw ? { status: 'found', raw } : { status: 'absent' };
+    } catch {
+      // Unreadable or hung: try again while the budget lasts.
+    }
+  }
+  return { status: 'unreadable' };
+}
 
 /** Why a restore was attempted. Closed set — it is an analytics prop. */
 export type SessionRestoreTrigger = 'unanswered' | 'retryable_error';

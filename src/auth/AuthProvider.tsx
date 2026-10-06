@@ -19,7 +19,7 @@ import {
   type AuthResult,
 } from './socialAuth';
 import { secureStorage } from '../lib/secureStorage';
-import { apiClient, ApiError, StorageUnavailableError } from '../api/client';
+import { apiClient, ApiError, StorageUnavailableError, type UnauthorizedOutcome } from '../api/client';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
 import {
   isRetryableFetchUserError,
@@ -29,11 +29,13 @@ import {
   SESSION_RESTORE_READ_TIMEOUT_MS,
   isAccessTokenExpired,
   parsePersistedSession,
+  readPersistedSession,
   restoredExpiryExplains,
   restoredUserIdFor,
   sessionRestoreTrigger,
   type RestoredSessionStamp,
 } from './sessionRestore';
+import { attemptSessionRefresh, boundedAuthCall, type RefreshUnresolvedReason } from './sessionRefresh';
 import type { DeviceCapacity, DeviceSession } from '../api/devices';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
@@ -86,6 +88,19 @@ function classifyAuthError(error: { name?: string; message?: string; status?: nu
   if (error.status === 429) return 'rate_limited';
   if (error.status && error.status >= 500) return 'server_error';
   return 'other';
+}
+
+/**
+ * GoTrue could not answer a refresh (src/auth/sessionRefresh.ts). Not proof
+ * the session is dead: keep it, and let the caller fail only the request.
+ */
+function refreshUnresolved(
+  trigger: 'on_auth_state' | 'foreground',
+  reason: RefreshUnresolvedReason
+): 'unresolved' {
+  breadcrumb('auth', 'session_refresh_unresolved', { trigger, reason });
+  trackEvent({ name: 'session_refresh_failed', props: { trigger, error_code: reason } });
+  return 'unresolved';
 }
 
 /**
@@ -714,6 +729,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // generation: every sign-out path bumps it, which retires the entry without a
   // separate clear on each path (restoredUserIdFor).
   const restoredSessionRef = useRef<RestoredSessionStamp | null>(null);
+  // True until GoTrue's own startup settles. refreshSession() and getSession()
+  // queue behind it, so while it is pending the 401 and foreground paths must
+  // not call them: after a restore adopted the persisted session because that
+  // startup stalled, they would hang with it (src/auth/sessionRefresh.ts).
+  const goTrueInitPendingRef = useRef(true);
   // Single-flight guard for fetchUser — see the comment at its definition.
   const fetchUserInFlightRef = useRef<Promise<boolean> | null>(null);
   // Distinguishes user-initiated sign-out from session expiry in onAuthStateChange.
@@ -1651,7 +1671,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   // Mutex for token refresh: prevents concurrent 401 handlers from racing
-  const refreshPromiseRef = useRef<Promise<void> | null>(null);
+  const refreshPromiseRef = useRef<Promise<UnauthorizedOutcome> | null>(null);
   // Prevents re-entrant recovery: if refreshSession() fails inside onAuthStateChange,
   // Supabase may emit a second SIGNED_OUT. This flag ensures we only attempt recovery once.
   const sessionRecoveryAttemptedRef = useRef<boolean>(false);
@@ -1665,7 +1685,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     apiClient.setOnMfaRequired((request) => {
       handleMfaRequiredResponse(request);
     });
-    apiClient.setOnUnauthorized(async () => {
+    apiClient.setOnUnauthorized(async (): Promise<UnauthorizedOutcome> => {
       const sessionAge = Date.now() - sessionTimestampRef.current;
       if (__DEV__) console.log('[Auth] onUnauthorized fired, session age:', sessionAge, 'ms');
 
@@ -1675,30 +1695,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (refreshPromiseRef.current) {
-        await refreshPromiseRef.current;
-        return;
+        return await refreshPromiseRef.current;
       }
 
-      const doRefresh = async () => {
+      const doRefresh = async (): Promise<UnauthorizedOutcome> => {
         try {
           if (__DEV__) console.log('[Auth] onUnauthorized: attempting token refresh');
           trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'on_auth_state' } });
-          const { error } = await supabase.auth.refreshSession();
-          if (error) {
+          // Bounded, and not attempted while GoTrue's startup is pending. An
+          // unresolved refresh never signs out (src/auth/sessionRefresh.ts).
+          const first = await attemptSessionRefresh(
+            () => supabase.auth.refreshSession(),
+            goTrueInitPendingRef.current
+          );
+          if (first.kind === 'unresolved') return refreshUnresolved('on_auth_state', first.reason);
+          if (first.kind === 'failed') {
             // Retry once after 3s — guards against transient network blips
             if (__DEV__) console.log('[Auth] onUnauthorized: first refresh failed, retrying in 3s');
             trackEvent({
               name: 'session_refresh_failed',
-              props: { trigger: 'on_auth_state', error_code: classifyAuthError(error) },
+              props: { trigger: 'on_auth_state', error_code: classifyAuthError(first.error) },
             });
             trackEvent({ name: 'auth_retry_fired', props: { op: 'refresh_session' } });
             await new Promise<void>(resolve => setTimeout(resolve, 3000));
-            const { error: retryError } = await supabase.auth.refreshSession();
-            if (retryError) {
+            const retry = await attemptSessionRefresh(
+              () => supabase.auth.refreshSession(),
+              goTrueInitPendingRef.current
+            );
+            if (retry.kind === 'unresolved') return refreshUnresolved('on_auth_state', retry.reason);
+            if (retry.kind === 'failed') {
               if (__DEV__) console.log('[Auth] onUnauthorized: retry also failed, signing out');
               trackEvent({
                 name: 'session_refresh_failed',
-                props: { trigger: 'on_auth_state', error_code: `retry_${classifyAuthError(retryError)}` },
+                props: { trigger: 'on_auth_state', error_code: `retry_${classifyAuthError(retry.error)}` },
               });
               setLogoutReason('session_expired');
               await handleSignOut({ recoveryMode: 'best_effort' });
@@ -1723,7 +1752,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       };
 
       refreshPromiseRef.current = doRefresh();
-      await refreshPromiseRef.current;
+      return await refreshPromiseRef.current;
     });
     apiClient.setOnSessionExpired(async () => {
       // A request stayed 401 even after onUnauthorized() ran its refresh+retry —
@@ -1791,17 +1820,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const restorePersistedSession = async (
       trigger: 'unanswered' | 'retryable_error'
     ): Promise<void> => {
-      const raw = await withPromiseTimeout(
-        secureStorage.getSession(),
-        SESSION_RESTORE_READ_TIMEOUT_MS,
-        'auth_storage_read_timeout:session_restore'
-      ).catch(() => null);
-      const restored = parsePersistedSession(raw);
+      // Strict: a failing Keystore must not read as "no stored session".
+      // Retried only inside this budget (readPersistedSession says why).
+      const read = await readPersistedSession(
+        () => secureStorage.getSessionStrict(),
+        SESSION_RESTORE_READ_TIMEOUT_MS
+      );
+      const restored = read.status === 'found' ? parsePersistedSession(read.raw) : null;
       // Re-check after the await. The top-level watchdog may already have
       // released the gate onto the sign-in screen (adopting now would yank a
       // vet out of a form they are typing into), and GoTrue may have delivered
       // its own answer while the read was in flight.
-      const skipReason = !restored
+      const skipReason = read.status === 'unreadable'
+        ? 'storage_unreadable'
+        : !restored
         ? 'no_persisted_session'
         : initWatchdogFired
         ? 'init_watchdog_fired'
@@ -1838,6 +1870,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // could not answer (deadline, or a retryable refresh failure while
     // offline), restorePersistedSession() falls back to the persisted session
     // instead of dropping a signed-in vet onto the Sign-In screen.
+    //
+    // refreshSession() and getSession() await GoTrue's startup before anything
+    // else, so until it settles the 401 and foreground paths must not call them
+    // (src/auth/sessionRefresh.ts). initialize() hands back the promise GoTrue
+    // started in its constructor; it reads nothing and takes no lock.
+    goTrueInitPendingRef.current = true;
+    const settleGoTrueInit = () => {
+      goTrueInitPendingRef.current = false;
+    };
+    supabase.auth.initialize().then(settleGoTrueInit, settleGoTrueInit);
     measurePhase(
       'auth_init_get_session',
       undefined,
@@ -2030,10 +2072,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (__DEV__) console.log('[Auth] foreground resume: refresh already in flight, skipping');
         return;
       }
+      // getSession()/refreshSession() would queue behind GoTrue's pending
+      // startup and hold the refresh lock every 401 handler waits on.
+      if (goTrueInitPendingRef.current) {
+        if (__DEV__) console.log('[Auth] foreground resume: GoTrue still starting up, skipping');
+        return;
+      }
 
-      const doRefresh = async () => {
+      const doRefresh = async (): Promise<UnauthorizedOutcome> => {
         try {
-          const { data } = await supabase.auth.getSession();
+          const current = await boundedAuthCall(() => supabase.auth.getSession());
+          if (current.timedOut) return refreshUnresolved('foreground', 'timeout');
+          const { data } = current.value;
           if (!data.session?.access_token) {
             if (__DEV__) console.log('[Auth] foreground resume: no active session');
             return;
@@ -2043,8 +2093,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!data.session.expires_at || now > data.session.expires_at - bufferSeconds) {
             if (__DEV__) console.log('[Auth] foreground resume: token expired or near-expiry, refreshing');
             trackEvent({ name: 'session_refresh_attempted', props: { trigger: 'foreground' } });
-            const { error } = await supabase.auth.refreshSession();
-            if (error) {
+            const attempt = await attemptSessionRefresh(
+              () => supabase.auth.refreshSession(),
+              goTrueInitPendingRef.current
+            );
+            if (attempt.kind === 'unresolved') return refreshUnresolved('foreground', attempt.reason);
+            if (attempt.kind === 'failed') {
+              const { error } = attempt;
               const errorCode = classifyAuthError(error);
               if (__DEV__) console.log('[Auth] foreground refresh failed:', error.message);
               trackEvent({

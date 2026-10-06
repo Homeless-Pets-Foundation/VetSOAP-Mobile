@@ -135,6 +135,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // the SDK's supported floor (several still declare 9.0). Raises every pod
     // target to 16.0 in post_install — see plugins/with-min-pod-deployment-target.js.
     './plugins/with-min-pod-deployment-target.js',
+    './plugins/with-ios-scene-lifecycle.js',
     // Native share sheet for generated PDF exports.
     'expo-sharing',
     // Native Apple Sign-In (iOS only at runtime; plugin adds the capability).

@@ -25,7 +25,7 @@ models were sending 1.13.21 events by 2026-10-02.
 | REACT-NATIVE-1Y | `slow_phase_recorder_durable_start` | 85 | 83 | Oct 5 | **Open**: native latency, deferred by #222 |
 | REACT-NATIVE-1K | `init_watchdog_fired` (regressed) | 1 | 40 | Oct 5 | **Fixed** 4f7b999 (session restore) |
 | REACT-NATIVE-1W | `slow_phase_recorder_audio_prepare` | 1 | 3 | Oct 3 | Latency warning, but each event is a non-crash-safe start; see below |
-| REACT-NATIVE-21 | `draft_sync_conflict` (new) | 1 | 0 | Oct 1 | **Fixed** in this commit (draft-create vs Submit race); see below |
+| REACT-NATIVE-21 | `draft_sync_conflict` (new) | 1 | 0 | Oct 1 | **Fixed** 8addb63 (draft-create vs Submit race); see below |
 | REACT-NATIVE-1T | `slow_phase_draft_presence_batch_request` | 9 | 19 | Sep 29 | Latency warning: 10.2 s vs 10 s threshold |
 | REACT-NATIVE-1B | `slow_phase_fetchUser` | 1 | 87 | Sep 28 | Latency warning: 12.4 s vs 10 s |
 | REACT-NATIVE-1P | `google_sign_in_failed` (iOS only) | 2 | 8 | Sep 19 | Native Google sign-in, error `-1`; the latest event is from an iPhone on an iOS 27 development build, not a clinic tablet |
@@ -33,7 +33,7 @@ models were sending 1.13.21 events by 2026-10-02.
 | REACT-NATIVE-20 | `durable_recorder_op_watchdog` (op `resume`) | 0 | 1 | Sep 16 | One event ever; no evidence either way |
 | REACT-NATIVE-1G | `slow_phase_record_pending_draft_scan` | 0 | 8 | Sep 14 | #222 single-flight; none since |
 | REACT-NATIVE-1D | `slow_phase_local_draft_list` | 0 | 39 | Sep 14 | #222 single-flight; none since |
-| REACT-NATIVE-1Z | `ApiError` on a draft-sync 409 | 0 | 1 | Sep 14 | Reclassified by #222; its successor is REACT-NATIVE-21 |
+| REACT-NATIVE-1Z | `ApiError` on a draft-sync 409 | 0 | 1 | Sep 14 | Same race as REACT-NATIVE-21; **fixed** 8addb63 |
 | REACT-NATIVE-1A | `slow_phase_registerDevice` | 0 | 17 | Sep 14 | Latency warning; none since |
 | REACT-NATIVE-1J | `recording_submit_failed:{prepare,confirm}:HTTP_401` | 0 | 22 | Sep 14 | #222/#223 stale-token retry; none since |
 
@@ -193,6 +193,12 @@ clinic tablet):
 | 21:45:56.6 | The draft create answers 409 after 2.2 s |
 | 21:45:57.0 | `draft_sync_conflict` reported with `had_server_draft: true` |
 
+REACT-NATIVE-1Z (Sep 14, 1.13.20) is the same race: the draft create was
+issued 1.5 s after Submit started and answered 409 after 6.0 s. Connect's
+NODE-1D holds the server side of both (stage `create`, reason
+`existing_recording_mismatch`); its seven older events, back to July 20, have
+aged out.
+
 Both requests carry the slot's single idempotency key (`uploadKeyForSlot`).
 Prepare-upload was issued second but answered first, leaving the row in
 `uploading`; the draft create then found that key on a row that was not a
@@ -209,7 +215,7 @@ dirty flag; the 409 handler then marked it dirty again, in memory and in
 storage. A retry of a failed Submit would have carried a metadata update it did
 not need. Sentry does not record whether this Submit succeeded.
 
-**Fixed** in this commit: the sync re-checks the submit and restart marks after
+**Fixed** (8addb63): the sync re-checks the submit and restart marks after
 the read, immediately before the create; and a 409 that lands once Submit owns
 the slot is recorded as the breadcrumb `sync_server_draft_conflict_submit_owned`
 with no dirty mark and no warning. A 409 outside a Submit still reports
@@ -245,7 +251,7 @@ had gone off (before 08b4ad4, any response without the header turned it off),
 or the slot already had audio segments (continuing a non-durable recording uses
 expo-audio by design). The one response recorded in that window came from the
 API, which sends the header, so the flag explanation needs a response the trail
-did not record. This commit adds a `record_start_expo_path` breadcrumb that
+did not record. 8addb63 adds a `record_start_expo_path` breadcrumb that
 records each gate as a boolean, so the next occurrence will show which.
 
 ## REACT-NATIVE-1Y: durable start latency (168 events)

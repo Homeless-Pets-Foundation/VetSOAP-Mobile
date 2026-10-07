@@ -97,7 +97,7 @@ export async function readPersistedSession(
 }
 
 /** Why a restore was attempted. Closed set — it is an analytics prop. */
-export type SessionRestoreTrigger = 'unanswered' | 'retryable_error';
+export type SessionRestoreTrigger = 'unanswered' | 'retryable_error' | 'no_session';
 
 /**
  * The parts of a `getSession()` result this decision reads. Loose on purpose:
@@ -117,10 +117,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Whether a bounded `getSession()` outcome warrants restoring from storage.
  *
  * `null` is what `withTimeout` yields when GoTrue never answered — the
- * deadline fired or the call rejected. A resolved result restores only when
- * GoTrue reported no session BECAUSE of a retryable network failure. Matched
- * by `name`, not `instanceof`, for the same reason rule 22 is: two module
- * instances of auth-js produce two class objects.
+ * deadline fired or the call rejected. A resolved result restores when GoTrue
+ * reported no session BECAUSE of a retryable network failure, or reported no
+ * session and no error at all: GoTrue reads storage through the lenient
+ * adapter in src/auth/supabase.ts, which turns a Keystore failure into
+ * "nothing stored", so only the strict read can tell a signed-out device from
+ * one whose storage failed for a moment (Codex review on VetSOAP-Mobile#234).
+ * Any other error is GoTrue's answer about the session and is honored.
+ * Matched by `name`, not `instanceof`, for the same reason rule 22 is: two
+ * module instances of auth-js produce two class objects.
  */
 export function sessionRestoreTrigger(
   result: GetSessionResultLike | null | undefined,
@@ -128,6 +133,7 @@ export function sessionRestoreTrigger(
   if (result == null) return 'unanswered';
   if (result.data?.session) return null;
   const error = result.error;
+  if (error == null) return isRecord(result.data) ? 'no_session' : null;
   if (isRecord(error) && error.name === 'AuthRetryableFetchError') {
     return 'retryable_error';
   }

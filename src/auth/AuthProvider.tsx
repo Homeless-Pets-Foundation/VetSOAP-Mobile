@@ -34,6 +34,7 @@ import {
   restoredUserIdFor,
   sessionRestoreTrigger,
   type RestoredSessionStamp,
+  type SessionRestoreTrigger,
 } from './sessionRestore';
 import {
   attemptSessionRefresh,
@@ -1854,12 +1855,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const initGeneration = authGenerationRef.current;
 
     // Offline-first restore (src/auth/sessionRestore.ts — Sentry
-    // REACT-NATIVE-1K). Runs only when GoTrue could not answer for a transient
-    // reason; adopts the session GoTrue itself persisted and keeps the lazy
-    // validation contract of the normal path below.
-    const restorePersistedSession = async (
-      trigger: 'unanswered' | 'retryable_error'
-    ): Promise<void> => {
+    // REACT-NATIVE-1K). Runs when GoTrue could not answer for a transient
+    // reason, or answered "no session" (which its lenient storage read also
+    // says when the Keystore failed); adopts the session GoTrue itself
+    // persisted and keeps the lazy validation contract of the normal path below.
+    const restorePersistedSession = async (trigger: SessionRestoreTrigger): Promise<void> => {
       // Strict: a failing Keystore must not read as "no stored session".
       // Retried only inside this budget (readPersistedSession says why).
       const read = await readPersistedSession(

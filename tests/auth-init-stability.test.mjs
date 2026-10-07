@@ -212,7 +212,7 @@ test('the fetchUser single-flight handle is dropped on every sign-out path', asy
   );
   assert.match(
     provider,
-    /clearTelemetryIdentity\(\);[\s\S]{0,400}?fetchUserInFlightRef\.current = null;\s*\n\s*registerDeviceInFlightRef\.current = null;\s*\n\s*authGenerationRef\.current \+= 1;\s*\n\s*setUser\(null\);\s*\n\s*setSession\(null\);\s*\n\s*setProfileSource\('live'\);/
+    /clearTelemetryIdentity\(\);[\s\S]{0,400}?fetchUserInFlightRef\.current = null;\s*\n\s*registerDeviceInFlightRef\.current = null;\s*\n\s*authGenerationRef\.current \+= 1;\s*\n\s*setUser\(null\);\s*\n\s*authSessionUserIdRef\.current = null;\s*\n\s*setSession\(null\);\s*\n\s*setProfileSource\('live'\);/
   );
 });
 

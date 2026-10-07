@@ -38,4 +38,13 @@ Refreshed #234: all 11 review threads remain resolved. Reviewed the auth restore
 
 - #234 is refreshed against the merged Xcode main with its approved offline and draft-ownership behavior retained. The supplied test account authenticates, but the clinic API requires its existing verified TOTP factor (`MFA_CHALLENGE_REQUIRED`). A usable clinical test account or the existing factor was requested while current-head validation continues. Full offline-auth, durable-flag and Finish/Submit device acceptance is still required; native module recovery evidence alone does not establish those product flows.
 
-- #233 now contains merged main `b235214b` and the refreshed #234 `2a8272b` baseline. Compared with the previously validated `6fee8fda` head, the product/SDK/native/workflow source tree is identical; only resolution evidence changes. Physical native recorder recovery has since passed, and existing development signing is usable. Full product auth/recording/upload acceptance still needs the test actor’s existing MFA factor; final current-head CI follows #234 acceptance and merge.
+### Test-actor validation and offline identity fix — October 7
+
+The owner-designated veterinarian account authenticates and `/auth/me` succeeds without MFA. Its Supabase identity differs from its clinic database `User.id`, as required by Connect's `supabaseUserId` mapping. Device acceptance preparation exposed that the profile cache compared these unrelated IDs and therefore rejected a legitimate offline restore.
+
+The cache now stores an explicit `authUserId` binding supplied by each live-profile writer, while retaining the clinic ID for all draft, stash, query and durable recording storage. Legacy entries keep their exact-id check; email never grants a cache match. Profile fetching rechecks the login identity and auth generation after asynchronous requests, registration and cache reads; a departing account cannot apply a late response or MFA refusal to its successor. Late initialization also yields to a newer auth event.
+
+Fresh Node 20 Linux CI passes frozen install, SDK alignment, both R2 contracts, typecheck, lint, and all 1,362 tests without skips. New execution regressions run the actual provider callback against delayed requests, registration and cache reads, and cover distinct identities, stale MFA failures and offline fallback. Native authenticated acceptance and current-head manual CI remain required before merge. Credentials, session tokens, names and clinical content are excluded from evidence.
+
+
+#233 now incorporates this functional identity fix alongside the Supabase 2.117.2 and other production SDK updates. Fresh Node 22 Linux validation is running; final main refresh, physical compatibility acceptance and exact-head manual checks follow #234 acceptance and merge.

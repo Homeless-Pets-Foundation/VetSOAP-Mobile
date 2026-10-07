@@ -722,6 +722,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * names for B to look at.
    */
   const authGenerationRef = useRef(0);
+  // Supabase identity differs from the clinic User.id used for local work.
+  const authSessionUserIdRef = useRef<string | null>(null);
   // The user a cold start restored from storage because GoTrue could not answer
   // (src/auth/sessionRestore.ts). GoTrue's own getSession() still reports no
   // session while its refresh is failing offline, so fetchUser's profile-cache
@@ -1075,6 +1077,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const fetchUser = useCallback(async (): Promise<boolean> => {
+    const generation = authGenerationRef.current;
+    const authUserId = authSessionUserIdRef.current;
+    const isCurrentAccount = () =>
+      authGenerationRef.current === generation && authSessionUserIdRef.current === authUserId;
     // Single-flight, same contract as registerDevice. fetchUser is reachable
     // from five places (session restore, onAuthStateChange, MFA completion,
     // recovery refresh, the cached-profile retry loop) and each entry costs a
@@ -1114,6 +1120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         if (__DEV__) console.log('[Auth] fetchUser: requesting /auth/me');
         const body = await requestMe();
+        if (!isCurrentAccount()) return 'deferred';
         if (__DEV__) console.log('[Auth] fetchUser: success, user:', body.user?.email ?? 'null');
         // Try to register before setting user state so React Query's
         // `enabled: !!user`-gated queries don't fire before the device has a
@@ -1122,9 +1129,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // the device-registration recovery UI can render instead of leaving the
         // app in a half-authenticated retry loop.
         await registerDeviceTimed();
+        if (!isCurrentAccount()) return 'deferred';
         applyFetchedUser(withOrganizationName(body));
         return 'loaded';
       } catch (error) {
+        if (!isCurrentAccount()) return 'deferred';
         if (error instanceof ApiError && error.code === 'MFA_REQUIRED') {
           handleMfaRequiredResponse(error.data as MfaStatusResponse | undefined);
           return 'deferred';
@@ -1136,25 +1145,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (error instanceof ApiError && error.status === 404) {
           if (__DEV__) console.log('[Auth] fetchUser: 404, waiting for pending Apple profile sync');
           await waitForPendingAppleProfileSync();
+          if (!isCurrentAccount()) return 'deferred';
           try {
             const retryBody = await requestMe();
+            if (!isCurrentAccount()) return 'deferred';
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync succeeded, user:', retryBody.user?.email ?? 'null');
             await registerDeviceTimed();
+            if (!isCurrentAccount()) return 'deferred';
             applyFetchedUser(withOrganizationName(retryBody));
             return 'loaded';
           } catch (retryError) {
+            if (!isCurrentAccount()) return 'deferred';
             if (__DEV__) console.log('[Auth] fetchUser: retry after Apple sync still missing user', retryError);
           }
 
           if (__DEV__) console.log('[Auth] fetchUser: 404, bootstrapping via /auth/register');
           try {
             await apiClient.post('/auth/register', {});
+            if (!isCurrentAccount()) return 'deferred';
             const body = await requestMe();
+            if (!isCurrentAccount()) return 'deferred';
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap succeeded, user:', body.user?.email ?? 'null');
             await registerDeviceTimed();
+            if (!isCurrentAccount()) return 'deferred';
             applyFetchedUser(withOrganizationName(body));
             return 'loaded';
           } catch (bootstrapError) {
+            if (!isCurrentAccount()) return 'deferred';
             if (__DEV__) console.log('[Auth] fetchUser: bootstrap failed', bootstrapError);
             setLogoutReason('session_expired');
             await handleSignOutRef.current({ recoveryMode: 'best_effort' });
@@ -1173,21 +1190,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let lastError: unknown;
     for (let attemptIdx = 0; attemptIdx <= delays.length; attemptIdx++) {
       try {
+        if (!isCurrentAccount()) return false;
         const result = await attempt();
+        if (!isCurrentAccount()) return false;
         if (result === 'loaded') {
           setUserFetchState('success');
           setUserFetchError(null);
           // 1B: persist the minimal profile projection so the next cold start
           // can survive a terminal /auth/me failure. Fire-and-forget (rule 4).
           const liveUser = activeUserRef.current;
-          if (liveUser) {
-            saveProfileCache(liveUser).catch(() => {});
+          if (liveUser && authUserId) {
+            saveProfileCache(liveUser, authUserId).catch(() => {});
           }
           return true;
         }
         setUserFetchState('idle');
         return false;
       } catch (error) {
+        if (!isCurrentAccount()) return false;
         lastError = error;
         if (!isRetryableFetchUserError(error) || attemptIdx === delays.length) {
           break;
@@ -1200,7 +1220,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (__DEV__) console.log('[Auth] fetchUser: all attempts failed', lastError);
 
     // 1B startup resilience: before stranding the user on the error screen,
-    // fall back to the cached minimal profile. Only when the cached id matches
+    // fall back to the cached minimal profile. Only when its auth binding matches
     // the session's user (rule 13, shared tablets) AND the failure was
     // retryable (network/timeout/5xx) or a restored token's own expiry. Any
     // other 401/403 means the API refused this account (role/org revoked);
@@ -1218,15 +1238,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         3000,
         'profile_cache_get_session'
       );
+      if (!isCurrentAccount()) return false;
       const sessionUserId =
         sessionResult?.data?.session?.user?.id ??
         restoredUserIdFor(restoredSessionRef.current, authGenerationRef.current);
-      if (sessionUserId) {
+      if (sessionUserId && sessionUserId === authUserId) {
         const cached = await withTimeout(
           getCachedProfile(sessionUserId),
           3000,
           'profile_cache_read'
         );
+        if (!isCurrentAccount()) return false;
         if (cached) {
           const isFirstApply = activeUserRef.current === null;
           applyFetchedUser({
@@ -1258,6 +1280,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (__DEV__) console.error('[Auth] profile cache fallback failed:', cacheError);
     }
 
+    if (!isCurrentAccount()) return false;
     setUserFetchState('error');
     setUserFetchError(fetchUserErrorMessage(lastError));
     return false;
@@ -1286,6 +1309,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(error.message);
     }
     const nextSession = (await supabase.auth.getSession()).data.session;
+    authSessionUserIdRef.current = nextSession?.user.id ?? null;
     setSession(nextSession);
     sessionTimestampRef.current = Date.now();
     apiClient.setToken(tokens.accessToken);
@@ -1524,6 +1548,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const completeMfaWithProfile = useCallback(
     async (data: MfaApiResponse): Promise<void> => {
+      const generation = authGenerationRef.current;
+      const authUserId = authSessionUserIdRef.current;
       setMfaRequired(Boolean(data.mfa?.required));
       setMfaReason(typeof data.mfa?.reason === 'string' ? data.mfa.reason : null);
       setMfaCurrentLevel(data.mfa?.currentLevel ?? 'aal2');
@@ -1532,6 +1558,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (data.user) {
         await registerDevice();
+        if (generation !== authGenerationRef.current || authUserId !== authSessionUserIdRef.current) return;
         applyFetchedUser(withOrganizationName(data));
         setUserFetchState('success');
         setUserFetchError(null);
@@ -1541,8 +1568,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // transferred practice keeps showing the stale name on the next offline
         // cold start. Fire-and-forget like the fetchUser success path (rule 4).
         const liveUser = activeUserRef.current;
-        if (liveUser) {
-          saveProfileCache(liveUser).catch(() => {});
+        if (liveUser && authUserId) {
+          saveProfileCache(liveUser, authUserId).catch(() => {});
         }
         return;
       }
@@ -1647,6 +1674,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     registerDeviceInFlightRef.current = null;
     authGenerationRef.current += 1;
     setUser(null);
+    authSessionUserIdRef.current = null;
     setSession(null);
     setUserFetchState('idle');
     setUserFetchError(null);
@@ -1858,6 +1886,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         generation: authGenerationRef.current,
         expiresAt: restored.expires_at ?? 0,
       };
+      authSessionUserIdRef.current = restored?.user.id ?? null;
       setSession(restored);
       sessionTimestampRef.current = Date.now();
       apiClient.setToken(restored.access_token);
@@ -1886,6 +1915,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       () => withTimeout(supabase.auth.getSession(), 10_000, 'auth_init_get_session'),
       { warningThresholdMs: null }
     ).then(async (result) => {
+      if (disposed || authEventSeen || authGenerationRef.current !== initGeneration) return;
       const existingSession = result?.data?.session ?? null;
       if (existingSession) {
         if (existingSession.access_token) {
@@ -1900,11 +1930,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // out if the session is genuinely dead (both wired in the effect
           // above, which runs first). A network failure is not a 401, so the
           // cached session survives until connectivity returns.
+          authSessionUserIdRef.current = existingSession?.user.id ?? null;
           setSession(existingSession);
           sessionTimestampRef.current = Date.now();
           apiClient.setToken(existingSession.access_token);
           fetchUser().catch(() => {});
         } else {
+          authSessionUserIdRef.current = existingSession?.user.id ?? null;
           setSession(existingSession);
         }
       } else {
@@ -1936,6 +1968,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // reads isPasswordRecovery so the authenticated session doesn't
           // bounce the user out of reset-password.
           if (event === 'PASSWORD_RECOVERY' && newSession) {
+            authSessionUserIdRef.current = newSession?.user.id ?? null;
             setSession(newSession);
             sessionTimestampRef.current = Date.now();
             apiClient.setToken(newSession.access_token);
@@ -1947,6 +1980,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (newSession?.access_token) {
             sessionRecoveryAttemptedRef.current = false; // reset for next sign-out cycle
             userInitiatedSignOutRef.current = false;     // ensure clear regardless of prior sign-out path
+            authSessionUserIdRef.current = newSession?.user.id ?? null;
             setSession(newSession);
             sessionTimestampRef.current = Date.now();
             if (__DEV__) console.log('[Auth] session established, storing token');
@@ -1968,6 +2002,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if (!recoveryError && recoveryData.session?.access_token) {
                 if (__DEV__) console.log('[Auth] recovery refresh succeeded, session restored');
                 sessionRecoveryAttemptedRef.current = false;
+                authSessionUserIdRef.current = recoveryData.session?.user.id ?? null;
                 setSession(recoveryData.session);
                 sessionTimestampRef.current = Date.now();
                 apiClient.setToken(recoveryData.session.access_token);
@@ -2028,6 +2063,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             registerDeviceInFlightRef.current = null;
             authGenerationRef.current += 1;
             setUser(null);
+            authSessionUserIdRef.current = null;
             setSession(null);
             setProfileSource('live');
             localRecoveryScanIdRef.current += 1;

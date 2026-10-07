@@ -15,9 +15,9 @@ import type { User } from '../types';
  * so writes are size-guarded to MAX_SERIALIZED_BYTES and the projection is
  * deliberately minimal — never cache the full /auth/me response.
  *
- * User-swap safety: the cache is only ever returned when its `id` matches the
- * current Supabase session's user id, so a shared tablet can never apply one
- * vet's cached profile to another vet's session.
+ * User-swap safety: bind the clinic profile to the authenticated Supabase id.
+ * The clinic User.id is a separate database identity used by drafts/recordings;
+ * comparing it with the auth id prevents legitimate offline restores.
  */
 
 const PROFILE_CACHE_KEY = 'captivet_profile_cache';
@@ -27,6 +27,7 @@ export const MAX_SERIALIZED_BYTES = 1536;
 
 export interface CachedProfile {
   id: string;
+  authUserId: string;
   email: string;
   fullName: string;
   role: string;
@@ -54,9 +55,11 @@ function utf8ByteLength(value: string): number {
  * back to its static tagline). Returns null if the projection cannot fit even
  * without both — caller skips the write.
  */
-export function serializeProfile(user: User, cachedAt: number): string | null {
+export function serializeProfile(user: User, cachedAt: number, authUserId: string): string | null {
+  if (!authUserId) return null;
   const projection: CachedProfile = {
     id: user.id,
+    authUserId,
     email: user.email,
     fullName: user.fullName,
     role: user.role,
@@ -77,7 +80,8 @@ export function serializeProfile(user: User, cachedAt: number): string | null {
 
 /**
  * Parse + validate a raw cache value. Returns null unless every field is
- * well-typed AND the cached id matches the current session's user id.
+ * well-typed AND the authenticated identity matches the current session.
+ * Legacy entries have no binding and retain their original exact-id check.
  */
 export function parseCachedProfile(raw: string | null, sessionUserId: string): CachedProfile | null {
   if (!raw || !sessionUserId) return null;
@@ -94,9 +98,11 @@ export function parseCachedProfile(raw: string | null, sessionUserId: string): C
     ) {
       return null;
     }
-    if (p.id !== sessionUserId) return null;
+    const authUserId = 'authUserId' in p ? p.authUserId : p.id;
+    if (typeof authUserId !== 'string' || authUserId !== sessionUserId) return null;
     return {
       id: p.id,
+      authUserId,
       email: p.email,
       fullName: p.fullName,
       role: p.role,
@@ -112,10 +118,10 @@ export function parseCachedProfile(raw: string | null, sessionUserId: string): C
 }
 
 /** Fire-and-forget from the live-fetch success path; never throws. */
-export async function saveProfileCache(user: User): Promise<void> {
+export async function saveProfileCache(user: User, authUserId: string): Promise<void> {
   try {
     if (!user?.id) return;
-    const serialized = serializeProfile(user, Date.now());
+    const serialized = serializeProfile(user, Date.now(), authUserId);
     if (!serialized) return;
     await secureStorage.setRawItem(PROFILE_CACHE_KEY, serialized, 'profileCache.set');
   } catch {

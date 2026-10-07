@@ -48,3 +48,4 @@ Fresh Node 20 Linux CI passes frozen install, SDK alignment, both R2 contracts, 
 
 
 #233 now incorporates this functional identity fix alongside the Supabase 2.117.2 and other production SDK updates. Fresh Node 22 Linux validation is running; final main refresh, physical compatibility acceptance and exact-head manual checks follow #234 acceptance and merge.
+Direct SDK/deep-link account replacement also passes through the new stable `applyAuthSession` callback. A changed authenticated identity drops prior profile/registration flights, clears outgoing query snapshots and active local-store scopes, and hides the old profile before loading the successor. Same-user token rotation retains active work and flights. Saved recording data is retained. Execution regressions cover direct replacement, same-user rotation and an old profile response arriving after the successor's independent fetch. Fresh Node 20 Linux CI passes all 1,365 tests and every local check.

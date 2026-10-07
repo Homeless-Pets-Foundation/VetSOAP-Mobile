@@ -188,7 +188,7 @@ export type AnalyticsEvent =
   | { name: 'profile_cache_used'; props: { age_s: number } }
   | {
       name: 'session_restored_from_storage';
-      props: { trigger: 'unanswered' | 'retryable_error'; access_token_expired: boolean };
+      props: { trigger: 'unanswered' | 'retryable_error' | 'no_session'; access_token_expired: boolean };
     }
   // Recording detail (transcript + playback)
   | { name: 'transcript_viewed'; props: { recording_id: string } }

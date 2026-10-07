@@ -38,7 +38,7 @@ function persisted(overrides = {}) {
   });
 }
 
-test('restores only when GoTrue could not answer for a transient reason', async () => {
+test('restores only when GoTrue could not answer, or could not read storage', async () => {
   const { sessionRestoreTrigger } = await load();
 
   // withTimeout yields null when the deadline fired or getSession rejected.
@@ -52,9 +52,16 @@ test('restores only when GoTrue could not answer for a transient reason', async 
     'retryable_error'
   );
 
-  // Authoritative answers are honored. No error means signed out; a
-  // non-retryable error means GoTrue already removed a dead session.
-  assert.equal(sessionRestoreTrigger({ data: { session: null }, error: null }), null);
+  // No session and no error is not proof of a sign-out: GoTrue reads storage
+  // through the lenient adapter, which turns a Keystore failure into "nothing
+  // stored" (Codex review on VetSOAP-Mobile#234). The strict read decides.
+  assert.equal(sessionRestoreTrigger({ data: { session: null }, error: null }), 'no_session');
+  assert.equal(sessionRestoreTrigger({ data: { session: null } }), 'no_session');
+  // An unexpected shape fails toward "no restore".
+  assert.equal(sessionRestoreTrigger({ error: null }), null);
+
+  // A non-retryable error is GoTrue's answer about the session: it already
+  // removed a dead one.
   assert.equal(
     sessionRestoreTrigger({
       data: { session: null },
@@ -186,7 +193,7 @@ test('AuthProvider restores only through the guarded, bounded path', async () =>
     provider.indexOf('// Restore existing session on startup.')
   );
   assert.ok(restoreBody.length > 0);
-  assert.match(restoreBody, /setSession\(restored\);/);
+  assert.match(restoreBody, /applyAuthSession\(restored\);/);
   assert.match(restoreBody, /sessionTimestampRef\.current = Date\.now\(\);/);
   assert.match(restoreBody, /apiClient\.setToken\(restored\.access_token\);/);
   assert.match(restoreBody, /fetchUser\(\)\.catch\(\(\) => \{\}\);/);
@@ -315,6 +322,6 @@ test('the restore event is in the analytics catalog with PHI-free props', async 
   const analytics = await read('src/lib/analytics.ts');
   assert.match(
     analytics,
-    /name: 'session_restored_from_storage';\s*props: \{ trigger: 'unanswered' \| 'retryable_error'; access_token_expired: boolean \};/
+    /name: 'session_restored_from_storage';\s*props: \{ trigger: 'unanswered' \| 'retryable_error' \| 'no_session'; access_token_expired: boolean \};/
   );
 });

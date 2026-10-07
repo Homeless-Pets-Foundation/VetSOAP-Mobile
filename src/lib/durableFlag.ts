@@ -44,6 +44,12 @@ const forceCapture = process.env.EXPO_PUBLIC_FORCE_DURABLE_CAPTURE === 'true';
 const FLAG_STORAGE_KEY = 'captivet_durable_capture_flag';
 /** Bound for one write plus its read-back (rule 24). */
 const PERSIST_TIMEOUT_MS = 5_000;
+/**
+ * Rewrites that a late-failing write may start before the next API response.
+ * Bounded so a Keystore that keeps hanging and then failing cannot chain writes
+ * for the rest of the process.
+ */
+const LATE_FAILURE_REWRITES = 2;
 
 /** `null` = nothing known in this process yet (never learned, not hydrated). */
 let captureEnabled: boolean | null = forceCapture ? true : null;
@@ -54,6 +60,8 @@ let desiredValue: boolean | null = null;
 let writeInFlight = false;
 /** Bumped when an abandoned write settles; a verification that spans the bump proves nothing. */
 let storageEpoch = 0;
+/** Late-failure rewrites started since the last API response. */
+let lateFailureRewrites = 0;
 
 function parseFlag(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;
@@ -72,22 +80,28 @@ function parseFlag(value: unknown): boolean | null {
  * cold start would hydrate after the server turned capture off (Codex review
  * on VetSOAP-Mobile#234). A write counts only once a read-back returns it:
  * SecureStore can drop a write while resolving (rule 17). A failed,
- * unverified, or hung write (bounded at PERSIST_TIMEOUT_MS) stops the loop and
- * marks storage unknown, so the next response writes and verifies again.
+ * unverified, or hung write (bounded at PERSIST_TIMEOUT_MS) marks storage
+ * unknown, so the next response writes and verifies again. It stops the loop
+ * unless a different value was queued behind it: that one has had no attempt
+ * yet, and an offline tablet may never get another response (Codex review,
+ * eighth round).
  *
  * A hung write is abandoned, not cancelled; the native bridge offers no
  * cancel. It can still land after a newer write was verified, including
  * through setRawItem's retry, leaving the stale value stored while the
  * bookkeeping says otherwise (Codex review on VetSOAP-Mobile#234). So when an
  * abandoned write settles, storage is marked unknown, a verification in
- * flight across that settle is not trusted, and if the late write's value is
- * not the newest one, the newest is written again at once. Only in that case:
- * on a Keystore that keeps outliving the deadline, rewriting after every
- * settle would chain one abandoned write into the next with no response to
- * pace it.
+ * flight across that settle is not trusted, and the newest value is written
+ * again at once unless the late write verified that very value. A late write
+ * of the newest value that failed is rewritten too, since settling is not
+ * landing (Codex review, sixth round), but at most LATE_FAILURE_REWRITES times
+ * per response: on a Keystore that keeps outliving the deadline, rewriting
+ * after every settle would chain one abandoned write into the next with no
+ * response to pace it.
  */
 function persist(value: boolean): void {
   desiredValue = value;
+  lateFailureRewrites = 0;
   if (writeInFlight || persistedValue === value) return;
   writeInFlight = true;
   void drainWrites();
@@ -111,15 +125,23 @@ async function drainWrites(): Promise<void> {
       const attempt = writeAndVerify(value ? 'true' : 'false');
       // Registered before the deadline's own handlers, so a write that settles
       // in time runs this while `abandoned` is still false.
-      const settleLate = () => {
+      const settleLate = (landed: boolean) => {
         if (!abandoned) return;
         storageEpoch += 1;
         persistedValue = null;
-        if (writeInFlight || desiredValue === null || desiredValue === value) return;
+        if (writeInFlight || desiredValue === null) return;
+        if (desiredValue === value) {
+          if (landed) return;
+          if (lateFailureRewrites >= LATE_FAILURE_REWRITES) return;
+          lateFailureRewrites += 1;
+        }
         writeInFlight = true;
         void drainWrites();
       };
-      attempt.then(settleLate, settleLate);
+      attempt.then(
+        (verified) => settleLate(verified),
+        () => settleLate(false),
+      );
       let ok = false;
       try {
         ok = await withPromiseTimeout(attempt, PERSIST_TIMEOUT_MS, 'durable_flag_persist_timeout');
@@ -128,6 +150,10 @@ async function drainWrites(): Promise<void> {
       }
       if (!ok) {
         persistedValue = null;
+        // A newer value that queued behind this attempt still gets one of its
+        // own; the same value waits for the next response, so a failing
+        // Keystore cannot spin here.
+        if (desiredValue !== value) continue;
         return;
       }
       if (epoch === storageEpoch) persistedValue = value;
@@ -253,6 +279,7 @@ export function __resetDurableCaptureFlag(): void {
   persistedValue = null;
   desiredValue = null;
   writeInFlight = false;
+  lateFailureRewrites = 0;
   hydrationPromise = null;
   hydrationSettled = false;
   hydrationGeneration += 1;

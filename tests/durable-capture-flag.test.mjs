@@ -383,6 +383,103 @@ test('a Keystore that keeps outliving the deadline does not chain writes', async
   assert.equal(map.get(KEY), 'false');
 });
 
+/** A setItemAsync that hangs until the test fails it. setRawItem retries once, so a write needs two failures. */
+function makeFailingLateStore(map, { failCalls = Infinity } = {}) {
+  const pending = [];
+  const counts = { calls: 0, writes: 0 };
+  return {
+    pending,
+    counts,
+    AFTER_FIRST_UNLOCK: 'afterFirstUnlock',
+    async getItemAsync(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    setItemAsync(key, value, options) {
+      counts.calls += 1;
+      if (options) counts.writes += 1;
+      if (counts.calls > failCalls) {
+        map.set(key, value);
+        return Promise.resolve();
+      }
+      return new Promise((_, reject) => pending.push(() => reject(new Error('keystore unavailable'))));
+    },
+    async deleteItemAsync(key) {
+      map.delete(key);
+    },
+  };
+}
+
+async function failOldestWrite(store) {
+  store.pending.shift()();
+  await flush();
+  store.pending.shift()();
+  await flush();
+  await flush();
+}
+
+test('an abandoned write that fails late is written again, not left for a response', async () => {
+  // Codex review on VetSOAP-Mobile#234, sixth round. A late settle was taken
+  // as the value having landed. A write of the newest value that outlived the
+  // deadline and then failed left the old value stored, with nothing to rewrite
+  // it until a response that an offline tablet never gets.
+  const map = new Map([[KEY, 'false']]);
+  const store = makeFailingLateStore(map, { failCalls: 2 });
+  const flag = await load(store, fastDeadline);
+  flag.applyDurableCaptureHeader('true', true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(store.pending.length, 1, 'the first write outlived its deadline');
+
+  await failOldestWrite(store);
+  await flush();
+  assert.equal(store.counts.writes, 2, 'the newest value is written again at once');
+  assert.equal(map.get(KEY), 'true');
+});
+
+test('late failures are rewritten at most twice before waiting for a response', async () => {
+  // Every write outlives the deadline and then fails. Rewriting after every
+  // late failure would chain writes for as long as the Keystore stays broken.
+  const map = new Map([[KEY, 'false']]);
+  const store = makeFailingLateStore(map);
+  const flag = await load(store, fastDeadline);
+  const outliveDeadline = () => new Promise((resolve) => setTimeout(resolve, 40));
+
+  flag.applyDurableCaptureHeader('true', true);
+  for (let i = 0; i < 4; i += 1) {
+    await outliveDeadline();
+    if (store.pending.length === 0) break;
+    await failOldestWrite(store);
+  }
+  assert.equal(store.counts.writes, 3, 'the write and two rewrites, then it waits');
+  assert.equal(map.get(KEY), 'false');
+
+  flag.applyDurableCaptureHeader('true', true);
+  await flush();
+  assert.equal(store.counts.writes, 4, 'the next response writes again');
+
+  await outliveDeadline();
+  await failOldestWrite(store);
+  assert.equal(store.counts.writes, 5, 'and its late failure may be rewritten again');
+});
+
+test('a value queued behind a failed write is still written', async () => {
+  // Codex review on VetSOAP-Mobile#234, eighth round. A response that arrived
+  // while a write was in flight only queued its value. When that write failed,
+  // the loop stopped without trying the queued value, leaving storage stale
+  // until a response that an offline tablet never gets.
+  const map = new Map();
+  const store = makeFailingLateStore(map, { failCalls: 2 });
+  const flag = await load(store);
+  flag.applyDurableCaptureHeader('true', true);
+  await flush();
+  flag.applyDurableCaptureHeader(null, true);
+  assert.equal(store.counts.writes, 1, 'the newer value waits behind the write in flight');
+
+  await failOldestWrite(store);
+  await flush();
+  assert.equal(store.counts.writes, 2, 'and is written once that write fails');
+  assert.equal(map.get(KEY), 'false');
+});
+
 test('a verification in flight when an abandoned write settles is not trusted', async () => {
   // Native calls can run on concurrent threads, so a read-back can be served
   // before the abandoned write lands yet answer after it has settled. That

@@ -28,3 +28,32 @@ export async function loadProviderCallback(name, closure) {
   });
   return module.exports;
 }
+
+// Same for a plain function: a module-level `function` declaration, or a
+// `const name = (...) => ...` inside an effect. The name must be unique.
+export async function loadProviderFunction(name, closure) {
+  const source = await readFile(new URL('../../src/auth/AuthProvider.tsx', import.meta.url), 'utf8');
+  const parsed = ts.createSourceFile('AuthProvider.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const found = [];
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.getText(parsed) === name) {
+      found.push(node.getText(parsed));
+    } else if (ts.isVariableDeclaration(node) && node.name.getText(parsed) === name) {
+      const initializer = node.initializer;
+      if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+        found.push(initializer.getText(parsed));
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+  if (found.length !== 1) throw new Error(`Expected one provider function named ${name}, found ${found.length}`);
+  const compiled = ts.transpileModule(`module.exports = (${found[0]});`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, {
+    module, __DEV__: false, Date, Promise, setTimeout, clearTimeout, ...closure,
+  });
+  return module.exports;
+}

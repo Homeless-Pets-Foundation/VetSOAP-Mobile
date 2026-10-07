@@ -43,7 +43,10 @@ async function harness({ request = async () => bodyA, register = async () => tru
     setSession: record('session'), setDeviceRegistrationBlock: record('deviceBlock'), setDeviceRegistrationPending: record('devicePending'),
     setMfaRequired: record('mfaRequired'), setMfaReturnPath: record('mfaReturnPath'), setMfaReason: record('mfaReason'), setActiveMfaChallenge: record('challenge'),
     ApiError, isRetryableFetchUserError, fetchUserErrorMessage, restoredExpiryExplains, restoredUserIdFor,
-    apiClient: { get: request, post: async () => { events.push(['bootstrap']); } },
+    apiClient: {
+      get: request, post: async () => { events.push(['bootstrap']); },
+      retireAuthEpoch: () => events.push(['retireAuthEpoch']),
+    },
     registerDevice: register, measurePhase: (_name, _tags, fn) => fn(),
     withTimeout: promise => promise,
     withOrganizationName: body => body.user && ({ ...body.user, organizationName: body.organization?.name }),
@@ -149,6 +152,9 @@ test('direct SDK account replacement clears the outgoing profile and read scopes
   h.refs.fetchUserInFlightRef.current = Promise.resolve(true);
   h.refs.registerDeviceInFlightRef.current = Promise.resolve(true);
   h.applyAuthSession({ user: { id: authB }, access_token: 'synthetic-next' });
+  // Before the caller installs B's token, so ApiClient cannot take the switch
+  // for a refresh and re-send A's in-flight request as B.
+  assert.equal(h.events.filter(([name]) => name === 'retireAuthEpoch').length, 1);
   assert.equal(h.refs.authGenerationRef.current, 1);
   assert.equal(h.refs.authSessionUserIdRef.current, authB);
   assert.equal(h.refs.activeUserRef.current, null);
@@ -191,4 +197,20 @@ test('a replacement account starts its own profile flight while the old request 
   assert.equal(requests, 2);
   assert.equal(h.refs.activeUserRef.current.id, clinicB);
   assert.equal((await h.cache.getCachedProfile(authB)).id, clinicB);
+});
+
+test('every session adoption retires the old account before installing the next token', async () => {
+  // retireAuthEpoch clears ApiClient's in-memory token, so a caller that set
+  // the new token first would leave requests unauthenticated until the next
+  // refresh. Each adoption therefore runs applyAuthSession, then setToken.
+  const { readFile } = await import('node:fs/promises');
+  const provider = await readFile(new URL('../src/auth/AuthProvider.tsx', import.meta.url), 'utf8');
+  const installs = [...provider.matchAll(/apiClient\.setToken\((?!null\))/g)].map((match) => match.index);
+  assert.ok(installs.length >= 6, 'AuthProvider changed shape');
+  for (const index of installs) {
+    const before = provider.slice(Math.max(0, index - 250), index);
+    const adoption = before.lastIndexOf('applyAuthSession(');
+    assert.ok(adoption >= 0, `setToken at ${index} has no session adoption just before it`);
+    assert.doesNotMatch(before.slice(adoption), /applyAuthSession\(null\)|apiClient\.setToken\(/);
+  }
 });

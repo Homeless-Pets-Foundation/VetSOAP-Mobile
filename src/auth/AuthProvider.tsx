@@ -923,6 +923,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Deep links/SDK session replacement can switch users without SIGNED_OUT.
       // Retire the old account before the new profile request begins. Saved
       // recordings stay on disk; only read caches and active scopes are cleared.
+      // ApiClient's epoch too, before the caller installs the next token: with
+      // no sign-out in between it would take the switch for a refresh and could
+      // re-send the old account's in-flight request under the new one.
+      apiClient.retireAuthEpoch();
       fetchUserInFlightRef.current = null;
       registerDeviceInFlightRef.current = null;
       authGenerationRef.current += 1;
@@ -2155,8 +2159,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           const current = await boundedAuthCall(() => supabase.auth.getSession());
           if (current.timedOut) return refreshUnresolved('foreground', 'timeout');
-          const { data } = current.value;
+          const { data, error: sessionError } = current.value;
           if (!data.session?.access_token) {
+            // getSession() refreshes a near-expiry session itself, and reports
+            // no session when that refresh fails in transit. Same as below:
+            // not a verdict on the session.
+            if (sessionError && isTransientRefreshFailure(classifyAuthError(sessionError))) {
+              breadcrumb('auth', 'session_refresh_unresolved', { trigger: 'foreground', reason: 'transient' });
+              return 'unresolved';
+            }
             if (__DEV__) console.log('[Auth] foreground resume: no active session');
             return;
           }
@@ -2178,17 +2189,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 name: 'session_refresh_failed',
                 props: { trigger: 'foreground', error_code: errorCode },
               });
+              // A transient failure says nothing about the session: keep it.
+              // A 401 that arrived meanwhile is waiting on this refresh, and
+              // must hear 'unresolved' rather than a finished refresh, or
+              // ApiClient takes its 401 as final and signs the vet out.
+              if (isTransientRefreshFailure(errorCode)) {
+                breadcrumb('auth', 'session_refresh_unresolved', { trigger: 'foreground', reason: 'transient' });
+                return 'unresolved';
+              }
               // Hard failures (auth no longer valid) need to advance the app to
               // the login screen. Without this the foreground handler logs the
               // error and returns — leaving the user on a half-auth screen
               // (session in memory, /auth/me 401-ing on every gated query) that
               // looks like a blank spinner. Local-scope signOut emits SIGNED_OUT
               // through onAuthStateChange so cleanup runs through one path.
-              if (!isTransientRefreshFailure(errorCode)) {
-                if (__DEV__) console.log('[Auth] foreground refresh hard-fail, forcing local signOut');
-                breadcrumb('auth', 'foreground_refresh_hard_fail', { error_code: errorCode });
-                await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-              }
+              if (__DEV__) console.log('[Auth] foreground refresh hard-fail, forcing local signOut');
+              breadcrumb('auth', 'foreground_refresh_hard_fail', { error_code: errorCode });
+              await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
             } else {
               if (__DEV__) console.log('[Auth] foreground refresh succeeded');
             }

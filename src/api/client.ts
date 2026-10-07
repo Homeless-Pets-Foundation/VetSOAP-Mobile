@@ -201,7 +201,8 @@ export class ApiClient {
     // identity of its own, and every sign-out path clears the token before the
     // next sign-in sets one (`handleSignOut`, and the SIGNED_OUT branch of
     // `onAuthStateChange`), so this is the signal that "the token changed"
-    // means a DIFFERENT USER rather than a refreshed session. A refresh only
+    // means a DIFFERENT USER rather than a refreshed session. A switch with no
+    // sign-out ends the epoch through `retireAuthEpoch` instead. A refresh only
     // ever replaces one non-null token with another and leaves the epoch alone.
     if (token === null) this.tokenEpoch++;
     this.currentToken = token;
@@ -211,6 +212,23 @@ export class ApiClient {
     } else {
       secureStorage.deleteToken().catch(() => {});
     }
+  }
+
+  /**
+   * End the current auth epoch when one account's session replaces another's
+   * with no sign-out in between (AuthProvider's `applyAuthSession`: a deep link
+   * or SDK session replacement). `setToken` relies on a sign-out clearing the
+   * token before a different user's token is set; this keeps that true for a
+   * direct switch, so a request still in flight for the previous account is
+   * never re-sent under the next one. The in-memory token goes too, so nothing
+   * else authenticates as the previous account. Storage is left to the
+   * `setToken` that installs the next token: a delete here would race that
+   * write.
+   */
+  retireAuthEpoch() {
+    this.tokenEpoch++;
+    this.currentToken = null;
+    this.tokenInitialized = true;
   }
 
   private async getAuthHeaders(): Promise<Record<string, string>> {
@@ -433,6 +451,15 @@ export class ApiClient {
       throwIfRequestAborted(signal);
       return sent;
     };
+    // Whether the latest attempt went out under the account that holds the
+    // session now. Only then may its response drive a retry or an auth side
+    // effect. After a sign-out (`setToken(null)`) or a direct account switch
+    // (`retireAuthEpoch`), the response belongs to the previous account: a
+    // retry would re-send its body and Idempotency-Key under the next
+    // account's token, and a refresh, registration, MFA prompt or sign-out
+    // would act on a session that never sent the request. Such a response
+    // only fails its own request.
+    const sentByCurrentAccount = () => this.tokenEpoch === epochAtFetch;
     let response = await send();
 
     // Cache the min-app-version floor + durable flag from a response and handle a
@@ -490,10 +517,14 @@ export class ApiClient {
     if (allowAuthSideEffects && response.status === 428 && path !== '/api/device-sessions/register') {
       const errorPreview = await response.clone().json().catch(() => ({})) ?? {};
       throwIfRequestAborted(signal);
-      if (errorPreview.code === 'DEVICE_REGISTRATION_REQUIRED' && this.onDeviceRegistrationRequired) {
+      if (
+        errorPreview.code === 'DEVICE_REGISTRATION_REQUIRED' &&
+        this.onDeviceRegistrationRequired &&
+        sentByCurrentAccount()
+      ) {
         const registered = await this.onDeviceRegistrationRequired().catch(() => false);
         throwIfRequestAborted(signal);
-        if (registered) {
+        if (registered && sentByCurrentAccount()) {
           if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after device registration');
           retried = true;
           response = await send();
@@ -505,7 +536,7 @@ export class ApiClient {
     if (allowAuthSideEffects && response.status === 401) {
       const errorPreview = await response.clone().json().catch(() => ({})) ?? {};
       throwIfRequestAborted(signal);
-      if (errorPreview.code === 'DEVICE_REVOKED') {
+      if (errorPreview.code === 'DEVICE_REVOKED' && sentByCurrentAccount()) {
         // Device was revoked by admin — force sign-out without token refresh
         try { await this.onDeviceRevoked?.(); } catch { /* ignore */ }
         throw new ApiError(
@@ -539,10 +570,11 @@ export class ApiClient {
       // identity, with the same body and the same Idempotency-Key. ApiClient has
       // no user identity of its own, so the sign-out is the signal: `setToken`
       // bumps the epoch whenever the token is CLEARED, which a refresh never
-      // does. Placed after the device-code checks so a revoked device forces
+      // does, and `retireAuthEpoch` bumps it for a switch with no sign-out.
+      // Placed after the device-code checks so a revoked device forces
       // sign-out immediately instead of paying an extra authenticated request.
       if (
-        this.tokenEpoch === epochAtFetch &&
+        sentByCurrentAccount() &&
         this.currentToken &&
         this.currentToken !== tokenAtFetch
       ) {
@@ -552,8 +584,9 @@ export class ApiClient {
       }
 
       // The stale-token retry may have already succeeded; a refresh and a
-      // possible sign-out are only warranted while the response is still 401.
-      if (response.status === 401) {
+      // possible sign-out are only warranted while the response is still 401,
+      // and only for the account that sent it (see `sentByCurrentAccount`).
+      if (response.status === 401 && sentByCurrentAccount()) {
         const oldToken = this.currentToken;
 
         let outcome: UnauthorizedOutcome = undefined;
@@ -564,13 +597,16 @@ export class ApiClient {
         }
         throwIfRequestAborted(signal);
         const newToken = this.currentToken;
+        // The account can also change while the refresh runs. Then the new
+        // token is the next account's, not a refresh of this one's.
+        const sameAccount = sentByCurrentAccount();
 
         // If the token changed after refresh, retry the request once
-        if (newToken && newToken !== oldToken) {
+        if (sameAccount && newToken && newToken !== oldToken) {
           if (__DEV__) console.log('[ApiClient]', method, path, 'retrying after token refresh');
           retried = true;
           response = await send();
-        } else if (outcome === 'unresolved') {
+        } else if (sameAccount && outcome === 'unresolved') {
           // The refresh could not run or finish. Fail this request as
           // retryable, and leave the session alone: onSessionExpired would
           // sign the vet out on what may only be a stalled auth server. The
@@ -585,7 +621,7 @@ export class ApiClient {
         // auth layer to route to sign-in rather than stranding the user in a zombie
         // session. Fires only after a refresh already ran; transient network blips
         // surface as throws (not clean 401s) so they don't trip it.
-        if (response.status === 401) {
+        if (response.status === 401 && sentByCurrentAccount()) {
           throwIfRequestAborted(signal);
           try { await this.onSessionExpired?.(); } catch { /* ignore */ }
           throwIfRequestAborted(signal);
@@ -624,7 +660,12 @@ export class ApiClient {
       const message = this.buildErrorMessage(response.status, errorBody, details, path);
       const code = typeof errorBody.code === 'string' ? errorBody.code : undefined;
 
-      if (allowAuthSideEffects && response.status === 403 && code === 'MFA_REQUIRED') {
+      if (
+        allowAuthSideEffects &&
+        response.status === 403 &&
+        code === 'MFA_REQUIRED' &&
+        sentByCurrentAccount()
+      ) {
         await this.onMfaRequired?.({
           path,
           method,

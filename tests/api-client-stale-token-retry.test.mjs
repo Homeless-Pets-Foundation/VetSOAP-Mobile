@@ -146,3 +146,274 @@ test('the refresh retry still fires across a refresh that did not clear the toke
   assert.equal(calls.length, 2);
   assert.equal(calls[1].authorization, 'Bearer token-after-refresh');
 });
+
+// The same hazard without a sign-out (Codex review on VetSOAP-Mobile#234): a
+// deep link or SDK session replacement moves straight from vet A's session to
+// vet B's, so `setToken` never sees null. AuthProvider's applyAuthSession
+// retires the epoch instead. And the stale-token retry is not the only path
+// that re-sends: the refresh retry and the device-registration retry re-send
+// too, and a refresh, a registration, an MFA prompt or a sign-out triggered by
+// A's response would act on B's session. A's response only fails A's request.
+const switchAccount = {
+  'a sign-out and sign-in': (client) => {
+    client.setToken(null);
+    client.setToken('token-user-b');
+  },
+  'a direct account switch': (client) => {
+    client.retireAuthEpoch();
+    client.setToken('token-user-b');
+  },
+};
+
+test('a direct account switch retires the epoch, so the 401 is not re-sent', async () => {
+  const responses = [jsonResponse(401, { error: 'Unauthorized' }), jsonResponse(200, { ok: true })];
+  let client;
+  const { mod, calls } = await runScenario({
+    responses,
+    onFetch: (n) => { if (n === 1) switchAccount['a direct account switch'](client); },
+  });
+  client = new mod.ApiClient();
+  client.setToken('token-user-a');
+
+  await assert.rejects(
+    () => client.request('/api/recordings/prepare-upload', { method: 'POST', body: {} }),
+    (err) => err.status === 401,
+  );
+  assert.equal(calls.length, 1, "A's request must not be re-sent with B's token");
+});
+
+for (const [label, change] of Object.entries(switchAccount)) {
+  test(`after ${label}, A's 401 drives no refresh, re-send or sign-out`, async () => {
+    // Once B's session is old enough for onUnauthorized to refresh it, the
+    // refreshed token is B's: re-sending would file A's request under B.
+    const responses = [jsonResponse(401, { error: 'Unauthorized' }), jsonResponse(200, { ok: true })];
+    let client;
+    const { mod, calls } = await runScenario({
+      responses,
+      onFetch: (n) => { if (n === 1) change(client); },
+    });
+    client = new mod.ApiClient();
+    client.setToken('token-user-a');
+    let refreshes = 0;
+    let expired = 0;
+    client.setOnUnauthorized(async () => {
+      refreshes += 1;
+      client.setToken('token-user-b-refreshed');
+    });
+    client.setOnSessionExpired(async () => { expired += 1; });
+
+    await assert.rejects(
+      () => client.request('/api/recordings/prepare-upload', { method: 'POST', body: {} }),
+      (err) => err.status === 401 && err.name === 'ApiError',
+    );
+    assert.equal(calls.length, 1, "A's request must not be re-sent with B's token");
+    assert.equal(refreshes, 0, "B's session must not be refreshed over A's 401");
+    assert.equal(expired, 0, 'B must not be signed out over a token B never sent');
+  });
+}
+
+for (const outcome of [undefined, 'unresolved']) {
+  test(`a switch while the refresh runs is not taken for the refresh (${outcome ?? 'answered'})`, async () => {
+    const responses = [jsonResponse(401, { error: 'Unauthorized' }), jsonResponse(200, { ok: true })];
+    const { mod, calls } = await runScenario({ responses });
+    const client = new mod.ApiClient();
+    client.setToken('token-user-a');
+    let expired = 0;
+    client.setOnUnauthorized(async () => {
+      // B's session replaces A's while A's refresh is still waiting.
+      switchAccount['a direct account switch'](client);
+      return outcome;
+    });
+    client.setOnSessionExpired(async () => { expired += 1; });
+
+    await assert.rejects(
+      () => client.request('/api/recordings/prepare-upload', { method: 'POST', body: {} }),
+      // Not the retryable timeout: a caller retrying it would send it as B.
+      (err) => err.status === 401 && err.name === 'ApiError',
+    );
+    assert.equal(calls.length, 1, "B's token is not a refresh of A's");
+    assert.equal(expired, 0);
+  });
+}
+
+test("A's 428 neither registers the device nor re-sends under B", async () => {
+  const responses = [
+    jsonResponse(428, { error: 'Device registration required', code: 'DEVICE_REGISTRATION_REQUIRED' }),
+    jsonResponse(200, { ok: true }),
+  ];
+  let client;
+  const { mod, calls } = await runScenario({
+    responses,
+    onFetch: (n) => { if (n === 1) switchAccount['a direct account switch'](client); },
+  });
+  client = new mod.ApiClient();
+  client.setToken('token-user-a');
+  let registrations = 0;
+  client.setOnDeviceRegistrationRequired(async () => {
+    registrations += 1;
+    return true;
+  });
+
+  await assert.rejects(
+    () => client.request('/api/recordings/prepare-upload', { method: 'POST', body: {} }),
+    (err) => err.status === 428,
+  );
+  assert.equal(registrations, 0);
+  assert.equal(calls.length, 1);
+});
+
+test('a switch during device registration does not re-send under B', async () => {
+  const responses = [
+    jsonResponse(428, { error: 'Device registration required', code: 'DEVICE_REGISTRATION_REQUIRED' }),
+    jsonResponse(200, { ok: true }),
+  ];
+  const { mod, calls } = await runScenario({ responses });
+  const client = new mod.ApiClient();
+  client.setToken('token-user-a');
+  client.setOnDeviceRegistrationRequired(async () => {
+    switchAccount['a direct account switch'](client);
+    return true;
+  });
+
+  await assert.rejects(
+    () => client.request('/api/recordings/prepare-upload', { method: 'POST', body: {} }),
+    (err) => err.status === 428,
+  );
+  assert.equal(calls.length, 1);
+});
+
+test('the same account still registers and re-sends after a 428', async () => {
+  const responses = [
+    jsonResponse(428, { error: 'Device registration required', code: 'DEVICE_REGISTRATION_REQUIRED' }),
+    jsonResponse(200, { ok: true }),
+  ];
+  const { mod, calls } = await runScenario({ responses });
+  const client = new mod.ApiClient();
+  client.setToken('token-user-a');
+  let registrations = 0;
+  client.setOnDeviceRegistrationRequired(async () => {
+    registrations += 1;
+    return true;
+  });
+
+  assert.deepEqual(
+    await client.request('/api/recordings/prepare-upload', { method: 'POST', body: {} }),
+    { ok: true },
+  );
+  assert.equal(registrations, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].authorization, 'Bearer token-user-a');
+});
+
+for (const [label, change] of [
+  ["A's MFA demand does not send B to the MFA screen", (client) => switchAccount['a direct account switch'](client)],
+  ['the same account still gets its MFA prompt', null],
+]) {
+  test(label, async () => {
+    const responses = [jsonResponse(403, { error: 'MFA required', code: 'MFA_REQUIRED' })];
+    let client;
+    const { mod } = await runScenario({
+      responses,
+      onFetch: (n) => { if (n === 1 && change) change(client); },
+    });
+    client = new mod.ApiClient();
+    client.setToken('token-user-a');
+    let prompts = 0;
+    client.setOnMfaRequired(() => { prompts += 1; });
+
+    await assert.rejects(
+      () => client.request('/api/recordings', { method: 'GET' }),
+      (err) => err.status === 403 && err.code === 'MFA_REQUIRED',
+    );
+    assert.equal(prompts, change ? 0 : 1);
+  });
+}
+
+/** A response whose body read is where the account switch lands. */
+function jsonResponseReadThen(status, body, onFirstRead) {
+  let read = false;
+  return {
+    status,
+    ok: false,
+    headers: { get: () => null },
+    json: async () => {
+      if (!read) {
+        read = true;
+        onFirstRead();
+      }
+      return body;
+    },
+    clone() { return this; },
+  };
+}
+
+for (const when of ['in flight', 'while its body is read']) {
+  test(`A's revoked device does not sign B out (switch ${when})`, async () => {
+    const body = { error: 'Device revoked', code: 'DEVICE_REVOKED' };
+    let client;
+    const switchToB = () => switchAccount['a direct account switch'](client);
+    const { mod, calls } = await runScenario({
+      responses: [when === 'in flight' ? jsonResponse(401, body) : jsonResponseReadThen(401, body, switchToB)],
+      onFetch: (n) => { if (n === 1 && when === 'in flight') switchToB(); },
+    });
+    client = new mod.ApiClient();
+    client.setToken('token-user-a');
+    let revoked = 0;
+    client.setOnDeviceRevoked(async () => { revoked += 1; });
+
+    await assert.rejects(() => client.request('/api/recordings', { method: 'GET' }), (err) => err.status === 401);
+    assert.equal(revoked, 0);
+    assert.equal(calls.length, 1);
+  });
+}
+
+test('the same account is still signed out on a revoked device', async () => {
+  const { mod } = await runScenario({
+    responses: [jsonResponse(401, { error: 'Device revoked', code: 'DEVICE_REVOKED' })],
+  });
+  const client = new mod.ApiClient();
+  client.setToken('token-user-a');
+  let revoked = 0;
+  client.setOnDeviceRevoked(async () => { revoked += 1; });
+
+  await assert.rejects(() => client.request('/api/recordings', { method: 'GET' }), (err) => err.status === 401);
+  assert.equal(revoked, 1);
+});
+
+test("A's 428 does not register for B when the switch lands while its body is read", async () => {
+  let client;
+  const { mod, calls } = await runScenario({
+    responses: [
+      jsonResponseReadThen(
+        428,
+        { error: 'Device registration required', code: 'DEVICE_REGISTRATION_REQUIRED' },
+        () => switchAccount['a direct account switch'](client),
+      ),
+      jsonResponse(200, { ok: true }),
+    ],
+  });
+  client = new mod.ApiClient();
+  client.setToken('token-user-a');
+  let registrations = 0;
+  client.setOnDeviceRegistrationRequired(async () => {
+    registrations += 1;
+    return true;
+  });
+
+  await assert.rejects(
+    () => client.request('/api/recordings/prepare-upload', { method: 'POST', body: {} }),
+    (err) => err.status === 428,
+  );
+  assert.equal(registrations, 0);
+  assert.equal(calls.length, 1);
+});
+
+test('a retired token authenticates nothing until the next account installs its own', async () => {
+  const { mod, calls } = await runScenario({ responses: [jsonResponse(200, { ok: true })] });
+  const client = new mod.ApiClient();
+  client.setToken('token-user-a');
+  client.retireAuthEpoch();
+
+  await client.request('/api/recordings', { method: 'GET' });
+  assert.equal(calls[0].authorization, undefined, "A's token must not outlive the switch");
+});

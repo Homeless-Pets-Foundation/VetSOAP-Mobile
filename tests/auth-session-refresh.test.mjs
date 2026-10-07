@@ -16,6 +16,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { loadProviderFunction } from './helpers/loadProviderCallback.mjs';
 import { loadTsModule } from './helpers/loadTs.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -114,10 +115,109 @@ test('a 401 refresh that fails transiently keeps the session, like the foregroun
     provider.indexOf('const handleAppStateChange = (nextState: AppStateStatus) => {'),
     provider.indexOf("AppState.addEventListener('change', handleAppStateChange)")
   );
-  assert.match(foreground, /if \(!isTransientRefreshFailure\(errorCode\)\) \{/);
+  assert.match(foreground, /if \(isTransientRefreshFailure\(errorCode\)\) \{/);
   // One definition: neither path keeps its own list.
   assert.doesNotMatch(foreground, /errorCode === '/);
   assert.doesNotMatch(onUnauthorized, /errorCode === '/);
+});
+
+/**
+ * The foreground-resume refresh, executed. A 401 that arrives while it runs
+ * waits on it, so what it RETURNS is what that request acts on: `'unresolved'`
+ * fails it as retryable, while a plain return lets ApiClient take its 401 as
+ * final and sign the vet out. A transient failure returned nothing, so a GoTrue
+ * network error signed the vet out after all (Codex review on
+ * VetSOAP-Mobile#234).
+ */
+async function foregroundRefresh({ session, getSessionError = null, refreshError = null }) {
+  const sessionRefresh = await load();
+  const events = [];
+  const breadcrumb = (_category, name, data) => events.push(['breadcrumb', name, data?.reason]);
+  const trackEvent = () => {};
+  const refreshPromiseRef = { current: null };
+  const handleAppStateChange = await loadProviderFunction('handleAppStateChange', {
+    refreshPromiseRef,
+    goTrueInitPendingRef: { current: false },
+    boundedAuthCall: sessionRefresh.boundedAuthCall,
+    attemptSessionRefresh: sessionRefresh.attemptSessionRefresh,
+    isTransientRefreshFailure: sessionRefresh.isTransientRefreshFailure,
+    classifyAuthError: await loadProviderFunction('classifyAuthError', {}),
+    refreshUnresolved: await loadProviderFunction('refreshUnresolved', { breadcrumb, trackEvent }),
+    supabase: {
+      auth: {
+        getSession: async () => ({ data: { session }, error: getSessionError }),
+        refreshSession: async () => {
+          events.push(['refresh']);
+          return { error: refreshError };
+        },
+        signOut: async ({ scope }) => {
+          events.push(['signOut', scope]);
+        },
+      },
+    },
+    breadcrumb,
+    trackEvent,
+    captureException: () => events.push(['captureException']),
+  });
+  handleAppStateChange('active');
+  const outcome = await refreshPromiseRef.current;
+  return { outcome, events };
+}
+
+// Inside the 10-minute window, so the resume refreshes.
+const expiringSession = () => ({
+  access_token: 'synthetic-access',
+  expires_at: Math.floor(Date.now() / 1000) + 60,
+});
+const named = (events, ...names) => events.filter(([name]) => names.includes(name));
+
+test('a foreground refresh that fails transiently answers a waiting 401 with unresolved', async () => {
+  for (const refreshError of [
+    { name: 'AuthRetryableFetchError', message: 'Failed to fetch', status: 0 },
+    { name: 'AuthApiError', message: 'Too many requests', status: 429 },
+    { name: 'AuthApiError', message: 'Internal error', status: 500 },
+  ]) {
+    const { outcome, events } = await foregroundRefresh({ session: expiringSession(), refreshError });
+    assert.equal(outcome, 'unresolved', refreshError.message);
+    assert.deepEqual(named(events, 'refresh', 'signOut'), [['refresh']], 'the session is kept');
+  }
+});
+
+test('a foreground refresh GoTrue refuses still signs out locally', async () => {
+  const { outcome, events } = await foregroundRefresh({
+    session: expiringSession(),
+    refreshError: { name: 'AuthApiError', message: 'Invalid Refresh Token: Refresh Token Not Found', status: 400 },
+  });
+  assert.equal(outcome, undefined);
+  assert.deepEqual(named(events, 'refresh', 'signOut'), [['refresh'], ['signOut', 'local']]);
+});
+
+test('getSession failing in transit before the refresh is unresolved too', async () => {
+  // getSession() refreshes a near-expiry session itself and reports no session
+  // when that fails; that is GoTrue not answering, not a signed-out device.
+  const { outcome, events } = await foregroundRefresh({
+    session: null,
+    getSessionError: { name: 'AuthRetryableFetchError', message: 'Failed to fetch', status: 0 },
+  });
+  assert.equal(outcome, 'unresolved');
+  assert.deepEqual(named(events, 'refresh', 'signOut'), []);
+});
+
+test('the foreground refresh still answers plainly when GoTrue gave a verdict', async () => {
+  // No session and no error: GoTrue holds no session to keep.
+  let run = await foregroundRefresh({ session: null });
+  assert.equal(run.outcome, undefined);
+  assert.deepEqual(named(run.events, 'refresh', 'signOut'), []);
+  // A refusal on getSession itself.
+  run = await foregroundRefresh({
+    session: null,
+    getSessionError: { name: 'AuthApiError', message: 'Invalid Refresh Token', status: 400 },
+  });
+  assert.equal(run.outcome, undefined);
+  // A refresh that succeeded: the waiting request retries with the new token.
+  run = await foregroundRefresh({ session: expiringSession() });
+  assert.equal(run.outcome, undefined);
+  assert.deepEqual(named(run.events, 'refresh', 'signOut'), [['refresh']]);
 });
 
 test('AuthProvider refreshes on a 401 only through the bounded path, and never signs out on it', async () => {

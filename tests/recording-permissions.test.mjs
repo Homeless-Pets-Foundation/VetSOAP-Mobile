@@ -156,10 +156,11 @@ test('ApiClient routes an unrecoverable 401 to sign-out instead of a zombie sess
   const client = await read('src/api/client.ts');
   assert.match(client, /private onSessionExpired\?/);
   assert.match(client, /setOnSessionExpired\(callback/);
-  // After onUnauthorized()'s refresh+retry, a still-401 response fires onSessionExpired.
+  // After onUnauthorized()'s refresh+retry, a still-401 response fires onSessionExpired
+  // (for the account that sent it; tests/api-client-stale-token-retry.test.mjs).
   assert.match(
     client,
-    /if \(response\.status === 401\) \{\s*throwIfRequestAborted\(signal\);\s*try \{ await this\.onSessionExpired\?\.\(\);/
+    /if \(response\.status === 401 && sentByCurrentAccount\(\)\) \{\s*throwIfRequestAborted\(signal\);\s*try \{ await this\.onSessionExpired\?\.\(\);/
   );
 
   const auth = await read('src/auth/AuthProvider.tsx');

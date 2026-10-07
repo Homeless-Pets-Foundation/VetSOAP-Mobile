@@ -71,3 +71,23 @@ export async function attemptSessionRefresh<E>(
   const { error } = result.value;
   return error ? { kind: 'failed', error } : { kind: 'refreshed' };
 }
+
+/** Codes from AuthProvider's classifyAuthError that say nothing about the session itself. */
+const TRANSIENT_REFRESH_FAILURES: ReadonlySet<string> = new Set([
+  'network',
+  'retryable_fetch',
+  'rate_limited',
+  'server_error',
+]);
+
+/**
+ * A `failed` refresh whose error is one of these did not reach GoTrue, or
+ * GoTrue was rate limiting or erroring. Neither proves the session is dead, so
+ * both refresh paths keep it: after a restore during a split outage (the API
+ * answering 401 for the expired token while GoTrue cannot refresh it), signing
+ * out would put the vet's drafts behind a sign-in that cannot succeed (Codex
+ * review on VetSOAP-Mobile#234).
+ */
+export function isTransientRefreshFailure(errorCode: string): boolean {
+  return TRANSIENT_REFRESH_FAILURES.has(errorCode);
+}

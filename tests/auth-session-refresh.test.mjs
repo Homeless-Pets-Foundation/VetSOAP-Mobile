@@ -66,6 +66,60 @@ test('a refresh that throws is not mistaken for a timeout', async () => {
   assert.deepEqual(plain(await boundedAuthCall(hang, 20)), { timedOut: true });
 });
 
+test('only failures that say nothing about the session count as transient', async () => {
+  const { isTransientRefreshFailure } = await load();
+  for (const code of ['network', 'retryable_fetch', 'rate_limited', 'server_error']) {
+    assert.equal(isTransientRefreshFailure(code), true, code);
+  }
+  // A refused or missing refresh token is GoTrue's answer about the session.
+  for (const code of ['invalid_credentials', 'invalid_payload', 'email_not_confirmed', 'other']) {
+    assert.equal(isTransientRefreshFailure(code), false, code);
+  }
+});
+
+test('the transient codes are ones classifyAuthError actually returns', async () => {
+  // The helper matches on classifyAuthError's output, so a renamed code would
+  // quietly turn a transient failure back into a sign-out.
+  const [{ isTransientRefreshFailure }, provider] = await Promise.all([
+    load(),
+    read('src/auth/AuthProvider.tsx'),
+  ]);
+  const start = provider.indexOf('function classifyAuthError(');
+  const body = provider.slice(start, provider.indexOf('\n}\n', start));
+  const codes = [...new Set([...body.matchAll(/return '([a-z_]+)';/g)].map((match) => match[1]))];
+  assert.ok(codes.length >= 8, 'classifyAuthError changed shape');
+  assert.deepEqual(
+    codes.filter((code) => isTransientRefreshFailure(code)).sort(),
+    ['network', 'rate_limited', 'retryable_fetch', 'server_error'],
+  );
+});
+
+test('a 401 refresh that fails transiently keeps the session, like the foreground path', async () => {
+  // Codex review on VetSOAP-Mobile#234: after the 3s retry, any failure signed
+  // the vet out. During a split outage after a restore, that discarded the
+  // offline session for a GoTrue network error.
+  const provider = await read('src/auth/AuthProvider.tsx');
+  const onUnauthorized = provider.slice(
+    provider.indexOf('apiClient.setOnUnauthorized('),
+    provider.indexOf('apiClient.setOnSessionExpired(')
+  );
+  const retryFailed = onUnauthorized.slice(onUnauthorized.indexOf("if (retry.kind === 'failed') {"));
+  const keep = retryFailed.indexOf('if (isTransientRefreshFailure(errorCode)) {');
+  const signOut = retryFailed.indexOf('await handleSignOut(');
+  assert.ok(keep > 0, 'the retry-failed branch must classify the failure');
+  assert.ok(keep < signOut, 'and keep a transient one before signing out');
+  assert.match(retryFailed.slice(keep, signOut), /return 'unresolved';/);
+
+  const foreground = provider.slice(
+    provider.indexOf('const handleAppStateChange = (nextState: AppStateStatus) => {'),
+    provider.indexOf("AppState.addEventListener('change', handleAppStateChange)")
+  );
+  assert.match(foreground, /if \(!isTransientRefreshFailure\(errorCode\)\) \{/);
+  // One definition: neither path keeps its own list.
+  assert.doesNotMatch(foreground, /errorCode === '/);
+  assert.doesNotMatch(onUnauthorized, /errorCode === '/);
+});
+
 test('AuthProvider refreshes on a 401 only through the bounded path, and never signs out on it', async () => {
   const provider = await read('src/auth/AuthProvider.tsx');
   const onUnauthorized = provider.slice(

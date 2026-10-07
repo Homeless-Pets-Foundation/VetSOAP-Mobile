@@ -461,6 +461,25 @@ test('late failures are rewritten at most twice before waiting for a response', 
   assert.equal(store.counts.writes, 5, 'and its late failure may be rewritten again');
 });
 
+test('a value queued behind a failed write is still written', async () => {
+  // Codex review on VetSOAP-Mobile#234, eighth round. A response that arrived
+  // while a write was in flight only queued its value. When that write failed,
+  // the loop stopped without trying the queued value, leaving storage stale
+  // until a response that an offline tablet never gets.
+  const map = new Map();
+  const store = makeFailingLateStore(map, { failCalls: 2 });
+  const flag = await load(store);
+  flag.applyDurableCaptureHeader('true', true);
+  await flush();
+  flag.applyDurableCaptureHeader(null, true);
+  assert.equal(store.counts.writes, 1, 'the newer value waits behind the write in flight');
+
+  await failOldestWrite(store);
+  await flush();
+  assert.equal(store.counts.writes, 2, 'and is written once that write fails');
+  assert.equal(map.get(KEY), 'false');
+});
+
 test('a verification in flight when an abandoned write settles is not trusted', async () => {
   // Native calls can run on concurrent threads, so a read-back can be served
   // before the abandoned write lands yet answer after it has settled. That

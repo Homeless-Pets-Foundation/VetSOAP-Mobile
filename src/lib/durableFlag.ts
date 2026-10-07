@@ -80,8 +80,11 @@ function parseFlag(value: unknown): boolean | null {
  * cold start would hydrate after the server turned capture off (Codex review
  * on VetSOAP-Mobile#234). A write counts only once a read-back returns it:
  * SecureStore can drop a write while resolving (rule 17). A failed,
- * unverified, or hung write (bounded at PERSIST_TIMEOUT_MS) stops the loop and
- * marks storage unknown, so the next response writes and verifies again.
+ * unverified, or hung write (bounded at PERSIST_TIMEOUT_MS) marks storage
+ * unknown, so the next response writes and verifies again. It stops the loop
+ * unless a different value was queued behind it: that one has had no attempt
+ * yet, and an offline tablet may never get another response (Codex review,
+ * eighth round).
  *
  * A hung write is abandoned, not cancelled; the native bridge offers no
  * cancel. It can still land after a newer write was verified, including
@@ -147,6 +150,10 @@ async function drainWrites(): Promise<void> {
       }
       if (!ok) {
         persistedValue = null;
+        // A newer value that queued behind this attempt still gets one of its
+        // own; the same value waits for the next response, so a failing
+        // Keystore cannot spin here.
+        if (desiredValue !== value) continue;
         return;
       }
       if (epoch === storageEpoch) persistedValue = value;

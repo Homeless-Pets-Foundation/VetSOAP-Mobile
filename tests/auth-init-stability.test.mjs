@@ -110,7 +110,7 @@ test('the auth init effect depends only on stable identities', async () => {
     provider,
     /\}, \[applyFetchedUser, handleMfaRequiredResponse, registerDevice\]\);/
   );
-  assert.match(provider, /\}, \[fetchUser, registerDevice, setRecoveryDraftSlotId\]\);/);
+  assert.match(provider, /\}, \[applyAuthSession, fetchUser, registerDevice, setRecoveryDraftSlotId\]\);/);
 
   // The init effect still exists and still owns the watchdog + getSession.
   assert.match(provider, /const initWatchdog = setTimeout\(\(\) => \{/);
@@ -203,8 +203,8 @@ test('the fetchUser single-flight handle is dropped on every sign-out path', asy
   // Both the explicit sign-out and the involuntary SIGNED_OUT branch clear it.
   assert.equal(
     (provider.match(/fetchUserInFlightRef\.current = null;/g) ?? []).length,
-    3,
-    'expected the release helper plus both sign-out paths'
+    4,
+    'expected the release helper, both sign-out paths and direct account replacement'
   );
   assert.match(
     provider,
@@ -212,7 +212,7 @@ test('the fetchUser single-flight handle is dropped on every sign-out path', asy
   );
   assert.match(
     provider,
-    /clearTelemetryIdentity\(\);[\s\S]{0,400}?fetchUserInFlightRef\.current = null;\s*\n\s*registerDeviceInFlightRef\.current = null;\s*\n\s*authGenerationRef\.current \+= 1;\s*\n\s*setUser\(null\);\s*\n\s*setSession\(null\);\s*\n\s*setProfileSource\('live'\);/
+    /clearTelemetryIdentity\(\);[\s\S]{0,400}?fetchUserInFlightRef\.current = null;\s*\n\s*registerDeviceInFlightRef\.current = null;\s*\n\s*authGenerationRef\.current \+= 1;\s*\n\s*setUser\(null\);\s*\n\s*applyAuthSession\(null\);\s*\n\s*setProfileSource\('live'\);/
   );
 });
 
@@ -314,10 +314,10 @@ test('the registerDevice flight is scoped to the signed-in account', async () =>
   // already-running flight cannot apply its result to the next session.
   assert.equal(
     (provider.match(/registerDeviceInFlightRef\.current = null;/g) ?? []).length,
-    3,
-    'expected the release helper plus both sign-out paths'
+    4,
+    'expected the release helper, both sign-out paths and direct account replacement'
   );
-  assert.equal((provider.match(/authGenerationRef\.current \+= 1;/g) ?? []).length, 2);
+  assert.equal((provider.match(/authGenerationRef\.current \+= 1;/g) ?? []).length, 3);
 
   // Every state write in the flight is behind the guard: success, the no-device-id
   // early return, and the whole error branch (which owns the limit-block state).

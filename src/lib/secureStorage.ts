@@ -185,6 +185,21 @@ export const secureStorage = {
     }
   },
 
+  /**
+   * Like `getSession`, but a native failure rejects with the strict sentinel
+   * instead of returning `null`, so a cold-start restore can tell a failing
+   * Keystore from a device with no session (src/auth/sessionRestore.ts).
+   */
+  async getSessionStrict(): Promise<string | null> {
+    try {
+      return await SecureStore.getItemAsync(KEYS.SESSION);
+    } catch (error) {
+      if (__DEV__) console.error('[SecureStorage] getSessionStrict failed:', error);
+      reportSecureStoreFailure('getSessionStrict', error);
+      throw new StrictReadUnavailableError('secure_store:getSessionStrict');
+    }
+  },
+
   async setSession(session: string): Promise<void> {
     try {
       await SecureStore.setItemAsync(KEYS.SESSION, session, {

@@ -562,7 +562,7 @@ test('AuthProvider raises fetchUser and registerDevice thresholds to 10s', async
   const registerBlock = src.slice(src.indexOf("measurePhase('registerDevice'"));
   assert.match(registerBlock.slice(0, 5000), /\{ warningThresholdMs: 10_000 \}/);
   const fetchBlock = src.slice(src.indexOf("measurePhase('fetchUser'"));
-  assert.match(fetchBlock.slice(0, 8000), /\{ warningThresholdMs: 10_000 \}/);
+  assert.match(fetchBlock, /\}, \{ warningThresholdMs: 10_000 \}\);\s*fetchUserInFlightRef\.current = promise;/);
 });
 
 test('local draft refresh keeps phase completion but disables its duplicate slow warning', async () => {

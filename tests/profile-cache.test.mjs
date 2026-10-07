@@ -61,6 +61,9 @@ async function loadTsModule(path) {
 const cache = await loadTsModule('src/lib/userProfileCache.ts');
 const { serializeProfile, parseCachedProfile, saveProfileCache, getCachedProfile, MAX_SERIALIZED_BYTES } = cache;
 
+// Clinic database identity and Supabase login identity are deliberately distinct.
+const authUserId = 'c5f3e4d6-7890-4cde-baf1-234567890abc';
+
 const realisticUser = {
   id: 'a3f1c2d4-5678-4abc-9def-0123456789ab',
   email: 'dr.veterinarian@homelesspetsfoundation.org',
@@ -71,7 +74,7 @@ const realisticUser = {
 };
 
 test('serialized projection stays under the Keystore size budget', () => {
-  const serialized = serializeProfile(realisticUser, 1765432100000);
+  const serialized = serializeProfile(realisticUser, 1765432100000, authUserId);
   assert.ok(serialized, 'realistic profile should serialize');
   assert.ok(MAX_SERIALIZED_BYTES <= 1536, 'budget must stay under 1.5KB (Android Keystore ~2KB cap)');
   assert.ok(
@@ -81,6 +84,7 @@ test('serialized projection stays under the Keystore size budget', () => {
   // Minimal projection only — never the full /auth/me response.
   const parsed = JSON.parse(serialized);
   assert.deepEqual(Object.keys(parsed).sort(), [
+    'authUserId',
     'avatarUrl',
     'cachedAt',
     'email',
@@ -93,16 +97,17 @@ test('serialized projection stays under the Keystore size budget', () => {
 
 test('oversized avatarUrl is dropped rather than failing the write', () => {
   const longAvatar = { ...realisticUser, avatarUrl: `https://cdn.example.com/${'x'.repeat(2000)}.png` };
-  const serialized = serializeProfile(longAvatar, 0);
+  const serialized = serializeProfile(longAvatar, 0, authUserId);
   assert.ok(serialized, 'should still serialize without the avatar');
   assert.equal(JSON.parse(serialized).avatarUrl, null);
 });
 
 test('organizationName round-trips so the practice name survives an offline cold start', () => {
   const withOrg = { ...realisticUser, organizationName: 'Homeless Pets Foundation' };
-  const serialized = serializeProfile(withOrg, 1765432100000);
+  const serialized = serializeProfile(withOrg, 1765432100000, authUserId);
   assert.ok(serialized);
   assert.deepEqual(Object.keys(JSON.parse(serialized)).sort(), [
+    'authUserId',
     'avatarUrl',
     'cachedAt',
     'email',
@@ -112,7 +117,7 @@ test('organizationName round-trips so the practice name survives an offline cold
     'organizationName',
     'role',
   ]);
-  assert.equal(parseCachedProfile(serialized, withOrg.id).organizationName, 'Homeless Pets Foundation');
+  assert.equal(parseCachedProfile(serialized, authUserId).organizationName, 'Homeless Pets Foundation');
 });
 
 test('a cache entry written before organizationName existed still parses', () => {
@@ -135,14 +140,14 @@ test('a cache entry written before organizationName existed still parses', () =>
 test('over the ceiling, avatarUrl drops before organizationName', () => {
   // Size the payload so it fits only after BOTH optional fields are dropped:
   // leave ~40 bytes of slack, far less than either field needs.
-  const floor = serializeProfile({ ...realisticUser, fullName: '', avatarUrl: null }, 0);
+  const floor = serializeProfile({ ...realisticUser, fullName: '', avatarUrl: null }, 0, authUserId);
   const padding = MAX_SERIALIZED_BYTES - Buffer.byteLength(floor, 'utf8') - 40;
   const crowded = {
     ...realisticUser,
     fullName: 'X'.repeat(padding),
     organizationName: 'P'.repeat(120),
   };
-  const serialized = serializeProfile(crowded, 0);
+  const serialized = serializeProfile(crowded, 0, authUserId);
   assert.ok(serialized, 'should still write after dropping both optional fields');
   const parsed = JSON.parse(serialized);
   assert.equal(parsed.avatarUrl, null);
@@ -152,12 +157,12 @@ test('over the ceiling, avatarUrl drops before organizationName', () => {
 
 test('a projection that cannot fit even without avatarUrl is not written', () => {
   const huge = { ...realisticUser, fullName: 'X'.repeat(3000) };
-  assert.equal(serializeProfile(huge, 0), null);
+  assert.equal(serializeProfile(huge, 0, authUserId), null);
 });
 
 test('parseCachedProfile rejects user mismatch (shared-tablet user swap)', () => {
-  const serialized = serializeProfile(realisticUser, 1765432100000);
-  assert.ok(parseCachedProfile(serialized, realisticUser.id));
+  const serialized = serializeProfile(realisticUser, 1765432100000, authUserId);
+  assert.ok(parseCachedProfile(serialized, authUserId));
   assert.equal(parseCachedProfile(serialized, 'different-user-id'), null);
   assert.equal(parseCachedProfile(serialized, ''), null);
 });
@@ -175,10 +180,12 @@ test('parseCachedProfile rejects corruption and malformed shapes', () => {
 
 test('save/get round-trip through the secureStorage raw accessors', async () => {
   storeBacking.clear();
-  await saveProfileCache(realisticUser);
-  const hit = await getCachedProfile(realisticUser.id);
+  await saveProfileCache(realisticUser, authUserId);
+  const hit = await getCachedProfile(authUserId);
   assert.ok(hit);
   assert.equal(hit.id, realisticUser.id);
+  assert.equal(hit.authUserId, authUserId);
+  assert.notEqual(hit.id, hit.authUserId);
   assert.equal(hit.fullName, realisticUser.fullName);
   assert.equal(hit.avatarUrl, realisticUser.avatarUrl);
   assert.ok(typeof hit.cachedAt === 'number' && hit.cachedAt > 0);
@@ -197,7 +204,7 @@ test('userProfileCache respects rule 3 (no direct SecureStore, no KEYS reach-in)
 test('AuthProvider confines cache fallback to the terminal-failure branch with bounded reads', async () => {
   const provider = await read('src/auth/AuthProvider.tsx');
   assert.match(provider, /withTimeout\(\s*getCachedProfile\(sessionUserId\),\s*3000/);
-  assert.match(provider, /saveProfileCache\(liveUser\)\.catch\(\(\) => \{\}\)/);
+  assert.match(provider, /saveProfileCache\(liveUser, authUserId\)\.catch\(\(\) => \{\}\)/);
   assert.match(provider, /setProfileSource\('cache'\)/);
   // The cache user must be applied through applyFetchedUser so rule-13
   // user-scoped storage (stash/draft setUserId) is configured.
@@ -227,20 +234,20 @@ test('the MFA profile path refreshes the cache, not just the live user', async (
   const provider = await read('src/auth/AuthProvider.tsx');
   assert.match(
     provider,
-    /applyFetchedUser\(withOrganizationName\(data\)\);[\s\S]{0,800}?saveProfileCache\(liveUser\)\.catch\(\(\) => \{\}\)/
+    /applyFetchedUser\(withOrganizationName\(data\)\);[\s\S]{0,800}?saveProfileCache\(liveUser, authUserId\)\.catch\(\(\) => \{\}\)/
   );
 });
 
 test('a re-save replaces a stale cached practice name', async () => {
   storeBacking.clear();
-  await saveProfileCache({ ...realisticUser, organizationName: 'Old Practice Name' });
-  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, 'Old Practice Name');
+  await saveProfileCache({ ...realisticUser, organizationName: 'Old Practice Name' }, authUserId);
+  assert.equal((await getCachedProfile(authUserId)).organizationName, 'Old Practice Name');
   // Practice renamed (or the org transferred) — the next live profile wins.
-  await saveProfileCache({ ...realisticUser, organizationName: 'Homeless Pets Foundation' });
-  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, 'Homeless Pets Foundation');
+  await saveProfileCache({ ...realisticUser, organizationName: 'Homeless Pets Foundation' }, authUserId);
+  assert.equal((await getCachedProfile(authUserId)).organizationName, 'Homeless Pets Foundation');
   // Name no longer served → the cached one must not linger.
-  await saveProfileCache(realisticUser);
-  assert.equal((await getCachedProfile(realisticUser.id)).organizationName, undefined);
+  await saveProfileCache(realisticUser, authUserId);
+  assert.equal((await getCachedProfile(authUserId)).organizationName, undefined);
 });
 
 test('OfflineBanner renders only for cached profile source', async () => {
@@ -248,4 +255,30 @@ test('OfflineBanner renders only for cached profile source', async () => {
   assert.match(banner, /profileSource !== 'cache'/);
   const layout = await read('app/(app)/_layout.tsx');
   assert.match(layout, /<OfflineBanner \/>/);
+});
+
+
+test('binding rejects another login even when it matches the clinic id', () => {
+  const raw = serializeProfile(realisticUser, 0, authUserId);
+  assert.equal(parseCachedProfile(raw, realisticUser.id), null);
+  for (const invalid of [null, 42, '', realisticUser.id]) {
+    const altered = JSON.stringify({ ...JSON.parse(raw), authUserId: invalid });
+    assert.equal(parseCachedProfile(altered, authUserId), null);
+  }
+});
+
+test('legacy entries retain exact-id binding, with no email identity fallback', () => {
+  const legacy = JSON.parse(serializeProfile(realisticUser, 0, authUserId));
+  delete legacy.authUserId;
+  assert.ok(parseCachedProfile(JSON.stringify(legacy), realisticUser.id));
+  assert.equal(parseCachedProfile(JSON.stringify(legacy), authUserId), null);
+});
+
+test('an unbound profile cannot overwrite the last known good entry', async () => {
+  storeBacking.clear();
+  await saveProfileCache(realisticUser, authUserId);
+  const before = storeBacking.get('captivet_profile_cache');
+  assert.equal(serializeProfile(realisticUser, 0, ''), null);
+  await saveProfileCache(realisticUser, '');
+  assert.equal(storeBacking.get('captivet_profile_cache'), before);
 });

@@ -63,7 +63,7 @@ test('auth init defers token validation to the first authed request (no blocking
   const restoreIdx = src.indexOf('if (existingSession.access_token) {');
   assert.ok(restoreIdx > -1, 'session-restore branch must be findable');
   const restoreBody = src.slice(restoreIdx, restoreIdx + 1600);
-  assert.match(restoreBody, /setSession\(existingSession\);/);
+  assert.match(restoreBody, /applyAuthSession\(existingSession\);/);
   assert.match(restoreBody, /apiClient\.setToken\(existingSession\.access_token\);/);
   assert.match(restoreBody, /fetchUser\(\)\.catch\(\(\) => \{\}\);/);
   assert.doesNotMatch(restoreBody, /secureStorage\.clearAll\(\)/);

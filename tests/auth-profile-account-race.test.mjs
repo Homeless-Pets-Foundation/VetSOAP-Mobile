@@ -29,11 +29,20 @@ async function harness({ request = async () => bodyA, register = async () => tru
   const refs = {
     authGenerationRef: { current: 0 }, authSessionUserIdRef: { current: authA },
     fetchUserInFlightRef: { current: null }, activeUserRef: { current: null },
-    restoredSessionRef: { current: null },
+    restoredSessionRef: { current: null }, registerDeviceInFlightRef: { current: null },
   };
+  const scopes = {draft:clinicA,stash:clinicA,durable:clinicA};
+  const queryData = new Map([['prior-account', {marker:'synthetic'}]]);
   const record = name => value => events.push([name, value]);
   const closure = {
-    ...refs, ApiError, isRetryableFetchUserError, fetchUserErrorMessage, restoredExpiryExplains, restoredUserIdFor,
+    ...refs,
+    queryClient: { clear: () => queryData.clear() }, stopQueryPersistence: record('stopPersistence'),
+    setStashUserId: id => { scopes.stash = id; }, draftStorage: { setUserId: id => { scopes.draft = id; } },
+    durableTombstone: {setUserId: id => {scopes.durable = id;}}, durableReconcileHold: {setUserId: () => {}}, durableActiveStore: {setUserId: () => {}},
+    invalidateDurableRecoveries: () => {}, durableRecoveryStore: {clear: () => {}}, clearTelemetryIdentity: () => {},
+    setSession: record('session'), setDeviceRegistrationBlock: record('deviceBlock'), setDeviceRegistrationPending: record('devicePending'),
+    setMfaRequired: record('mfaRequired'), setMfaReturnPath: record('mfaReturnPath'), setMfaReason: record('mfaReason'), setActiveMfaChallenge: record('challenge'),
+    ApiError, isRetryableFetchUserError, fetchUserErrorMessage, restoredExpiryExplains, restoredUserIdFor,
     apiClient: { get: request, post: async () => { events.push(['bootstrap']); } },
     registerDevice: register, measurePhase: (_name, _tags, fn) => fn(),
     withTimeout: promise => promise,
@@ -49,6 +58,7 @@ async function harness({ request = async () => bodyA, register = async () => tru
     setTimeout: fn => setTimeout(fn, 0),
   };
   const fetchUser = await loadProviderCallback('fetchUser', closure);
+  const applyAuthSession = await loadProviderCallback('applyAuthSession', closure);
   function switchAccount() {
     refs.authGenerationRef.current++;
     refs.authSessionUserIdRef.current = authB;
@@ -56,7 +66,7 @@ async function harness({ request = async () => bodyA, register = async () => tru
     refs.activeUserRef.current = { id: clinicB };
     events.length = 0;
   }
-  return { fetchUser, refs, events, cache, stored, switchAccount };
+  return { fetchUser, applyAuthSession, refs, events, cache, stored, scopes, queryData, switchAccount };
 }
 
 test('live profile caches its login binding while retaining the clinic storage id', async () => {
@@ -130,4 +140,55 @@ test('failed device registration still applies the current profile for recovery 
   const h = await harness({ register: async () => false });
   assert.equal(await h.fetchUser(), true);
   assert.equal(h.refs.activeUserRef.current.id, clinicA);
+});
+
+
+test('direct SDK account replacement clears the outgoing profile and read scopes', async () => {
+  const h = await harness();
+  await h.fetchUser();
+  h.refs.fetchUserInFlightRef.current = Promise.resolve(true);
+  h.refs.registerDeviceInFlightRef.current = Promise.resolve(true);
+  h.applyAuthSession({ user: { id: authB }, access_token: 'synthetic-next' });
+  assert.equal(h.refs.authGenerationRef.current, 1);
+  assert.equal(h.refs.authSessionUserIdRef.current, authB);
+  assert.equal(h.refs.activeUserRef.current, null);
+  assert.equal(h.refs.fetchUserInFlightRef.current, null);
+  assert.equal(h.refs.registerDeviceInFlightRef.current, null);
+  assert.deepEqual(h.scopes, {draft:null,stash:null,durable:null});
+  assert.equal(h.queryData.size, 0);
+  assert.ok(h.events.some(([name, value]) => name === 'stopPersistence' && value.removeStored));
+  // Clearing the active account must not delete its offline profile or recordings.
+  assert.equal((await h.cache.getCachedProfile(authA)).id, clinicA);
+  assert.equal(await h.cache.getCachedProfile(authB), null);
+});
+
+test('same-user token rotation retains active work, scopes and shared flights', async () => {
+  const h = await harness();
+  await h.fetchUser();
+  const flight = Promise.resolve(true);
+  h.refs.fetchUserInFlightRef.current = flight;
+  h.refs.registerDeviceInFlightRef.current = flight;
+  h.events.length = 0;
+  h.applyAuthSession({ user: { id: authA }, access_token: 'synthetic-rotated' });
+  assert.equal(h.refs.authGenerationRef.current, 0);
+  assert.equal(h.refs.activeUserRef.current.id, clinicA);
+  assert.equal(h.refs.fetchUserInFlightRef.current, flight);
+  assert.equal(h.refs.registerDeviceInFlightRef.current, flight);
+  assert.deepEqual(h.scopes, {draft:clinicA,stash:clinicA,durable:clinicA});
+  assert.equal(h.queryData.size, 1);
+  assert.deepEqual(h.events.map(([name]) => name), ['session']);
+});
+
+test('a replacement account starts its own profile flight while the old request is pending', async () => {
+  const prior = deferred();
+  let requests = 0;
+  const h = await harness({ request: () => requests++ === 0 ? prior.promise : Promise.resolve({user:{...bodyA.user,id:clinicB}}) });
+  const departing = h.fetchUser();
+  h.applyAuthSession({user:{id:authB},access_token:'synthetic-next'});
+  assert.equal(await h.fetchUser(), true);
+  prior.resolve(bodyA);
+  assert.equal(await departing, false);
+  assert.equal(requests, 2);
+  assert.equal(h.refs.activeUserRef.current.id, clinicB);
+  assert.equal((await h.cache.getCachedProfile(authB)).id, clinicB);
 });

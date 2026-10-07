@@ -193,7 +193,7 @@ test('AuthProvider restores only through the guarded, bounded path', async () =>
     provider.indexOf('// Restore existing session on startup.')
   );
   assert.ok(restoreBody.length > 0);
-  assert.match(restoreBody, /setSession\(restored\);/);
+  assert.match(restoreBody, /applyAuthSession\(restored\);/);
   assert.match(restoreBody, /sessionTimestampRef\.current = Date\.now\(\);/);
   assert.match(restoreBody, /apiClient\.setToken\(restored\.access_token\);/);
   assert.match(restoreBody, /fetchUser\(\)\.catch\(\(\) => \{\}\);/);

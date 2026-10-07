@@ -916,7 +916,7 @@ test('a held durable copy survives a restart, and the hold is released on resolu
   assert.match(recovery, /heldRecordingIds,/);
   // User-scoped like every other durable store (shared clinic tablets).
   assert.match(auth, /durableReconcileHold\.setUserId\(scopedUserId\);/);
-  assert.equal((auth.match(/durableReconcileHold\.setUserId\(null\)/g) ?? []).length, 2);
+  assert.equal((auth.match(/durableReconcileHold\.setUserId\(null\)/g) ?? []).length, 3);
 
   // Held on BOTH durable success paths, and BEFORE markUploaded() — which is
   // what makes the manifest self-heal eligible, so a hold written after it

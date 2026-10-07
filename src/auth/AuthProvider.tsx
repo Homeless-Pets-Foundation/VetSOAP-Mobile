@@ -910,6 +910,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => {});
   }, [scanLocalRecoveryIntent, setRecoveryDraftSlotId]);
 
+  const applyAuthSession = useCallback((nextSession: Session | null) => {
+    const nextAuthUserId = nextSession?.user.id ?? null;
+    const previousAuthUserId = authSessionUserIdRef.current;
+    if (previousAuthUserId && nextAuthUserId && previousAuthUserId !== nextAuthUserId) {
+      // Deep links/SDK session replacement can switch users without SIGNED_OUT.
+      // Retire the old account before the new profile request begins. Saved
+      // recordings stay on disk; only read caches and active scopes are cleared.
+      fetchUserInFlightRef.current = null;
+      registerDeviceInFlightRef.current = null;
+      authGenerationRef.current += 1;
+      restoredSessionRef.current = null;
+      stopQueryPersistence({ removeStored: true });
+      queryClient.clear();
+      setStashUserId(null);
+      draftStorage.setUserId(null);
+      durableTombstone.setUserId(null);
+      durableReconcileHold.setUserId(null);
+      durableActiveStore.setUserId(null);
+      invalidateDurableRecoveries();
+      durableRecoveryStore.clear();
+      clearTelemetryIdentity();
+      applyFetchedUser(null);
+      setDeviceRegistrationBlock(null);
+      setDeviceRegistrationPending(false);
+      setMfaRequired(false);
+      setMfaReturnPath(null);
+      setMfaReason(null);
+      setActiveMfaChallenge(null);
+    }
+    authSessionUserIdRef.current = nextAuthUserId;
+    setSession(nextSession);
+  }, [applyFetchedUser]);
+
   const handleMfaRequiredResponse = useCallback(
     (data?: {
       reason?: string;
@@ -1309,11 +1342,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(error.message);
     }
     const nextSession = (await supabase.auth.getSession()).data.session;
-    authSessionUserIdRef.current = nextSession?.user.id ?? null;
-    setSession(nextSession);
+    applyAuthSession(nextSession);
     sessionTimestampRef.current = Date.now();
     apiClient.setToken(tokens.accessToken);
-  }, []);
+  }, [applyAuthSession]);
 
   const getRefreshTokenForMfa = useCallback(async (): Promise<string | null> => {
     if (session?.refresh_token) return session.refresh_token;
@@ -1674,8 +1706,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     registerDeviceInFlightRef.current = null;
     authGenerationRef.current += 1;
     setUser(null);
-    authSessionUserIdRef.current = null;
-    setSession(null);
+    applyAuthSession(null);
     setUserFetchState('idle');
     setUserFetchError(null);
     setProfileSource('live');
@@ -1692,7 +1723,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMfaCurrentLevel('aal1');
     setMfaNextLevel('aal1');
     setActiveMfaChallenge(null);
-  }, [setRecoveryDraftSlotId]);
+  }, [applyAuthSession, setRecoveryDraftSlotId]);
 
   useEffect(() => {
     activeUserRef.current = user;
@@ -1886,8 +1917,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         generation: authGenerationRef.current,
         expiresAt: restored.expires_at ?? 0,
       };
-      authSessionUserIdRef.current = restored?.user.id ?? null;
-      setSession(restored);
+      applyAuthSession(restored);
       sessionTimestampRef.current = Date.now();
       apiClient.setToken(restored.access_token);
       fetchUser().catch(() => {});
@@ -1930,14 +1960,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // out if the session is genuinely dead (both wired in the effect
           // above, which runs first). A network failure is not a 401, so the
           // cached session survives until connectivity returns.
-          authSessionUserIdRef.current = existingSession?.user.id ?? null;
-          setSession(existingSession);
+          applyAuthSession(existingSession);
           sessionTimestampRef.current = Date.now();
           apiClient.setToken(existingSession.access_token);
           fetchUser().catch(() => {});
         } else {
-          authSessionUserIdRef.current = existingSession?.user.id ?? null;
-          setSession(existingSession);
+          applyAuthSession(existingSession);
         }
       } else {
         const trigger = sessionRestoreTrigger(result);
@@ -1968,8 +1996,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // reads isPasswordRecovery so the authenticated session doesn't
           // bounce the user out of reset-password.
           if (event === 'PASSWORD_RECOVERY' && newSession) {
-            authSessionUserIdRef.current = newSession?.user.id ?? null;
-            setSession(newSession);
+            applyAuthSession(newSession);
             sessionTimestampRef.current = Date.now();
             apiClient.setToken(newSession.access_token);
             setIsPasswordRecovery(true);
@@ -1980,8 +2007,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (newSession?.access_token) {
             sessionRecoveryAttemptedRef.current = false; // reset for next sign-out cycle
             userInitiatedSignOutRef.current = false;     // ensure clear regardless of prior sign-out path
-            authSessionUserIdRef.current = newSession?.user.id ?? null;
-            setSession(newSession);
+            applyAuthSession(newSession);
             sessionTimestampRef.current = Date.now();
             if (__DEV__) console.log('[Auth] session established, storing token');
             apiClient.setToken(newSession.access_token);
@@ -2002,8 +2028,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if (!recoveryError && recoveryData.session?.access_token) {
                 if (__DEV__) console.log('[Auth] recovery refresh succeeded, session restored');
                 sessionRecoveryAttemptedRef.current = false;
-                authSessionUserIdRef.current = recoveryData.session?.user.id ?? null;
-                setSession(recoveryData.session);
+                applyAuthSession(recoveryData.session);
                 sessionTimestampRef.current = Date.now();
                 apiClient.setToken(recoveryData.session.access_token);
                 fetchUser().catch((e) => {
@@ -2063,8 +2088,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             registerDeviceInFlightRef.current = null;
             authGenerationRef.current += 1;
             setUser(null);
-            authSessionUserIdRef.current = null;
-            setSession(null);
+            applyAuthSession(null);
             setProfileSource('live');
             localRecoveryScanIdRef.current += 1;
             recoveryScannedUserIdRef.current = null;
@@ -2094,7 +2118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(initWatchdog);
       subscription.unsubscribe();
     };
-  }, [fetchUser, registerDevice, setRecoveryDraftSlotId]);
+  }, [applyAuthSession, fetchUser, registerDevice, setRecoveryDraftSlotId]);
 
   // Proactively refresh token when app returns from background.
   // Uses getSession() rather than the stale closure value of session?.expires_at

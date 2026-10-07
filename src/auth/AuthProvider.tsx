@@ -35,7 +35,12 @@ import {
   sessionRestoreTrigger,
   type RestoredSessionStamp,
 } from './sessionRestore';
-import { attemptSessionRefresh, boundedAuthCall, type RefreshUnresolvedReason } from './sessionRefresh';
+import {
+  attemptSessionRefresh,
+  boundedAuthCall,
+  isTransientRefreshFailure,
+  type RefreshUnresolvedReason,
+} from './sessionRefresh';
 import type { DeviceCapacity, DeviceSession } from '../api/devices';
 import { stashStorage } from '../lib/stashStorage';
 import { stashAudioManager } from '../lib/stashAudioManager';
@@ -1783,11 +1788,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             );
             if (retry.kind === 'unresolved') return refreshUnresolved('on_auth_state', retry.reason);
             if (retry.kind === 'failed') {
-              if (__DEV__) console.log('[Auth] onUnauthorized: retry also failed, signing out');
+              const errorCode = classifyAuthError(retry.error);
               trackEvent({
                 name: 'session_refresh_failed',
-                props: { trigger: 'on_auth_state', error_code: `retry_${classifyAuthError(retry.error)}` },
+                props: { trigger: 'on_auth_state', error_code: `retry_${errorCode}` },
               });
+              // GoTrue answered, but with nothing about the session itself:
+              // keep it, as the foreground path does. Only this request fails.
+              if (isTransientRefreshFailure(errorCode)) {
+                breadcrumb('auth', 'session_refresh_unresolved', { trigger: 'on_auth_state', reason: 'transient' });
+                return 'unresolved';
+              }
+              if (__DEV__) console.log('[Auth] onUnauthorized: retry also failed, signing out');
               setLogoutReason('session_expired');
               await handleSignOut({ recoveryMode: 'best_effort' });
             } else {
@@ -2172,12 +2184,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               // (session in memory, /auth/me 401-ing on every gated query) that
               // looks like a blank spinner. Local-scope signOut emits SIGNED_OUT
               // through onAuthStateChange so cleanup runs through one path.
-              const isTransient =
-                errorCode === 'network' ||
-                errorCode === 'retryable_fetch' ||
-                errorCode === 'rate_limited' ||
-                errorCode === 'server_error';
-              if (!isTransient) {
+              if (!isTransientRefreshFailure(errorCode)) {
                 if (__DEV__) console.log('[Auth] foreground refresh hard-fail, forcing local signOut');
                 breadcrumb('auth', 'foreground_refresh_hard_fail', { error_code: errorCode });
                 await supabase.auth.signOut({ scope: 'local' }).catch(() => {});

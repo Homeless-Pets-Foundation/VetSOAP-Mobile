@@ -7,16 +7,16 @@ MODE="${1:-all}"
 
 cd "$ROOT_DIR"
 
-require_node_20() {
+require_node_22() {
   if ! command -v node >/dev/null 2>&1; then
-    echo "Node 20 is required but node was not found." >&2
+    echo "Node 22 is required but node was not found." >&2
     exit 1
   fi
 
   local node_major
   node_major="$(node -p 'process.versions.node.split(".")[0]')"
-  if [[ "$node_major" != "20" ]]; then
-    echo "Node 20 is required; found $(node --version)." >&2
+  if [[ "$node_major" != "22" ]]; then
+    echo "Node 22 is required; found $(node --version)." >&2
     exit 1
   fi
 }
@@ -93,7 +93,7 @@ run_swift() {
 }
 
 run_linux_suite() {
-  require_node_20
+  require_node_22
   install_dependencies
   run_r2
   run_expo_deps
@@ -104,23 +104,23 @@ run_linux_suite() {
 
 case "$MODE" in
   r2)
-    require_node_20
+    require_node_22
     run_r2
     ;;
   typecheck)
-    require_node_20
+    require_node_22
     run_typecheck
     ;;
   lint)
-    require_node_20
+    require_node_22
     run_lint
     ;;
   test)
-    require_node_20
+    require_node_22
     run_tests
     ;;
   expo-deps)
-    require_node_20
+    require_node_22
     run_expo_deps
     ;;
   swift)

@@ -35,10 +35,10 @@ test('scripts/ci.sh exposes an expo-deps mode that runs expo install --check', a
   assert.match(ci, /run_expo_deps\(\) \{/, 'run_expo_deps must exist');
   assert.match(ci, /npx expo install --check/, 'the check itself must be expo install --check');
 
-  // The mode must be dispatchable and Node-20-gated like its siblings.
+  // The mode must be dispatchable and Node-22-gated like its siblings.
   const mode = ci.match(/\n {2}expo-deps\)\n([\s\S]*?)\n {4};;/);
   assert.ok(mode, 'ci.sh must have an `expo-deps)` case branch');
-  assert.match(mode[1], /require_node_20/);
+  assert.match(mode[1], /require_node_22/);
   assert.match(mode[1], /run_expo_deps/);
   assert.match(ci, /Usage: \$0 \{[^}]*\bexpo-deps\b/, 'usage text must list the mode');
 

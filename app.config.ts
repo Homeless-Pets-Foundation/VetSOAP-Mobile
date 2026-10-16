@@ -114,6 +114,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // Raise the Java heap ceiling on the low-end Galaxy Tab A7 Lite fleet so the
     // OS reaches for us later. See the plugin header for the Sentry evidence.
     './plugins/with-android-large-heap',
+    // Keep MainActivity alive through font size / display size / Bold text /
+    // locale / keyboard-cover changes. Recreating it re-mounted the whole app and
+    // ANR'd a Galaxy Tab A7 Lite mid-capture (Sentry REACT-NATIVE-22).
+    './plugins/with-android-config-changes',
     [
       'expo-local-authentication',
       {
@@ -124,7 +128,26 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // Sentry — native crash reporting + source map upload.
     // DSN injected at runtime via EXPO_PUBLIC_SENTRY_DSN; the plugin itself
     // configures native SDKs + source-map upload during EAS build.
-    '@sentry/react-native/expo',
+    // experimental_android adds the Sentry Android Gradle Plugin so release
+    // builds also upload Android native debug symbols and the R8 mapping —
+    // without them the REACT-NATIVE-22 ANR showed 57 `missing` native frames and
+    // obfuscated Java frames (`n4.d0.onMeasure`). Org/project/auth token still
+    // come from SENTRY_ORG / SENTRY_PROJECT / SENTRY_AUTH_TOKEN in the EAS build
+    // environment (never put authToken here: it would be written into the app),
+    // and SENTRY_DISABLE_AUTO_UPLOAD=true turns every upload off for local builds.
+    [
+      '@sentry/react-native/expo',
+      {
+        experimental_android: {
+          enableAndroidGradlePlugin: true,
+          uploadNativeSymbols: true,
+          autoUploadNativeSymbols: true,
+          includeNativeSources: false,
+          includeProguardMapping: true,
+          autoUploadProguardMapping: true,
+        },
+      },
+    ],
     // FFmpeg for on-device audio trimming and waveform extraction
     ['@config-plugins/ffmpeg-kit-react-native', { package: 'min' }],
     // iOS-only: override CocoaPods trunk resolution of ffmpeg-kit-ios-min

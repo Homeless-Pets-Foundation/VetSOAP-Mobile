@@ -174,3 +174,36 @@ test('the quality dashboard refetch requires a real completion and is throttled'
   assert.match(home, /trailingQualityRefetchRef\.current = setTimeout\(/);
   assert.match(home, /clearTimeout\(trailingQualityRefetchRef\.current\)/);
 });
+
+test('a blurred tab does not keep its recordings lists active', async () => {
+  // freezeOnBlur stops rendering but not the query observers, so a mutation used
+  // to refetch Home's lists behind the Recordings tab (and vice versa).
+  // Unsubscribed, they are marked stale and refetch once on refocus.
+  const home = await read('app/(app)/(tabs)/index.tsx');
+  const recordings = await read('app/(app)/(tabs)/recordings/index.tsx');
+  const attention = await read('src/hooks/useAttentionFeed.ts');
+
+  assert.match(home, /\],\s*\/\/[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*subscribed: isTabFocused,\s*\}\);/);
+  assert.equal((recordings.match(/subscribed: isTabFocused,/g) ?? []).length, 2);
+  assert.match(attention, /enabled: canLoadServerData,\s*(?:\/\/[^\n]*\n\s*)*subscribed: focused,/);
+
+  // Refocus resubscribes and starts the stale refetch itself; the focus effects
+  // must join it, never abort and repeat it. (Pull-to-refresh still restarts.)
+  for (const [name, source] of [['home', home], ['recordings', recordings]]) {
+    const focusRefresh = source.match(/const handleFocusRefresh = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[/)?.[0];
+    assert.ok(focusRefresh, `${name} focus refresh not found`);
+    assert.match(focusRefresh, /refetch\(\{ cancelRefetch: false \}\)/);
+    assert.match(focusRefresh, /refetchDrafts\(\{ cancelRefetch: false \}\)/);
+    assert.doesNotMatch(focusRefresh, /refetch(?:Drafts)?\(\)/, `${name} focus refresh aborts the resubscribe fetch`);
+  }
+  assert.match(attention, /serverRefetch\(\{ cancelRefetch: false \}\)/);
+});
+
+test('polling follows AppState, and a resume is not a second refresh burst', async () => {
+  const client = await read('src/lib/queryClient.ts');
+  assert.match(client, /focusManager\.setEventListener\(\(handleFocus\) => \{/);
+  assert.match(client, /AppState\.addEventListener\('change', \(state\) => \{\s*handleFocus\(state === 'active'\);/);
+  assert.match(client, /refetchOnWindowFocus: false,/);
+  // Tying onlineManager to NetInfo would pause mutations offline.
+  assert.doesNotMatch(client, /onlineManager\./);
+});

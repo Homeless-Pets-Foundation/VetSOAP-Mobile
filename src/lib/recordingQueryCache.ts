@@ -235,13 +235,61 @@ export function purgeDeletedRecordingCaches(
   queryClient.invalidateQueries({ queryKey: ['patients'] }).catch(() => {});
 }
 
+/**
+ * How long recording-cache invalidations are gathered before one refetch.
+ *
+ * Callers fire after async storage work — one `draft_deleted` per slot once its
+ * SecureStore delete settles, an autosave burst, a pending-draft sync — so a
+ * burst spans several ticks and a microtask would not merge it. Each separate
+ * call used to refetch every matching list: with Home and Recordings both
+ * mounted that is five `GET /api/recordings` per call, which alone fills
+ * OkHttp's five-requests-per-host limit and queues uploads behind it. The
+ * window is fixed from the first request, so a steady stream cannot postpone
+ * the refetch indefinitely.
+ */
+export const RECORDING_INVALIDATION_WINDOW_MS = 250;
+
+const pendingInvalidations = new WeakMap<QueryClient, Map<string, readonly unknown[]>>();
+
+function keyHasPrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): boolean {
+  return prefix.length <= queryKey.length && prefix.every((part, index) => queryKey[index] === part);
+}
+
+function flushRecordingInvalidations(queryClient: QueryClient): void {
+  const pending = pendingInvalidations.get(queryClient);
+  pendingInvalidations.delete(queryClient);
+  if (!pending || pending.size === 0) return;
+  const prefixes = [...pending.values()];
+  queryClient
+    .invalidateQueries({
+      predicate: (query) => prefixes.some((prefix) => keyHasPrefix(query.queryKey, prefix)),
+      refetchType: 'active',
+      // A request that arrives after a flush describes a state change the
+      // in-flight fetch may predate, so it restarts that fetch rather than
+      // joining it. Within the window there is only ever one call.
+      cancelRefetch: true,
+    })
+    .catch(() => {});
+}
+
+/**
+ * Mark the lists a mutation affects stale and refetch the visible ones, once
+ * per window however many mutations land in it (see
+ * RECORDING_INVALIDATION_WINDOW_MS). Each matching query refetches at most
+ * once because the union of every requested key set goes out as ONE
+ * `invalidateQueries` call.
+ */
 export function invalidateRecordingCaches(
   queryClient: QueryClient,
   mutation: RecordingCacheMutation,
 ): void {
+  let pending = pendingInvalidations.get(queryClient);
+  if (!pending) {
+    pending = new Map();
+    pendingInvalidations.set(queryClient, pending);
+    setTimeout(() => flushRecordingInvalidations(queryClient), RECORDING_INVALIDATION_WINDOW_MS);
+  }
   for (const queryKey of recordingInvalidationKeysFor(mutation)) {
-    queryClient
-      .invalidateQueries({ queryKey, refetchType: 'active' })
-      .catch(() => {});
+    pending.set(JSON.stringify(queryKey), queryKey);
   }
 }

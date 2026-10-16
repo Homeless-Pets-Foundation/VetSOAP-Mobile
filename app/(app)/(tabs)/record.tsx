@@ -110,6 +110,7 @@ import {
   type SubmitDiagnosticsProps,
 } from '../../../src/lib/analytics';
 import { breadcrumb, captureException, captureMessage, completePhaseFrom, measurePhase, nowMs } from '../../../src/lib/monitoring';
+import { startForegroundTimer } from '../../../src/lib/foregroundClock';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
@@ -3168,7 +3169,9 @@ function RecordingSession() {
           : slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0)
       );
       const segmentCount = slot.durable ? 1 : slot.segments.length;
-      const uploadStartedAt = Date.now();
+      // Foreground-only: a backgrounded tablet suspends JS, and wall time then
+      // reported the whole absence as upload latency.
+      const uploadTimer = startForegroundTimer();
       const netState = networkStateForTelemetry();
       // The server's copy of the metadata can differ from the snapshot we sent
       // without that being a failed submit. Identity-tier divergence is the one
@@ -3406,7 +3409,7 @@ function RecordingSession() {
               recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
             }
 
-            const latencyMs = Date.now() - uploadStartedAt;
+            const latencyMs = Math.round(uploadTimer.elapsedForegroundMs());
             trackEvent({
               name: 'submit_succeeded',
               props: {
@@ -3417,6 +3420,7 @@ function RecordingSession() {
                 recording_id: result.id,
                 attempt_number: attemptNumber,
                 latency_ms: latencyMs,
+                app_suspended: uploadTimer.wasSuspended(),
                 ...baseSubmitDiagnostics,
               },
             });
@@ -3424,6 +3428,7 @@ function RecordingSession() {
               slot_index: slotIndex,
               attempt_number: attemptNumber,
               latency_ms: latencyMs,
+              app_suspended: uploadTimer.wasSuspended(),
             });
             uploadAttemptCountsRef.current.delete(slot.id);
             return result.id;
@@ -3766,7 +3771,7 @@ function RecordingSession() {
             durableRecoveryStore.remove(durable.recordingId);
           }
 
-          const durableLatencyMs = Date.now() - uploadStartedAt;
+          const durableLatencyMs = Math.round(uploadTimer.elapsedForegroundMs());
           trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: durableResult.id } });
           trackEvent({
             name: 'submit_succeeded',
@@ -3778,6 +3783,7 @@ function RecordingSession() {
               recording_id: durableResult.id,
               attempt_number: attemptNumber,
               latency_ms: durableLatencyMs,
+              app_suspended: uploadTimer.wasSuspended(),
               ...baseSubmitDiagnostics,
             },
           });
@@ -4111,7 +4117,7 @@ function RecordingSession() {
         for (const tempUri of splitTempUris) safeDeleteFile(tempUri);
         if (splitTempDir) safeDeleteDirectory(splitTempDir);
 
-        const latencyMs = Date.now() - uploadStartedAt;
+        const latencyMs = Math.round(uploadTimer.elapsedForegroundMs());
         trackEvent({
           name: 'submit_succeeded',
           props: {
@@ -4122,6 +4128,7 @@ function RecordingSession() {
             recording_id: result.id,
             attempt_number: attemptNumber,
             latency_ms: latencyMs,
+            app_suspended: uploadTimer.wasSuspended(),
             ...baseSubmitDiagnostics,
           },
         });
@@ -4129,6 +4136,7 @@ function RecordingSession() {
           slot_index: slotIndex,
           attempt_number: attemptNumber,
           latency_ms: latencyMs,
+          app_suspended: uploadTimer.wasSuspended(),
         });
         // Reset attempt counter for this slot — any future retry starts fresh.
         uploadAttemptCountsRef.current.delete(slot.id);
@@ -4271,7 +4279,7 @@ function RecordingSession() {
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
 
         const phase = getUploadPhase(error);
-        const latencyMs = Date.now() - uploadStartedAt;
+        const latencyMs = Math.round(uploadTimer.elapsedForegroundMs());
         // Derive an error code usable for filtering — server-supplied codes
         // win over phase so trial/billing errors stay legible. Hermes-
         // minified class names from expo-modules-core CodedError can leak a
@@ -4314,6 +4322,7 @@ function RecordingSession() {
             network_state: netStateAtFailure,
             network_state_at_start: netState,
             latency_ms: latencyMs,
+            app_suspended: uploadTimer.wasSuspended(),
             ...failureSubmitDiagnostics,
           },
         });
@@ -4354,6 +4363,7 @@ function RecordingSession() {
               duration_s: durationSeconds,
               file_size_bytes: uploadSizeBytes || undefined,
               latency_ms: latencyMs,
+              app_suspended: uploadTimer.wasSuspended(),
               recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
               submit_context: failureSubmitDiagnostics,
               diagnostic: diagnostic ?? null,

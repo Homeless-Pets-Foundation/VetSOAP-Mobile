@@ -1,5 +1,23 @@
-import { QueryClient } from '@tanstack/react-query';
+import { AppState } from 'react-native';
+import { focusManager, QueryClient } from '@tanstack/react-query';
 import { ApiError } from '../api/client';
+
+// React Query's default focus listener needs `window` events, which React
+// Native does not have, so `focusManager.isFocused()` was always true: every
+// `refetchInterval` kept polling while the app sat in the background and its
+// requests landed in the foreground's network budget on resume. AppState is
+// the native equivalent. Only polling (and retry back-off) follows it —
+// `refetchOnWindowFocus` stays off below because the screens already refresh
+// stale data on foreground themselves, and a second, library-driven refresh
+// of every active query on each resume would be its own request burst.
+// onlineManager is deliberately left alone: tying it to NetInfo would pause
+// mutations while offline, which the upload and draft flows do not expect.
+focusManager.setEventListener((handleFocus) => {
+  const subscription = AppState.addEventListener('change', (state) => {
+    handleFocus(state === 'active');
+  });
+  return () => subscription.remove();
+});
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,6 +40,7 @@ export const queryClient = new QueryClient({
       // runs on every sign-out path in AuthProvider, so this only bounds
       // same-user in-memory retention after the last observer unmounts.
       gcTime: 10 * 60 * 1000,
+      refetchOnWindowFocus: false,
     },
   },
 });

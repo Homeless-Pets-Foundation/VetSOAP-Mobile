@@ -125,6 +125,9 @@ export function useAttentionFeed(options: { focused: boolean }): UseAttentionFee
     queryKey: [...ATTENTION_QUERY_KEY],
     queryFn: ({ signal }) => fetchAttentionPage(signal),
     enabled: canLoadServerData,
+    // Only the surface the user is looking at keeps the 100-row page active, so
+    // a recording mutation does not re-download it behind another screen.
+    subscribed: focused,
     // Deliberately NOT PERSIST_GC_TIME_MS: this page is excluded from disk
     // dehydration, so a long gcTime would only pin a stale in-memory queue.
     //
@@ -302,7 +305,9 @@ export function useAttentionFeed(options: { focused: boolean }): UseAttentionFee
   useEffect(() => {
     if (!focused) return;
     if (user?.id) localRefetch().catch(() => {});
-    if (canLoadServerData && serverIsStale) serverRefetch().catch(() => {});
+    // Join, never abort: an invalidation or a refocus (resubscribe) has usually
+    // already started this refetch, and cancelling it would only send it twice.
+    if (canLoadServerData && serverIsStale) serverRefetch({ cancelRefetch: false }).catch(() => {});
   }, [focused, user?.id, canLoadServerData, serverIsStale, localRefetch, serverRefetch]);
 
   return {

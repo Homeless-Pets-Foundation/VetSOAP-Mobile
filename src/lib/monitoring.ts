@@ -60,6 +60,14 @@ function scrub<T extends object>(obj: T): T {
  */
 const BREADCRUMB_DEDUPE_WINDOW_S = 0.25;
 
+/**
+ * Local release builds (`APP_VARIANT=local-test` in app.config.ts) install as
+ * this application id beside the Play app and report through the same DSN. They
+ * are not `__DEV__`, so without this their events landed in `production` next to
+ * the clinic fleet (a 2026-10-07 network-fault acceptance run did exactly that).
+ */
+const LOCAL_TEST_APPLICATION_ID = 'com.captivet.mobile.local';
+
 type MinimalBreadcrumb = {
   timestamp?: number;
   category?: string;
@@ -174,7 +182,11 @@ export function initMonitoring(): void {
       dsn: SENTRY_DSN,
       // Release identifier so we can tie crashes to an app version.
       release: `${Application.applicationId ?? 'com.captivet.mobile'}@${Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? 'unknown'}+${Application.nativeBuildVersion ?? '0'}`,
-      environment: __DEV__ ? 'development' : 'production',
+      environment: __DEV__
+        ? 'development'
+        : Application.applicationId === LOCAL_TEST_APPLICATION_ID
+          ? 'local-test'
+          : 'production',
       enabled: !__DEV__ || process.env.EXPO_PUBLIC_SENTRY_ENABLE_IN_DEV === 'true',
       // ApiClient.doFetch already emits `network/info` breadcrumbs with a
       // server-side request_id (the cross-reference key we want). Sentry's

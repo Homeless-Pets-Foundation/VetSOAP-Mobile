@@ -66,7 +66,7 @@ test('recordings tab is labeled Recordings and stash limit is single-sourced', a
   const stashStorage = await read('src/lib/stashStorage.ts');
   assert.match(stashStorage, /export const MAX_STASHES = 5;/);
   const hook = await read('src/hooks/useStashedSessions.ts');
-  assert.match(hook, /allStashes\.length >= MAX_STASHES/);
+  assert.match(hook, /visibleStashes\.length >= MAX_STASHES/);
 });
 
 test('detail-screen processing copy comes from the catalog with a single ellipsis', async () => {

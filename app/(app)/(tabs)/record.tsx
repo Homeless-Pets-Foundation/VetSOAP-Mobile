@@ -5032,7 +5032,7 @@ function RecordingSession() {
       eligible.forEach(({ id }) => autoStashableFailuresRef.current.delete(id));
 
       const session = sessionRef.current;
-      const success = await stashSession(session);
+      const success = await stashSession(session, resumedFromStashIdRef.current);
       if (!success) return false;
 
       session.slots.forEach((slot) => deleteLocalSlotDraft(slot));
@@ -6609,7 +6609,7 @@ function RecordingSession() {
         // not update the closure variable. Passing `session` risks stashing the
         // pre-flush snapshot with a missing serverDraftId.
         const postFlushSession = sessionRef.current;
-        const success = await stashSession(postFlushSession);
+        const success = await stashSession(postFlushSession, resumedFromStashIdRef.current);
         if (success) {
           // The stash persists the stable intent, canonical server ID, and any
           // complete pending-confirm hint, so retries continue with the same

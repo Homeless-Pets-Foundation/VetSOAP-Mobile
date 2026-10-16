@@ -135,7 +135,7 @@ export function useStashedSessions(userId: string | null) {
   }, [userId, isScopeCurrent]);
 
   const stashSession = useCallback(
-    async (sessionState: SessionState): Promise<boolean> => {
+    async (sessionState: SessionState, replacingStashId: string | null = null): Promise<boolean> => {
       const scopedUserId = userId;
       if (!scopedUserId || !isScopeCurrent(scopedUserId)) return false;
 
@@ -218,7 +218,9 @@ export function useStashedSessions(userId: string | null) {
           return false;
         }
 
-        const saved = await stashStorage.addStashedSession(stashedSession);
+        // A resumed session's pinned entry is swapped out in this same write;
+        // the caller's releaseResumedStash then only has its audio dir to remove.
+        const saved = await stashStorage.addStashedSession(stashedSession, replacingStashId);
         if (!isScopeCurrent(scopedUserId)) return false;
         if (!saved) {
           // Metadata write did not commit, so keep the active session intact and
@@ -460,15 +462,17 @@ export function useStashedSessions(userId: string | null) {
   );
 
   // Hide pinned (resumed) stashes from the user-visible list so a single stash
-  // cannot be resumed twice in parallel. Capacity is measured against the full
-  // underlying set since SecureStore enforces MAX_STASHES on the total.
+  // cannot be resumed twice in parallel. A pinned entry belongs to the active
+  // session, and re-stashing that session replaces it in the same write
+  // (`addStashedSession(..., replacingId)`), so it does not take a slot from
+  // the save. Counting it left a resumed session unsavable at MAX_STASHES.
   const visibleStashes = allStashes.filter((s) => !s.resumedAt);
 
   return {
     stashes: visibleStashes,
     isLoading,
     stashCount: visibleStashes.length,
-    isAtCapacity: allStashes.length >= MAX_STASHES,
+    isAtCapacity: visibleStashes.length >= MAX_STASHES,
     stashSession,
     resumeSession,
     markResumed,

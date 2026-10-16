@@ -508,12 +508,19 @@ export const stashStorage = {
     }
   },
 
-  async addStashedSession(session: StashedSession): Promise<boolean> {
+  /**
+   * `replacingId` names the resumed entry this session was restored from. It
+   * is dropped in the same write that adds the new entry, so re-saving a
+   * resumed session fits even when the list is full, and a failed write leaves
+   * the old entry in place.
+   */
+  async addStashedSession(session: StashedSession, replacingId: string | null = null): Promise<boolean> {
     try {
       const existing = await this.getStashedSessions();
-      if (existing.length >= MAX_STASHES) return false;
-      existing.push(session);
-      return await this.saveStashedSessions(existing);
+      const kept = replacingId ? existing.filter((s) => s.id !== replacingId) : existing;
+      if (kept.length >= MAX_STASHES) return false;
+      kept.push(session);
+      return await this.saveStashedSessions(kept);
     } catch {
       return false;
     }

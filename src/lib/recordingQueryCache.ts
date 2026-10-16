@@ -261,14 +261,16 @@ function flushRecordingInvalidations(queryClient: QueryClient): void {
   if (!pending || pending.size === 0) return;
   const prefixes = [...pending.values()];
   queryClient
-    .invalidateQueries({
-      predicate: (query) => prefixes.some((prefix) => keyHasPrefix(query.queryKey, prefix)),
-      refetchType: 'active',
+    .invalidateQueries(
+      {
+        predicate: (query) => prefixes.some((prefix) => keyHasPrefix(query.queryKey, prefix)),
+        refetchType: 'active',
+      },
       // A request that arrives after a flush describes a state change the
       // in-flight fetch may predate, so it restarts that fetch rather than
       // joining it. Within the window there is only ever one call.
-      cancelRefetch: true,
-    })
+      { cancelRefetch: true },
+    )
     .catch(() => {});
 }
 

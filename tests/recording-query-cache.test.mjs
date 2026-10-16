@@ -264,8 +264,8 @@ async function loadCoalescingHarness() {
     },
   });
   const queryClient = {
-    invalidateQueries(filters) {
-      calls.push(filters);
+    invalidateQueries(filters, options) {
+      calls.push({ filters, options });
       return Promise.resolve();
     },
   };
@@ -296,11 +296,13 @@ test('mutations inside one window become one invalidateQueries call', async () =
 
   h.flush();
   assert.equal(h.calls.length, 1);
-  const [filters] = h.calls;
+  const [{ filters, options }] = h.calls;
   assert.equal(filters.refetchType, 'active');
   // Within the window there is one call; a later window describes a newer
   // state change, so it must restart an in-flight fetch rather than join it.
-  assert.equal(filters.cancelRefetch, true);
+  // TanStack v5 reads cancelRefetch from the options argument, not the filters.
+  assert.equal(options?.cancelRefetch, true);
+  assert.equal(filters.cancelRefetch, undefined);
   assert.equal(filters.queryKey, undefined, 'the union goes out as a predicate');
 
   for (const key of [
@@ -333,10 +335,10 @@ test('the window carries the union of every requested key set', async () => {
 
   assert.equal(h.calls.length, 1);
   // From processing_retry only.
-  assert.ok(matches(h.calls[0], ['dashboard', 'quality', 'org']));
+  assert.ok(matches(h.calls[0].filters, ['dashboard', 'quality', 'org']));
   // From draft_deleted only.
-  assert.ok(matches(h.calls[0], ['recordings', 'drafts', 'recent']));
-  assert.ok(matches(h.calls[0], ['local-drafts', 'user-1']));
+  assert.ok(matches(h.calls[0].filters, ['recordings', 'drafts', 'recent']));
+  assert.ok(matches(h.calls[0].filters, ['local-drafts', 'user-1']));
 });
 
 test('a request after the window opens a new one', async () => {
@@ -348,7 +350,7 @@ test('a request after the window opens a new one', async () => {
   assert.equal(h.timers.length, 1, 'the second request must schedule its own window');
   h.flush();
   assert.equal(h.calls.length, 2);
-  assert.ok(matches(h.calls[1], ['dashboard', 'quality', 'org']));
+  assert.ok(matches(h.calls[1].filters, ['dashboard', 'quality', 'org']));
 });
 
 test('windows are per QueryClient', async () => {

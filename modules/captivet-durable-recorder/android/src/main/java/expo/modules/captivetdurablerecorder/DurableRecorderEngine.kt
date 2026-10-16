@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
+import android.util.Log
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -67,6 +68,7 @@ internal object DurableRecorderEngine {
   private const val LIVE_STATS_INTERVAL_MS = 250L
   private const val DROP_EMIT_THROTTLE_MS = 2_000L
   private const val THREAD_JOIN_TIMEOUT_MS = 5_000L
+  private const val TAG = "DurableRecorder"
   private const val DEFAULT_COMMIT_INTERVAL_MS = 2_000L
 
   private const val LOW_SPACE_BYTES = 100L * 1024 * 1024 // 100 MiB
@@ -660,16 +662,24 @@ internal object DurableRecorderEngine {
 
   private fun doTeardown(finalState: String, errorCode: String?) {
     running = false
+    val startedAt = SystemClock.elapsedRealtime()
     // Wait for the pipeline to drain the encoder + flush the queue (bounded join
     // so a wedged native call cannot hang teardown forever; JS also watchdogs).
-    joinThread(captureThread); captureThread = null
-    joinThread(drainThread); drainThread = null
-    joinThread(writerThread); writerThread = null
+    val capture = captureThread
+    joinThread(capture); captureThread = null
+    val captureJoinedAt = SystemClock.elapsedRealtime()
+    val drain = drainThread
+    joinThread(drain); drainThread = null
+    val drainJoinedAt = SystemClock.elapsedRealtime()
+    val writer = writerThread
+    joinThread(writer); writerThread = null
+    val writerJoinedAt = SystemClock.elapsedRealtime()
     stopTimers()
     releaseFocus()
     releaseMic()
     releaseEncoder()
     releaseOutput()
+    val releasedAt = SystemClock.elapsedRealtime()
     setState(finalState)
 
     val ctx = appContext
@@ -687,7 +697,22 @@ internal object DurableRecorderEngine {
       if (errorCode != null) m.lastErrorCode = errorCode
       runCatching { DurableManifest.writeAtomic(DurablePaths.manifestFile(ctx, m.userId, m.recordingId), m) }
     }
+    val manifestAt = SystemClock.elapsedRealtime()
     stopForegroundService(ctx)
+    // Timings and thread names only, never ids or paths. Separates native
+    // teardown time from time a JS-measured stop spent queued; "alive" means a
+    // join gave up and that pipeline thread outlived the teardown.
+    Log.i(
+      TAG,
+      "teardown state=$finalState error=${errorCode ?: "none"} " +
+        "thread=${Thread.currentThread().name} " +
+        "captureJoinMs=${captureJoinedAt - startedAt} captureAlive=${capture?.isAlive == true} " +
+        "drainJoinMs=${drainJoinedAt - captureJoinedAt} drainAlive=${drain?.isAlive == true} " +
+        "writerJoinMs=${writerJoinedAt - drainJoinedAt} writerAlive=${writer?.isAlive == true} " +
+        "releaseMs=${releasedAt - writerJoinedAt} manifestMs=${manifestAt - releasedAt} " +
+        "serviceStopMs=${SystemClock.elapsedRealtime() - manifestAt} " +
+        "totalMs=${SystemClock.elapsedRealtime() - startedAt}",
+    )
   }
 
   /** Paused/interrupted -> stopped without re-running the pipeline (already torn). */

@@ -82,10 +82,13 @@ test('a durable start failure really does fall through to expo without throwing'
   const hook = read('src/hooks/useAudioRecorder.ts');
   const catchIdx = hook.indexOf('} catch (durableError) {');
   assert.ok(catchIdx > 0);
-  const block = hook.slice(catchIdx, catchIdx + 600);
+  // Bounded by the fall-through marker, not a fixed character count: a fixed
+  // window silently drops assertions off the end as the block grows.
+  const endIdx = hook.indexOf('// fall through to expo-audio path below', catchIdx);
+  assert.ok(endIdx > catchIdx, 'the catch must end by falling through to expo');
+  const block = hook.slice(catchIdx, endIdx);
   assert.match(block, /backendRef\.current = 'expo'/);
   assert.doesNotMatch(block, /throw /, 'a rethrow here would make the outer catch handle it instead');
-  assert.match(block, /fall through to expo-audio path below/);
 });
 
 test('record.tsx re-keys the pointer when durable start fell back to expo', () => {

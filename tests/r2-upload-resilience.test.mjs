@@ -162,7 +162,7 @@ test('record.tsx auto-stash helper consumes flags, stashes, emits per-slot analy
     /eligible\.forEach\(\(\{ id \}\) => autoStashableFailuresRef\.current\.delete\(id\)\)/
   );
   // Stash is via the existing hook, not a bespoke duplicate path
-  assert.match(src, /const success = await stashSession\(session\);/);
+  assert.match(src, /const success = await stashSession\(session, resumedFromStashIdRef\.current\);/);
   // Per-slot analytics — one event per eligible slot, not aggregate
   assert.match(src, /name: 'recording_auto_stashed'/);
   // Reason is threaded from the eligibility map so create_draft and r2_put

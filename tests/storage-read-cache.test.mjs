@@ -209,6 +209,46 @@ test('stashStorage: a write after a cached read is visible on the next read', as
   assert.equal(after[0].id, 's2');
 });
 
+// Re-saving a resumed session at MAX_STASHES (5): the pinned entry it came
+// from is swapped out in the same write. Found on device 2026-10-16: a resumed
+// session could not be saved again while five sessions were stored.
+test('stashStorage: a full list takes a re-saved resumed session in place of its entry', async () => {
+  const { stashStorage } = await loadStashStorage();
+  stashStorage.setUserId('userA');
+  const ids = ['s1', 's2', 's3', 's4', 's5'];
+  await stashStorage.saveStashedSessions(ids.map(makeSession));
+
+  assert.equal(await stashStorage.addStashedSession(makeSession('new')), false, 'plain add stays capped');
+  assert.equal(await stashStorage.addStashedSession(makeSession('s3-resaved'), 's3'), true);
+
+  // Joined: the module runs in its own vm realm, so its arrays fail deepStrictEqual.
+  const after = (await stashStorage.getStashedSessions()).map((s) => s.id).join(',');
+  assert.equal(after, 's1,s2,s4,s5,s3-resaved');
+});
+
+test('stashStorage: replacing an id that is not stored does not lift the cap', async () => {
+  const { stashStorage } = await loadStashStorage();
+  stashStorage.setUserId('userA');
+  await stashStorage.saveStashedSessions(['s1', 's2', 's3', 's4', 's5'].map(makeSession));
+
+  assert.equal(await stashStorage.addStashedSession(makeSession('new'), 'missing'), false);
+  assert.equal((await stashStorage.getStashedSessions()).length, 5);
+});
+
+test('stashStorage: a failed replacing write keeps the resumed entry', async () => {
+  const { stashStorage, mock } = await loadStashStorage();
+  stashStorage.setUserId('userA');
+  await stashStorage.saveStashedSessions(['s1', 's2'].map(makeSession));
+
+  mock.setItemAsync = async () => {
+    throw new Error('keystore unavailable');
+  };
+  assert.equal(await stashStorage.addStashedSession(makeSession('s2-resaved'), 's2'), false);
+
+  const after = (await stashStorage.getStashedSessions()).map((s) => s.id).join(',');
+  assert.equal(after, 's1,s2');
+});
+
 test('stashStorage: clearAllStashes invalidates the cache', async () => {
   const { stashStorage } = await loadStashStorage();
   stashStorage.setUserId('userA');

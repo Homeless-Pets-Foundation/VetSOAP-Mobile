@@ -139,6 +139,11 @@ export default function HomeScreen() {
         enabled: canLoadServerData,
       },
     ],
+    // A blurred tab stays mounted (freezeOnBlur only stops rendering), so its
+    // observers kept these queries "active" and every recording mutation
+    // refetched them behind whatever screen the user was on. Unsubscribed, they
+    // are only marked stale, and resubscribing on focus refetches them once.
+    subscribed: isTabFocused,
   });
 
   const { data, error, isLoading, isError, refetch, isRefetching } = recordingsQuery;
@@ -375,11 +380,13 @@ export default function HomeScreen() {
       skipped: false,
       count: staleServerSourceCount + 1,
     }, () => {
+      // Join, never abort: refocusing resubscribes the queries above, which
+      // already starts the stale refetch this would otherwise cancel and repeat.
       if (canLoadServerData && recordingsQuery.isStale) {
-        refetch().catch(() => {});
+        refetch({ cancelRefetch: false }).catch(() => {});
       }
       if (canLoadServerData && draftsQuery.isStale) {
-        refetchDrafts().catch(() => {});
+        refetchDrafts({ cancelRefetch: false }).catch(() => {});
       }
       if (qualityStale) {
         runQualityRefetch().catch(() => {});

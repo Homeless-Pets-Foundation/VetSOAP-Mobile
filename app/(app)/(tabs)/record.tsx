@@ -9,6 +9,7 @@ import {
   Pressable,
   useWindowDimensions,
   FlatList,
+  ScrollView,
   AppState,
   InteractionManager,
 } from 'react-native';
@@ -110,6 +111,7 @@ import {
   type SubmitDiagnosticsProps,
 } from '../../../src/lib/analytics';
 import { breadcrumb, captureException, captureMessage, completePhaseFrom, measurePhase, nowMs } from '../../../src/lib/monitoring';
+import { startForegroundTimer } from '../../../src/lib/foregroundClock';
 import { reportClientError } from '../../../src/api/telemetry';
 import { DRAFT_DEBOUNCE_MS } from '../../../src/config';
 import { audioEditorBridge } from '../../../src/lib/audioEditorBridge';
@@ -407,6 +409,11 @@ const SILENT_METERING_THRESHOLD_DB = -35;
 const SHORT_AUDIO_FFMPEG_SILENCE_SECONDS = 15;
 const MISSING_METERING_FFMPEG_MAX_SECONDS = 180;
 const RECORDING_KEEP_AWAKE_TAG = 'captivet-recording';
+// The Saved Sessions list sits above the patient pager, which only gets the
+// height left over. Unbounded, four of the MAX_STASHES cards left the pager
+// ~10px on a Galaxy Tab A7 Lite (800x1340), hiding the Record button. The list
+// scrolls inside this share of the window instead.
+const STASH_LIST_MAX_HEIGHT_RATIO = 0.3;
 
 type SilenceCheckReason =
   | 'metering_all_below_threshold'
@@ -525,6 +532,15 @@ async function sumSegmentSizes(segments: AudioSegment[]): Promise<number> {
 
 // ─── Durable capture helpers ───────────────────────────────────────────────
 const DURABLE_OP_WATCHDOG_MS = 12000;
+/**
+ * Start gets a longer bound than the other ops. useAudioRecorder.start() may
+ * spend its 10s durable timeout, then up to 5s letting a late native start
+ * release the mic (the recorder no longer shares Expo's queue, so the expo
+ * fallback would otherwise race it), then bring up the expo-audio fallback. The
+ * hook must unwind before this fires, or the UI reports a failed start while the
+ * fallback goes on to record with no slot bound to it.
+ */
+const DURABLE_START_WATCHDOG_MS = 20_000;
 
 function newDurableRecordingId(): string {
   return `dr-${getSecureRandomHex(16)}`;
@@ -615,7 +631,7 @@ async function withDurableOpWatchdog<T>(
       captureMessage('durable_recorder_op_watchdog', 'warning', { tags: { op } });
       trackEvent({ name: 'durable_recorder_op_watchdog', props: { op } });
       reject(new Error(`durable ${op} timed out`));
-    }, DURABLE_OP_WATCHDOG_MS);
+    }, op === 'start' ? DURABLE_START_WATCHDOG_MS : DURABLE_OP_WATCHDOG_MS);
   });
   try {
     return await Promise.race([p, watchdog]);
@@ -884,7 +900,7 @@ function RecordingSession() {
   const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
   const recorder = useAudioRecorder();
   const colors = useThemeColors();
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: windowHeight } = useWindowDimensions();
   const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
   const [preferredTemplateId, setPreferredTemplateId] = useState<string | null | undefined>(undefined);
   const [defaultTemplateSavingId, setDefaultTemplateSavingId] = useState<string | null>(null);
@@ -3168,7 +3184,9 @@ function RecordingSession() {
           : slot.segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0)
       );
       const segmentCount = slot.durable ? 1 : slot.segments.length;
-      const uploadStartedAt = Date.now();
+      // Foreground-only: a backgrounded tablet suspends JS, and wall time then
+      // reported the whole absence as upload latency.
+      const uploadTimer = startForegroundTimer();
       const netState = networkStateForTelemetry();
       // The server's copy of the metadata can differ from the snapshot we sent
       // without that being a failed submit. Identity-tier divergence is the one
@@ -3406,7 +3424,7 @@ function RecordingSession() {
               recoveryIntent.clearForDraftSlot(slot.id).catch(() => {});
             }
 
-            const latencyMs = Date.now() - uploadStartedAt;
+            const latencyMs = Math.round(uploadTimer.elapsedForegroundMs());
             trackEvent({
               name: 'submit_succeeded',
               props: {
@@ -3417,6 +3435,7 @@ function RecordingSession() {
                 recording_id: result.id,
                 attempt_number: attemptNumber,
                 latency_ms: latencyMs,
+                app_suspended: uploadTimer.wasSuspended(),
                 ...baseSubmitDiagnostics,
               },
             });
@@ -3424,6 +3443,7 @@ function RecordingSession() {
               slot_index: slotIndex,
               attempt_number: attemptNumber,
               latency_ms: latencyMs,
+              app_suspended: uploadTimer.wasSuspended(),
             });
             uploadAttemptCountsRef.current.delete(slot.id);
             return result.id;
@@ -3766,7 +3786,7 @@ function RecordingSession() {
             durableRecoveryStore.remove(durable.recordingId);
           }
 
-          const durableLatencyMs = Date.now() - uploadStartedAt;
+          const durableLatencyMs = Math.round(uploadTimer.elapsedForegroundMs());
           trackEvent({ name: 'durable_upload_confirmed', props: { recording_id: durableResult.id } });
           trackEvent({
             name: 'submit_succeeded',
@@ -3778,6 +3798,7 @@ function RecordingSession() {
               recording_id: durableResult.id,
               attempt_number: attemptNumber,
               latency_ms: durableLatencyMs,
+              app_suspended: uploadTimer.wasSuspended(),
               ...baseSubmitDiagnostics,
             },
           });
@@ -4111,7 +4132,7 @@ function RecordingSession() {
         for (const tempUri of splitTempUris) safeDeleteFile(tempUri);
         if (splitTempDir) safeDeleteDirectory(splitTempDir);
 
-        const latencyMs = Date.now() - uploadStartedAt;
+        const latencyMs = Math.round(uploadTimer.elapsedForegroundMs());
         trackEvent({
           name: 'submit_succeeded',
           props: {
@@ -4122,6 +4143,7 @@ function RecordingSession() {
             recording_id: result.id,
             attempt_number: attemptNumber,
             latency_ms: latencyMs,
+            app_suspended: uploadTimer.wasSuspended(),
             ...baseSubmitDiagnostics,
           },
         });
@@ -4129,6 +4151,7 @@ function RecordingSession() {
           slot_index: slotIndex,
           attempt_number: attemptNumber,
           latency_ms: latencyMs,
+          app_suspended: uploadTimer.wasSuspended(),
         });
         // Reset attempt counter for this slot — any future retry starts fresh.
         uploadAttemptCountsRef.current.delete(slot.id);
@@ -4271,7 +4294,7 @@ function RecordingSession() {
         setUploadStatus(slot.id, 'error', { progress: 0, error: msg });
 
         const phase = getUploadPhase(error);
-        const latencyMs = Date.now() - uploadStartedAt;
+        const latencyMs = Math.round(uploadTimer.elapsedForegroundMs());
         // Derive an error code usable for filtering — server-supplied codes
         // win over phase so trial/billing errors stay legible. Hermes-
         // minified class names from expo-modules-core CodedError can leak a
@@ -4314,6 +4337,7 @@ function RecordingSession() {
             network_state: netStateAtFailure,
             network_state_at_start: netState,
             latency_ms: latencyMs,
+            app_suspended: uploadTimer.wasSuspended(),
             ...failureSubmitDiagnostics,
           },
         });
@@ -4354,6 +4378,7 @@ function RecordingSession() {
               duration_s: durationSeconds,
               file_size_bytes: uploadSizeBytes || undefined,
               latency_ms: latencyMs,
+              app_suspended: uploadTimer.wasSuspended(),
               recording_id: slot.serverDraftId ?? slot.serverRecordingId ?? null,
               submit_context: failureSubmitDiagnostics,
               diagnostic: diagnostic ?? null,
@@ -7672,14 +7697,20 @@ function RecordingSession() {
           <Text className="text-body-sm font-semibold text-content-secondary mb-2">
             {STASH_COPY.sectionTitle(stashCount)}
           </Text>
-          {stashes.map((stash) => (
-            <StashedSessionCard
-              key={stash.id}
-              stash={stash}
-              onResume={() => handleResumeStash(stash.id)}
-              onDelete={() => handleDeleteStash(stash.id)}
-            />
-          ))}
+          <ScrollView
+            style={{ maxHeight: windowHeight * STASH_LIST_MAX_HEIGHT_RATIO }}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator
+          >
+            {stashes.map((stash) => (
+              <StashedSessionCard
+                key={stash.id}
+                stash={stash}
+                onResume={() => handleResumeStash(stash.id)}
+                onDelete={() => handleDeleteStash(stash.id)}
+              />
+            ))}
+          </ScrollView>
         </View>
       )}
 

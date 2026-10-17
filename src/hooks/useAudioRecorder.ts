@@ -19,11 +19,25 @@ import type { DurableSlotRef } from '../types/multiPatient';
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped' | 'interrupted';
 
 /**
- * Hard cap on the native durable start() promise. Kept below the record.tsx
- * withDurableOpWatchdog (12s) so the hook unwinds its own isStartingRef lock and
- * falls back to the expo path before the outer watchdog fires.
+ * Hard cap on the native durable start() promise. Together with
+ * DURABLE_LATE_START_SETTLE_MS and the expo fallback it stays below the
+ * record.tsx start watchdog (DURABLE_START_WATCHDOG_MS, 20s), so the hook unwinds
+ * its own isStartingRef lock and falls back to the expo path before the outer
+ * watchdog fires.
  */
 const DURABLE_START_TIMEOUT_MS = 10_000;
+
+/**
+ * After the durable start times out, how long to wait for the late native start
+ * to settle (and be discarded) before the expo-audio fallback opens the mic.
+ *
+ * The native recorder runs on its own serial queue, so expo-audio's calls no
+ * longer wait behind a slow durable start. Without this wait a start that lands
+ * after the fallback began would request audio focus and interrupt the expo
+ * recording it was replaced by. Bounded so a start that never settles cannot
+ * hold the fallback hostage.
+ */
+const DURABLE_LATE_START_SETTLE_MS = 5_000;
 
 /**
  * Hard cap on the native durable stop() promise. Kept below the record.tsx
@@ -45,6 +59,28 @@ const DURABLE_STOP_TIMEOUT_MS = 10_000;
 const DURABLE_PAUSE_TIMEOUT_MS = 10_000;
 const DURABLE_RESUME_TIMEOUT_MS = 10_000;
 const NATIVE_RECORDER_PHASE_WARNING_MS = 1_000;
+/**
+ * Slow-phase threshold for the durable stop/pause teardown (encoder drain,
+ * thread joins, fsync). Higher than the bring-up threshold: a teardown that
+ * finalizes the file legitimately takes longer than opening the mic.
+ */
+const DURABLE_TEARDOWN_PHASE_WARNING_MS = 3_000;
+
+/** Resolve when `op` settles or after `ms`, whichever comes first. Never rejects. */
+function settleWithin(op: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    op.then(
+      () => {},
+      () => {},
+    ),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 /**
  * Race a durable native op against a rejecting timeout so a hung native bridge
@@ -624,6 +660,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       // expo-audio capture, emit telemetry, show durability unavailable").
       const wantDurable = !!ctx && isDurableCaptureEnabled() && durableRecorder.isAvailable();
       if (wantDurable && ctx) {
+        let durableStartTimedOut = false;
+        // Settles once a late start has resolved and been discarded (or failed).
+        let lateStartReleased: Promise<void> = Promise.resolve();
         try {
           // Internal Rule-24 timeout: a native start that never settles would
           // otherwise leave isStartingRef=true forever (the finally never runs)
@@ -632,7 +671,6 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
           // rejecting timeout lets the finally release the lock and fall through
           // to the expo path. (The record.tsx watchdog is a second layer, but it
           // can't unwind the hook's own start state.)
-          let durableStartTimedOut = false;
           const startPromise = durableRecorder.start({
             userId: ctx.userId,
             slotId: ctx.slotId,
@@ -650,10 +688,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
           // native start may still resolve LATE and own the mic + foreground
           // service with no JS slot referencing it. Discard that orphan capture
           // (best-effort) so it releases the mic instead of racing the expo path.
-          startPromise.then(
-            () => {
+          lateStartReleased = startPromise.then(
+            async () => {
               if (durableStartTimedOut) {
-                durableRecorder
+                await durableRecorder
                   .discard({ userId: ctx.userId, recordingId: ctx.recordingId })
                   .catch(() => {});
               }
@@ -708,6 +746,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
           backendRef.current = 'expo';
           durableRecordingIdRef.current = null;
           setActiveDurableRecordingId(null);
+          if (durableStartTimedOut) {
+            // Let a late native start finish and release the mic + audio focus
+            // before expo-audio takes them (see DURABLE_LATE_START_SETTLE_MS).
+            await settleWithin(lateStartReleased, DURABLE_LATE_START_SETTLE_MS);
+          }
           // fall through to expo-audio path below
         }
       } else {
@@ -771,8 +814,14 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     capturedDurationRef.current = freezeElapsedClock();
     if (backendRef.current === 'durable') {
       try {
+        const pausePromise = durableRecorder.pause();
+        // Observer only (the timeout below owns the outcome), bounded by the same
+        // deadline so a pause that never settles cannot leak the AppState listener.
+        measurePhase('recorder_durable_pause', undefined, () => withDurableTimeout(pausePromise, DURABLE_PAUSE_TIMEOUT_MS, 'durable pause timed out'), {
+          warningThresholdMs: DURABLE_TEARDOWN_PHASE_WARNING_MS,
+        }).catch(() => {});
         const manifest = await withDurableTimeout(
-          durableRecorder.pause(),
+          pausePromise,
           DURABLE_PAUSE_TIMEOUT_MS,
           'durable pause timed out',
         );
@@ -1064,8 +1113,14 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       // disk (recoverable next launch); getDurableSnapshot() reads the last-polled
       // duration, so the finish path still saves a durable draft.
       try {
+        const stopPromise = durableRecorder.stop();
+        // Observer only (the race below owns the outcome), bounded by the same
+        // deadline so a stop that never settles cannot leak the AppState listener.
+        measurePhase('recorder_durable_stop', undefined, () => withDurableTimeout(stopPromise, DURABLE_STOP_TIMEOUT_MS, 'durable stop timed out'), {
+          warningThresholdMs: DURABLE_TEARDOWN_PHASE_WARNING_MS,
+        }).catch(() => {});
         const manifest = await Promise.race([
-          durableRecorder.stop(),
+          stopPromise,
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('durable stop timed out')), DURABLE_STOP_TIMEOUT_MS),
           ),

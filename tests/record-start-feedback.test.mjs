@@ -200,6 +200,21 @@ test('the durable start is measured like the other native recorder phases', asyn
   assert.match(monitoring, /if \(__DEV__\) console\.log\(`\[perf\] \$\{name\} \$\{durationMs\}ms \$\{outcome\}`\)/);
 });
 
+test('the durable stop and pause are observed without owning the outcome', async () => {
+  const hook = await read('src/hooks/useAudioRecorder.ts');
+  // Same shape as the start observer: the native promise is captured once, the
+  // observer is bounded by the op's own deadline and swallows its rejection, and
+  // the existing timeout/race still decides what the hook does.
+  assert.match(
+    hook,
+    /const stopPromise = durableRecorder\.stop\(\);\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*measurePhase\('recorder_durable_stop', undefined, \(\) => withDurableTimeout\(stopPromise, DURABLE_STOP_TIMEOUT_MS, '[^']+'\), \{\s*warningThresholdMs: DURABLE_TEARDOWN_PHASE_WARNING_MS,?\s*\}\)\.catch\(\(\) => \{\}\);\s*const manifest = await Promise\.race\(\[\s*stopPromise,/,
+  );
+  assert.match(
+    hook,
+    /const pausePromise = durableRecorder\.pause\(\);\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*measurePhase\('recorder_durable_pause', undefined, \(\) => withDurableTimeout\(pausePromise, DURABLE_PAUSE_TIMEOUT_MS, '[^']+'\), \{\s*warningThresholdMs: DURABLE_TEARDOWN_PHASE_WARNING_MS,?\s*\}\)\.catch\(\(\) => \{\}\);\s*const manifest = await withDurableTimeout\(\s*pausePromise,/,
+  );
+});
+
 test('completePhaseFrom emits the same breadcrumb shape as measurePhase', async () => {
   const breadcrumbs = [];
   const messages = [];

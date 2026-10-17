@@ -24,6 +24,12 @@ test('legacy recorder times latency phases and ships concurrent service binding'
     assert.match(recorder, new RegExp(`measurePhase\\('${phase}'`), phase);
   }
   assert.equal((recorder.match(/warningThresholdMs: NATIVE_RECORDER_PHASE_WARNING_MS/g) ?? []).length, 5);
+  // The durable teardown (stop/pause) has its own, higher threshold: finalizing
+  // the file legitimately takes longer than opening the mic.
+  for (const phase of ['recorder_durable_stop', 'recorder_durable_pause']) {
+    assert.match(recorder, new RegExp(`measurePhase\\('${phase}'`), phase);
+  }
+  assert.equal((recorder.match(/warningThresholdMs: DURABLE_TEARDOWN_PHASE_WARNING_MS/g) ?? []).length, 2);
 
   const bind = audioRecorder.indexOf('async(start = CoroutineStart.UNDISPATCHED) { serviceConnection.bindWithService() }');
   const prepare = audioRecorder.indexOf('mediaRecorder.prepare()');

@@ -525,6 +525,15 @@ async function sumSegmentSizes(segments: AudioSegment[]): Promise<number> {
 
 // ─── Durable capture helpers ───────────────────────────────────────────────
 const DURABLE_OP_WATCHDOG_MS = 12000;
+/**
+ * Start gets a longer bound than the other ops. useAudioRecorder.start() may
+ * spend its 10s durable timeout, then up to 5s letting a late native start
+ * release the mic (the recorder no longer shares Expo's queue, so the expo
+ * fallback would otherwise race it), then bring up the expo-audio fallback. The
+ * hook must unwind before this fires, or the UI reports a failed start while the
+ * fallback goes on to record with no slot bound to it.
+ */
+const DURABLE_START_WATCHDOG_MS = 20_000;
 
 function newDurableRecordingId(): string {
   return `dr-${getSecureRandomHex(16)}`;
@@ -615,7 +624,7 @@ async function withDurableOpWatchdog<T>(
       captureMessage('durable_recorder_op_watchdog', 'warning', { tags: { op } });
       trackEvent({ name: 'durable_recorder_op_watchdog', props: { op } });
       reject(new Error(`durable ${op} timed out`));
-    }, DURABLE_OP_WATCHDOG_MS);
+    }, op === 'start' ? DURABLE_START_WATCHDOG_MS : DURABLE_OP_WATCHDOG_MS);
   });
   try {
     return await Promise.race([p, watchdog]);

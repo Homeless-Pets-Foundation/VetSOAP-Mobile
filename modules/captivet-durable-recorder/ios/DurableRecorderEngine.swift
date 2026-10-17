@@ -15,8 +15,9 @@ import AVFoundation
 ///    file handle, the running counters, and the DispatchSourceTimer commit tick.
 ///    Because it is serial, converters (which are not thread-safe) are always
 ///    touched from one thread, and the ~2 s commit never overlaps a buffer write.
-///  - Control ops (start/pause/resume/stop/...) run on the Expo async worker
-///    thread. They take `controlLock` to serialize against each other and hop
+///  - Control ops (start/pause/resume/stop/...) run on the module's dedicated
+///    serial `com.captivet.durable-recorder` queue (not Expo's queue shared by
+///    every module). They take `controlLock` to serialize against each other and hop
 ///    onto `writerQueue.sync {}` for anything that mutates the engine/writer, so
 ///    all engine mutation stays on the writer queue. writerQueue tasks NEVER take
 ///    controlLock, so there is no lock-ordering deadlock.

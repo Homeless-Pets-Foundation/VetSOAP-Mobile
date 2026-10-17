@@ -1,5 +1,18 @@
 import ExpoModulesCore
 
+/// The one serial queue every durable recorder AsyncFunction runs on.
+///
+/// Expo's default for an AsyncFunction is a single global serial queue shared by
+/// every Expo module, so a long stop (encoder drain, fsync, session
+/// deactivation) held up SecureStore and file-system calls across the app. This
+/// queue keeps recorder calls in order among themselves without blocking anyone
+/// else. It must stay serial (calls rely on running one at a time) and must not
+/// be the engine's private `writerQueue`, which control ops `sync` onto.
+private let durableRecorderQueue = DispatchQueue(
+  label: "com.captivet.durable-recorder",
+  qos: .userInitiated
+)
+
 /// Expo Module bridge for the durable audio recorder (iOS).
 ///
 /// Every AsyncFunction delegates to `DurableRecorderEngine.shared`, which owns
@@ -38,28 +51,28 @@ public class CaptivetDurableRecorderModule: Module {
         sampleRate: input.sampleRate,
         bitrate: input.bitrate
       )
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("pause") { () -> [String: Any] in
       try DurableRecorderEngine.shared.pause()
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("resume") { (input: UserRecordingInput) -> [String: Any] in
       try DurableRecorderEngine.shared.resume(userId: input.userId, recordingId: input.recordingId)
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     // stop() may be called with no argument (see index.ts); accept an optional.
     AsyncFunction("stop") { (input: StopInput?) -> [String: Any] in
       try DurableRecorderEngine.shared.stop(userId: input?.userId, recordingId: input?.recordingId)
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("discard") { (input: UserRecordingInput) in
       try DurableRecorderEngine.shared.discard(userId: input.userId, recordingId: input.recordingId)
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("purgeAfterUpload") { (input: UserRecordingInput) in
       try DurableRecorderEngine.shared.purgeAfterUpload(userId: input.userId, recordingId: input.recordingId)
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     // MARK: - Manifest mutations (atomic temp+rename)
 
@@ -69,7 +82,7 @@ public class CaptivetDurableRecorderModule: Module {
         recordingId: input.recordingId,
         serverRecordingId: input.serverRecordingId
       )
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("setPendingConfirm") { (input: SetPendingConfirmInput) in
       try DurableRecorderEngine.shared.setPendingConfirm(
@@ -77,7 +90,7 @@ public class CaptivetDurableRecorderModule: Module {
         recordingId: input.recordingId,
         pendingConfirmJson: input.pendingConfirmJson
       )
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("resetUploadAttempt") { (input: ResetUploadAttemptInput) in
       try DurableRecorderEngine.shared.resetUploadAttempt(
@@ -86,7 +99,7 @@ public class CaptivetDurableRecorderModule: Module {
         expectedOldKey: input.expectedOldKey,
         replacementKey: input.replacementKey
       )
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("markUploaded") { (input: MarkUploadedInput) in
       try DurableRecorderEngine.shared.markUploaded(
@@ -94,21 +107,21 @@ public class CaptivetDurableRecorderModule: Module {
         recordingId: input.recordingId,
         confirmedUploadAt: input.confirmedUploadAt
       )
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     // MARK: - Read / recovery ops (degrade to nil/[] on the JS side if absent)
 
     AsyncFunction("getStatus") { () -> [String: Any]? in
       DurableRecorderEngine.shared.getStatus()
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("getManifest") { (input: UserRecordingInput) -> [String: Any]? in
       try DurableRecorderEngine.shared.getManifest(userId: input.userId, recordingId: input.recordingId)
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     AsyncFunction("listRecoverableSessions") { (userId: String) -> [[String: Any]] in
       try DurableRecorderEngine.shared.listRecoverableSessions(userId: userId)
-    }
+    }.runOnQueue(durableRecorderQueue)
 
     // MARK: - Synchronous live feed
 

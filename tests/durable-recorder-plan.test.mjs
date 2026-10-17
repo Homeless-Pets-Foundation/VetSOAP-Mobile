@@ -864,7 +864,10 @@ test('durable pause/resume native calls are bounded by a timeout', async () => {
   assert.match(hook, /const DURABLE_PAUSE_TIMEOUT_MS =/);
   assert.match(hook, /const DURABLE_RESUME_TIMEOUT_MS =/);
   assert.match(hook, /function withDurableTimeout<T>/);
-  assert.match(hook, /withDurableTimeout\(\s*durableRecorder\.pause\(\),\s*DURABLE_PAUSE_TIMEOUT_MS/);
+  // The pause promise is captured once so the slow-phase observer can watch it;
+  // the bounded await is still what decides the outcome.
+  assert.match(hook, /const pausePromise = durableRecorder\.pause\(\);/);
+  assert.match(hook, /const manifest = await withDurableTimeout\(\s*pausePromise,\s*DURABLE_PAUSE_TIMEOUT_MS/);
   assert.match(hook, /withDurableTimeout\(\s*durableRecorder\.resume\(\{ userId, recordingId \}\),\s*DURABLE_RESUME_TIMEOUT_MS/);
 });
 

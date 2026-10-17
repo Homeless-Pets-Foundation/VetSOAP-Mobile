@@ -9,6 +9,7 @@ import {
   Pressable,
   useWindowDimensions,
   FlatList,
+  ScrollView,
   AppState,
   InteractionManager,
 } from 'react-native';
@@ -408,6 +409,11 @@ const SILENT_METERING_THRESHOLD_DB = -35;
 const SHORT_AUDIO_FFMPEG_SILENCE_SECONDS = 15;
 const MISSING_METERING_FFMPEG_MAX_SECONDS = 180;
 const RECORDING_KEEP_AWAKE_TAG = 'captivet-recording';
+// The Saved Sessions list sits above the patient pager, which only gets the
+// height left over. Unbounded, four of the MAX_STASHES cards left the pager
+// ~10px on a Galaxy Tab A7 Lite (800x1340), hiding the Record button. The list
+// scrolls inside this share of the window instead.
+const STASH_LIST_MAX_HEIGHT_RATIO = 0.3;
 
 type SilenceCheckReason =
   | 'metering_all_below_threshold'
@@ -894,7 +900,7 @@ function RecordingSession() {
   const recordFirstEnabled = user?.capabilities?.includes('record_first') ?? false;
   const recorder = useAudioRecorder();
   const colors = useThemeColors();
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: windowHeight } = useWindowDimensions();
   const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
   const [preferredTemplateId, setPreferredTemplateId] = useState<string | null | undefined>(undefined);
   const [defaultTemplateSavingId, setDefaultTemplateSavingId] = useState<string | null>(null);
@@ -7691,14 +7697,20 @@ function RecordingSession() {
           <Text className="text-body-sm font-semibold text-content-secondary mb-2">
             {STASH_COPY.sectionTitle(stashCount)}
           </Text>
-          {stashes.map((stash) => (
-            <StashedSessionCard
-              key={stash.id}
-              stash={stash}
-              onResume={() => handleResumeStash(stash.id)}
-              onDelete={() => handleDeleteStash(stash.id)}
-            />
-          ))}
+          <ScrollView
+            style={{ maxHeight: windowHeight * STASH_LIST_MAX_HEIGHT_RATIO }}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator
+          >
+            {stashes.map((stash) => (
+              <StashedSessionCard
+                key={stash.id}
+                stash={stash}
+                onResume={() => handleResumeStash(stash.id)}
+                onDelete={() => handleDeleteStash(stash.id)}
+              />
+            ))}
+          </ScrollView>
         </View>
       )}
 

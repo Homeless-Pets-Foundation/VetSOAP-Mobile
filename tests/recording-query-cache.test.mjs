@@ -190,20 +190,26 @@ test('a mutation row that fails the LIST contract leaves the attention cache alo
   assert.equal(plain(stored.merged.data[0]).status, 'completed');
 });
 
-test('a terminal non-draft delete purges detail, SOAP, tasks, lists, and patient visits', () => {
+test('a terminal non-draft delete purges detail, SOAP, tasks, lists, and patient visits', async () => {
   const removed = [];
   const invalidated = [];
+  const recordingInvalidations = [];
   const setKeys = [];
+  const h = await loadCoalescingHarness();
   const queryClient = {
     removeQueries: ({ queryKey }) => removed.push(JSON.stringify(queryKey)),
-    invalidateQueries: ({ queryKey }) => {
-      invalidated.push(JSON.stringify(queryKey));
+    invalidateQueries: (filters) => {
+      if (filters.predicate) recordingInvalidations.push(filters);
+      else invalidated.push(JSON.stringify(filters.queryKey));
       return Promise.resolve();
     },
     setQueriesData: ({ queryKey }) => setKeys.push(JSON.stringify(queryKey)),
   };
 
-  CACHE.purgeDeletedRecordingCaches(queryClient, { recordingId: 'rec-1', patientId: 'pat-1' });
+  h.cache.purgeDeletedRecordingCaches(queryClient, { recordingId: 'rec-1', patientId: 'pat-1' });
+  // The purge itself is synchronous; only the summary refetch waits for the window.
+  assert.equal(recordingInvalidations.length, 0);
+  h.flush();
 
   assert.ok(removed.includes(JSON.stringify(['recording', 'rec-1'])));
   assert.ok(removed.includes(JSON.stringify(['soapNote', 'rec-1'])));
@@ -216,7 +222,9 @@ test('a terminal non-draft delete purges detail, SOAP, tasks, lists, and patient
   // Summaries invalidated after the purge.
   assert.ok(invalidated.includes(JSON.stringify(['patient', 'pat-1'])));
   assert.ok(invalidated.includes(JSON.stringify(['patients'])));
-  assert.ok(invalidated.includes(JSON.stringify(['dashboard', 'quality'])));
+  assert.equal(recordingInvalidations.length, 1);
+  assert.ok(matches(recordingInvalidations[0], ['dashboard', 'quality', 'org']));
+  assert.ok(matches(recordingInvalidations[0], ['recordings', 'list', '', 'all', 'submittedAt-desc']));
 });
 
 test('hot recording mutations use central cache helper instead of broad invalidation', async () => {
@@ -235,4 +243,120 @@ test('hot recording mutations use central cache helper instead of broad invalida
   assert.doesNotMatch(card, /invalidateQueries\(\{ queryKey: \['recordings'\]/);
   assert.doesNotMatch(detail, /invalidateQueries\(\{ queryKey: \['recordings'\]/);
   assert.doesNotMatch(record, /invalidateQueries\(\{ queryKey: \['recordings'\]/);
+});
+
+// ─── coalesced invalidation ──────────────────────────────────────────
+//
+// Every recording mutation used to refetch each matching list separately: with
+// Home and Recordings both mounted that was five `GET /api/recordings` per call,
+// which fills OkHttp's five-requests-per-host limit on its own. A discarded
+// three-slot session called it once per slot as each SecureStore delete settled,
+// and an autosave called `draft_changed` twice. Requests inside one window now
+// go out as ONE invalidateQueries over the union of their key sets.
+
+async function loadCoalescingHarness() {
+  const timers = [];
+  const calls = [];
+  const cache = await loadTsModule('src/lib/recordingQueryCache.ts', {}, {
+    setTimeout: (fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    },
+  });
+  const queryClient = {
+    invalidateQueries(filters, options) {
+      calls.push({ filters, options });
+      return Promise.resolve();
+    },
+  };
+  return {
+    cache,
+    queryClient,
+    calls,
+    timers,
+    flush() {
+      const due = timers.splice(0);
+      for (const timer of due) timer.fn();
+    },
+  };
+}
+
+const matches = (filters, queryKey) => filters.predicate({ queryKey });
+
+test('mutations inside one window become one invalidateQueries call', async () => {
+  const h = await loadCoalescingHarness();
+  h.cache.invalidateRecordingCaches(h.queryClient, 'draft_changed');
+  h.cache.invalidateRecordingCaches(h.queryClient, 'draft_changed');
+  h.cache.invalidateRecordingCaches(h.queryClient, 'draft_changed');
+  h.cache.invalidateRecordingCaches(h.queryClient, 'draft_deleted');
+
+  assert.equal(h.calls.length, 0, 'nothing may refetch before the window closes');
+  assert.equal(h.timers.length, 1, 'one window, however many requests');
+  assert.equal(h.timers[0].ms, h.cache.RECORDING_INVALIDATION_WINDOW_MS);
+
+  h.flush();
+  assert.equal(h.calls.length, 1);
+  const [{ filters, options }] = h.calls;
+  assert.equal(filters.refetchType, 'active');
+  // Within the window there is one call; a later window describes a newer
+  // state change, so it must restart an in-flight fetch rather than join it.
+  // TanStack v5 reads cancelRefetch from the options argument, not the filters.
+  assert.equal(options?.cancelRefetch, true);
+  assert.equal(filters.cancelRefetch, undefined);
+  assert.equal(filters.queryKey, undefined, 'the union goes out as a predicate');
+
+  for (const key of [
+    ['recordings', 'recent'],
+    ['recordings', 'list', '', 'all', 'submittedAt-desc'],
+    ['recordings', 'drafts', 'recent'],
+    ['recordings', 'drafts', 'list', '', 'desc'],
+    ['recordings', 'attention', 'updated-v1'],
+    ['local-drafts', 'user-1'],
+    ['attention', 'local-unsent', 'user-1'],
+  ]) {
+    assert.ok(matches(filters, key), `${JSON.stringify(key)} must be invalidated`);
+  }
+  for (const key of [
+    ['dashboard', 'quality', 'org', 'user', 'vet'],
+    ['recording', 'rec-1'],
+    ['patients', 'list'],
+    ['recordings'],
+    ['attention'],
+  ]) {
+    assert.ok(!matches(filters, key), `${JSON.stringify(key)} must not be invalidated`);
+  }
+});
+
+test('the window carries the union of every requested key set', async () => {
+  const h = await loadCoalescingHarness();
+  h.cache.invalidateRecordingCaches(h.queryClient, 'processing_retry');
+  h.cache.invalidateRecordingCaches(h.queryClient, 'draft_deleted');
+  h.flush();
+
+  assert.equal(h.calls.length, 1);
+  // From processing_retry only.
+  assert.ok(matches(h.calls[0].filters, ['dashboard', 'quality', 'org']));
+  // From draft_deleted only.
+  assert.ok(matches(h.calls[0].filters, ['recordings', 'drafts', 'recent']));
+  assert.ok(matches(h.calls[0].filters, ['local-drafts', 'user-1']));
+});
+
+test('a request after the window opens a new one', async () => {
+  const h = await loadCoalescingHarness();
+  h.cache.invalidateRecordingCaches(h.queryClient, 'draft_changed');
+  h.flush();
+  h.cache.invalidateRecordingCaches(h.queryClient, 'submit_success');
+
+  assert.equal(h.timers.length, 1, 'the second request must schedule its own window');
+  h.flush();
+  assert.equal(h.calls.length, 2);
+  assert.ok(matches(h.calls[1].filters, ['dashboard', 'quality', 'org']));
+});
+
+test('windows are per QueryClient', async () => {
+  const h = await loadCoalescingHarness();
+  const other = { invalidateQueries: () => Promise.resolve() };
+  h.cache.invalidateRecordingCaches(h.queryClient, 'draft_changed');
+  h.cache.invalidateRecordingCaches(other, 'draft_changed');
+  assert.equal(h.timers.length, 2);
 });

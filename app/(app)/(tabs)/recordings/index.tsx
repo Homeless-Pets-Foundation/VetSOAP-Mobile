@@ -151,6 +151,10 @@ export default function RecordingsListScreen() {
       }),
     initialPageParam: 1,
     enabled: shouldLoadRecordings,
+    // Unsubscribed while another tab is showing: invalidation marks it stale
+    // instead of re-pulling every loaded page behind that tab, and refocusing
+    // refetches it once.
+    subscribed: isTabFocused,
     getNextPageParam: (lastPage) => {
       if (!lastPage.pagination) return undefined;
       const { page, totalPages } = lastPage.pagination;
@@ -239,6 +243,7 @@ export default function RecordingsListScreen() {
         sortOrder: 'desc',
       }),
     enabled: shouldLoadDrafts,
+    subscribed: isTabFocused,
   });
 
   const {
@@ -365,11 +370,13 @@ export default function RecordingsListScreen() {
       skipped: !shouldRefetchRecordings && !shouldRefetchDrafts && !shouldRefreshLocalDrafts,
       count: staleSourceCount,
     }, () => {
+      // Join, never abort: refocusing resubscribes both queries, which already
+      // starts the stale refetch this would otherwise cancel and repeat.
       if (shouldRefetchRecordings) {
-        refetch().catch(() => {});
+        refetch({ cancelRefetch: false }).catch(() => {});
       }
       if (shouldRefetchDrafts) {
-        refetchDrafts().catch(() => {});
+        refetchDrafts({ cancelRefetch: false }).catch(() => {});
       }
       if (shouldRefreshLocalDrafts) {
         refreshLocalDrafts();

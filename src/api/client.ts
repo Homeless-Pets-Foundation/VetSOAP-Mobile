@@ -5,6 +5,7 @@ import { getIdempotencyUuid } from '../lib/random';
 import { setMinVersionFloor, UPGRADE_REQUIRED_CODE } from '../lib/minVersion';
 import { applyDurableCaptureHeader } from '../lib/durableFlag';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
+import { startForegroundTimer, type ForegroundTimer } from '../lib/foregroundClock';
 import { ApiError, RequestTimeoutError, StorageUnavailableError } from './apiErrors';
 import { ERROR_COPY } from '../constants/strings';
 
@@ -66,10 +67,34 @@ function endpointKindOf(path: string): 'recordings' | 'auth' | 'telemetry' | 'de
   return 'other';
 }
 
+interface RequestTiming {
+  timer: ForegroundTimer;
+  /** Foreground ms spent reading the token and device id, summed over attempts. */
+  prepMs: number;
+}
+
+interface RequestLatency {
+  /** Foreground time on the wire: excludes storage reads and time in background. */
+  latency_ms: number;
+  /** Foreground time reading the token and device id before sending. */
+  prep_ms: number;
+  /** The app left the foreground during the request, so it was suspended. */
+  app_suspended: boolean;
+}
+
+function requestLatency(timing: RequestTiming): RequestLatency {
+  const prepMs = Math.round(timing.prepMs);
+  return {
+    latency_ms: Math.max(0, Math.round(timing.timer.elapsedForegroundMs()) - prepMs),
+    prep_ms: prepMs,
+    app_suspended: timing.timer.wasSuspended(),
+  };
+}
+
 function emitApiRequestFailed(
   endpointKind: ReturnType<typeof endpointKindOf>,
   status: number,
-  latencyMs: number,
+  latency: RequestLatency,
   retried: boolean,
 ): void {
   try {
@@ -77,7 +102,7 @@ function emitApiRequestFailed(
     const { trackEvent } = require('../lib/analytics') as typeof import('../lib/analytics');
     trackEvent({
       name: 'api_request_failed',
-      props: { endpoint_kind: endpointKind, status, latency_ms: latencyMs, retried },
+      props: { endpoint_kind: endpointKind, status, ...latency, retried },
     });
   } catch {
     // swallow
@@ -88,7 +113,7 @@ function emitApiBreadcrumb(
   method: string,
   path: string,
   status: number,
-  latencyMs: number,
+  latency: RequestLatency,
   requestId: string,
 ): void {
   try {
@@ -96,7 +121,7 @@ function emitApiBreadcrumb(
     const { breadcrumb } = require('../lib/monitoring') as typeof import('../lib/monitoring');
     breadcrumb('network', `${method} ${path}`, {
       status,
-      latency_ms: latencyMs,
+      ...latency,
       request_id: requestId,
     });
   } catch {
@@ -295,8 +320,10 @@ export class ApiClient {
     idempotencyKey?: string,
     requestId?: string,
     signal?: AbortSignal,
+    timing?: RequestTiming,
   ): Promise<Response> {
     throwIfRequestAborted(signal);
+    const prepTimer = startForegroundTimer();
     const authHeaders = await this.getAuthHeaders();
     throwIfRequestAborted(signal);
     // Cache device ID after first successful read to avoid hitting SecureStore on every request.
@@ -316,6 +343,9 @@ export class ApiClient {
       // register a SECOND identity against the organization's device limit.
       if (id && persisted) this.cachedDeviceId = id;
     }
+    // Storage reads are bounded but can still take seconds on a degraded
+    // Keystore; report them as prep_ms so they never read as network latency.
+    if (timing) timing.prepMs += prepTimer.elapsedForegroundMs();
     throwIfRequestAborted(signal);
     const controller = new AbortController();
     const abortFromExternalSignal = () => controller.abort();
@@ -403,7 +433,7 @@ export class ApiClient {
     // its own if we ever miss setting this, but the correlation is tighter
     // when the client owns the ID. Cheap UUID — non-security context.
     const requestId = getIdempotencyUuid();
-    const fetchStartedAt = Date.now();
+    const timing: RequestTiming = { timer: startForegroundTimer(), prepMs: 0 };
     let retried = false;
     // Snapshot the auth state each attempt is actually sent with. A background
     // refresh can land WHILE a request is in flight, and the 401 handling below
@@ -429,6 +459,7 @@ export class ApiClient {
         idempotencyKey,
         requestId,
         signal,
+        timing,
       );
       throwIfRequestAborted(signal);
       return sent;
@@ -471,7 +502,7 @@ export class ApiClient {
         throwIfRequestAborted(signal);
         if (typeof upgradeBody.minVersion === 'string') setMinVersionFloor(upgradeBody.minVersion);
         const endpointKind = endpointKindOf(path);
-        emitApiRequestFailed(endpointKind, 426, Date.now() - fetchStartedAt, retried);
+        emitApiRequestFailed(endpointKind, 426, requestLatency(timing), retried);
         throw new ApiError(
           'A newer version of Captivet is required. Please update the app to continue.',
           426,
@@ -576,7 +607,7 @@ export class ApiClient {
           // sign the vet out on what may only be a stalled auth server. The
           // copy is "timed out", which the upload classifier deliberately
           // fails fast on rather than retrying into the same stall.
-          emitApiRequestFailed(endpointKindOf(path), 401, Date.now() - fetchStartedAt, retried);
+          emitApiRequestFailed(endpointKindOf(path), 401, requestLatency(timing), retried);
           throw new RequestTimeoutError(ERROR_COPY.timeout);
         }
 
@@ -597,7 +628,7 @@ export class ApiClient {
     // re-run the upgrade handling against the FINAL response so it is not lost.
     if (retried) await handleUpgradeResponse(response);
 
-    const latencyMs = Date.now() - fetchStartedAt;
+    const latency = requestLatency(timing);
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({})) ?? {};
       throwIfRequestAborted(signal);
@@ -647,8 +678,8 @@ export class ApiClient {
       const hasData = Object.keys(restData).length > 0;
 
       const endpointKind = endpointKindOf(path);
-      emitApiRequestFailed(endpointKind, response.status, latencyMs, retried);
-      emitApiBreadcrumb(method, path, response.status, latencyMs, requestId);
+      emitApiRequestFailed(endpointKind, response.status, latency, retried);
+      emitApiBreadcrumb(method, path, response.status, latency, requestId);
 
       throw new ApiError(
         message,
@@ -663,7 +694,7 @@ export class ApiClient {
     // Success breadcrumb so upload-path debugging has the whole conversation
     // even when no error fires. Keeps the breadcrumb ring small via the
     // `maxBreadcrumbs: 50` setting in monitoring.ts.
-    emitApiBreadcrumb(method, path, response.status, latencyMs, requestId);
+    emitApiBreadcrumb(method, path, response.status, latency, requestId);
 
     if (response.status === 204 || !parseJson) {
       return undefined as T;

@@ -509,8 +509,11 @@ export const RECORD_EXPIRY_COPY = {
 } as const;
 
 export const RECORD_BANNERS = {
-  pendingDraftOffline: 'Draft recording pending upload — connect to the internet to sync',
-  pendingDraftOnline: 'Draft saved locally — syncing to server…',
+  // Says what is TRUE for the vet: the audio is safe here and nothing has been
+  // submitted. "Syncing to server…" read as auto-upload + processing (UX-H6);
+  // the sync only creates a placeholder row — the SOAP note needs Submit.
+  pendingDraftOffline: 'Saved on this device — not submitted. Submit when you’re back online.',
+  pendingDraftOnline: 'Saved on this device — not submitted. Submit to generate the SOAP note.',
 } as const;
 
 export const TRANSCRIPT_COPY = {

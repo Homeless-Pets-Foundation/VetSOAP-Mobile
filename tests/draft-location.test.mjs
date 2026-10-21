@@ -107,7 +107,8 @@ test('cards route saved-session drafts to the Record tab, which reveals the list
   assert.match(card, /recording\.status === 'draft' && inSavedSession[\s\S]*?showSavedSessions=1/);
   assert.match(card, /prev\.inSavedSession === next\.inSavedSession/);
   const record = await read('app/(app)/(tabs)/record.tsx');
-  assert.match(record, /\(!hasUnsavedRecordings \|\| forceShowStashList\)/);
+  // The 30-day notice may also reveal the list (unsent-expiry-notice test).
+  assert.match(record, /\(!hasUnsavedRecordings \|\| forceShowStashList(?: \|\| expiryNoticeCoversSavedSessions)?\)/);
   assert.match(record, /showSavedSessions !== '1'/);
   assert.match(record, /navigation\.addListener\('blur', \(\) => setForceShowStashList\(false\)\)/);
   const hook = await read('src/hooks/useLocalDraftRecordings.ts');

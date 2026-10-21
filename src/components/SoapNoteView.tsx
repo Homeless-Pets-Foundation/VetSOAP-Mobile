@@ -55,6 +55,11 @@ interface SoapNoteViewProps {
    * never per keystroke). The detail screen uses it to guard every back path.
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Fires when "some section has a save in flight" flips. A sent save can't be
+   * discarded (the request still lands), so the screen blocks leaving instead.
+   */
+  onSavingChange?: (saving: boolean) => void;
 }
 
 function formatEditedAt(value: string | null | undefined): string | null {
@@ -81,6 +86,7 @@ function AccordionSection({
   soapNoteId,
   canEdit,
   onDirtyChange,
+  onSavingChange,
 }: {
   sectionKey: SoapNoteSection;
   label: string;
@@ -95,6 +101,7 @@ function AccordionSection({
   soapNoteId: string;
   canEdit: boolean;
   onDirtyChange: (sectionKey: string, dirty: boolean) => void;
+  onSavingChange: (sectionKey: string, saving: boolean) => void;
 }) {
   const colors = useThemeColors();
   const [showCopied, setShowCopied] = useState(false);
@@ -118,6 +125,10 @@ function AccordionSection({
     onDirtyChange(sectionKey, isDirty);
   }, [isDirty, sectionKey, onDirtyChange]);
   React.useEffect(() => () => onDirtyChange(sectionKey, false), [sectionKey, onDirtyChange]);
+  React.useEffect(() => {
+    onSavingChange(sectionKey, isSaving);
+  }, [isSaving, sectionKey, onSavingChange]);
+  React.useEffect(() => () => onSavingChange(sectionKey, false), [sectionKey, onSavingChange]);
 
   React.useEffect(() => {
     rotation.value = withTiming(isExpanded ? 1 : 0, { duration: 200 });
@@ -288,7 +299,13 @@ function AccordionSection({
   );
 }
 
-export function SoapNoteView({ soapNote, recordingId, canEdit = false, onDirtyChange }: SoapNoteViewProps) {
+export function SoapNoteView({
+  soapNote,
+  recordingId,
+  canEdit = false,
+  onDirtyChange,
+  onSavingChange,
+}: SoapNoteViewProps) {
   const colors = useThemeColors();
   // Latest callback in a ref so the tracker (and the per-section callback
   // below) stays stable across renders.
@@ -299,6 +316,15 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false, onDirtyCh
   );
   const handleSectionDirty = useCallback((sectionKey: string, dirty: boolean) => {
     dirtyTrackerRef.current.set(sectionKey, dirty);
+  }, []);
+  // Same transition-only key set, for saves in flight.
+  const onSavingChangeRef = useRef(onSavingChange);
+  onSavingChangeRef.current = onSavingChange;
+  const savingTrackerRef = useRef(
+    createSoapDirtyTracker((anySaving) => onSavingChangeRef.current?.(anySaving)),
+  );
+  const handleSectionSaving = useCallback((sectionKey: string, saving: boolean) => {
+    savingTrackerRef.current.set(sectionKey, saving);
   }, []);
   const [expandedSection, setExpandedSection] = useState<string | null>('subjective');
   const [showCopiedAll, setShowCopiedAll] = useState(false);
@@ -374,6 +400,7 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false, onDirtyCh
             soapNoteId={soapNote.id}
             canEdit={canEdit}
             onDirtyChange={handleSectionDirty}
+            onSavingChange={handleSectionSaving}
           />
         );
       })}

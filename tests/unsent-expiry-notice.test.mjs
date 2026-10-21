@@ -7,6 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { loadTsModule } from './helpers/loadTs.mjs';
 
 const read = (p) => readFile(new URL(`../${p}`, import.meta.url), 'utf8');
 
@@ -32,13 +33,55 @@ test('≥30 days and ≥23 days both surface a notice', async () => {
   assert.doesNotMatch(effect, /approaching 30-day expiry/, 'the dev-only log is gone');
 });
 
+// Codex review on PR #252: drafts were counted one each but saved SESSIONS one
+// each too, so a 5-patient session read as "1 recording".
+test('counts are in one unit: recordings, with saved sessions counted per slot', async () => {
+  const { effect } = await evictionEffect();
+  assert.match(effect, /countUnsentStashRecordings\(stashResult\.expired\)/);
+  assert.match(effect, /countUnsentStashRecordings\(stashResult\.expiring\)/);
+  assert.doesNotMatch(effect, /expiredStashes\.length|stashResult\.(?:expired|expiring)\.length/);
+});
+
+// Codex review on PR #252: the tab outlives a shared-tablet user switch, and a
+// sweep with nothing to report left the previous vet's notice up.
+test('the notice is cleared on every user-scope change and on an empty sweep', async () => {
+  const { src, effect } = await evictionEffect();
+  const head = src.slice(src.indexOf('const [expiryNotice, setExpiryNotice]'), src.indexOf("scheduleNonUrgentWork('thirty_day_eviction'"));
+  assert.match(head, /useEffect\(\(\) => \{\s*(?:\/\/[^\n]*\n\s*)*setExpiryNotice\(null\);\s*if \(!user\?\.id\) \{/);
+  assert.match(head, /evictionSweptUserRef\.current = null;/, 'a sign-out lets the next sign-in sweep again');
+  assert.match(effect, /\} else \{\s*setExpiryNotice\(null\);\s*\}/);
+});
+
 test('the notice is a non-modal banner whose Review goes where the recordings are', async () => {
   const { src } = await evictionEffect();
   const banner = src.slice(src.indexOf('{expiryNotice ? ('), src.indexOf('{/* Pending Drafts Banner */}'));
   assert.match(banner, /<Banner/);
   assert.match(banner, /dismissible/);
+  assert.match(banner, /onDismiss=\{\(\) => setExpiryNotice\(null\)\}/);
+  // Review is offered only when drafts are involved, and opens them.
+  assert.match(banner, /expiryNotice\.draftCount > 0\s*\?\s*\{\s*label: RECORD_EXPIRY_COPY\.review,/);
   assert.match(banner, /router\.navigate\('\/recordings\?status=draft' as never\)/);
-  assert.match(banner, /setForceShowStashList\(true\)/);
+  assert.match(banner, /RECORD_EXPIRY_COPY\.where\(\s*expiryNotice\.draftCount,\s*expiryNotice\.savedSessionRecordingCount\s*\)/);
+});
+
+// Codex review on PR #252: with drafts AND saved sessions, Review reached only
+// the drafts, and saved sessions stay hidden while unsaved work is open.
+test('saved-session work the notice counts is listed on the Record screen', async () => {
+  const { src } = await evictionEffect();
+  assert.match(src, /const expiryNoticeCoversSavedSessions = \(expiryNotice\?\.savedSessionRecordingCount \?\? 0\) > 0;/);
+  assert.match(
+    src,
+    /\(!hasUnsavedRecordings \|\| forceShowStashList \|\| expiryNoticeCoversSavedSessions\)/,
+  );
+});
+
+test('the copy says where each source is', async () => {
+  const { RECORD_EXPIRY_COPY } = await loadTsModule('src/constants/strings.ts');
+  assert.equal(RECORD_EXPIRY_COPY.where(2, 0), 'Review to submit or delete them.');
+  assert.equal(RECORD_EXPIRY_COPY.where(1, 0), 'Review to submit or delete it.');
+  assert.match(RECORD_EXPIRY_COPY.where(0, 5), /^They’re under Saved Sessions on this screen\.$/);
+  assert.match(RECORD_EXPIRY_COPY.where(3, 4), /^4 are under Saved Sessions on this screen; Review opens the other 3\.$/);
+  assert.match(RECORD_EXPIRY_COPY.expired(1), /^1 unsent recording is over 30 days old/);
 });
 
 test('copy lives in the catalog and never threatens automatic deletion', async () => {
@@ -50,7 +93,23 @@ test('copy lives in the catalog and never threatens automatic deletion', async (
 
 test('Recordings honors ?status=draft once, clearing it without navigating', async () => {
   const src = await read('app/(app)/(tabs)/recordings/index.tsx');
-  assert.match(src, /if \(statusParam !== 'draft'\) return;\s*setSelectedStatusFilter\('draft'\);\s*router\.setParams\(\{ status: undefined \}\);/);
+  assert.match(
+    src,
+    /if \(statusParam !== 'draft'\) return;\s*filterFromLinkRef\.current = true;\s*setSelectedStatusFilter\('draft'\);\s*router\.setParams\(\{ status: undefined \}\);/,
+  );
+});
+
+// Codex review on PR #252: the list stays mounted, so the link's filter
+// outlived the visit and pinned later ordinary visits to Not Submitted.
+test('the link-applied filter is dropped when the vet leaves the tab, a chosen one is kept', async () => {
+  const src = await read('app/(app)/(tabs)/recordings/index.tsx');
+  // TAB blur (the parent) — opening a draft's detail pushes onto this stack
+  // and must keep the filter for the way back.
+  assert.match(
+    src,
+    /const tabNavigation = navigation\.getParent\(\) \?\? navigation;\s*return tabNavigation\.addListener\('blur', \(\) => \{\s*if \(!filterFromLinkRef\.current\) return;\s*filterFromLinkRef\.current = false;\s*setSelectedStatusFilter\('all'\);/,
+  );
+  assert.match(src, /onValueChange=\{\(value\) => \{\s*filterFromLinkRef\.current = false;\s*setSelectedStatusFilter\(value\);/);
 });
 
 test('attention links land on the drafts / saved sessions themselves', async () => {

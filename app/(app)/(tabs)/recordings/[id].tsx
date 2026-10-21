@@ -955,10 +955,22 @@ export default function RecordingDetailScreen() {
   //    gated explicitly, since they route by name rather than trusting history.
   // `discardingEditsRef` lets a confirmed discard through without a second
   // prompt from usePreventRemove; it re-arms whenever the screen regains focus.
+  // A save already IN FLIGHT is different: Discard can't recall a sent
+  // request (it would still persist the text the dialog said was thrown
+  // away), so while one is pending every exit is blocked with a "still
+  // saving" notice instead — success then disarms the guard, failure leaves
+  // the edit dirty and back under the discard confirm.
   const [soapEditDirty, setSoapEditDirty] = useState(false);
   const soapEditDirtyRef = useRef(false);
   soapEditDirtyRef.current = soapEditDirty;
+  const [soapSaving, setSoapSaving] = useState(false);
+  const soapSavingRef = useRef(false);
+  soapSavingRef.current = soapSaving;
   const discardingEditsRef = useRef(false);
+
+  const alertSoapStillSaving = useCallback(() => {
+    Alert.alert(SOAP_EDIT_DISCARD_COPY.savingTitle, SOAP_EDIT_DISCARD_COPY.savingBody);
+  }, []);
 
   const confirmDiscardSoapEdits = useCallback((proceed: () => void) => {
     Alert.alert(SOAP_EDIT_DISCARD_COPY.title, SOAP_EDIT_DISCARD_COPY.body, [
@@ -974,7 +986,11 @@ export default function RecordingDetailScreen() {
     ]);
   }, []);
 
-  usePreventRemove(soapEditDirty, ({ data }) => {
+  usePreventRemove(soapEditDirty || soapSaving, ({ data }) => {
+    if (soapSavingRef.current) {
+      alertSoapStillSaving();
+      return;
+    }
     if (discardingEditsRef.current) {
       navigation.dispatch(data.action);
       return;
@@ -991,13 +1007,17 @@ export default function RecordingDetailScreen() {
   /** Runs `leave` now, or after a Discard confirm while a SOAP edit is unsaved. */
   const leaveGuarded = useCallback(
     (leave: () => void) => {
+      if (soapSavingRef.current) {
+        alertSoapStillSaving();
+        return;
+      }
       if (soapEditDirtyRef.current && !discardingEditsRef.current) {
         confirmDiscardSoapEdits(leave);
         return;
       }
       leave();
     },
-    [confirmDiscardSoapEdits]
+    [confirmDiscardSoapEdits, alertSoapStillSaving]
   );
 
   const guardedGoBack = useCallback(() => {
@@ -1911,6 +1931,7 @@ export default function RecordingDetailScreen() {
                   recordingId={id ?? undefined}
                   canEdit={recordingPermissions.canEdit}
                   onDirtyChange={setSoapEditDirty}
+                  onSavingChange={setSoapSaving}
                 />
               </View>
             ) : (

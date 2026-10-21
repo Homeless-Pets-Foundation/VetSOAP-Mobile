@@ -432,6 +432,9 @@ export const SOAP_EDIT_DISCARD_COPY = {
   body: 'Your edit to this SOAP note has not been saved. Leaving now will discard it.',
   keepEditing: 'Keep editing',
   discard: 'Discard',
+  // A save already sent can't be discarded — leaving waits for it instead.
+  savingTitle: 'Still saving',
+  savingBody: 'Your SOAP edit is still saving. Try again in a moment.',
 } as const;
 
 export const SPECIES_OTHER_COPY = {
@@ -509,10 +512,18 @@ export const RECORDER_TRANSITION_COPY = {
  * deleted, one at a time, from the list Review opens).
  */
 export const RECORD_EXPIRY_COPY = {
+  // Counts are RECORDINGS (patient slots) from both sources: a draft is one, a
+  // saved session counts each slot with audio (countUnsentStashRecordings).
   expired: (n: number): string =>
-    `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} over 30 days old on this device. Review to submit or delete ${n === 1 ? 'it' : 'them'}.`,
+    `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} over 30 days old on this device.`,
   expiring: (n: number): string =>
     `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} nearly 30 days old and still not submitted.`,
+  /** Where to act: drafts via Review (Recordings › Not Submitted); saved sessions are listed on the Record screen itself. */
+  where: (drafts: number, inSavedSessions: number): string => {
+    if (inSavedSessions === 0) return `Review to submit or delete ${drafts === 1 ? 'it' : 'them'}.`;
+    if (drafts === 0) return `${inSavedSessions === 1 ? 'It’s' : 'They’re'} under Saved Sessions on this screen.`;
+    return `${inSavedSessions} ${inSavedSessions === 1 ? 'is' : 'are'} under Saved Sessions on this screen; Review opens the other ${drafts}.`;
+  },
   review: 'Review',
 } as const;
 

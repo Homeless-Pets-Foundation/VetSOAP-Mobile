@@ -51,7 +51,7 @@ test('SoapNoteView reports dirty transitions upward and clears on unmount', asyn
 test('the detail screen guards navigation removal with usePreventRemove', async () => {
   const src = await read(DETAIL);
   assert.match(src, /onDirtyChange=\{setSoapEditDirty\}/);
-  assert.match(src, /usePreventRemove\(soapEditDirty, \(\{ data \}\) => \{/);
+  assert.match(src, /usePreventRemove\(soapEditDirty \|\| soapSaving, \(\{ data \}\) => \{/);
   assert.match(src, /navigation\.dispatch\(data\.action\)/);
 });
 
@@ -72,6 +72,33 @@ test('a confirmed discard passes the removal guard without a second prompt, and 
   const src = await read(DETAIL);
   assert.match(src, /if \(discardingEditsRef\.current\) \{\s*navigation\.dispatch\(data\.action\);\s*return;/);
   assert.match(src, /useFocusEffect\(\s*useCallback\(\(\) => \{\s*discardingEditsRef\.current = false;/);
+});
+
+// Codex review on PR #252: Discard while a save is in flight navigated away
+// but could not recall the request, so the "discarded" text still persisted.
+test('a save in flight blocks every exit instead of offering a discard it cannot honor', async () => {
+  const view = await read('src/components/SoapNoteView.tsx');
+  assert.match(view, /onSavingChange\?: \(saving: boolean\) => void;/);
+  assert.match(
+    view,
+    /React\.useEffect\(\(\) => \{\s*onSavingChange\(sectionKey, isSaving\);\s*\}, \[isSaving, sectionKey, onSavingChange\]\);/,
+  );
+  assert.match(view, /React\.useEffect\(\(\) => \(\) => onSavingChange\(sectionKey, false\)/);
+  assert.match(view, /onSavingChange=\{handleSectionSaving\}/);
+
+  const src = await read(DETAIL);
+  assert.match(src, /onSavingChange=\{setSoapSaving\}/);
+  // Checked FIRST on both paths, ahead of the discard confirm and the
+  // already-discarding pass-through.
+  assert.match(
+    src,
+    /usePreventRemove\(soapEditDirty \|\| soapSaving, \(\{ data \}\) => \{\s*if \(soapSavingRef\.current\) \{\s*alertSoapStillSaving\(\);\s*return;\s*\}\s*if \(discardingEditsRef\.current\)/,
+  );
+  assert.match(
+    src,
+    /\(leave: \(\) => void\) => \{\s*if \(soapSavingRef\.current\) \{\s*alertSoapStillSaving\(\);\s*return;\s*\}\s*if \(soapEditDirtyRef\.current/,
+  );
+  assert.match(src, /Alert\.alert\(SOAP_EDIT_DISCARD_COPY\.savingTitle, SOAP_EDIT_DISCARD_COPY\.savingBody\)/);
 });
 
 test('discard copy lives in the strings catalog', async () => {

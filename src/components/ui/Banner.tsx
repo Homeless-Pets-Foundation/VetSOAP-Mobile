@@ -58,6 +58,8 @@ interface BannerProps {
   icon?: LucideIcon;
   cta?: { label: string; onPress: () => void };
   dismissible?: boolean;
+  /** Called after the vet dismisses the banner, so the owner can drop its state. */
+  onDismiss?: () => void;
 }
 
 /**
@@ -75,6 +77,7 @@ export function Banner({
   icon: Icon,
   cta,
   dismissible = false,
+  onDismiss,
 }: BannerProps) {
   const { iconSm } = useResponsive();
   const colors = useThemeColors();
@@ -139,7 +142,10 @@ export function Banner({
       ) : null}
       {dismissible ? (
         <Pressable
-          onPress={() => setDismissed(true)}
+          onPress={() => {
+            setDismissed(true);
+            onDismiss?.();
+          }}
           accessibilityRole="button"
           accessibilityLabel="Dismiss"
           hitSlop={HIT_SLOP}

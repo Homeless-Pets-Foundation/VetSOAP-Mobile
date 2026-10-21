@@ -29,7 +29,7 @@ function loadPureTs(relPath) {
   return moduleObj.exports;
 }
 
-const { countUnsentStashSessions } = loadPureTs('../src/lib/unsentCount.ts');
+const { countUnsentStashSessions, countUnsentStashRecordings } = loadPureTs('../src/lib/unsentCount.ts');
 
 test('countUnsentStashSessions counts resumed stashes as unsent (O6)', () => {
   const sessions = [
@@ -43,4 +43,32 @@ test('countUnsentStashSessions counts resumed stashes as unsent (O6)', () => {
 
 test('countUnsentStashSessions returns 0 for no sessions', () => {
   assert.equal(countUnsentStashSessions([]), 0);
+});
+
+// UX-H7 (UI/UX audit 2026-10-21): the sign-out / delete-account warning says
+// "You have N recordings…", so a 4-patient saved session is 4, not 1. The
+// session-level count above stays for the attention feed's "N saved sessions".
+test('countUnsentStashRecordings counts each patient slot with audio', () => {
+  const sessions = [
+    {
+      id: 'multi',
+      slots: [
+        { segments: [{ uri: 'file:///a.m4a', duration: 3 }] },
+        { segments: [], durable: { recordingId: 'durable-1' } },
+        { segments: [], pendingConfirm: { recordingId: 'r', uploadKey: 'k' } },
+        { segments: [] }, // form-only slot, no audio yet
+      ],
+    },
+    {
+      id: 'single',
+      resumedAt: '2026-07-01T00:00:00.000Z',
+      slots: [{ segments: [{ uri: 'file:///b.m4a', duration: 1 }] }],
+    },
+  ];
+  assert.equal(countUnsentStashRecordings(sessions), 4);
+});
+
+test('countUnsentStashRecordings never under-reports a session as zero (O6)', () => {
+  assert.equal(countUnsentStashRecordings([{ id: 'torn', slots: [] }, { id: 'legacy' }]), 2);
+  assert.equal(countUnsentStashRecordings([]), 0);
 });

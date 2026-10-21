@@ -6953,7 +6953,25 @@ function RecordingSession() {
     [resetSession, restoreSession, router, user?.id]
   );
 
-  const { draftSlotId } = useLocalSearchParams<{ draftSlotId?: string }>();
+  const { draftSlotId, showSavedSessions } = useLocalSearchParams<{
+    draftSlotId?: string;
+    showSavedSessions?: string;
+  }>();
+
+  // `showSavedSessions=1` (from a "Saved session" card or the detail screen's
+  // Open Saved Sessions) reveals the list even while the current session has
+  // unsaved work — otherwise the vet lands on a Record tab that doesn't show
+  // what the link promised. One-shot: consumed here, cleared on blur.
+  const [forceShowStashList, setForceShowStashList] = useState(false);
+  useEffect(() => {
+    if (showSavedSessions !== '1') return;
+    setForceShowStashList(true);
+    router.replace('/(tabs)/record' as any);
+  }, [showSavedSessions, router]);
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('blur', () => setForceShowStashList(false));
+    return unsubscribe;
+  }, [navigation]);
 
   useEffect(() => {
     if (!draftSlotId) return;
@@ -7373,13 +7391,17 @@ function RecordingSession() {
             text: STASH_COPY.delete,
             style: 'destructive',
             onPress: () => {
-              deleteStash(stashId).catch(() => {});
+              // Refresh the Home/Recordings "Saved session" chips, which read
+              // the stash under the local-drafts key.
+              deleteStash(stashId)
+                .then(() => invalidateRecordingCaches(queryClient, 'draft_deleted'))
+                .catch(() => {});
             },
           },
         ]
       );
     },
-    [deleteStash]
+    [deleteStash, queryClient]
   );
 
   // -- Edit handler --
@@ -7453,8 +7475,10 @@ function RecordingSession() {
     [isSlotUploadActive, session.slots, router, replaceAllSegments]
   );
 
-  // Show stash list when session is clean and stashes exist
-  const showStashList = !stashesLoading && stashCount > 0 && !hasUnsavedRecordings;
+  // Show stash list when session is clean and stashes exist, or when a
+  // saved-session link asked for it (forceShowStashList).
+  const showStashList =
+    !stashesLoading && stashCount > 0 && (!hasUnsavedRecordings || forceShowStashList);
 
   // Show stash button when there are unsaved recordings to stash
   const canStash =

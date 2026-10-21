@@ -20,6 +20,7 @@ import {
   mergeDraftRecordings,
   sortRecordingsBySubmittedAt,
 } from '../../../../src/lib/draftRecordings';
+import { savedSessionIdForDraft } from '../../../../src/lib/draftLocation';
 import {
   canRecordAppointments,
   RECORD_APPOINTMENT_PERMISSION_MESSAGE,
@@ -249,6 +250,7 @@ export default function RecordingsListScreen() {
   const {
     localDrafts,
     draftResumeMap,
+    savedSessionDraftMap,
     refreshLocalDrafts,
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
@@ -522,6 +524,7 @@ export default function RecordingsListScreen() {
           <RecordingCard
             recording={item}
             localDraftSlotId={draftResumeMap[item.id]}
+            inSavedSession={!!savedSessionIdForDraft(savedSessionDraftMap, item.id)}
             highlighted={submittedIdSet.has(item.id)}
             hideStatusBadge={item.status === 'completed'}
           />

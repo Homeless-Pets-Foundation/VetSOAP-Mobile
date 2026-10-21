@@ -6,13 +6,16 @@ import {
   linkedServerDraftIds,
 } from '../api/draftPresence';
 import { buildDraftResumeMap } from '../lib/draftRecordings';
+import { buildSavedSessionDraftMap } from '../lib/draftLocation';
 import { draftStorage, type DraftMetadata } from '../lib/draftStorage';
+import { stashStorage } from '../lib/stashStorage';
 import { measurePhase } from '../lib/monitoring';
 import { useAuthDeviceRegistration, useAuthUser } from './useAuth';
 
 const LOCAL_DRAFTS_STALE_MS = 60_000;
 const RECONCILE_INTERVAL_MS = 5 * 60_000;
 const EMPTY_DRAFTS: DraftMetadata[] = [];
+const EMPTY_SAVED_SESSION_MAP: Record<string, string> = {};
 
 const lastReconciledAtByUser = new Map<string, number>();
 const reconcileInFlightByUser = new Map<string, Promise<number>>();
@@ -90,6 +93,12 @@ async function reconcileMissingServerDrafts(userId: string, force: boolean): Pro
 export interface UseLocalDraftRecordingsResult {
   localDrafts: DraftMetadata[];
   draftResumeMap: Record<string, string>;
+  /**
+   * Normalized server draft id → saved-session id, for drafts whose audio a
+   * saved session holds (Save for Later deletes the local draft but keeps the
+   * server row). Look up with `savedSessionIdForDraft`. Labels/routing only.
+   */
+  savedSessionDraftMap: Record<string, string>;
   isLoading: boolean;
   isRefetching: boolean;
   isStale: boolean;
@@ -166,8 +175,26 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
     },
   });
 
+  // Nested under ['local-drafts', userId] so every existing invalidation of the
+  // draft list (stash save deletes the drafts → 'draft_deleted', focus refresh)
+  // refreshes this too. Lenient read: a missed stash only leaves the card on its
+  // previous "Not on this device" path; the detail screen's strict anchor check
+  // still governs any destructive action.
+  const savedSessionQuery = useQuery({
+    queryKey: ['local-drafts', userId, 'saved-sessions'],
+    enabled: !!userId,
+    staleTime: LOCAL_DRAFTS_STALE_MS,
+    gcTime: 10 * 60_000,
+    queryFn: async () => {
+      if (!userId || stashStorage.getUserId() !== userId) return EMPTY_SAVED_SESSION_MAP;
+      const sessions = await stashStorage.getStashedSessionsForUser(userId);
+      return buildSavedSessionDraftMap(sessions);
+    },
+  });
+
   const localDrafts = query.data ?? EMPTY_DRAFTS;
   const draftResumeMap = useMemo(() => buildDraftResumeMap(localDrafts), [localDrafts]);
+  const savedSessionDraftMap = savedSessionQuery.data ?? EMPTY_SAVED_SESSION_MAP;
 
   const refreshLocalDrafts = useCallback(
     (opts?: { forceReconcile?: boolean }) => {
@@ -192,6 +219,7 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
   return {
     localDrafts,
     draftResumeMap,
+    savedSessionDraftMap,
     isLoading: query.isLoading,
     isRefetching: query.isRefetching,
     isStale: query.isStale,

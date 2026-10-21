@@ -23,3 +23,30 @@ import type { StashedSession } from '../types/stash';
 export function countUnsentStashSessions(sessions: StashedSession[]): number {
   return sessions.length;
 }
+
+function slotCarriesAudio(slot: StashedSession['slots'][number] | null | undefined): boolean {
+  if (!slot) return false;
+  if (Array.isArray(slot.segments) && slot.segments.length > 0) return true;
+  if (slot.durable?.recordingId) return true;
+  return !!slot.pendingConfirm;
+}
+
+/**
+ * Number of un-sent RECORDINGS (patient slots) held by saved sessions — the
+ * unit the sign-out / delete-account warning speaks in ("You have N
+ * recordings…"). `countUnsentStashSessions` counted a 4-patient saved session
+ * as 1 recording (UI/UX audit 2026-10-21, UX-H7).
+ *
+ * Each slot with audio evidence (segments, a durable pointer, or a pending
+ * confirmation) counts once. A session with no slot that proves audio still
+ * counts 1: this is a warning, and under-reporting is the failure that matters
+ * (finding O6) — a torn or legacy stash must never read as zero.
+ */
+export function countUnsentStashRecordings(sessions: StashedSession[]): number {
+  let total = 0;
+  for (const session of sessions) {
+    const withAudio = (session?.slots ?? []).filter(slotCarriesAudio).length;
+    total += Math.max(1, withAudio);
+  }
+  return total;
+}

@@ -25,6 +25,7 @@ import {
   shouldFetchQualityAnalytics,
 } from '../../../src/api/qualityAnalytics';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
+import { savedSessionIdForDraft } from '../../../src/lib/draftLocation';
 import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
 import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
@@ -180,6 +181,7 @@ export default function HomeScreen() {
   const {
     localDrafts,
     draftResumeMap,
+    savedSessionDraftMap,
     refreshLocalDrafts,
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
@@ -589,7 +591,11 @@ export default function HomeScreen() {
           </View>
           {drafts.map((recording) => (
             <View key={recording.id}>
-              <RecordingCard recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+              <RecordingCard
+                recording={recording}
+                localDraftSlotId={draftResumeMap[recording.id]}
+                inSavedSession={!!savedSessionIdForDraft(savedSessionDraftMap, recording.id)}
+              />
             </View>
           ))}
         </View>
@@ -687,6 +693,7 @@ export default function HomeScreen() {
               <RecordingCard
                 recording={recording}
                 localDraftSlotId={draftResumeMap[recording.id]}
+                inSavedSession={!!savedSessionIdForDraft(savedSessionDraftMap, recording.id)}
                 hideStatusBadge={recording.status === 'completed'}
               />
             </View>

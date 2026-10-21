@@ -352,6 +352,31 @@ export const RECORDING_DETAIL_COPY = {
   audioNotOnDeviceBody:
     'This draft was started on another device, or its local audio was cleared from this one. ' +
     'Submit it from the device where you recorded it, or delete it here to clean up.',
+  // Draft rows whose audio IS on this device, just not in draftStorage (a
+  // saved session, a strict-scan draft, or a recovery) — UX-H3, 2026-10-21.
+  draftSavedSessionTitle: 'Saved on This Device',
+  draftSavedSessionBody:
+    'This recording is in a saved session on this device. Open it to resume and submit.',
+  draftResumableTitle: 'Saved on This Device',
+  draftResumableBody: 'This recording is saved on this device. Resume it to review and submit.',
+  draftRecoveryTitle: 'Recoverable on This Device',
+  draftRecoveryBody:
+    'A recoverable copy of this recording is on this device. Open recovery to review and submit it.',
+  draftCheckingTitle: 'Checking This Device',
+  draftUnknownTitle: 'Could Not Check This Device',
+} as const;
+
+/** RecordingCard location chip for `status='draft'` rows. */
+export const DRAFT_LOCATION_COPY = {
+  onDevice: 'On this device',
+  savedSession: 'Saved session',
+  notOnDevice: 'Not on this device',
+  onDeviceA11y: 'Draft audio is saved on this device',
+  savedSessionA11y: 'Draft audio is in a saved session on this device',
+  notOnDeviceA11y: 'Draft audio is not saved on this device',
+  onDeviceSuffix: ', audio on this device',
+  savedSessionSuffix: ', audio in a saved session on this device',
+  notOnDeviceSuffix: ', audio not on this device',
 } as const;
 
 export const RECORDINGS_LIST_COPY = {

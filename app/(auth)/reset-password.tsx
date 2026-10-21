@@ -137,7 +137,7 @@ export default function ResetPasswordScreen() {
         >
           <View className="px-6 py-6">
             <View className="mb-8">
-              <Text className="text-heading-lg font-bold text-content-primary mb-2">
+              <Text className="text-display font-bold text-content-primary mb-2">
                 Set new password
               </Text>
               <Text className="text-body text-content-secondary">

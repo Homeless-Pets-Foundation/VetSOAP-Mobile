@@ -248,7 +248,7 @@ export function RecordingAudioDownload({
   const isDownloading = phase === 'downloading';
 
   return (
-    <View className="mt-4 pt-4 border-t border-border-subtle">
+    <View className="mt-4 pt-4 border-t border-border-default">
       {isDownloading && progress ? (
         <>
           <Text className="text-body-sm text-content-secondary mb-2">

@@ -276,7 +276,7 @@ export default function MfaScreen() {
                 <ShieldCheck color={colors.brand500} size={iconMd} />
               </View>
 
-              <Text className="text-heading-lg font-bold text-content-primary mb-2">
+              <Text className="text-display font-bold text-content-primary mb-2">
                 {title}
               </Text>
               <Text className="text-body text-content-secondary mb-6">{subtitle}</Text>

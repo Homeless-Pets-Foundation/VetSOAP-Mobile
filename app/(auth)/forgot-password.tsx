@@ -106,7 +106,7 @@ export default function ForgotPasswordScreen() {
         >
           <View className="px-6">
             <View className="items-center">
-              <Text className="text-heading-lg font-bold text-content-primary mb-3">
+              <Text className="text-display font-bold text-content-primary mb-3">
                 Check your email
               </Text>
               <Text className="text-body text-content-secondary text-center mb-6">
@@ -172,7 +172,7 @@ export default function ForgotPasswordScreen() {
         >
           <View className="px-6 py-6">
             <View className="mb-8">
-              <Text className="text-heading-lg font-bold text-content-primary mb-2">
+              <Text className="text-display font-bold text-content-primary mb-2">
                 Reset password
               </Text>
               <Text className="text-body text-content-secondary">

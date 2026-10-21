@@ -400,8 +400,10 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
       <Text className="text-body-sm text-content-tertiary text-center mb-6">
         {APP_LOCK_COPY.subtitle}
       </Text>
+      {/* w-full: a shrink-wrapped multi-word label in this centered column
+          loses its tail under Android Bold text (CLAUDE.md > UI Gotchas). */}
       {recordingLive && hasRevealed ? (
-        <Text className="text-body-sm font-semibold text-status-danger text-center mb-4">
+        <Text className="w-full text-body-sm font-semibold text-status-danger text-center mb-4">
           {APP_LOCK_COPY.recordingContinues}
         </Text>
       ) : null}

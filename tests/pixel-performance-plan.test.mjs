@@ -213,7 +213,9 @@ test('Pixel performance plan keeps focus refresh, local drafts, pending sync, an
     2,
     'both destructive draft sweeps must pass an explicit user and live scope guard',
   );
-  assert.match(record, /deleteDraftForUser\(user\.id, draft\.slotId\)/);
+  // The user-scoped deleteDraftForUser this pinned lived in the 30-day bulk
+  // delete, which is gone: the age sweep no longer deletes anything (rule 13
+  // warn-first; tests/unsent-expiry-notice.test.mjs fences that).
 
   assert.match(draftStorage, /export interface DraftSyncResult/);
   assert.match(draftStorage, /attempted: number;\s*succeeded: number;\s*failed: number;/);

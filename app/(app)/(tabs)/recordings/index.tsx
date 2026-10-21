@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
 import { Search, Mic, X, AlertCircle } from 'lucide-react-native';
@@ -96,7 +96,11 @@ function recordingMatchesSearch(recording: Recording, searchQuery: string): bool
 
 export default function RecordingsListScreen() {
   const router = useRouter();
-  const { submittedIds: submittedIdsParam } = useLocalSearchParams<{ submittedIds?: string | string[] }>();
+  const navigation = useNavigation();
+  const { submittedIds: submittedIdsParam, status: statusParam } = useLocalSearchParams<{
+    submittedIds?: string | string[];
+    status?: string;
+  }>();
   const user = useAuthUser();
   const colors = useThemeColors();
   const { iconSm, iconLg } = useResponsive();
@@ -106,6 +110,28 @@ export default function RecordingsListScreen() {
   /** Bumped on focus so the date grouping re-evaluates "today" after midnight. */
   const [nowTick, setNowTick] = useState(0);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
+  // `?status=draft` (the Record tab's 30-day Review, attention links) opens the
+  // list on Not Submitted. One-shot: applied, then cleared in place (setParams,
+  // not a navigation), and dropped when the vet leaves the TAB — this screen
+  // stays mounted, so without that a later ordinary visit stayed pinned to
+  // Not Submitted. Tab-level blur (the parent), not this screen's: opening a
+  // draft's detail pushes onto this stack and must keep the filter for the
+  // way back. A filter the vet picks themselves is never reset.
+  const filterFromLinkRef = useRef(false);
+  useEffect(() => {
+    if (statusParam !== 'draft') return;
+    filterFromLinkRef.current = true;
+    setSelectedStatusFilter('draft');
+    router.setParams({ status: undefined });
+  }, [statusParam, router]);
+  useEffect(() => {
+    const tabNavigation = navigation.getParent() ?? navigation;
+    return tabNavigation.addListener('blur', () => {
+      if (!filterFromLinkRef.current) return;
+      filterFromLinkRef.current = false;
+      setSelectedStatusFilter('all');
+    });
+  }, [navigation]);
   const isTabFocused = useIsFocused();
   const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
   const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;
@@ -503,7 +529,10 @@ export default function RecordingsListScreen() {
           <Select
             options={statusFilterOptions}
             value={selectedStatusFilter}
-            onValueChange={(value) => setSelectedStatusFilter(value)}
+            onValueChange={(value) => {
+              filterFromLinkRef.current = false;
+              setSelectedStatusFilter(value);
+            }}
             placeholder="Status"
             accessibilityLabel={`Filter recordings by status. Current filter ${activeStatusFilterLabel}`}
             sheetTitle="Filter by status"

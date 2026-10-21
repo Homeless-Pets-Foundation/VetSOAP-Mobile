@@ -139,8 +139,10 @@ export function parseAttentionFocus(value: unknown): AttentionFocus | null {
 
 export type AttentionDestination =
   | { kind: 'recording_detail'; recordingId: string; focus: AttentionFocus | null }
-  | { kind: 'recordings_list' }
-  | { kind: 'record_tab' }
+  /** `status: 'draft'` opens the list on Not Submitted (`/recordings?status=draft`). */
+  | { kind: 'recordings_list'; status?: 'draft' }
+  /** `showSavedSessions` reveals Saved Sessions even over an unsaved session. */
+  | { kind: 'record_tab'; showSavedSessions?: true }
   | { kind: 'recovery' }
   /**
    * Non-navigating: the row states what must happen and offers no tap.
@@ -1004,7 +1006,8 @@ export function buildLocalAttentionItems(
       'local_drafts',
       ATTENTION_FEED_COPY.localDraftsTitle,
       ATTENTION_FEED_COPY.localDrafts(summary.draftCount),
-      { kind: 'recordings_list' },
+      // Land on the drafts themselves, not the unfiltered list (UX-M10).
+      { kind: 'recordings_list', status: 'draft' },
       ATTENTION_FEED_COPY.ctaOpenDrafts
     );
   }
@@ -1013,7 +1016,8 @@ export function buildLocalAttentionItems(
       'local_saved_sessions',
       ATTENTION_FEED_COPY.localSavedSessionsTitle,
       ATTENTION_FEED_COPY.localSavedSessions(summary.stashSessionCount),
-      { kind: 'record_tab' },
+      // Saved Sessions are hidden while the Record tab holds unsaved work.
+      { kind: 'record_tab', showSavedSessions: true },
       ATTENTION_FEED_COPY.ctaOpenSavedSessions
     );
   }

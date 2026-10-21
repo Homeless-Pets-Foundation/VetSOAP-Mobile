@@ -30,6 +30,7 @@ import {
   MULTI_PATIENT_RECORD_FIRST_COPY,
   OVERSIZED_CONFIRM_COPY,
   RECORD_BANNERS,
+  RECORD_EXPIRY_COPY,
   RECORDER_TRANSITION_COPY,
   REPLACE_SESSION_COPY,
   SILENT_CHECK_COPY,
@@ -44,6 +45,7 @@ import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import { draftStorage } from '../../../src/lib/draftStorage';
 import { rememberOrphanDraftId } from '../../../src/lib/orphanDraftRetry';
 import { stashStorage, MAX_STASHES } from '../../../src/lib/stashStorage';
+import { countUnsentStashRecordings } from '../../../src/lib/unsentCount';
 import { recoveryIntent, type RecoveryIntentReason } from '../../../src/lib/recoveryIntent';
 import {
   getRecordingPermissionsAsync,
@@ -146,6 +148,7 @@ import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
 import { UploadOverlay, countBatchCompleted } from '../../../src/components/UploadOverlay';
 import { CONTENT_MAX_WIDTH, ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
+import { Banner } from '../../../src/components/ui/Banner';
 import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
@@ -7148,10 +7151,50 @@ function RecordingSession() {
   // unmount) re-sweeps for each user instead of silently skipping everyone
   // after the first.
   const evictionSweptUserRef = useRef<string | null>(null);
+  /** Counts cover BOTH cohorts (≥30d expired and ≥23d expiring), all in recordings. */
+  const [expiryNotice, setExpiryNotice] = useState<{
+    expiredCount: number;
+    expiringCount: number;
+    /** Drafts (one recording each) — reached via Recordings › Not Submitted. */
+    draftCount: number;
+    /** Recordings (slots with audio) inside saved sessions — listed on this screen. */
+    savedSessionRecordingCount: number;
+  } | null>(null);
+  const expiryNoticeRef = useRef(expiryNotice);
+  expiryNoticeRef.current = expiryNotice;
+  // While a notice is up, re-check what it counts whenever that may have
+  // changed: on every return to this tab (Review → submit/delete drafts
+  // elsewhere) and whenever the saved-session list changes here. Otherwise the
+  // banner kept a stale count, or claimed recordings were under Saved Sessions
+  // after the last one was deleted. No notice → no re-checks.
+  const [expiryRecheck, setExpiryRecheck] = useState(0);
+  const expiryRecheckSweptRef = useRef(0);
   useEffect(() => {
-    if (!user?.id) return;
-    if (evictionSweptUserRef.current === user.id) return;
+    return navigation.addListener('focus', () => {
+      if (expiryNoticeRef.current) setExpiryRecheck((n) => n + 1);
+    });
+  }, [navigation]);
+  useEffect(() => {
+    if (expiryNoticeRef.current) setExpiryRecheck((n) => n + 1);
+  }, [stashCount]);
+  useEffect(() => {
+    if (!user?.id) {
+      // Signed out: clear, and let the next sign-in (even the same vet) sweep
+      // again.
+      setExpiryNotice(null);
+      evictionSweptUserRef.current = null;
+      return;
+    }
+    const isRecheck = evictionSweptUserRef.current === user.id;
+    if (isRecheck && expiryRecheck === expiryRecheckSweptRef.current) return;
+    if (!isRecheck) {
+      // A new scope starts clean: on a shared tablet this tab outlives a user
+      // switch, and the previous vet's notice must never show for the next.
+      // A re-check keeps the current notice up until its result replaces it.
+      setExpiryNotice(null);
+    }
     evictionSweptUserRef.current = user.id;
+    expiryRecheckSweptRef.current = expiryRecheck;
     const online = isConnected !== false;
     let cancelled = false;
     const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async (isExpired) => {
@@ -7191,58 +7234,34 @@ function RecordingSession() {
         const stashResult = await stashStorage.evictExpired({ maxAgeDays: 30, warnAgeDays: 23 });
         if (!isScopeValid()) return;
 
-        const expiredDrafts = draftResult.expired;
-        const expiredStashes = stashResult.expired;
-        const totalExpired = expiredDrafts.length + expiredStashes.length;
-        const totalExpiring = draftResult.expiring.length + stashResult.expiring.length;
+        // One unit throughout — recordings. A draft is one; a saved session is
+        // counted per slot with audio, so a 5-patient session is 5, not 1.
+        const expiredDraftCount = draftResult.expired.length;
+        const expiredSessionRecordings = countUnsentStashRecordings(stashResult.expired);
+        const expiringDraftCount = draftResult.expiring.length;
+        const expiringSessionRecordings = countUnsentStashRecordings(stashResult.expiring);
+        const totalExpired = expiredDraftCount + expiredSessionRecordings;
+        const totalExpiring = expiringDraftCount + expiringSessionRecordings;
 
-        if (totalExpired > 0) {
-          const n = totalExpired;
-          const noun = n === 1 ? 'recording' : 'recordings';
-          const verb = n === 1 ? 'is' : 'are';
-          const obj = n === 1 ? 'it' : 'them';
-          const extra = totalExpiring > 0 ? ` ${totalExpiring} more will expire soon.` : '';
-          Alert.alert(
-            'Recordings Expiring',
-            `${n} ${noun} on this device ${verb} over 30 days old and still not sent for SOAP notes. Submit ${obj} now, or delete from this device?${extra}`,
-            [
-              { text: 'Keep for now', style: 'cancel' },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: () => {
-                  (async () => {
-                    if (!isScopeValid()) return;
-                    for (const draft of expiredDrafts) {
-                      if (!isScopeValid()) return;
-                      try {
-                        if (draft.serverDraftId) {
-                          await recordingsApi.delete(draft.serverDraftId, { reason: 'user_delete' }).catch(() => {});
-                        }
-                        if (!isScopeValid()) return;
-                        await draftStorage.deleteDraftForUser(user.id, draft.slotId);
-                      } catch {
-                        // best-effort
-                      }
-                    }
-                    for (const stash of expiredStashes) {
-                      if (!isScopeValid()) return;
-                      try {
-                        await deleteStash(stash.id);
-                      } catch {
-                        // best-effort
-                      }
-                    }
-                    if (isScopeValid()) {
-                      invalidateRecordingCaches(queryClient, 'draft_deleted');
-                    }
-                  })().catch(() => {});
-                },
-              },
-            ]
-          );
-        } else if (totalExpiring > 0 && __DEV__) {
-          console.log(`[record] ${totalExpiring} unsent recording(s) approaching 30-day expiry`);
+        // Warn-first and never destructive (rule 13): a non-modal banner whose
+        // Review opens the affected list, where each recording is submitted or
+        // deleted on its own. The old modal fired as the Record tab opened (i.e.
+        // as an exam started), listed nothing, offered no Submit despite its
+        // copy, and its Delete removed every expired draft (server row
+        // included) and every expired stash in one tap. The ≥23-day heads-up
+        // rule 13 promises was a __DEV__ console.log only; it now shows too.
+        // Both cohorts in one notice: an expired recording must not hide the
+        // 23–29-day ones (or the saved sessions they live in) for the session.
+        if (!isScopeValid()) return;
+        if (totalExpired + totalExpiring > 0) {
+          setExpiryNotice({
+            expiredCount: totalExpired,
+            expiringCount: totalExpiring,
+            draftCount: expiredDraftCount + expiringDraftCount,
+            savedSessionRecordingCount: expiredSessionRecordings + expiringSessionRecordings,
+          });
+        } else {
+          setExpiryNotice(null);
         }
       } catch (error) {
         if (__DEV__) console.error('[record] eviction sweep failed:', error);
@@ -7252,8 +7271,8 @@ function RecordingSession() {
       cancelled = true;
       cancelWork();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per user; isConnected read via closure at mount
-  }, [user?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per user, plus re-checks while a notice is up; isConnected read via closure
+  }, [user?.id, expiryRecheck]);
 
   // Effect: ask once per device whether to exempt Captivet from Android battery
   // optimization. Samsung One UI app-sleep kills the app mid-recording, and that
@@ -7480,10 +7499,15 @@ function RecordingSession() {
     [isSlotUploadActive, session.slots, router, replaceAllSegments]
   );
 
-  // Show stash list when session is clean and stashes exist, or when a
-  // saved-session link asked for it (forceShowStashList).
+  // Show stash list when session is clean and stashes exist, when a
+  // saved-session link asked for it (forceShowStashList), or while the 30-day
+  // notice counts saved-session recordings — the notice says they are on this
+  // screen, so they must be, even with unsaved work in progress.
+  const expiryNoticeCoversSavedSessions = (expiryNotice?.savedSessionRecordingCount ?? 0) > 0;
   const showStashList =
-    !stashesLoading && stashCount > 0 && (!hasUnsavedRecordings || forceShowStashList);
+    !stashesLoading &&
+    stashCount > 0 &&
+    (!hasUnsavedRecordings || forceShowStashList || expiryNoticeCoversSavedSessions);
 
   // Show stash button when there are unsaved recordings to stash
   const canStash =
@@ -7800,6 +7824,36 @@ function RecordingSession() {
             </Text>
           </Pressable>
         )}
+
+        {/* 30-day unsent-work notice (rule 13 warn-first). Each source is
+            reachable: saved sessions are listed on this screen while the
+            notice counts them (showStashList); drafts are behind Review →
+            Recordings › Not Submitted. Mixed → both, and the copy says which. */}
+        {expiryNotice ? (
+          <View className="mx-5 mb-2">
+            <Banner
+              variant={expiryNotice.expiredCount > 0 ? 'warning' : 'info'}
+              message={RECORD_EXPIRY_COPY.message({
+                expired: expiryNotice.expiredCount,
+                expiring: expiryNotice.expiringCount,
+                drafts: expiryNotice.draftCount,
+                inSavedSessions: expiryNotice.savedSessionRecordingCount,
+              })}
+              cta={
+                expiryNotice.draftCount > 0
+                  ? {
+                      label: RECORD_EXPIRY_COPY.review,
+                      onPress: () => {
+                        router.navigate('/recordings?status=draft' as never);
+                      },
+                    }
+                  : undefined
+              }
+              dismissible
+              onDismiss={() => setExpiryNotice(null)}
+            />
+          </View>
+        ) : null}
 
         {/* Pending Drafts Banner */}
         {hasPendingDrafts && (

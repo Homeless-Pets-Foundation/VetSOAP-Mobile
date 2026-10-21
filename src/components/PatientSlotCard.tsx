@@ -475,7 +475,14 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           ) : slot.audioState === 'paused' && !isRecorderOwner ? (
             <Badge variant="warning">Paused</Badge>
           ) : isStopped ? (
-            <Badge variant="success">Recording Complete</Badge>
+            // Not "Recording Complete" in green: after Finish nothing is sent or
+            // processed until Submit, and a green check read as "done" (UX-H6).
+            // Same wording and amber as Home's "Not Submitted".
+            slot.uploadStatus === 'success' ? (
+              <Badge variant="success">Submitted</Badge>
+            ) : (
+              <Badge variant="warning">Not Submitted</Badge>
+            )
           ) : (
             <Badge variant="neutral">Ready to Record</Badge>
           )}
@@ -641,7 +648,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
 
           {isStopped && hasSegments && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
-              <Button variant="primary" size="lg" onPress={handleContinueRecording} disabled={isUploading} icon={<Plus color={colors.contentOnBrand} size={18} />}>
+              {/* Secondary: Submit & Generate is the one primary action after
+                  Finish; a primary-large Continue competed with it (UX-H6). */}
+              <Button variant="secondary" onPress={handleContinueRecording} disabled={isUploading} icon={<Plus color={colors.contentPrimary} size={18} />}>
                 Continue Recording
               </Button>
               <Button variant="secondary" onPress={handleEditRecording} disabled={isUploading} icon={<Scissors color={colors.contentPrimary} size={16} />}>
@@ -687,7 +696,7 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
           {isStopped && !hasSegments && canDiscardDurable && !isFinishSaving && (
             <Animated.View entering={FadeIn.duration(200)} className="gap-2">
               {canContinueDurable && (
-                <Button variant="primary" size="lg" onPress={handleContinueRecording} icon={<Plus color={colors.contentOnBrand} size={18} />}>
+                <Button variant="secondary" onPress={handleContinueRecording} icon={<Plus color={colors.contentPrimary} size={18} />}>
                   Continue Recording
                 </Button>
               )}

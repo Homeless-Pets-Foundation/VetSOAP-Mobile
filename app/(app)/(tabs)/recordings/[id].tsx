@@ -11,8 +11,8 @@ import {
 import { Text } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
-import { useFocusEffect } from '@react-navigation/native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, usePreventRemove } from '@react-navigation/native';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import {
@@ -72,6 +72,7 @@ import {
   METADATA_REVIEW_COPY,
   RECORDING_DETAIL_COPY,
   REGENERATE_SOAP_COPY,
+  SOAP_EDIT_DISCARD_COPY,
   TRANSCRIPT_COPY,
 } from '../../../../src/constants/strings';
 import { trackEvent } from '../../../../src/lib/analytics';
@@ -152,6 +153,7 @@ export default function RecordingDetailScreen() {
   const requestedFocus = parseAttentionFocus(focus);
   const cameFromAttention = from === 'attention';
   const router = useRouter();
+  const navigation = useNavigation();
   const queryClient = useQueryClient();
   const { iconMd } = useResponsive();
   const colors = useThemeColors();
@@ -771,6 +773,10 @@ export default function RecordingDetailScreen() {
     });
   }, [id, recording]);
 
+  // Set once the recording is deleted from here: nothing is left to save or
+  // discard, so the SOAP edit guard below must not intercept the navigation
+  // that follows (Keep editing would strand the vet on a deleted recording).
+  const recordingDeletedRef = useRef(false);
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!id) return;
@@ -841,6 +847,7 @@ export default function RecordingDetailScreen() {
           patientId: recording?.patientId ?? null,
         });
       }
+      recordingDeletedRef.current = true;
       router.navigate('/recordings');
     },
     onError: (error: Error) => {
@@ -944,16 +951,98 @@ export default function RecordingDetailScreen() {
     router.replace('/recordings');
   }, [router, from, cameFromAttention]);
 
+  // Unsaved SOAP section edit (UX-H5). SoapNoteView reports only dirty
+  // TRANSITIONS, so this re-renders when the guard arms/disarms, not per key.
+  // Every way off this screen goes through the same confirm:
+  //  - a navigation REMOVAL (stack pop, iOS swipe, default Android back, and
+  //    router.back/replace from goBack) — usePreventRemove;
+  //  - the screen's own back control and its attention-route BackHandler —
+  //    gated explicitly, since they route by name rather than trusting history.
+  // `discardingEditsRef` lets a confirmed discard through without a second
+  // prompt from usePreventRemove; it re-arms whenever the screen regains focus.
+  // A save already IN FLIGHT is different: Discard can't recall a sent
+  // request (it would still persist the text the dialog said was thrown
+  // away), so while one is pending every exit is blocked with a "still
+  // saving" notice instead — success then disarms the guard, failure leaves
+  // the edit dirty and back under the discard confirm.
+  const [soapEditDirty, setSoapEditDirty] = useState(false);
+  const soapEditDirtyRef = useRef(false);
+  soapEditDirtyRef.current = soapEditDirty;
+  const [soapSaving, setSoapSaving] = useState(false);
+  const soapSavingRef = useRef(false);
+  soapSavingRef.current = soapSaving;
+  const discardingEditsRef = useRef(false);
+
+  const alertSoapStillSaving = useCallback(() => {
+    Alert.alert(SOAP_EDIT_DISCARD_COPY.savingTitle, SOAP_EDIT_DISCARD_COPY.savingBody);
+  }, []);
+
+  const confirmDiscardSoapEdits = useCallback((proceed: () => void) => {
+    Alert.alert(SOAP_EDIT_DISCARD_COPY.title, SOAP_EDIT_DISCARD_COPY.body, [
+      { text: SOAP_EDIT_DISCARD_COPY.keepEditing, style: 'cancel' },
+      {
+        text: SOAP_EDIT_DISCARD_COPY.discard,
+        style: 'destructive',
+        onPress: () => {
+          discardingEditsRef.current = true;
+          proceed();
+        },
+      },
+    ]);
+  }, []);
+
+  usePreventRemove(soapEditDirty || soapSaving, ({ data }) => {
+    if (recordingDeletedRef.current) {
+      navigation.dispatch(data.action);
+      return;
+    }
+    if (soapSavingRef.current) {
+      alertSoapStillSaving();
+      return;
+    }
+    if (discardingEditsRef.current) {
+      navigation.dispatch(data.action);
+      return;
+    }
+    confirmDiscardSoapEdits(() => navigation.dispatch(data.action));
+  });
+
+  useFocusEffect(
+    useCallback(() => {
+      discardingEditsRef.current = false;
+    }, [])
+  );
+
+  /** Runs `leave` now, or after a Discard confirm while a SOAP edit is unsaved. */
+  const leaveGuarded = useCallback(
+    (leave: () => void) => {
+      if (soapSavingRef.current) {
+        alertSoapStillSaving();
+        return;
+      }
+      if (soapEditDirtyRef.current && !discardingEditsRef.current) {
+        confirmDiscardSoapEdits(leave);
+        return;
+      }
+      leave();
+    },
+    [confirmDiscardSoapEdits, alertSoapStillSaving]
+  );
+
+  const guardedGoBack = useCallback(() => {
+    leaveGuarded(goBack);
+  }, [leaveGuarded, goBack]);
+
   // Android hardware back must take the SAME route as the header control.
   useFocusEffect(
     useCallback(() => {
       if (!cameFromAttention) return;
       const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-        router.replace('/recordings/attention' as never);
+        leaveGuarded(() => router.replace('/recordings/attention' as never));
         return true;
       });
       return () => subscription.remove();
-    }, [cameFromAttention, router])
+    }, [cameFromAttention, router, leaveGuarded])
   );
 
   const startNewRecording = useCallback(() => {
@@ -976,7 +1065,7 @@ export default function RecordingDetailScreen() {
               ? 'This recording is no longer available. It may have been deleted.'
               : 'You no longer have access to this recording.'}
           </Text>
-          <Button variant="primary" onPress={goBack}>
+          <Button variant="primary" onPress={guardedGoBack}>
             Go Back
           </Button>
         </Animated.View>
@@ -998,7 +1087,7 @@ export default function RecordingDetailScreen() {
             {error instanceof ApiError ? error.message : 'An unexpected error occurred. Please try again.'}
           </Text>
           <View className="flex-row gap-3">
-            <Button variant="primary" onPress={goBack}>
+            <Button variant="primary" onPress={guardedGoBack}>
               Go Back
             </Button>
             <Button variant="secondary" onPress={() => { refetchRecording().catch(() => {}); }}>
@@ -1186,7 +1275,7 @@ export default function RecordingDetailScreen() {
         {/* Header */}
         <View className="flex-row items-center px-5 pt-5">
           <Pressable
-            onPress={goBack}
+            onPress={guardedGoBack}
             accessibilityRole="button"
             accessibilityLabel="Go back"
             className="mr-3 w-11 h-11 items-center justify-center"
@@ -1850,6 +1939,8 @@ export default function RecordingDetailScreen() {
                   soapNote={soapNote}
                   recordingId={id ?? undefined}
                   canEdit={recordingPermissions.canEdit}
+                  onDirtyChange={setSoapEditDirty}
+                  onSavingChange={setSoapSaving}
                 />
               </View>
             ) : (

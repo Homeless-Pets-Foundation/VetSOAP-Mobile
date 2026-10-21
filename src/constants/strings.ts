@@ -426,6 +426,17 @@ export const SOAP_SECTION_ACTIONS = {
   copied: 'Copied!',
 } as const;
 
+/** Leaving the recording detail screen with an unsaved SOAP section edit. */
+export const SOAP_EDIT_DISCARD_COPY = {
+  title: 'Discard unsaved changes?',
+  body: 'Your edit to this SOAP note has not been saved. Leaving now will discard it.',
+  keepEditing: 'Keep editing',
+  discard: 'Discard',
+  // A save already sent can't be discarded — leaving waits for it instead.
+  savingTitle: 'Still saving',
+  savingBody: 'Your SOAP edit is still saving. Try again in a moment.',
+} as const;
+
 export const SPECIES_OTHER_COPY = {
   segmentLabel: 'Other',
   inputLabel: 'Species (type it in)',
@@ -494,9 +505,51 @@ export const RECORDER_TRANSITION_COPY = {
   dismiss: 'OK',
 } as const;
 
+/**
+ * Record-tab notice for unsent work ≥23/≥30 days old (rule 13 warn-first).
+ * Unsent recordings are never deleted automatically and never upload on
+ * their own — the notice exists to get them submitted (or deliberately
+ * deleted, one at a time, from the list Review opens).
+ */
+// Counts are RECORDINGS (patient slots) from both sources: a draft is one, a
+// saved session counts each slot with audio (countUnsentStashRecordings).
+const expiryExpiredLine = (n: number): string =>
+  `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} over 30 days old on this device.`;
+const expiryExpiringLine = (n: number): string =>
+  `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} nearly 30 days old and still not submitted.`;
+const expiryAlsoExpiringLine = (n: number): string =>
+  `${n} more ${n === 1 ? 'is' : 'are'} nearly 30 days old.`;
+/** Where to act: drafts via Review (Recordings › Not Submitted); saved sessions are listed on the Record screen itself. */
+const expiryWhereLine = (drafts: number, inSavedSessions: number): string => {
+  if (inSavedSessions === 0) return `Review to submit or delete ${drafts === 1 ? 'it' : 'them'}.`;
+  if (drafts === 0) return `${inSavedSessions === 1 ? 'It’s' : 'They’re'} under Saved Sessions on this screen.`;
+  return `${inSavedSessions} ${inSavedSessions === 1 ? 'is' : 'are'} under Saved Sessions on this screen; Review opens the other ${drafts}.`;
+};
+
+export const RECORD_EXPIRY_COPY = {
+  expired: expiryExpiredLine,
+  expiring: expiryExpiringLine,
+  alsoExpiring: expiryAlsoExpiringLine,
+  where: expiryWhereLine,
+  /** The whole banner: both age cohorts (expired first), then where each source is. */
+  message: (counts: { expired: number; expiring: number; drafts: number; inSavedSessions: number }): string => {
+    const age =
+      counts.expired > 0
+        ? counts.expiring > 0
+          ? `${expiryExpiredLine(counts.expired)} ${expiryAlsoExpiringLine(counts.expiring)}`
+          : expiryExpiredLine(counts.expired)
+        : expiryExpiringLine(counts.expiring);
+    return `${age} ${expiryWhereLine(counts.drafts, counts.inSavedSessions)}`;
+  },
+  review: 'Review',
+} as const;
+
 export const RECORD_BANNERS = {
-  pendingDraftOffline: 'Draft recording pending upload — connect to the internet to sync',
-  pendingDraftOnline: 'Draft saved locally — syncing to server…',
+  // Says what is TRUE for the vet: the audio is safe here and nothing has been
+  // submitted. "Syncing to server…" read as auto-upload + processing (UX-H6);
+  // the sync only creates a placeholder row — the SOAP note needs Submit.
+  pendingDraftOffline: 'Saved on this device — not submitted. Submit when you’re back online.',
+  pendingDraftOnline: 'Saved on this device — not submitted. Submit to generate the SOAP note.',
 } as const;
 
 export const TRANSCRIPT_COPY = {

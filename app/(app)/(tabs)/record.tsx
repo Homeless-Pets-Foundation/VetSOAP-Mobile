@@ -30,6 +30,7 @@ import {
   MULTI_PATIENT_RECORD_FIRST_COPY,
   OVERSIZED_CONFIRM_COPY,
   RECORD_BANNERS,
+  RECORD_EXPIRY_COPY,
   RECORDER_TRANSITION_COPY,
   REPLACE_SESSION_COPY,
   SILENT_CHECK_COPY,
@@ -146,6 +147,7 @@ import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
 import { UploadOverlay, countBatchCompleted } from '../../../src/components/UploadOverlay';
 import { CONTENT_MAX_WIDTH, ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
+import { Banner } from '../../../src/components/ui/Banner';
 import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
 import type { CreateRecording } from '../../../src/types';
@@ -7148,6 +7150,12 @@ function RecordingSession() {
   // unmount) re-sweeps for each user instead of silently skipping everyone
   // after the first.
   const evictionSweptUserRef = useRef<string | null>(null);
+  const [expiryNotice, setExpiryNotice] = useState<{
+    expired: boolean;
+    count: number;
+    /** How many of them are drafts (Recordings → Not Submitted); the rest are saved sessions. */
+    draftCount: number;
+  } | null>(null);
   useEffect(() => {
     if (!user?.id) return;
     if (evictionSweptUserRef.current === user.id) return;
@@ -7196,53 +7204,26 @@ function RecordingSession() {
         const totalExpired = expiredDrafts.length + expiredStashes.length;
         const totalExpiring = draftResult.expiring.length + stashResult.expiring.length;
 
+        // Warn-first and never destructive (rule 13): a non-modal banner whose
+        // Review opens the affected list, where each recording is submitted or
+        // deleted on its own. The old modal fired as the Record tab opened (i.e.
+        // as an exam started), listed nothing, offered no Submit despite its
+        // copy, and its Delete removed every expired draft (server row
+        // included) and every expired stash in one tap. The ≥23-day heads-up
+        // rule 13 promises was a __DEV__ console.log only; it now shows too.
+        if (!isScopeValid()) return;
         if (totalExpired > 0) {
-          const n = totalExpired;
-          const noun = n === 1 ? 'recording' : 'recordings';
-          const verb = n === 1 ? 'is' : 'are';
-          const obj = n === 1 ? 'it' : 'them';
-          const extra = totalExpiring > 0 ? ` ${totalExpiring} more will expire soon.` : '';
-          Alert.alert(
-            'Recordings Expiring',
-            `${n} ${noun} on this device ${verb} over 30 days old and still not sent for SOAP notes. Submit ${obj} now, or delete from this device?${extra}`,
-            [
-              { text: 'Keep for now', style: 'cancel' },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: () => {
-                  (async () => {
-                    if (!isScopeValid()) return;
-                    for (const draft of expiredDrafts) {
-                      if (!isScopeValid()) return;
-                      try {
-                        if (draft.serverDraftId) {
-                          await recordingsApi.delete(draft.serverDraftId, { reason: 'user_delete' }).catch(() => {});
-                        }
-                        if (!isScopeValid()) return;
-                        await draftStorage.deleteDraftForUser(user.id, draft.slotId);
-                      } catch {
-                        // best-effort
-                      }
-                    }
-                    for (const stash of expiredStashes) {
-                      if (!isScopeValid()) return;
-                      try {
-                        await deleteStash(stash.id);
-                      } catch {
-                        // best-effort
-                      }
-                    }
-                    if (isScopeValid()) {
-                      invalidateRecordingCaches(queryClient, 'draft_deleted');
-                    }
-                  })().catch(() => {});
-                },
-              },
-            ]
-          );
-        } else if (totalExpiring > 0 && __DEV__) {
-          console.log(`[record] ${totalExpiring} unsent recording(s) approaching 30-day expiry`);
+          setExpiryNotice({
+            expired: true,
+            count: totalExpired,
+            draftCount: expiredDrafts.length,
+          });
+        } else if (totalExpiring > 0) {
+          setExpiryNotice({
+            expired: false,
+            count: totalExpiring,
+            draftCount: draftResult.expiring.length,
+          });
         }
       } catch (error) {
         if (__DEV__) console.error('[record] eviction sweep failed:', error);
@@ -7800,6 +7781,33 @@ function RecordingSession() {
             </Text>
           </Pressable>
         )}
+
+        {/* 30-day unsent-work notice (rule 13 warn-first). Review goes where
+            the recordings are: drafts → Recordings › Not Submitted; saved
+            sessions only → reveal Saved Sessions here. */}
+        {expiryNotice ? (
+          <View className="mx-5 mb-2">
+            <Banner
+              variant={expiryNotice.expired ? 'warning' : 'info'}
+              message={
+                expiryNotice.expired
+                  ? RECORD_EXPIRY_COPY.expired(expiryNotice.count)
+                  : RECORD_EXPIRY_COPY.expiring(expiryNotice.count)
+              }
+              cta={{
+                label: RECORD_EXPIRY_COPY.review,
+                onPress: () => {
+                  if (expiryNotice.draftCount > 0) {
+                    router.navigate('/recordings?status=draft' as never);
+                  } else {
+                    setForceShowStashList(true);
+                  }
+                },
+              }}
+              dismissible
+            />
+          </View>
+        ) : null}
 
         {/* Pending Drafts Banner */}
         {hasPendingDrafts && (

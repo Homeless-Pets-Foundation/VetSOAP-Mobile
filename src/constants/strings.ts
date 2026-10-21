@@ -494,6 +494,20 @@ export const RECORDER_TRANSITION_COPY = {
   dismiss: 'OK',
 } as const;
 
+/**
+ * Record-tab notice for unsent work ≥23/≥30 days old (rule 13 warn-first).
+ * Unsent recordings are never deleted automatically and never upload on
+ * their own — the notice exists to get them submitted (or deliberately
+ * deleted, one at a time, from the list Review opens).
+ */
+export const RECORD_EXPIRY_COPY = {
+  expired: (n: number): string =>
+    `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} over 30 days old on this device. Review to submit or delete ${n === 1 ? 'it' : 'them'}.`,
+  expiring: (n: number): string =>
+    `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} nearly 30 days old and still not submitted.`,
+  review: 'Review',
+} as const;
+
 export const RECORD_BANNERS = {
   pendingDraftOffline: 'Draft recording pending upload — connect to the internet to sync',
   pendingDraftOnline: 'Draft saved locally — syncing to server…',

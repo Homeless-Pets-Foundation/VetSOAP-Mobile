@@ -35,9 +35,9 @@ export function attentionDestinationHref(destination: AttentionDestination): str
         ? `/recordings/${destination.recordingId}?from=attention&focus=${destination.focus}`
         : `/recordings/${destination.recordingId}?from=attention`;
     case 'recordings_list':
-      return '/recordings';
+      return destination.status === 'draft' ? '/recordings?status=draft' : '/recordings';
     case 'record_tab':
-      return '/record';
+      return destination.showSavedSessions ? '/record?showSavedSessions=1' : '/record';
     case 'recovery':
       return '/recording-recovery';
     default:

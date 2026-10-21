@@ -119,7 +119,9 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(record, /params: \{ submittedIds: submittedRecordingIds\.join\(','\) \}/);
   assert.match(record, /submit_all_completed/);
 
-  assert.match(list, /useLocalSearchParams<\{ submittedIds\?: string \| string\[\] \}>/);
+  // `status?: string` rides along since the 30-day Review deep-links to
+  // `?status=draft` (tests/unsent-expiry-notice.test.mjs).
+  assert.match(list, /useLocalSearchParams<\{\s*submittedIds\?: string \| string\[\];/);
   assert.match(list, /const MAX_SUBMITTED_IDS = 10/);
   assert.match(list, /const UUID_REGEX = \/\^\[0-9a-f\]\{8\}/);
   assert.match(list, /function normalizeSubmittedIdsParam\(submittedIdsParam: string \| string\[\] \| undefined\): string\[\]/);
@@ -221,7 +223,9 @@ test('recording deletes send explicit PHI-free delete reasons', async () => {
   assert.match(record, /reason: 'orphan_draft_cleanup'/);
   assert.doesNotMatch(record, /deleteRecordingWithRetry\(serverId, 'post_upload_local_cleanup'\)/);
   assert.match(record, /A racing create can therefore return the exact canonical/);
-  assert.match(record, /reason: 'user_delete'/);
+  // record.tsx's only 'user_delete' was the 30-day bulk delete, which is gone:
+  // the age sweep now never deletes (rule 13 warn-first; see
+  // tests/unsent-expiry-notice.test.mjs). The detail screen's user delete stays.
   assert.match(detail, /recordingsApi\.delete\(id, \{ reason: 'user_delete' \}\)/);
 });
 

@@ -96,7 +96,10 @@ function recordingMatchesSearch(recording: Recording, searchQuery: string): bool
 
 export default function RecordingsListScreen() {
   const router = useRouter();
-  const { submittedIds: submittedIdsParam } = useLocalSearchParams<{ submittedIds?: string | string[] }>();
+  const { submittedIds: submittedIdsParam, status: statusParam } = useLocalSearchParams<{
+    submittedIds?: string | string[];
+    status?: string;
+  }>();
   const user = useAuthUser();
   const colors = useThemeColors();
   const { iconSm, iconLg } = useResponsive();
@@ -106,6 +109,14 @@ export default function RecordingsListScreen() {
   /** Bumped on focus so the date grouping re-evaluates "today" after midnight. */
   const [nowTick, setNowTick] = useState(0);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
+  // `?status=draft` (the Record tab's 30-day Review, attention links) opens the
+  // list on Not Submitted. One-shot: applied, then cleared in place (setParams,
+  // not a navigation) so a later visit isn't pinned to the filter.
+  useEffect(() => {
+    if (statusParam !== 'draft') return;
+    setSelectedStatusFilter('draft');
+    router.setParams({ status: undefined });
+  }, [statusParam, router]);
   const isTabFocused = useIsFocused();
   const { deviceRegistrationPending, deviceRegistrationBlock } = useAuthDeviceRegistration();
   const canLoadServerData = !!user && !deviceRegistrationPending && !deviceRegistrationBlock;

@@ -50,6 +50,7 @@ import {
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { recordingDimmer } from '../../../src/lib/recordingDimmer';
 import * as audioFocus from '../../../modules/captivet-audio-focus';
 import * as durableRecorder from '../../../modules/captivet-durable-recorder';
 import { ensureDurableCaptureFlagHydrated, isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
@@ -1327,6 +1328,7 @@ function RecordingSession() {
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+      recordingDimmer.stop();
     };
   }, []);
 
@@ -1785,16 +1787,24 @@ function RecordingSession() {
   // alive via the Android foreground-service mic + iOS background-audio mode.
   // The live recording stays owned by expo-audio until the user taps Finish.
 
+  //
+  // Awake is not full brightness: on Android, recordingDimmer drops the window
+  // to a low level after a minute untouched and restores it on any touch —
+  // the backlight is the main battery cost of keeping a tablet awake.
+
   useEffect(() => {
     const shouldStayAwake = recorder.state === 'recording';
     if (!shouldStayAwake) {
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+      recordingDimmer.stop();
       return;
     }
 
     activateKeepAwakeAsync(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+    recordingDimmer.start();
     return () => {
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+      recordingDimmer.stop();
     };
   }, [recorder.state]);
 

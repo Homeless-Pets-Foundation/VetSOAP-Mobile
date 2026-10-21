@@ -11,6 +11,7 @@ import { ACCOUNT_LOAD_ERROR_COPY } from '../../src/constants/strings';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
 import { breadcrumb } from '../../src/lib/monitoring';
 import { usePendingDraftSync } from '../../src/hooks/usePendingDraftSync';
+import { noteRecordingUserActivity } from '../../src/lib/recordingDimmer';
 
 const HALF_AUTH_TIMEOUT_MS = 30_000;
 
@@ -195,19 +196,24 @@ export default function AppLayout() {
   }
 
   return (
-    <AppLockGuard>
-      <View style={{ flex: 1 }}>
-        <DeviceRegistrationBanner />
-        <OfflineBanner />
-        <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="settings" />
-          {/* iOS interactive-pop swipe-back from screen edge intercepts the left
-              trim handle's pan when the user starts the drag near the edge.
-              Disable it here — the editor has its own back button. */}
-          <Stack.Screen name="audio-editor" options={{ gestureEnabled: false }} />
-        </Stack>
-      </View>
-    </AppLockGuard>
+    // Any touch — including on the lock screen — restores a recording-dimmed
+    // screen (src/lib/recordingDimmer.ts). onTouchStart bubbles from whatever
+    // was touched; it never claims the responder.
+    <View style={{ flex: 1 }} onTouchStart={noteRecordingUserActivity}>
+      <AppLockGuard>
+        <View style={{ flex: 1 }}>
+          <DeviceRegistrationBanner />
+          <OfflineBanner />
+          <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="settings" />
+            {/* iOS interactive-pop swipe-back from screen edge intercepts the left
+                trim handle's pan when the user starts the drag near the edge.
+                Disable it here — the editor has its own back button. */}
+            <Stack.Screen name="audio-editor" options={{ gestureEnabled: false }} />
+          </Stack>
+        </View>
+      </AppLockGuard>
+    </View>
   );
 }

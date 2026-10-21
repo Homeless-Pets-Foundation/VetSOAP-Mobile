@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { useAppLocked } from '../../hooks/useAppLocked';
+import { noteRecordingUserActivity } from '../../lib/recordingDimmer';
 import { IconButton } from './IconButton';
 import { cx, runMaybeAsync } from './styles';
 
@@ -61,6 +62,8 @@ export function Sheet({
       <KeyboardAvoidingView
         className="flex-1 justify-end bg-scrim"
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        // A Modal is its own window, outside the app-level touch tracker.
+        onTouchStart={noteRecordingUserActivity}
       >
         {closeOnBackdropPress ? (
           <Pressable

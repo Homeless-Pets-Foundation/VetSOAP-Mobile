@@ -916,6 +916,10 @@ export const ATTENTION_FEED_COPY = {
       .join(' · '),
   viewRecent: 'View recent attention',
   loading: 'Checking recent recordings…',
+  // Home's quiet line for a clean RECENT page. Qualified by the actual checked
+  // count; the full coverage qualifier stays on the full screen.
+  homeQuietRecentClean: (checked: number): string =>
+    `Recent check: nothing found in the last ${checked} updated recording${checked === 1 ? '' : 's'}`,
 
   // ── Zero-row states. Only `clean` is a positive claim, and it is feed-scoped.
   clean: 'No supported items need attention right now',

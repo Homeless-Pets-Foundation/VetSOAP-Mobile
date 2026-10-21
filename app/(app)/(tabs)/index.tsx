@@ -81,12 +81,14 @@ export default function HomeScreen() {
   const activeProviderIssue = useActiveProviderIssue();
   const supportRecovery = useSupportRecoveryVaultSummary();
   const attentionFeed = useAttentionFeed({ focused: isTabFocused });
-  const showAttentionSection = homeAttentionHasContent(attentionFeed);
+  // Gates only the impression. The section itself always renders, and with
+  // nothing to list it is one quiet line (see AttentionFeedSection).
+  const attentionHasContent = homeAttentionHasContent(attentionFeed);
   // Depend on the STABLE refresh functions, never the hook result objects: an
   // unstable useFocusEffect callback re-fires on every render (refetch storm).
   const refreshAttention = attentionFeed.refresh;
   const refreshSupportRecovery = supportRecovery.refresh;
-  useAttentionImpression('home', attentionFeed, isTabFocused && showAttentionSection);
+  useAttentionImpression('home', attentionFeed, isTabFocused && attentionHasContent);
   const [bannersExpanded, setBannersExpanded] = useState(false);
   // Priority order (WP30): recovery > support-staff recovery vault > device
   // limit > provider issue. Recovery of preserved clinical work outranks data
@@ -574,7 +576,7 @@ export default function HomeScreen() {
           app being broken (data loss, device blocked), which outranks data
           hygiene. Never gates Home: it renders its own bounded state and Home
           stays usable if its queries or a native local read hang (rule 24). */}
-      {showAttentionSection ? <AttentionFeedSection feed={attentionFeed} /> : null}
+      <AttentionFeedSection feed={attentionFeed} />
 
       {/* Recent Recordings */}
       {drafts.length > 0 ? (

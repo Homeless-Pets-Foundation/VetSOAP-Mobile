@@ -20,6 +20,7 @@ import { Button } from './ui/Button';
 import { CopiedToast } from './ui/CopiedToast';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { CLIP_SAFE, clipSafe } from './ui/styles';
+import { createSoapDirtyTracker, isSoapSectionDirty } from '../lib/soapEditDirty';
 
 type SoapAccent = 'subjective' | 'objective' | 'assessment' | 'plan';
 
@@ -49,6 +50,11 @@ interface SoapNoteViewProps {
   soapNote: SoapNote;
   recordingId?: string;
   canEdit?: boolean;
+  /**
+   * Fires when "some section holds an unsaved edit" flips (transitions only,
+   * never per keystroke). The detail screen uses it to guard every back path.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 function formatEditedAt(value: string | null | undefined): string | null {
@@ -74,6 +80,7 @@ function AccordionSection({
   recordingId,
   soapNoteId,
   canEdit,
+  onDirtyChange,
 }: {
   sectionKey: SoapNoteSection;
   label: string;
@@ -87,6 +94,7 @@ function AccordionSection({
   recordingId?: string;
   soapNoteId: string;
   canEdit: boolean;
+  onDirtyChange: (sectionKey: string, dirty: boolean) => void;
 }) {
   const colors = useThemeColors();
   const [showCopied, setShowCopied] = useState(false);
@@ -101,6 +109,15 @@ function AccordionSection({
   React.useEffect(() => {
     if (!isEditing) setDraft(content ?? '');
   }, [content, isEditing]);
+
+  // Report only dirty TRANSITIONS upward (the dep is the boolean, not the
+  // draft), and clear on unmount so a section that goes away never leaves
+  // the screen's back guard armed.
+  const isDirty = isSoapSectionDirty(isEditing, draft, content);
+  React.useEffect(() => {
+    onDirtyChange(sectionKey, isDirty);
+  }, [isDirty, sectionKey, onDirtyChange]);
+  React.useEffect(() => () => onDirtyChange(sectionKey, false), [sectionKey, onDirtyChange]);
 
   React.useEffect(() => {
     rotation.value = withTiming(isExpanded ? 1 : 0, { duration: 200 });
@@ -271,8 +288,18 @@ function AccordionSection({
   );
 }
 
-export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNoteViewProps) {
+export function SoapNoteView({ soapNote, recordingId, canEdit = false, onDirtyChange }: SoapNoteViewProps) {
   const colors = useThemeColors();
+  // Latest callback in a ref so the tracker (and the per-section callback
+  // below) stays stable across renders.
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  onDirtyChangeRef.current = onDirtyChange;
+  const dirtyTrackerRef = useRef(
+    createSoapDirtyTracker((anyDirty) => onDirtyChangeRef.current?.(anyDirty)),
+  );
+  const handleSectionDirty = useCallback((sectionKey: string, dirty: boolean) => {
+    dirtyTrackerRef.current.set(sectionKey, dirty);
+  }, []);
   const [expandedSection, setExpandedSection] = useState<string | null>('subjective');
   const [showCopiedAll, setShowCopiedAll] = useState(false);
   const copyAllTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -346,6 +373,7 @@ export function SoapNoteView({ soapNote, recordingId, canEdit = false }: SoapNot
             recordingId={recordingId}
             soapNoteId={soapNote.id}
             canEdit={canEdit}
+            onDirtyChange={handleSectionDirty}
           />
         );
       })}

@@ -426,6 +426,14 @@ export const SOAP_SECTION_ACTIONS = {
   copied: 'Copied!',
 } as const;
 
+/** Leaving the recording detail screen with an unsaved SOAP section edit. */
+export const SOAP_EDIT_DISCARD_COPY = {
+  title: 'Discard unsaved changes?',
+  body: 'Your edit to this SOAP note has not been saved. Leaving now will discard it.',
+  keepEditing: 'Keep editing',
+  discard: 'Discard',
+} as const;
+
 export const SPECIES_OTHER_COPY = {
   segmentLabel: 'Other',
   inputLabel: 'Species (type it in)',

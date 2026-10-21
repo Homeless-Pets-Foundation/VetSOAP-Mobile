@@ -98,6 +98,10 @@ import {
   findLocalRecoveryAnchor,
   type LocalRecoveryAnchor,
 } from '../../../../src/lib/localRecordings';
+import {
+  classifyServerDraftLocation,
+  draftLocationAllowsDelete,
+} from '../../../../src/lib/draftLocation';
 import { getSubmitTimestamps, clearSubmitTimestamps } from '../../../../src/lib/submitTiming';
 import { reportClientError } from '../../../../src/api/telemetry';
 import { useRecordingPermissions } from '../../../../src/hooks/usePermissions';
@@ -679,11 +683,17 @@ export default function RecordingDetailScreen() {
    */
   const [localAnchor, setLocalAnchor] = useState<LocalRecoveryAnchor | null>(null);
   const [anchorAttempt, setAnchorAttempt] = useState(0);
+  // Drafts need the same scan when draftStorage has no resumable copy: Save
+  // for Later deletes the local draft but keeps the server row, so "not in
+  // draftStorage" is NOT "not on this device" (UX-H3, 2026-10-21). The anchor
+  // finds the saved session (or a recovery) and only a proven `none` unlocks
+  // Delete Draft.
   const needsAnchorCheck =
     !!id &&
     !!recording &&
-    recording.status !== 'draft' &&
-    retryPresentation === 'audio_unavailable';
+    (recording.status === 'draft'
+      ? draftResolved && !draftLocalSlotId
+      : retryPresentation === 'audio_unavailable');
 
   useEffect(() => {
     if (!needsAnchorCheck || !id || !user?.id) {
@@ -717,7 +727,9 @@ export default function RecordingDetailScreen() {
         router.navigate(`/record?draftSlotId=${localAnchor.draftSlotId}` as never);
         return;
       case 'saved_session':
-        router.navigate('/record' as never);
+        // The param reveals Saved Sessions even when the Record tab's current
+        // session has unsaved work (the list is otherwise hidden then).
+        router.navigate('/record?showSavedSessions=1' as never);
         return;
       case 'durable_recovery':
         router.push('/durable-recovery' as never);
@@ -1020,6 +1032,11 @@ export default function RecordingDetailScreen() {
     recording.transcriptText.trim().length > 0;
   const deleteDraftBlockedReason =
     recordingPermissions.deleteBlockedReason ?? 'You do not have permission to delete this draft.';
+  const draftLocation = classifyServerDraftLocation({
+    draftResolved,
+    draftLocalSlotId,
+    anchor: localAnchor,
+  });
   const parsedDate = new Date(recording.createdAt);
   const formattedDate = isNaN(parsedDate.getTime())
     ? ''
@@ -1527,6 +1544,75 @@ export default function RecordingDetailScreen() {
                 </View>
               </View>
             </Card>
+          ) : draftLocation.kind === 'saved_session' ||
+            draftLocation.kind === 'resumable_draft' ||
+            draftLocation.kind === 'recovery' ? (
+            /* The audio IS on this device, just not in draftStorage. Never a
+               delete here: this screen cannot clean up a stash/recovery copy,
+               and deleting the server row would strand it. */
+            <Card className="mx-5 mb-4">
+              <View className="flex-row items-start">
+                <View className="mr-2 mt-0.5">
+                  {draftLocation.kind === 'recovery' ? (
+                    <LifeBuoy color={colors.brand500} size={18} />
+                  ) : (
+                    <FileText color={colors.brand500} size={18} />
+                  )}
+                </View>
+                <View className="flex-1">
+                  <Text className="text-body font-semibold text-content-primary mb-1">
+                    {draftLocation.kind === 'saved_session'
+                      ? RECORDING_DETAIL_COPY.draftSavedSessionTitle
+                      : draftLocation.kind === 'resumable_draft'
+                        ? RECORDING_DETAIL_COPY.draftResumableTitle
+                        : RECORDING_DETAIL_COPY.draftRecoveryTitle}
+                  </Text>
+                  <Text className="text-body-sm text-content-tertiary mb-3">
+                    {draftLocation.kind === 'saved_session'
+                      ? RECORDING_DETAIL_COPY.draftSavedSessionBody
+                      : draftLocation.kind === 'resumable_draft'
+                        ? RECORDING_DETAIL_COPY.draftResumableBody
+                        : RECORDING_DETAIL_COPY.draftRecoveryBody}
+                  </Text>
+                  <View className="self-start">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onPress={openAnchorDestination}
+                      accessibilityLabel={anchorActionLabel}
+                    >
+                      {anchorActionLabel}
+                    </Button>
+                  </View>
+                </View>
+              </View>
+            </Card>
+          ) : draftLocation.kind === 'checking' || draftLocation.kind === 'unknown' ? (
+            /* Loading or ambiguous → guidance + recheck, never a delete. */
+            <Card className="mx-5 mb-4">
+              <View className="flex-row items-start">
+                <View className="mr-2 mt-0.5"><FileText color={colors.contentTertiary} size={18} /></View>
+                <View className="flex-1">
+                  <Text className="text-body font-semibold text-content-primary mb-1">
+                    {draftLocation.kind === 'unknown'
+                      ? RECORDING_DETAIL_COPY.draftUnknownTitle
+                      : RECORDING_DETAIL_COPY.draftCheckingTitle}
+                  </Text>
+                  <Text className="text-body-sm text-content-tertiary mb-3">
+                    {draftLocation.kind === 'unknown'
+                      ? DELETE_RECORDING_COPY.unknownLocalState
+                      : DELETE_RECORDING_COPY.checking}
+                  </Text>
+                  {draftLocation.kind === 'unknown' ? (
+                    <View className="self-start">
+                      <Button variant="secondary" size="sm" onPress={recheckLocalAnchor}>
+                        {DELETE_RECORDING_COPY.recheck}
+                      </Button>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            </Card>
           ) : (
             <Card className="mx-5 mb-4 border-status-warning">
               <View className="flex-row items-start">
@@ -1544,7 +1630,7 @@ export default function RecordingDetailScreen() {
                       action is unavailable, so it takes the full row instead
                       (CLAUDE.md > UI Gotchas). numberOfLines stays unset — the reason is
                       a sentence and should wrap, not ellipsize. */}
-                  {recordingPermissions.canDelete ? (
+                  {recordingPermissions.canDelete && draftLocationAllowsDelete(draftLocation) ? (
                     <View className="self-start">
                       <Button
                         variant="danger"

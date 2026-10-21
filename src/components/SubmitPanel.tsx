@@ -3,6 +3,7 @@ import { View } from 'react-native';
 import { Text } from './ui/Text';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { Button } from './ui/Button';
+import { CONTENT_MAX_WIDTH } from './ui/ScreenContainer';
 import { slotHasRecoverableAudio } from '../types/multiPatient';
 import type { PatientSlot } from '../types/multiPatient';
 
@@ -56,55 +57,58 @@ export function SubmitPanel({
       accessibilityRole="summary"
       accessibilityLiveRegion="polite"
     >
-      <View className="flex-row items-center justify-between mb-3">
-        {/* flex-1 — sole child of a justify-between row, so it shrink-wraps and Android
-            "Bold text" drops the tail: "3 of 5 patients recorded (2 already uploaded)"
-            renders as "3 of 5 patients", which reads as a selection rather than a
-            completion count and gates a batch submit (CLAUDE.md > UI Gotchas).
-            numberOfLines is deliberately unset — this line is allowed to grow in
-            height, and truncating a count is worse than wrapping it. */}
-        <Text className="text-body-sm text-content-secondary flex-1">
-          {recorded} of {slots.length} patients recorded
-          {uploaded > 0 ? ` (${uploaded} already uploaded)` : ''}
-        </Text>
+      {/* Full-width bar; contents centered at the 600dp column on tablets. */}
+      <View style={{ width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' }}>
+        <View className="flex-row items-center justify-between mb-3">
+          {/* flex-1 — sole child of a justify-between row, so it shrink-wraps and Android
+              "Bold text" drops the tail: "3 of 5 patients recorded (2 already uploaded)"
+              renders as "3 of 5 patients", which reads as a selection rather than a
+              completion count and gates a batch submit (CLAUDE.md > UI Gotchas).
+              numberOfLines is deliberately unset — this line is allowed to grow in
+              height, and truncating a count is worse than wrapping it. */}
+          <Text className="text-body-sm text-content-secondary flex-1">
+            {recorded} of {slots.length} patients recorded
+            {uploaded > 0 ? ` (${uploaded} already uploaded)` : ''}
+          </Text>
+        </View>
+
+        {skipped > 0 && (
+          <Text className="text-caption text-status-warning mb-2">
+            {skipped} patient{skipped > 1 ? 's have' : ' has'} no recording — will be skipped
+          </Text>
+        )}
+
+        {needsDetails > 0 && (
+          <Text className="text-caption text-status-warning mb-2">
+            {needsDetails} recorded patient{needsDetails > 1 ? 's need' : ' needs'} required details before submit
+          </Text>
+        )}
+
+        {hasActiveRecording && (
+          <Text className="text-caption text-status-warning mb-2">
+            Finish or discard all active recording segments before submitting all patients.
+          </Text>
+        )}
+
+        <Button
+          variant="primary"
+          size="lg"
+          onPress={onSubmitAll}
+          loading={isSubmitting}
+          disabled={isSubmitting || hasActiveRecording || submitBlockedByMissingDetails}
+          accessibilityLabel={
+            submitBlockedByMissingDetails
+              ? 'Add required details before submitting all recordings'
+              : `Submit ${readyToUpload} recording${readyToUpload > 1 ? 's' : ''}`
+          }
+        >
+          {isSubmitting
+            ? 'Uploading...'
+            : submitBlockedByMissingDetails
+              ? 'Add Required Details'
+              : `Submit All Recordings (${readyToUpload})`}
+        </Button>
       </View>
-
-      {skipped > 0 && (
-        <Text className="text-caption text-status-warning mb-2">
-          {skipped} patient{skipped > 1 ? 's have' : ' has'} no recording — will be skipped
-        </Text>
-      )}
-
-      {needsDetails > 0 && (
-        <Text className="text-caption text-status-warning mb-2">
-          {needsDetails} recorded patient{needsDetails > 1 ? 's need' : ' needs'} required details before submit
-        </Text>
-      )}
-
-      {hasActiveRecording && (
-        <Text className="text-caption text-status-warning mb-2">
-          Finish or discard all active recording segments before submitting all patients.
-        </Text>
-      )}
-
-      <Button
-        variant="primary"
-        size="lg"
-        onPress={onSubmitAll}
-        loading={isSubmitting}
-        disabled={isSubmitting || hasActiveRecording || submitBlockedByMissingDetails}
-        accessibilityLabel={
-          submitBlockedByMissingDetails
-            ? 'Add required details before submitting all recordings'
-            : `Submit ${readyToUpload} recording${readyToUpload > 1 ? 's' : ''}`
-        }
-      >
-        {isSubmitting
-          ? 'Uploading...'
-          : submitBlockedByMissingDetails
-            ? 'Add Required Details'
-            : `Submit All Recordings (${readyToUpload})`}
-      </Button>
     </Animated.View>
   );
 }

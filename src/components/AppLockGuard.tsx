@@ -1,5 +1,15 @@
-import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
-import { AccessibilityInfo, ActivityIndicator, View, Image, AppState, Alert } from 'react-native';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useContext } from 'react';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Alert,
+  AppState,
+  BackHandler,
+  Image,
+  Keyboard,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { Text } from './ui/Text';
 import type { AppStateStatus } from 'react-native';
 import { biometrics } from '../lib/biometrics';
@@ -9,6 +19,8 @@ import { Button } from './ui/Button';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { withPromiseTimeout } from '../lib/promiseTimeout';
 import { APP_LOCK_COPY } from '../constants/strings';
+import { appLockState } from '../lib/appLockState';
+import { recordingActivity } from '../lib/recordingActivity';
 import {
   APPLOCK_INIT_WATCHDOG_MS,
   APPLOCK_PROBE_TIMEOUT_MS,
@@ -27,7 +39,9 @@ import type {
   PromptOutcome,
 } from '../lib/appLockPolicy';
 
-const BACKGROUND_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
+// 2 minutes: at 30s every trip to the PIMS to paste a note cost a biometric
+// prompt on return. The lock still re-engages for a tablet left unattended.
+export const BACKGROUND_LOCK_THRESHOLD_MS = 120_000;
 
 interface AppLockGuardProps {
   children: React.ReactNode;
@@ -99,6 +113,13 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [unlockHint, setUnlockHint] = useState<string | null>(null);
+  // True once the signed-in tree has been shown. From then on a lock is an
+  // overlay above the mounted tree, never a replacement for it.
+  const [hasRevealed, setHasRevealed] = useState(false);
+  // Owned = a session holds the recorder (recording OR paused); capturing =
+  // audio is actually being recorded. The lock screen tells them apart.
+  const [recorderOwned, setRecorderOwned] = useState(() => recordingActivity.isActive());
+  const [capturing, setCapturing] = useState(() => recordingActivity.isCapturing());
   const colors = useThemeColors();
   const backgroundedAtRef = useRef<number | null>(null);
   const isAuthenticatingRef = useRef(false);
@@ -131,6 +152,9 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   useEffect(() => {
     if (isReady && isLocked) AccessibilityInfo.announceForAccessibility('App locked');
   }, [isReady, isLocked]);
+
+  useEffect(() => recordingActivity.subscribe(setRecorderOwned), []);
+  useEffect(() => recordingActivity.subscribeCapturing(setCapturing), []);
 
   const attemptUnlock = useCallback(async () => {
     if (isAuthenticatingRef.current) return;
@@ -319,10 +343,38 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     };
   }, []);
 
+  // Publish the lock for modal surfaces (ui/Sheet) that draw above the overlay.
+  // Layout effect, not a passive one: a passive effect runs after the locked
+  // frame paints, leaving an open Sheet's Modal above the lock screen for that
+  // frame. Updates from a layout effect re-render the Sheets before paint.
+  useLayoutEffect(() => {
+    appLockState.setLocked(isLocked && hasRevealed);
+  }, [isLocked, hasRevealed]);
+  useEffect(() => () => appLockState.setLocked(false), []);
+
+  // Once the content has been shown, keep it MOUNTED under the lock. Replacing
+  // `children` on a resume re-lock unmounted the whole signed-in tree: a
+  // screen-off recording was stopped the moment the vet came back to finish
+  // it, and any unsaved edit or navigation position was lost.
+  useEffect(() => {
+    if (!isLocked) setHasRevealed(true);
+  }, [isLocked]);
+
+  // While the overlay is up: drop the keyboard of a focused field underneath,
+  // and swallow Android hardware back so it can't navigate the hidden stack.
+  // Registered when the lock engages, so it runs before any screen's handler.
+  const overlayActive = isLocked && hasRevealed;
+  useEffect(() => {
+    if (!overlayActive) return;
+    Keyboard.dismiss();
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [overlayActive]);
+
   // While checking biometric state on cold start, show branding + a spinner
   // (no PHI). A fully blank view read as a frozen app for up to the watchdog
   // window when the biometric bridge stalled.
-  if (!isReady && isLocked) {
+  if (!hasRevealed && !isReady && isLocked) {
     return (
       <View className="flex-1 justify-center items-center bg-surface">
         <Image
@@ -337,53 +389,85 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     );
   }
 
-  if (isLocked) {
-    return (
-      <View className="flex-1 justify-center items-center p-6 bg-surface">
-        <Image
-          source={require('../../assets/logo-wordmark.png')}
-          style={{ width: '60%', maxWidth: 280, aspectRatio: 600 / 139 }}
-          resizeMode="contain"
-          accessibilityLabel="Captivet"
-          className="mb-4"
-        />
-        <Text className="text-body-lg font-bold text-content-primary mb-2">
-          {APP_LOCK_COPY.title}
+  const lockScreen = (
+    <View
+      className="flex-1 justify-center items-center p-6 bg-surface"
+      accessibilityViewIsModal
+    >
+      <Image
+        source={require('../../assets/logo-wordmark.png')}
+        style={{ width: '60%', maxWidth: 280, aspectRatio: 600 / 139 }}
+        resizeMode="contain"
+        accessibilityLabel="Captivet"
+        className="mb-4"
+      />
+      <Text className="text-body-lg font-bold text-content-primary mb-2">
+        {APP_LOCK_COPY.title}
+      </Text>
+      <Text className="text-body-sm text-content-tertiary text-center mb-6">
+        {APP_LOCK_COPY.subtitle}
+      </Text>
+      {/* w-full: a shrink-wrapped multi-word label in this centered column
+          loses its tail under Android Bold text (CLAUDE.md > UI Gotchas). */}
+      {recorderOwned && hasRevealed ? (
+        <Text className="w-full text-body-sm font-semibold text-status-danger text-center mb-4">
+          {capturing ? APP_LOCK_COPY.recordingContinues : APP_LOCK_COPY.recordingPaused}
         </Text>
-        <Text className="text-body-sm text-content-tertiary text-center mb-6">
-          {APP_LOCK_COPY.subtitle}
-        </Text>
-        {unlockHint && (
-          <Text
-            className="text-body-sm text-status-warning text-center mb-4"
-            accessibilityRole="alert"
-            accessibilityLiveRegion="polite"
-          >
-            {unlockHint}
-          </Text>
-        )}
-        <Button
-          variant="primary"
-          size="lg"
-          onPress={() => { attemptUnlock().catch(() => {}); }}
-          loading={isAuthenticating}
-          accessibilityLabel="Unlock with biometrics"
+      ) : null}
+      {unlockHint && (
+        <Text
+          className="text-body-sm text-status-warning text-center mb-4"
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
         >
-          Unlock
+          {unlockHint}
+        </Text>
+      )}
+      <Button
+        variant="primary"
+        size="lg"
+        onPress={() => { attemptUnlock().catch(() => {}); }}
+        loading={isAuthenticating}
+        accessibilityLabel="Unlock with biometrics"
+      >
+        Unlock
+      </Button>
+      <View className="mt-4">
+        <Button
+          variant="secondary"
+          size="sm"
+          onPress={handleLockScreenSignOut}
+          accessibilityLabel="Sign out of the app"
+        >
+          Sign Out
         </Button>
-        <View className="mt-4">
-          <Button
-            variant="secondary"
-            size="sm"
-            onPress={handleLockScreenSignOut}
-            accessibilityLabel="Sign out of the app"
-          >
-            Sign Out
-          </Button>
-        </View>
       </View>
-    );
-  }
+    </View>
+  );
 
-  return <>{children}</>;
+  // Cold start: nothing has been shown yet, so the lock screen stands alone —
+  // the signed-in tree mounts only after the first unlock (no PHI behind it).
+  if (!hasRevealed && isLocked) return lockScreen;
+
+  // From the first unlock on, the tree always renders through this one
+  // wrapper, so neither the reveal nor a later re-lock ever remounts it. A
+  // re-lock is an opaque overlay above it; the tree underneath is hidden from
+  // screen readers and touch while locked.
+  return (
+    <View style={{ flex: 1 }}>
+      <View
+        style={{ flex: 1 }}
+        pointerEvents={isLocked ? 'none' : 'auto'}
+        importantForAccessibility={isLocked ? 'no-hide-descendants' : 'auto'}
+        accessibilityElementsHidden={isLocked}
+      >
+        {children}
+      </View>
+      {isLocked ? (
+        <View style={[StyleSheet.absoluteFill, { zIndex: 1000, elevation: 1000 }]}>
+          {lockScreen}
+        </View>
+      ) : null}
+    </View>
+  );
 }

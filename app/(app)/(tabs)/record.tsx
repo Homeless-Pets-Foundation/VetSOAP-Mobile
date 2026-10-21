@@ -50,6 +50,7 @@ import {
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { recordingDimmer } from '../../../src/lib/recordingDimmer';
 import * as audioFocus from '../../../modules/captivet-audio-focus';
 import * as durableRecorder from '../../../modules/captivet-durable-recorder';
 import { ensureDurableCaptureFlagHydrated, isDurableCaptureEnabled } from '../../../src/lib/durableFlag';
@@ -143,7 +144,7 @@ import { PatientSlotCard } from '../../../src/components/PatientSlotCard';
 import { SubmitPanel } from '../../../src/components/SubmitPanel';
 import { StashedSessionCard } from '../../../src/components/StashedSessionCard';
 import { UploadOverlay, countBatchCompleted } from '../../../src/components/UploadOverlay';
-import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
+import { CONTENT_MAX_WIDTH, ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { Button } from '../../../src/components/ui/Button';
 import { slotHasRecoverableAudio } from '../../../src/types/multiPatient';
 import type { AudioSegment, PatientSlot } from '../../../src/types/multiPatient';
@@ -414,6 +415,13 @@ const RECORDING_KEEP_AWAKE_TAG = 'captivet-recording';
 // ~10px on a Galaxy Tab A7 Lite (800x1340), hiding the Record button. The list
 // scrolls inside this share of the window instead.
 const STASH_LIST_MAX_HEIGHT_RATIO = 0.3;
+// Header/banner/tab-strip column on tablets: the 600dp content width every
+// other tab uses (ScreenContainer), plus this screen's own 20dp side padding.
+const RECORD_COLUMN_STYLE = {
+  width: '100%',
+  maxWidth: CONTENT_MAX_WIDTH + 40,
+  alignSelf: 'center',
+} as const;
 
 type SilenceCheckReason =
   | 'metering_all_below_threshold'
@@ -1320,6 +1328,8 @@ function RecordingSession() {
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+      recordingDimmer.stop();
+      recordingActivity.setCapturing(false);
     };
   }, []);
 
@@ -1778,16 +1788,26 @@ function RecordingSession() {
   // alive via the Android foreground-service mic + iOS background-audio mode.
   // The live recording stays owned by expo-audio until the user taps Finish.
 
+  //
+  // Awake is not full brightness: on Android, recordingDimmer drops the window
+  // to a low level after a minute untouched and restores it on any touch —
+  // the backlight is the main battery cost of keeping a tablet awake.
+
   useEffect(() => {
     const shouldStayAwake = recorder.state === 'recording';
+    recordingActivity.setCapturing(shouldStayAwake);
     if (!shouldStayAwake) {
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+      recordingDimmer.stop();
       return;
     }
 
     activateKeepAwakeAsync(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+    recordingDimmer.start();
     return () => {
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
+      recordingDimmer.stop();
+      recordingActivity.setCapturing(false);
     };
   }, [recorder.state]);
 
@@ -1978,6 +1998,23 @@ function RecordingSession() {
       });
     }
   }, [session.activeIndex]);
+
+  // A rotation or iPad Split View resize changes the page width, but the pager
+  // keeps its old pixel offset — it came to rest between two patients, and a vet
+  // could type into the wrong patient's form. Snap to the active page instead.
+  const pagerWidthRef = useRef(screenWidth);
+  useEffect(() => {
+    if (pagerWidthRef.current === screenWidth) return;
+    pagerWidthRef.current = screenWidth;
+    // One frame later, so the pages have re-laid-out at the new width.
+    const frame = requestAnimationFrame(() => {
+      pagerRef.current?.scrollToOffset({
+        offset: sessionRef.current.activeIndex * screenWidth,
+        animated: false,
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [screenWidth]);
 
   // Shared tab/swipe selection: if leaving a live recording, park it first so
   // returning to that patient exposes Resume instead of hiding an active owner.
@@ -6919,7 +6956,27 @@ function RecordingSession() {
     [resetSession, restoreSession, router, user?.id]
   );
 
-  const { draftSlotId } = useLocalSearchParams<{ draftSlotId?: string }>();
+  const { draftSlotId, showSavedSessions } = useLocalSearchParams<{
+    draftSlotId?: string;
+    showSavedSessions?: string;
+  }>();
+
+  // `showSavedSessions=1` (from a "Saved session" card or the detail screen's
+  // Open Saved Sessions) reveals the list even while the current session has
+  // unsaved work — otherwise the vet lands on a Record tab that doesn't show
+  // what the link promised. One-shot: consumed here, cleared on blur.
+  const [forceShowStashList, setForceShowStashList] = useState(false);
+  useEffect(() => {
+    if (showSavedSessions !== '1') return;
+    setForceShowStashList(true);
+    // setParams, not replace: clearing the param must not navigate (a
+    // navigation could fire the blur below and re-hide the list at once).
+    router.setParams({ showSavedSessions: undefined });
+  }, [showSavedSessions, router]);
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('blur', () => setForceShowStashList(false));
+    return unsubscribe;
+  }, [navigation]);
 
   useEffect(() => {
     if (!draftSlotId) return;
@@ -7339,13 +7396,17 @@ function RecordingSession() {
             text: STASH_COPY.delete,
             style: 'destructive',
             onPress: () => {
-              deleteStash(stashId).catch(() => {});
+              // Refresh the Home/Recordings "Saved session" chips, which read
+              // the stash under the local-drafts key.
+              deleteStash(stashId)
+                .then(() => invalidateRecordingCaches(queryClient, 'draft_deleted'))
+                .catch(() => {});
             },
           },
         ]
       );
     },
-    [deleteStash]
+    [deleteStash, queryClient]
   );
 
   // -- Edit handler --
@@ -7419,8 +7480,10 @@ function RecordingSession() {
     [isSlotUploadActive, session.slots, router, replaceAllSegments]
   );
 
-  // Show stash list when session is clean and stashes exist
-  const showStashList = !stashesLoading && stashCount > 0 && !hasUnsavedRecordings;
+  // Show stash list when session is clean and stashes exist, or when a
+  // saved-session link asked for it (forceShowStashList).
+  const showStashList =
+    !stashesLoading && stashCount > 0 && (!hasUnsavedRecordings || forceShowStashList);
 
   // Show stash button when there are unsaved recordings to stash
   const canStash =
@@ -7649,140 +7712,145 @@ function RecordingSession() {
 
   return (
     <SafeAreaView className="screen">
-      {/* Header */}
-      <View className="px-5 pt-3 pb-2 bg-surface">
-        <View className="flex-row justify-between items-start">
-          <View className="flex-1">
-            <Text
-              className="text-display font-bold text-content-primary"
-              accessibilityRole="header"
-            >
-              Record Appointment
-            </Text>
-            <Text className="text-body text-content-tertiary mt-1">
-              Record a live appointment and generate a SOAP note
-            </Text>
-          </View>
-          {canStash && (
-            <View className="ml-3 mt-1">
-              <Button
-                variant="secondary"
-                size="sm"
-                onPress={() => {
-                  // Stay tappable at capacity so the limit and remedy are
-                  // explained instead of a silently dead 'Saved Full' button.
-                  if (isAtCapacity) {
-                    Alert.alert(STASH_COPY.atCapacityTitle, STASH_COPY.atCapacityBody(MAX_STASHES));
-                    return;
-                  }
-                  handleStashSession();
-                }}
-                disabled={isAnyUploading || submitIntentCount > 0 || uploadRestartCount > 0}
-                loading={isStashing}
-                accessibilityLabel="Save session for later"
-                accessibilityState={{
-                  disabled: isAnyUploading || submitIntentCount > 0 || uploadRestartCount > 0,
-                }}
+      {/* Tablet: the header, banners and tab strip share the 600dp content
+          column every other tab uses; the pager pages stay full-width. */}
+      <View style={RECORD_COLUMN_STYLE}>
+        {/* Header */}
+        <View className="px-5 pt-3 pb-2 bg-surface">
+          <View className="flex-row justify-between items-start">
+            <View className="flex-1">
+              <Text
+                className="text-display font-bold text-content-primary"
+                accessibilityRole="header"
               >
-                {isAtCapacity ? STASH_COPY.savedFull(MAX_STASHES) : STASH_COPY.saveForLater}
-              </Button>
+                Record Appointment
+              </Text>
+              <Text className="text-body text-content-tertiary mt-1">
+                Record a live appointment and generate a SOAP note
+              </Text>
             </View>
-          )}
+            {canStash && (
+              <View className="ml-3 mt-1">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onPress={() => {
+                    // Stay tappable at capacity so the limit and remedy are
+                    // explained instead of a silently dead 'Saved Full' button.
+                    if (isAtCapacity) {
+                      Alert.alert(STASH_COPY.atCapacityTitle, STASH_COPY.atCapacityBody(MAX_STASHES));
+                      return;
+                    }
+                    handleStashSession();
+                  }}
+                  disabled={isAnyUploading || submitIntentCount > 0 || uploadRestartCount > 0}
+                  loading={isStashing}
+                  accessibilityLabel="Save session for later"
+                  accessibilityState={{
+                    disabled: isAnyUploading || submitIntentCount > 0 || uploadRestartCount > 0,
+                  }}
+                >
+                  {isAtCapacity ? STASH_COPY.savedFull(MAX_STASHES) : STASH_COPY.saveForLater}
+                </Button>
+              </View>
+            )}
+          </View>
         </View>
-      </View>
 
-      {/* Stashed Sessions */}
-      {showStashList && (
-        <View className="px-5 pb-2">
-          <Text className="text-body-sm font-semibold text-content-secondary mb-2">
-            {STASH_COPY.sectionTitle(stashCount)}
-          </Text>
-          <ScrollView
-            style={{ maxHeight: windowHeight * STASH_LIST_MAX_HEIGHT_RATIO }}
-            nestedScrollEnabled
-            showsVerticalScrollIndicator
-          >
-            {stashes.map((stash) => (
-              <StashedSessionCard
-                key={stash.id}
-                stash={stash}
-                onResume={() => handleResumeStash(stash.id)}
-                onDelete={() => handleDeleteStash(stash.id)}
-              />
-            ))}
-          </ScrollView>
-        </View>
-      )}
+        {/* Stashed Sessions */}
+        {showStashList && (
+          <View className="px-5 pb-2">
+            <Text className="text-body-sm font-semibold text-content-secondary mb-2">
+              {STASH_COPY.sectionTitle(stashCount)}
+            </Text>
+            <ScrollView
+              style={{ maxHeight: windowHeight * STASH_LIST_MAX_HEIGHT_RATIO }}
+              nestedScrollEnabled
+              showsVerticalScrollIndicator
+            >
+              {stashes.map((stash) => (
+                <StashedSessionCard
+                  key={stash.id}
+                  stash={stash}
+                  onResume={() => handleResumeStash(stash.id)}
+                  onDelete={() => handleDeleteStash(stash.id)}
+                />
+              ))}
+            </ScrollView>
+          </View>
+        )}
 
-      {/* Compact progress banner while the upload overlay is hidden */}
-      {showOverlay && uploadOverlayHidden && (
-        <Pressable
-          onPress={() => setUploadOverlayHidden(false)}
-          accessibilityRole="button"
-          accessibilityLabel={UPLOAD_OVERLAY_COPY.backgroundProgress(
-            activeBatchPosition,
-            Math.max(batchSlotIds.length, 1)
-          )}
-          className="mx-5 mb-2 px-3 py-3 bg-brand-50 dark:bg-surface-sunken border border-brand-300 dark:border-border-default rounded-lg flex-row items-center"
-        >
-          <ActivityIndicator size="small" color={colors.brand500} />
-          <Text className="text-body-sm font-medium text-content-body flex-1 ml-3" numberOfLines={2}>
-            {UPLOAD_OVERLAY_COPY.backgroundProgress(
+        {/* Compact progress banner while the upload overlay is hidden */}
+        {showOverlay && uploadOverlayHidden && (
+          <Pressable
+            onPress={() => setUploadOverlayHidden(false)}
+            accessibilityRole="button"
+            accessibilityLabel={UPLOAD_OVERLAY_COPY.backgroundProgress(
               activeBatchPosition,
               Math.max(batchSlotIds.length, 1)
             )}
-          </Text>
-        </Pressable>
-      )}
+            className="mx-5 mb-2 px-3 py-3 bg-brand-50 dark:bg-surface-sunken border border-brand-300 dark:border-border-default rounded-lg flex-row items-center"
+          >
+            <ActivityIndicator size="small" color={colors.brand500} />
+            <Text className="text-body-sm font-medium text-content-body flex-1 ml-3" numberOfLines={2}>
+              {UPLOAD_OVERLAY_COPY.backgroundProgress(
+                activeBatchPosition,
+                Math.max(batchSlotIds.length, 1)
+              )}
+            </Text>
+          </Pressable>
+        )}
 
-      {/* Pending Drafts Banner */}
-      {hasPendingDrafts && (
-        <View className="mx-5 mb-2 px-3 py-2 bg-status-warning border border-status-warning rounded-lg flex-row items-center">
-          <Text className="text-body-sm text-status-warning flex-1">
-            {isConnected === false ? RECORD_BANNERS.pendingDraftOffline : RECORD_BANNERS.pendingDraftOnline}
-          </Text>
+        {/* Pending Drafts Banner */}
+        {hasPendingDrafts && (
+          <View className="mx-5 mb-2 px-3 py-2 bg-status-warning border border-status-warning rounded-lg flex-row items-center">
+            <Text className="text-body-sm text-status-warning flex-1">
+              {isConnected === false ? RECORD_BANNERS.pendingDraftOffline : RECORD_BANNERS.pendingDraftOnline}
+            </Text>
+          </View>
+        )}
+
+        {/* Interruption Banner — call/Siri/headphones interrupted recording.
+            Stays visible from the moment the partial segment is saved until
+            AppState returns to 'active' and recording auto-resumes. */}
+        {(interruptionPendingResume || durableInterruptionNotice) && (
+          <View
+            className="mx-5 mb-2 px-3 py-3 bg-status-warning border-2 border-status-warning rounded-lg flex-row items-center"
+            accessibilityLiveRegion="assertive"
+            accessibilityRole="alert"
+          >
+            <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-3" />
+            <Text className="text-body-sm font-semibold text-status-warning flex-1">
+              {interruptionPendingResume
+                ? RECORDER_TRANSITION_COPY.interruptedPaused
+                : RECORDER_TRANSITION_COPY.interruptedSaved}
+            </Text>
+            {!interruptionPendingResume && (
+              <Pressable
+                onPress={() => setDurableInterruptionNotice(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss interruption notice"
+                hitSlop={10}
+                style={{ minHeight: 44, justifyContent: 'center' }}
+              >
+                <Text className="text-body-sm font-semibold text-status-warning underline">
+                  {RECORDER_TRANSITION_COPY.dismiss}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+
+        {/* Patient Tab Strip */}
+        <View className="px-3 pb-1">
+          <PatientTabStrip
+            slots={session.slots}
+            activeIndex={session.activeIndex}
+            onSelectIndex={selectPatientIndex}
+            onAddPatient={handleAddPatient}
+          />
         </View>
-      )}
 
-      {/* Interruption Banner — call/Siri/headphones interrupted recording.
-          Stays visible from the moment the partial segment is saved until
-          AppState returns to 'active' and recording auto-resumes. */}
-      {(interruptionPendingResume || durableInterruptionNotice) && (
-        <View
-          className="mx-5 mb-2 px-3 py-3 bg-status-warning border-2 border-status-warning rounded-lg flex-row items-center"
-          accessibilityLiveRegion="assertive"
-          accessibilityRole="alert"
-        >
-          <View className="w-2 h-2 rounded-full bg-status-warning-fg mr-3" />
-          <Text className="text-body-sm font-semibold text-status-warning flex-1">
-            {interruptionPendingResume
-              ? RECORDER_TRANSITION_COPY.interruptedPaused
-              : RECORDER_TRANSITION_COPY.interruptedSaved}
-          </Text>
-          {!interruptionPendingResume && (
-            <Pressable
-              onPress={() => setDurableInterruptionNotice(false)}
-              accessibilityRole="button"
-              accessibilityLabel="Dismiss interruption notice"
-              hitSlop={10}
-              style={{ minHeight: 44, justifyContent: 'center' }}
-            >
-              <Text className="text-body-sm font-semibold text-status-warning underline">
-                {RECORDER_TRANSITION_COPY.dismiss}
-              </Text>
-            </Pressable>
-          )}
-        </View>
-      )}
-
-      {/* Patient Tab Strip */}
-      <View className="px-3 pb-1">
-        <PatientTabStrip
-          slots={session.slots}
-          activeIndex={session.activeIndex}
-          onSelectIndex={selectPatientIndex}
-          onAddPatient={handleAddPatient}
-        />
       </View>
 
       {/* Horizontal pager */}

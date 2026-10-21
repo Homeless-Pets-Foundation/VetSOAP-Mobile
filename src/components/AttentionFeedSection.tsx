@@ -5,7 +5,8 @@ import { useRouter } from 'expo-router';
 import { AlertTriangle, ChevronRight } from 'lucide-react-native';
 import { ATTENTION_FEED_COPY } from '../constants/strings';
 import { trackEvent, type AttentionSurface } from '../lib/analytics';
-import type { AttentionDestination, AttentionFeedItem } from '../lib/attentionFeed';
+import type { AttentionDestination, AttentionFeedItem, HomeAttentionQuietState } from '../lib/attentionFeed';
+import { homeAttentionQuietLabel, homeAttentionQuietState } from '../lib/attentionFeed';
 import { formatShortDate } from '../lib/recordingDisplay';
 import { useThemeColors } from '../hooks/useThemeColors';
 import type { UseAttentionFeedResult } from '../hooks/useAttentionFeed';
@@ -214,14 +215,17 @@ export function attentionCoverageFooter(feed: UseAttentionFeedResult): string | 
 }
 
 /**
- * Whether Home renders the section at all.
+ * Whether Home has anything to say beyond the one sanctioned clean verdict.
+ * Home always renders `AttentionFeedSection` now, so a clean feed shows its quiet
+ * clean line rather than a silent gap. This still gates the `attention_feed_shown`
+ * impression, so the event keeps meaning "a qualified or non-empty state was
+ * shown".
  *
- * Hiding it entirely is itself a claim — the absence of a "Needs Attention"
- * block reads as "nothing to do". So the section stays for any qualified state:
- * loaded rows, a retry/partial notice, or a bounded page that could not cover
- * the practice. Only a genuinely settled, coverage-complete, clean feed hides
- * it, which keeps a quiet Home quiet without ever presenting a truncated or
- * failed check as all-clear.
+ * Hiding the section entirely is itself a claim: the absence of a "Needs
+ * Attention" block reads as "nothing to do". So this stays true for any qualified
+ * state: loaded rows, a retry/partial notice, or a bounded page that could not
+ * cover the practice. Only a genuinely settled, coverage-complete, clean feed is
+ * false.
  */
 export function homeAttentionHasContent(feed: UseAttentionFeedResult): boolean {
   if (feed.items.length > 0) return true;
@@ -241,6 +245,58 @@ export function homeAttentionIsChecking(feed: UseAttentionFeedResult): boolean {
   return (!feed.isSettled || !feed.localSettled) && feed.items.length === 0;
 }
 
+/** Home's quiet-line state for this feed, or `null` for the full block. */
+export function homeAttentionQuietStateFor(feed: UseAttentionFeedResult): HomeAttentionQuietState | null {
+  return homeAttentionQuietState({
+    itemCount: feed.items.length,
+    noticeCount: attentionStateNotices(feed).length,
+    isSettled: feed.isSettled,
+    localSettled: feed.localSettled,
+    isClean: feed.isClean,
+    isTruncated: feed.isTruncated,
+    checkedCount: feed.checkedCount,
+  });
+}
+
+interface HomeAttentionQuietRowProps {
+  state: HomeAttentionQuietState;
+}
+
+/**
+ * One quiet, non-heading line that replaces the whole "Needs Attention" block
+ * when there is nothing to list. Every state, including `checking`, is a link to
+ * the full screen. That keeps the footprint and the chevron identical, so the
+ * settled verdict replaces "Checking…" in place with no layout shift. The full
+ * screen shows its own loader while it checks, so an early tap never dead-ends.
+ * `min-h-[44px]` holds two lines of body-sm, so the longer recent-page line does
+ * not grow the row either.
+ */
+function HomeAttentionQuietRow({ state }: HomeAttentionQuietRowProps) {
+  const router = useRouter();
+  const colors = useThemeColors();
+  const label = homeAttentionQuietLabel(state);
+  return (
+    <View className="mb-6">
+      <Pressable
+        onPress={() => router.push('/recordings/attention' as never)}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}. ${ATTENTION_FEED_COPY.openScreenAccessibilityLabel}`}
+        accessibilityState={{ busy: state.kind === 'checking' }}
+        className="flex-row items-center min-h-[44px] py-1"
+        hitSlop={HIT_SLOP}
+      >
+        {/* flex-1: the label takes real width, so "Recent check: nothing found in
+            the last 100 updated recordings" wraps under Bold text instead of
+            losing its tail (CLAUDE.md > UI Gotchas). */}
+        <Text className="text-body-sm text-content-tertiary flex-1" numberOfLines={2}>
+          {label}
+        </Text>
+        <ChevronRight color={colors.contentTertiary} size={16} style={{ flexShrink: 0 }} />
+      </Pressable>
+    </View>
+  );
+}
+
 interface AttentionFeedSectionProps {
   feed: UseAttentionFeedResult;
 }
@@ -248,7 +304,9 @@ interface AttentionFeedSectionProps {
 /**
  * Home's "Needs Attention" section: at most two ACTIONABLE rows, qualified state
  * lines, and ONE summary row ("2 need you · 3 across the practice ›") that opens
- * the full screen. Deliberately never expands read-only patient rows on the
+ * the full screen. With nothing to list it collapses to one quiet line
+ * (`homeAttentionQuietState`): checking, the clean claim, or a clean recent
+ * page. Deliberately never expands read-only patient rows on the
  * landing screen, and never renders a single authoritative count mixing
  * device-local rows with a truncated server page. The bounded-page qualifier
  * (`attentionCoverageFooter`) is the full screen's — repeating it here doubled
@@ -258,6 +316,7 @@ interface AttentionFeedSectionProps {
 export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
   const router = useRouter();
   const colors = useThemeColors();
+  const quietState = homeAttentionQuietStateFor(feed);
   const notices = attentionStateNotices(feed);
   const visibleRows = feed.groups.needsYou.slice(0, HOME_ATTENTION_ROW_LIMIT);
   const hiddenNeedsYou = feed.groups.needsYou.length - visibleRows.length;
@@ -275,6 +334,8 @@ export function AttentionFeedSection({ feed }: AttentionFeedSectionProps) {
     feed.items.length > 0
       ? ATTENTION_FEED_COPY.homeSummary(feed.groups.needsYou.length, acrossPracticeCount)
       : ATTENTION_FEED_COPY.viewRecent;
+
+  if (quietState) return <HomeAttentionQuietRow state={quietState} />;
 
   return (
     <View className="mb-6">

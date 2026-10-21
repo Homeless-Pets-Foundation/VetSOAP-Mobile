@@ -20,16 +20,22 @@ interface MarkdownTextProps {
 
 const DEFAULT_TEXT_CLASS = 'text-body text-content-body leading-relaxed';
 
+// Every <Text> here is long-form reading copy (SOAP and translation section
+// bodies), so each one — nested spans included, since RN caps per fragment —
+// takes the 2.0x reading ceiling. See READING_MAX_FONT_SIZE_MULTIPLIER.
+
 function Spans({ spans }: { spans: MarkdownSpan[] }) {
   return (
     <>
       {spans.map((span, i) =>
         span.bold ? (
-          <Text key={i} className="font-semibold text-content-primary">
+          <Text key={i} scaling="reading" className="font-semibold text-content-primary">
             {span.text}
           </Text>
         ) : (
-          <Text key={i}>{span.text}</Text>
+          <Text key={i} scaling="reading">
+            {span.text}
+          </Text>
         )
       )}
     </>
@@ -49,6 +55,7 @@ function Block({
     case 'header':
       return (
         <Text
+          scaling="reading"
           className={`${block.level === 1 ? 'text-body-lg' : 'text-body'} font-bold text-content-primary ${isFirst ? '' : 'mt-2'} mb-1`}
           accessibilityRole="header"
         >
@@ -59,12 +66,12 @@ function Block({
     case 'numbered':
       return (
         <View className="flex-row mb-1 pl-1">
-          <Text className={textClassName}>
+          <Text scaling="reading" className={textClassName}>
             {block.type === 'bullet' ? '•' : block.marker}
             {'  '}
           </Text>
           {/* flex-1 so the label claims row space and wraps instead of clipping (Android Text-in-flex-row gotcha) */}
-          <Text className={`${textClassName} flex-1`}>
+          <Text scaling="reading" className={`${textClassName} flex-1`}>
             <Spans spans={block.spans} />
           </Text>
         </View>
@@ -72,7 +79,7 @@ function Block({
     case 'paragraph':
     default:
       return (
-        <Text className={`${textClassName} ${isFirst ? '' : 'mt-1'} mb-1`}>
+        <Text scaling="reading" className={`${textClassName} ${isFirst ? '' : 'mt-1'} mb-1`}>
           <Spans spans={block.spans} />
         </Text>
       );
@@ -93,7 +100,11 @@ export function MarkdownText({ text, textClassName = DEFAULT_TEXT_CLASS }: Markd
   }
 
   if (!blocks) {
-    return <Text className={textClassName}>{text ?? ''}</Text>;
+    return (
+      <Text scaling="reading" className={textClassName}>
+        {text ?? ''}
+      </Text>
+    );
   }
 
   return (

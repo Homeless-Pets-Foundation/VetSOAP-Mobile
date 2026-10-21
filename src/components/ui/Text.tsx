@@ -5,13 +5,14 @@ import {
   type TextProps as RNTextProps,
   type TextInputProps as RNTextInputProps,
 } from 'react-native';
-import { resolveMaxFontSizeMultiplier } from '../../lib/fontScaling';
+import { resolveMaxFontSizeMultiplier, type TextScaling } from '../../lib/fontScaling';
 import { APP_FONT_FAMILY } from '../../lib/typography';
 
 /**
  * The app's `Text` and `TextInput`. Every text call site imports from here, not
  * from `react-native`, so the 1.3x OS-text-scaling cap is applied exactly once,
- * in one place, and cannot be forgotten.
+ * in one place, and cannot be forgotten. Long-form reading paragraphs opt into
+ * a 2.0x ceiling with `scaling="reading"`; nothing else can raise it.
  *
  * WHY a wrapper instead of a global patch: `app/_layout.tsx` used to monkey-patch
  * `Text.render` / `TextInput.render`. RN 0.83 exports both as plain function
@@ -38,15 +39,26 @@ import { APP_FONT_FAMILY } from '../../lib/typography';
  * wrapper to `react-native` for it.
  */
 
-export type TextProps = RNTextProps & { className?: string };
+export type TextProps = RNTextProps & {
+  className?: string;
+  /**
+   * `'reading'` raises the ceiling to 2.0x for long-form reading paragraphs
+   * (see `READING_MAX_FONT_SIZE_MULTIPLIER`). Fenced to an allowlist of files by
+   * tests/font-scaling-guard.test.mjs — never use it on labels, buttons, badges
+   * or headers. Nested <Text> spans must pass it too: RN applies
+   * maxFontSizeMultiplier per text fragment, so an un-flagged span is capped at
+   * 1.3x inside a 2.0x paragraph.
+   */
+  scaling?: TextScaling;
+};
 export type TextInputProps = RNTextInputProps & { className?: string };
 
-export function Text({ maxFontSizeMultiplier, style, ...props }: TextProps) {
+export function Text({ maxFontSizeMultiplier, scaling, style, ...props }: TextProps) {
   return (
     <RNText
       {...props}
       style={[{ fontFamily: APP_FONT_FAMILY }, style]}
-      maxFontSizeMultiplier={resolveMaxFontSizeMultiplier(maxFontSizeMultiplier)}
+      maxFontSizeMultiplier={resolveMaxFontSizeMultiplier(maxFontSizeMultiplier, scaling)}
     />
   );
 }

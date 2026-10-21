@@ -111,8 +111,103 @@ test('the wrapper applies the resolved cap to both Text and TextInput', async ()
   // namespace too; without this alias the fence would force that call site back
   // to importing from react-native.
   assert.match(src, /export type TextInput = RNTextInput/);
-  const applied = src.match(/maxFontSizeMultiplier=\{resolveMaxFontSizeMultiplier\(maxFontSizeMultiplier\)\}/g);
-  assert.equal(applied?.length, 2, 'both Text and TextInput must apply the resolved cap');
+  // Text resolves against its `scaling` opt-in; TextInput takes no reading
+  // ceiling at all (inputs are UI chrome), so it resolves against the default.
+  const textApplied = src.match(
+    /maxFontSizeMultiplier=\{resolveMaxFontSizeMultiplier\(maxFontSizeMultiplier, scaling\)\}/g,
+  );
+  assert.equal(textApplied?.length, 1, 'Text must apply the resolved cap, honouring `scaling`');
+  const inputApplied = src.match(/maxFontSizeMultiplier=\{resolveMaxFontSizeMultiplier\(maxFontSizeMultiplier\)\}/g);
+  assert.equal(inputApplied?.length, 1, 'TextInput must apply the default resolved cap');
+});
+
+// ---------------------------------------------------------------------------
+// Reading exception. Long-form reading paragraphs (SOAP/translation markdown,
+// transcript chunks, the client-email body) reflow inside auto-height
+// containers, so they wrap instead of clipping; holding them at 1.3x left a
+// low-vision vet at 200% OS text reading notes at 130%. They opt into a 2.0x
+// ceiling with `scaling="reading"`. The risk is the opt-in spreading to chrome
+// (labels, buttons, badges), which is exactly where 1.3x exists to stop
+// overflow — so the opt-in is fenced to an explicit file allowlist.
+// ---------------------------------------------------------------------------
+
+/** The only files allowed to pass `scaling` to ui/Text. */
+const READING_ALLOWLIST = [
+  'src/components/ClientEmailCard.tsx',
+  'src/components/MarkdownText.tsx',
+  'src/components/TranscriptView.tsx',
+];
+
+/** Files that DEFINE the opt-in (and so mention `scaling` in code). */
+const READING_DEFINERS = [WRAPPER, 'src/lib/fontScaling.ts'];
+
+test('the reading ceiling is 2.0x and only the exact opt-in reaches it', async () => {
+  const { resolveMaxFontSizeMultiplier, READING_MAX_FONT_SIZE_MULTIPLIER } =
+    await loadTsModule('src/lib/fontScaling.ts');
+  assert.equal(READING_MAX_FONT_SIZE_MULTIPLIER, 2.0);
+  assert.equal(resolveMaxFontSizeMultiplier(undefined, 'reading'), 2.0);
+  // Smaller still wins; larger clamps to the READING ceiling, not past it.
+  assert.equal(resolveMaxFontSizeMultiplier(1.1, 'reading'), 1.1);
+  assert.equal(resolveMaxFontSizeMultiplier(3, 'reading'), 2.0);
+  for (const bad of [null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(resolveMaxFontSizeMultiplier(bad, 'reading'), 2.0, `bad cap ${bad} should fall back to 2.0`);
+  }
+  // Default text is untouched, and anything other than 'reading' (an untyped
+  // JS caller, a typo) gets the global cap — never a higher one.
+  assert.equal(resolveMaxFontSizeMultiplier(undefined), 1.3);
+  assert.equal(resolveMaxFontSizeMultiplier(2), 1.3);
+  for (const other of ['Reading', 'large', '', 2]) {
+    assert.equal(resolveMaxFontSizeMultiplier(undefined, other), 1.3, `scaling ${String(other)} must not raise the cap`);
+  }
+});
+
+test('only allowlisted reading bodies opt into the reading ceiling', async () => {
+  const offenders = [];
+  for (const dir of ['app', 'src']) {
+    for await (const file of walk(path.join(root, dir))) {
+      const rel = path.relative(root, file).split(path.sep).join('/');
+      if (READING_DEFINERS.includes(rel)) continue;
+      const raw = await readFile(file, 'utf8');
+      // Mask comments/strings so prose about the opt-in is not an opt-in, then
+      // read the raw text at each code position to see what was actually passed.
+      const code = maskNonCode(raw);
+      for (const m of code.matchAll(/\bscaling\s*[:=]/g)) {
+        const usage = raw.slice(m.index, m.index + 'scaling="reading"'.length);
+        if (!READING_ALLOWLIST.includes(rel)) {
+          offenders.push(`${rel}: not allowlisted`);
+        } else if (usage !== 'scaling="reading"') {
+          // A computed value could be anything; only the literal is reviewable.
+          offenders.push(`${rel}: must be the literal scaling="reading"`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `the 2.0x reading ceiling is for long-form reading paragraphs only (labels, buttons, badges and headers stay at 1.3x): ${offenders.join('; ')}`,
+  );
+});
+
+test('each allowlisted reading body actually opts in', async () => {
+  for (const rel of READING_ALLOWLIST) {
+    const src = await readFile(path.join(root, rel), 'utf8');
+    assert.match(src, /scaling="reading"/, `${rel} is allowlisted but no longer opts in — drop it from the allowlist`);
+  }
+});
+
+test('every MarkdownText fragment, nested spans included, takes the reading ceiling', async () => {
+  // RN applies maxFontSizeMultiplier per text FRAGMENT, so a nested <Text>
+  // span without the opt-in is capped at 1.3x inside a 2.0x paragraph — the
+  // bold run would visibly shrink against its own sentence.
+  const raw = await readFile(path.join(root, 'src/components/MarkdownText.tsx'), 'utf8');
+  const code = maskNonCode(raw);
+  const opens = [...code.matchAll(/<Text\b[^>]*>/g)];
+  assert.ok(opens.length > 0, 'MarkdownText renders no <Text>');
+  for (const m of opens) {
+    const tag = raw.slice(m.index, m.index + m[0].length);
+    assert.match(tag, /scaling="reading"/, `MarkdownText <Text> without the reading opt-in: ${tag.replace(/\s+/g, ' ')}`);
+  }
 });
 
 test('the dead Text.render patch is gone from app/_layout.tsx', async () => {

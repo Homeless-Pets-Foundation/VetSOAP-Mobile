@@ -173,6 +173,7 @@ export function TranscriptView({ transcript }: TranscriptViewProps) {
         <Text
           key={i}
           selectable
+          scaling="reading"
           // mt-3 only at boundaries the SOURCE had — size-split continuation
           // chunks would otherwise render fake paragraph gaps.
           className={`text-body text-content-body leading-relaxed ${

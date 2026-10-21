@@ -21,18 +21,41 @@
 export const GLOBAL_MAX_FONT_SIZE_MULTIPLIER = 1.3;
 
 /**
+ * Ceiling for long-form READING text only: SOAP/translation markdown bodies,
+ * transcript chunks, the client-email body. These are reflowing paragraphs in
+ * auto-height containers, so they wrap rather than clip, and capping them at
+ * 1.3x left a low-vision vet at 200% OS text reading clinical notes at 130%
+ * (WCAG 1.4.4 asks for 200%). UI chrome — labels, buttons, badges, headers —
+ * keeps the 1.3x ceiling, because that is where dense layouts actually break.
+ * Opt-in is `scaling="reading"` on the ui/Text wrapper, and the guard fences it
+ * to an allowlist of files so it cannot spread to chrome.
+ */
+export const READING_MAX_FONT_SIZE_MULTIPLIER = 2.0;
+
+/** Which ceiling a Text element is capped by. Omitted = the global 1.3x cap. */
+export type TextScaling = 'reading';
+
+/**
  * Resolve the cap for one element.
  *
- * A SMALLER per-element cap wins — some pills genuinely break before 1.3x. A
+ * `scaling` picks the ceiling (1.3x by default, 2.0x for 'reading'). A
+ * SMALLER per-element cap wins — some pills genuinely break before 1.3x. A
  * larger one does not: exceeding the ceiling is the overflow the cap exists to
  * prevent, and a caller cannot opt out by asking for more. Anything that is not
  * a usable positive finite number (null, 0, negative, NaN, Infinity) falls back
- * to the global cap rather than disabling scaling. RN types the prop as
+ * to the ceiling rather than disabling scaling. RN types the prop as
  * `number | null | undefined`, so null has to be handled, not just undefined.
  */
-export function resolveMaxFontSizeMultiplier(explicit?: number | null): number {
+export function resolveMaxFontSizeMultiplier(
+  explicit?: number | null,
+  scaling?: TextScaling,
+): number {
+  // Only the exact 'reading' opt-in raises the ceiling; anything else (an
+  // untyped JS caller, a typo) gets the global cap, never a higher one.
+  const ceiling =
+    scaling === 'reading' ? READING_MAX_FONT_SIZE_MULTIPLIER : GLOBAL_MAX_FONT_SIZE_MULTIPLIER;
   if (typeof explicit !== 'number' || !Number.isFinite(explicit) || explicit <= 0) {
-    return GLOBAL_MAX_FONT_SIZE_MULTIPLIER;
+    return ceiling;
   }
-  return Math.min(explicit, GLOBAL_MAX_FONT_SIZE_MULTIPLIER);
+  return Math.min(explicit, ceiling);
 }

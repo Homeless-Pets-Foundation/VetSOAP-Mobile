@@ -130,7 +130,14 @@ export function ClientEmailCard({ recordingId }: { recordingId: string }) {
       {draft && (
         <View className="border border-border-default rounded-input p-3 bg-surface">
           <Text className="text-body font-semibold text-content-primary mb-2">{draft.subject}</Text>
-          <Text className="text-body-sm text-content-body" numberOfLines={previewExpanded ? undefined : 8}>
+          {/* Reading ceiling (2.0x): the body is a reflowing paragraph. The
+              collapsed preview's numberOfLines ellipsizes visibly (with Show
+              more below), it never clips, so the larger text is safe. */}
+          <Text
+            scaling="reading"
+            className="text-body-sm text-content-body"
+            numberOfLines={previewExpanded ? undefined : 8}
+          >
             {draft.body}
           </Text>
           <Button

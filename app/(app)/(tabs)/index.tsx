@@ -25,6 +25,7 @@ import {
   shouldFetchQualityAnalytics,
 } from '../../../src/api/qualityAnalytics';
 import { mergeDraftRecordings } from '../../../src/lib/draftRecordings';
+import { savedSessionIdForDraft } from '../../../src/lib/draftLocation';
 import { measurePhase } from '../../../src/lib/monitoring';
 import { friendlyErrorMessage, technicalErrorDetails } from '../../../src/lib/errorCopy';
 import { copyWithAutoClear } from '../../../src/lib/secureClipboard';
@@ -81,12 +82,14 @@ export default function HomeScreen() {
   const activeProviderIssue = useActiveProviderIssue();
   const supportRecovery = useSupportRecoveryVaultSummary();
   const attentionFeed = useAttentionFeed({ focused: isTabFocused });
-  const showAttentionSection = homeAttentionHasContent(attentionFeed);
+  // Gates only the impression. The section itself always renders, and with
+  // nothing to list it is one quiet line (see AttentionFeedSection).
+  const attentionHasContent = homeAttentionHasContent(attentionFeed);
   // Depend on the STABLE refresh functions, never the hook result objects: an
   // unstable useFocusEffect callback re-fires on every render (refetch storm).
   const refreshAttention = attentionFeed.refresh;
   const refreshSupportRecovery = supportRecovery.refresh;
-  useAttentionImpression('home', attentionFeed, isTabFocused && showAttentionSection);
+  useAttentionImpression('home', attentionFeed, isTabFocused && attentionHasContent);
   const [bannersExpanded, setBannersExpanded] = useState(false);
   // Priority order (WP30): recovery > support-staff recovery vault > device
   // limit > provider issue. Recovery of preserved clinical work outranks data
@@ -178,6 +181,7 @@ export default function HomeScreen() {
   const {
     localDrafts,
     draftResumeMap,
+    savedSessionDraftMap,
     refreshLocalDrafts,
     isStale: areLocalDraftsStale,
   } = useLocalDraftRecordings();
@@ -574,7 +578,7 @@ export default function HomeScreen() {
           app being broken (data loss, device blocked), which outranks data
           hygiene. Never gates Home: it renders its own bounded state and Home
           stays usable if its queries or a native local read hang (rule 24). */}
-      {showAttentionSection ? <AttentionFeedSection feed={attentionFeed} /> : null}
+      <AttentionFeedSection feed={attentionFeed} />
 
       {/* Recent Recordings */}
       {drafts.length > 0 ? (
@@ -587,7 +591,11 @@ export default function HomeScreen() {
           </View>
           {drafts.map((recording) => (
             <View key={recording.id}>
-              <RecordingCard recording={recording} localDraftSlotId={draftResumeMap[recording.id]} />
+              <RecordingCard
+                recording={recording}
+                localDraftSlotId={draftResumeMap[recording.id]}
+                inSavedSession={!!savedSessionIdForDraft(savedSessionDraftMap, recording.id)}
+              />
             </View>
           ))}
         </View>
@@ -685,6 +693,7 @@ export default function HomeScreen() {
               <RecordingCard
                 recording={recording}
                 localDraftSlotId={draftResumeMap[recording.id]}
+                inSavedSession={!!savedSessionIdForDraft(savedSessionDraftMap, recording.id)}
                 hideStatusBadge={recording.status === 'completed'}
               />
             </View>

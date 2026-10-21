@@ -19,6 +19,7 @@ import { AudioWaveform } from './AudioWaveform';
 import { formatClockDuration } from '../lib/formatClock';
 import { RecorderLiveReadout } from './RecorderLiveReadout';
 import { Card } from './ui/Card';
+import { CONTENT_MAX_WIDTH } from './ui/ScreenContainer';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { Toggle } from './ui/Toggle';
@@ -409,7 +410,15 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   return (
     <ScrollView
       style={{ width }}
-      contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: totalSlots > 1 ? 24 : 80 }}
+      // Each pager page stays full-width (paging math depends on it); the card
+      // content inside is centered at the 600dp column on tablets.
+      contentContainerStyle={{
+        paddingHorizontal: 20,
+        paddingBottom: totalSlots > 1 ? 24 : 80,
+        width: '100%',
+        maxWidth: CONTENT_MAX_WIDTH + 40,
+        alignSelf: 'center',
+      }}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
       automaticallyAdjustKeyboardInsets

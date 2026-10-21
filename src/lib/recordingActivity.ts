@@ -18,6 +18,11 @@ type Listener = (active: boolean) => void;
 
 let isActive = false;
 const listeners = new Set<Listener>();
+// Narrower than `isActive`: true only while audio is actually being captured
+// (recorder state 'recording'), not while a session is paused. The lock screen
+// uses it so it never says "recording continues" over a paused session.
+let isCapturing = false;
+const captureListeners = new Set<Listener>();
 
 export const recordingActivity = {
   setActive(next: boolean): void {
@@ -41,6 +46,30 @@ export const recordingActivity = {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
+    };
+  },
+
+  setCapturing(next: boolean): void {
+    if (isCapturing === next) return;
+    isCapturing = next;
+    for (const listener of captureListeners) {
+      try {
+        listener(isCapturing);
+      } catch {
+        // A broken subscriber must never break the recorder path.
+      }
+    }
+  },
+
+  isCapturing(): boolean {
+    return isCapturing;
+  },
+
+  /** Returns an unsubscribe function. */
+  subscribeCapturing(listener: Listener): () => void {
+    captureListeners.add(listener);
+    return () => {
+      captureListeners.delete(listener);
     };
   },
 };

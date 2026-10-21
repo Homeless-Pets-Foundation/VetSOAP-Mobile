@@ -1,6 +1,6 @@
 import { draftStorage, durableManifestAudioExistence, type DurableManifestSnapshot } from './draftStorage';
 import { stashStorage } from './stashStorage';
-import { countUnsentStashSessions } from './unsentCount';
+import { countUnsentStashRecordings, countUnsentStashSessions } from './unsentCount';
 import { fileExistsStrict } from './fileOps';
 import { clonePendingConfirm } from './pendingConfirm';
 import { withPromiseTimeout } from './promiseTimeout';
@@ -12,7 +12,9 @@ import type { User } from '../types';
 
 /**
  * Count un-sent recordings on this device for the current user: local drafts
- * with audio segments, plus stashed sessions. Best-effort: any failure returns
+ * with audio segments, plus the recordings (patient slots) inside saved
+ * sessions. Durable crash recoveries and support-staff vault items are not
+ * included (they have their own entry points). Best-effort: any failure returns
  * the partial count and never blocks sign-out or account-deletion UX. Assumes
  * draft/stash user scoping is already set by AuthProvider.fetchUser().
  *
@@ -35,8 +37,10 @@ export async function countUnsentRecordings(): Promise<number> {
   try {
     const sessions = await stashStorage.getStashedSessions();
     // Count resumed stashes too — a resumed-but-unsubmitted session is unsent
-    // work that nothing else represents (finding O6). See countUnsentStashSessions.
-    stashes = countUnsentStashSessions(sessions);
+    // work that nothing else represents (finding O6). Counted per RECORDING
+    // (patient slot), the unit the warning copy uses — see
+    // countUnsentStashRecordings.
+    stashes = countUnsentStashRecordings(sessions);
   } catch {
     // best-effort
   }

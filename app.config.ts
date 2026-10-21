@@ -277,6 +277,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         'android.permission.ACCESS_FINE_LOCATION',
         'android.permission.ACCESS_COARSE_LOCATION',
         'android.permission.CAMERA',
+        // expo-brightness's config plugin (NOT registered) would add this; the
+        // recording dimmer only sets this activity's window brightness, which
+        // needs no permission. Blocked so a future plugin registration can't
+        // quietly add a special-access permission Play reviews.
+        'android.permission.WRITE_SETTINGS',
         // Google Play rejected versionCode 45 under the photo/video
         // permissions policy. expo-screen-capture (still installed but now
         // unused — screen-capture prevention was removed; see CLAUDE.md

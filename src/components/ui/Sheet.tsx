@@ -4,6 +4,8 @@ import { Text } from './Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
 import { useThemeColors } from '../../hooks/useThemeColors';
+import { useAppLocked } from '../../hooks/useAppLocked';
+import { noteRecordingUserActivity } from '../../lib/recordingDimmer';
 import { IconButton } from './IconButton';
 import { cx, runMaybeAsync } from './styles';
 
@@ -38,6 +40,9 @@ export function Sheet({
 }: SheetProps) {
   const insets = useSafeAreaInsets();
   const colors = useThemeColors();
+  // A Modal draws in its own native window, above AppLockGuard's overlay —
+  // hide it while the app is locked so it can't sit on top of the lock screen.
+  const appLocked = useAppLocked();
 
   const close = () => {
     runMaybeAsync('Sheet onClose', onClose);
@@ -45,9 +50,10 @@ export function Sheet({
 
   return (
     <Modal
-      visible={visible}
+      visible={visible && !appLocked}
       transparent
-      animationType="slide"
+      // Hidden by the lock: vanish at once rather than slide out over it.
+      animationType={appLocked ? 'none' : 'slide'}
       onRequestClose={close}
       statusBarTranslucent
     >
@@ -57,6 +63,8 @@ export function Sheet({
       <KeyboardAvoidingView
         className="flex-1 justify-end bg-scrim"
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        // A Modal is its own window, outside the app-level touch tracker.
+        onTouchStart={noteRecordingUserActivity}
       >
         {closeOnBackdropPress ? (
           <Pressable

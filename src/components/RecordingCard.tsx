@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { ChevronRight, CloudOff, Smartphone, Sparkles } from 'lucide-react-native';
 import { StatusBadge } from './StatusBadge';
 import type { Recording } from '../types';
-import { METADATA_REVIEW_COPY } from '../constants/strings';
+import { DRAFT_LOCATION_COPY, METADATA_REVIEW_COPY } from '../constants/strings';
 import { displayPatientName, isUntitledVisit } from '../lib/recordingDisplay';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { CLIP_SAFE, clipSafe } from './ui/styles';
@@ -13,6 +13,13 @@ import { CLIP_SAFE, clipSafe } from './ui/styles';
 interface RecordingCardProps {
   recording: Recording;
   localDraftSlotId?: string;
+  /**
+   * Set when a saved session (stash) on this device holds this draft's audio.
+   * Save for Later deletes the local draft but keeps the server row, so without
+   * this the card claimed "Not on this device" and opened a Delete Draft
+   * dead end (UX-H3, 2026-10-21).
+   */
+  inSavedSession?: boolean;
   highlighted?: boolean;
   /**
    * List contexts pass `recording.status === 'completed'`: a green "Completed"
@@ -23,19 +30,33 @@ interface RecordingCardProps {
   hideStatusBadge?: boolean;
 }
 
-function DraftLocationChip({ isOnDevice }: { isOnDevice: boolean }) {
+type DraftLocationState = 'on_device' | 'saved_session' | 'not_on_device';
+
+function DraftLocationChip({ location }: { location: DraftLocationState }) {
   const colors = useThemeColors();
+  const isOnDevice = location !== 'not_on_device';
   const Icon = isOnDevice ? Smartphone : CloudOff;
   const containerClass = isOnDevice ? 'bg-brand-100 dark:bg-surface-sunken' : 'bg-status-warning';
   const textClass = isOnDevice ? 'text-brand-700 dark:text-brand-500' : 'text-status-warning';
   const iconColor = isOnDevice ? colors.brand500 : colors.statusWarningFg;
-  const label = isOnDevice ? 'On this device' : 'Not on this device';
+  const label =
+    location === 'on_device'
+      ? DRAFT_LOCATION_COPY.onDevice
+      : location === 'saved_session'
+        ? DRAFT_LOCATION_COPY.savedSession
+        : DRAFT_LOCATION_COPY.notOnDevice;
+  const a11yLabel =
+    location === 'on_device'
+      ? DRAFT_LOCATION_COPY.onDeviceA11y
+      : location === 'saved_session'
+        ? DRAFT_LOCATION_COPY.savedSessionA11y
+        : DRAFT_LOCATION_COPY.notOnDeviceA11y;
 
   return (
     <View
       className={`px-2 py-0.5 rounded-badge flex-row items-center self-end ${containerClass}`}
       accessibilityRole="text"
-      accessibilityLabel={isOnDevice ? 'Draft audio is saved on this device' : 'Draft audio is not saved on this device'}
+      accessibilityLabel={a11yLabel}
     >
       <Icon color={iconColor} size={12} style={{ marginRight: 4, flexShrink: 0 }} />
       {/* Trailing space + flexShrink:0 — Android under-measures single-word Text in self-end flex-rows and clips the last glyph; do NOT remove. */}
@@ -66,6 +87,7 @@ function AiLabeledChip() {
 export const RecordingCard = React.memo(function RecordingCard({
   recording,
   localDraftSlotId,
+  inSavedSession = false,
   highlighted = false,
   hideStatusBadge = false,
 }: RecordingCardProps) {
@@ -107,10 +129,18 @@ export const RecordingCard = React.memo(function RecordingCard({
   const showAiLabeledChip = aiAppliedCount > 0;
   const isDraft = recording.status === 'draft';
   const hasLocalDraftAudio = Boolean(localDraftSlotId);
+  // A resumable local draft wins: it is what a tap opens.
+  const draftLocation: DraftLocationState = hasLocalDraftAudio
+    ? 'on_device'
+    : inSavedSession
+      ? 'saved_session'
+      : 'not_on_device';
   const accessibilityStatusSuffix = isDraft
-    ? hasLocalDraftAudio
-      ? ', audio on this device'
-      : ', audio not on this device'
+    ? draftLocation === 'on_device'
+      ? DRAFT_LOCATION_COPY.onDeviceSuffix
+      : draftLocation === 'saved_session'
+        ? DRAFT_LOCATION_COPY.savedSessionSuffix
+        : DRAFT_LOCATION_COPY.notOnDeviceSuffix
     : '';
 
   return (
@@ -118,6 +148,10 @@ export const RecordingCard = React.memo(function RecordingCard({
       onPress={() => {
         if (recording.status === 'draft' && localDraftSlotId) {
           router.push(`/(tabs)/record?draftSlotId=${localDraftSlotId}` as any);
+        } else if (recording.status === 'draft' && inSavedSession) {
+          // Saved Sessions live on the Record tab; the param reveals the list
+          // even when the current session has unsaved work.
+          router.push('/(tabs)/record?showSavedSessions=1' as any);
         } else if (recording.id) {
           router.push(`/recordings/${recording.id}` as `/recordings/${string}`);
         }
@@ -201,7 +235,7 @@ export const RecordingCard = React.memo(function RecordingCard({
           <View className="items-end gap-1">
             {hideStatusBadge ? null : <StatusBadge status={recording.status} />}
             {showAiLabeledChip ? <AiLabeledChip /> : null}
-            {isDraft ? <DraftLocationChip isOnDevice={hasLocalDraftAudio} /> : null}
+            {isDraft ? <DraftLocationChip location={draftLocation} /> : null}
           </View>
           <ChevronRight color={colors.contentTertiary} size={18} />
         </View>
@@ -227,6 +261,7 @@ export const RecordingCard = React.memo(function RecordingCard({
     (next.recording.aiExtractedMetadata?.appliedFields?.length ?? 0) &&
   prev.recording.needsMetadataReview === next.recording.needsMetadataReview &&
   prev.localDraftSlotId === next.localDraftSlotId &&
+  prev.inSavedSession === next.inSavedSession &&
   prev.hideStatusBadge === next.hideStatusBadge &&
   prev.highlighted === next.highlighted
 );

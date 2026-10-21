@@ -1226,3 +1226,59 @@ export function attentionCoverage(envelope: AttentionEnvelope | null | undefined
   if (!envelope.pagination) return 'unknown';
   return envelope.pagination.total <= envelope.data.length ? 'complete' : 'recent_page_only';
 }
+
+/**
+ * The one quiet line Home shows INSTEAD of the "Needs Attention" block when
+ * there is nothing to list. For any practice past 100 recordings the coverage
+ * is permanently `recent_page_only`, so the alarm-titled block used to sit on
+ * Home forever with nothing in it, and flash "Checking…" in and out on every
+ * cold open. Every variant stays qualified:
+ *
+ * - `checking`: not looked yet. Same footprint as the settled line, so the
+ *   verdict replaces it in place instead of shifting the screen.
+ * - `clean`: the feed's one positive claim, and ONLY when `isClean` (all six
+ *   conditions) holds.
+ * - `recent_clean`: nothing found in the bounded recent page. Scoped by the
+ *   ACTUAL checked count, never presented as an all-clear.
+ *
+ * Anything else, including any row or any qualified notice (error, blocked,
+ * partial, unknown coverage, unknown local work), returns `null`, and Home
+ * renders the full block. A state this function does not recognize falls back
+ * to the full block too: the safe default is more information, not less.
+ */
+export interface HomeAttentionQuietInput {
+  itemCount: number;
+  noticeCount: number;
+  isSettled: boolean;
+  localSettled: boolean;
+  isClean: boolean;
+  isTruncated: boolean;
+  checkedCount: number;
+}
+
+export type HomeAttentionQuietState =
+  | { kind: 'checking' }
+  | { kind: 'clean' }
+  | { kind: 'recent_clean'; checkedCount: number };
+
+export function homeAttentionQuietState(input: HomeAttentionQuietInput): HomeAttentionQuietState | null {
+  if (input.itemCount > 0) return null;
+  if (input.noticeCount > 0) return null;
+  if (!input.isSettled || !input.localSettled) return { kind: 'checking' };
+  if (input.isClean) return { kind: 'clean' };
+  if (input.isTruncated && input.checkedCount > 0) {
+    return { kind: 'recent_clean', checkedCount: input.checkedCount };
+  }
+  return null;
+}
+
+export function homeAttentionQuietLabel(state: HomeAttentionQuietState): string {
+  switch (state.kind) {
+    case 'checking':
+      return ATTENTION_FEED_COPY.loading;
+    case 'clean':
+      return ATTENTION_FEED_COPY.clean;
+    case 'recent_clean':
+      return ATTENTION_FEED_COPY.homeQuietRecentClean(state.checkedCount);
+  }
+}

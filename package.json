@@ -31,6 +31,7 @@
     "expo-application": "~55.0.19",
     "expo-asset": "~55.0.17",
     "expo-audio": "~55.0.18",
+    "expo-brightness": "~55.0.17",
     "expo-build-properties": "~55.0.18",
     "expo-clipboard": "~55.0.17",
     "expo-constants": "~55.0.16",

@@ -751,20 +751,31 @@ export default function AudioEditorScreen() {
     return { coarse: 30, fine: 2 };
   }, [selectedSegment?.duration]);
 
+  // Reads the live bounds from refs, not state: the long-press repeat calls this
+  // from a setInterval whose closure was created at press time, so state-based
+  // math recomputed the same value every tick — the handle moved one step and
+  // stopped while the haptic kept firing at 10 Hz. Each step also writes the ref
+  // so back-to-back ticks accumulate before the re-render lands.
   const nudgeHandleFor = useCallback(
     (which: 'start' | 'end', deltaSec: number) => {
       const dur = selectedSegment?.duration ?? 0;
       if (dur <= 0) return;
-      Haptics.selectionAsync().catch(() => {});
+      const start = trimStartStateRef.current;
+      const end = trimEndStateRef.current;
       if (which === 'start') {
-        const next = Math.max(0, Math.min(trimStart + deltaSec, trimEnd - 1));
+        const next = Math.max(0, Math.min(start + deltaSec, end - 1));
+        if (next === start) return; // at the limit: no move, no haptic
+        trimStartStateRef.current = next;
         setTrimStart(next);
       } else {
-        const next = Math.max(trimStart + 1, Math.min(trimEnd + deltaSec, dur));
+        const next = Math.max(start + 1, Math.min(end + deltaSec, dur));
+        if (next === end) return;
+        trimEndStateRef.current = next;
         setTrimEnd(next);
       }
+      Haptics.selectionAsync().catch(() => {});
     },
-    [selectedSegment?.duration, trimStart, trimEnd]
+    [selectedSegment?.duration]
   );
 
   const nudgeHandle = useCallback(

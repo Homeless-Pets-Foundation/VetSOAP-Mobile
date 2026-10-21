@@ -28,8 +28,12 @@ test('the eviction sweep never bulk-deletes and never opens a modal', async () =
 
 test('≥30 days and ≥23 days both surface a notice', async () => {
   const { effect } = await evictionEffect();
-  assert.match(effect, /if \(totalExpired > 0\) \{\s*setExpiryNotice\(\{\s*expired: true,/);
-  assert.match(effect, /else if \(totalExpiring > 0\) \{\s*setExpiryNotice\(\{\s*expired: false,/);
+  // Codex review on PR #252 (round 2): one notice carries BOTH cohorts — an
+  // expired recording used to hide the 23–29-day ones for the whole session.
+  assert.match(
+    effect,
+    /if \(totalExpired \+ totalExpiring > 0\) \{\s*setExpiryNotice\(\{\s*expiredCount: totalExpired,\s*expiringCount: totalExpiring,\s*draftCount: expiredDraftCount \+ expiringDraftCount,\s*savedSessionRecordingCount: expiredSessionRecordings \+ expiringSessionRecordings,/,
+  );
   assert.doesNotMatch(effect, /approaching 30-day expiry/, 'the dev-only log is gone');
 });
 
@@ -47,9 +51,32 @@ test('counts are in one unit: recordings, with saved sessions counted per slot',
 test('the notice is cleared on every user-scope change and on an empty sweep', async () => {
   const { src, effect } = await evictionEffect();
   const head = src.slice(src.indexOf('const [expiryNotice, setExpiryNotice]'), src.indexOf("scheduleNonUrgentWork('thirty_day_eviction'"));
-  assert.match(head, /useEffect\(\(\) => \{\s*(?:\/\/[^\n]*\n\s*)*setExpiryNotice\(null\);\s*if \(!user\?\.id\) \{/);
-  assert.match(head, /evictionSweptUserRef\.current = null;/, 'a sign-out lets the next sign-in sweep again');
+  assert.match(
+    head,
+    /if \(!user\?\.id\) \{\s*(?:\/\/[^\n]*\n\s*)*setExpiryNotice\(null\);\s*evictionSweptUserRef\.current = null;\s*return;/,
+    'signed out: cleared, and the next sign-in sweeps again',
+  );
+  assert.match(
+    head,
+    /const isRecheck = evictionSweptUserRef\.current === user\.id;[\s\S]*?if \(!isRecheck\) \{\s*(?:\/\/[^\n]*\n\s*)*setExpiryNotice\(null\);/,
+    'a different user starts clean',
+  );
   assert.match(effect, /\} else \{\s*setExpiryNotice\(null\);\s*\}/);
+});
+
+// Codex review on PR #252 (round 2): the sweep ran once per user, so the
+// banner kept a stale count after the vet submitted/deleted what it counted.
+test('while a notice is up, it is re-checked on return to the tab and on saved-session changes', async () => {
+  const { src } = await evictionEffect();
+  assert.match(
+    src,
+    /navigation\.addListener\('focus', \(\) => \{\s*if \(expiryNoticeRef\.current\) setExpiryRecheck\(\(n\) => n \+ 1\);/,
+  );
+  assert.match(src, /useEffect\(\(\) => \{\s*if \(expiryNoticeRef\.current\) setExpiryRecheck\(\(n\) => n \+ 1\);\s*\}, \[stashCount\]\);/);
+  assert.match(src, /if \(isRecheck && expiryRecheck === expiryRecheckSweptRef\.current\) return;/);
+  assert.match(src, /\}, \[user\?\.id, expiryRecheck\]\);/);
+  // A re-check is the same serialized sweep (Keystore load stays queued
+  // behind the other startup sweeps; sweep-serialization fences the args).
 });
 
 test('the notice is a non-modal banner whose Review goes where the recordings are', async () => {
@@ -61,7 +88,11 @@ test('the notice is a non-modal banner whose Review goes where the recordings ar
   // Review is offered only when drafts are involved, and opens them.
   assert.match(banner, /expiryNotice\.draftCount > 0\s*\?\s*\{\s*label: RECORD_EXPIRY_COPY\.review,/);
   assert.match(banner, /router\.navigate\('\/recordings\?status=draft' as never\)/);
-  assert.match(banner, /RECORD_EXPIRY_COPY\.where\(\s*expiryNotice\.draftCount,\s*expiryNotice\.savedSessionRecordingCount\s*\)/);
+  assert.match(banner, /variant=\{expiryNotice\.expiredCount > 0 \? 'warning' : 'info'\}/);
+  assert.match(
+    banner,
+    /RECORD_EXPIRY_COPY\.message\(\{\s*expired: expiryNotice\.expiredCount,\s*expiring: expiryNotice\.expiringCount,\s*drafts: expiryNotice\.draftCount,\s*inSavedSessions: expiryNotice\.savedSessionRecordingCount,\s*\}\)/,
+  );
 });
 
 // Codex review on PR #252: with drafts AND saved sessions, Review reached only
@@ -82,11 +113,20 @@ test('the copy says where each source is', async () => {
   assert.match(RECORD_EXPIRY_COPY.where(0, 5), /^They’re under Saved Sessions on this screen\.$/);
   assert.match(RECORD_EXPIRY_COPY.where(3, 4), /^4 are under Saved Sessions on this screen; Review opens the other 3\.$/);
   assert.match(RECORD_EXPIRY_COPY.expired(1), /^1 unsent recording is over 30 days old/);
+  assert.equal(
+    RECORD_EXPIRY_COPY.message({ expired: 2, expiring: 1, drafts: 3, inSavedSessions: 0 }),
+    '2 unsent recordings are over 30 days old on this device. 1 more is nearly 30 days old. Review to submit or delete them.',
+    'mixed ages: expired first, the expiring cohort still named',
+  );
+  assert.equal(
+    RECORD_EXPIRY_COPY.message({ expired: 0, expiring: 1, drafts: 0, inSavedSessions: 1 }),
+    '1 unsent recording is nearly 30 days old and still not submitted. It’s under Saved Sessions on this screen.',
+  );
 });
 
 test('copy lives in the catalog and never threatens automatic deletion', async () => {
   const strings = await read('src/constants/strings.ts');
-  const block = strings.slice(strings.indexOf('export const RECORD_EXPIRY_COPY'), strings.indexOf('export const RECORD_BANNERS'));
+  const block = strings.slice(strings.indexOf('const expiryExpiredLine'), strings.indexOf('export const RECORD_BANNERS'));
   assert.ok(block.includes('expired:') && block.includes('expiring:') && block.includes("review: 'Review'"));
   assert.doesNotMatch(block, /will be deleted|expire[sd]? (?:and|on)/i);
 });

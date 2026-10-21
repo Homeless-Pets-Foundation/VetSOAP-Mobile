@@ -92,13 +92,26 @@ test('a save in flight blocks every exit instead of offering a discard it cannot
   // already-discarding pass-through.
   assert.match(
     src,
-    /usePreventRemove\(soapEditDirty \|\| soapSaving, \(\{ data \}\) => \{\s*if \(soapSavingRef\.current\) \{\s*alertSoapStillSaving\(\);\s*return;\s*\}\s*if \(discardingEditsRef\.current\)/,
+    /usePreventRemove\(soapEditDirty \|\| soapSaving, \(\{ data \}\) => \{\s*if \(recordingDeletedRef\.current\) \{[\s\S]*?\}\s*if \(soapSavingRef\.current\) \{\s*alertSoapStillSaving\(\);\s*return;\s*\}\s*if \(discardingEditsRef\.current\)/,
   );
   assert.match(
     src,
     /\(leave: \(\) => void\) => \{\s*if \(soapSavingRef\.current\) \{\s*alertSoapStillSaving\(\);\s*return;\s*\}\s*if \(soapEditDirtyRef\.current/,
   );
   assert.match(src, /Alert\.alert\(SOAP_EDIT_DISCARD_COPY\.savingTitle, SOAP_EDIT_DISCARD_COPY\.savingBody\)/);
+});
+
+// Codex review on PR #252 (round 2): Delete Recording navigates away after the
+// row is gone; the guard intercepted it and Keep editing stranded the vet on a
+// deleted recording.
+test('a successful delete leaves without the edit guard', async () => {
+  const src = await read(DETAIL);
+  assert.match(src, /recordingDeletedRef\.current = true;\s*router\.navigate\('\/recordings'\);/);
+  assert.match(
+    src,
+    /usePreventRemove\(soapEditDirty \|\| soapSaving, \(\{ data \}\) => \{\s*if \(recordingDeletedRef\.current\) \{\s*navigation\.dispatch\(data\.action\);\s*return;\s*\}/,
+    'checked first, ahead of the saving block and the discard confirm',
+  );
 });
 
 test('discard copy lives in the strings catalog', async () => {

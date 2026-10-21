@@ -511,18 +511,35 @@ export const RECORDER_TRANSITION_COPY = {
  * their own — the notice exists to get them submitted (or deliberately
  * deleted, one at a time, from the list Review opens).
  */
+// Counts are RECORDINGS (patient slots) from both sources: a draft is one, a
+// saved session counts each slot with audio (countUnsentStashRecordings).
+const expiryExpiredLine = (n: number): string =>
+  `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} over 30 days old on this device.`;
+const expiryExpiringLine = (n: number): string =>
+  `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} nearly 30 days old and still not submitted.`;
+const expiryAlsoExpiringLine = (n: number): string =>
+  `${n} more ${n === 1 ? 'is' : 'are'} nearly 30 days old.`;
+/** Where to act: drafts via Review (Recordings › Not Submitted); saved sessions are listed on the Record screen itself. */
+const expiryWhereLine = (drafts: number, inSavedSessions: number): string => {
+  if (inSavedSessions === 0) return `Review to submit or delete ${drafts === 1 ? 'it' : 'them'}.`;
+  if (drafts === 0) return `${inSavedSessions === 1 ? 'It’s' : 'They’re'} under Saved Sessions on this screen.`;
+  return `${inSavedSessions} ${inSavedSessions === 1 ? 'is' : 'are'} under Saved Sessions on this screen; Review opens the other ${drafts}.`;
+};
+
 export const RECORD_EXPIRY_COPY = {
-  // Counts are RECORDINGS (patient slots) from both sources: a draft is one, a
-  // saved session counts each slot with audio (countUnsentStashRecordings).
-  expired: (n: number): string =>
-    `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} over 30 days old on this device.`,
-  expiring: (n: number): string =>
-    `${n} unsent ${n === 1 ? 'recording is' : 'recordings are'} nearly 30 days old and still not submitted.`,
-  /** Where to act: drafts via Review (Recordings › Not Submitted); saved sessions are listed on the Record screen itself. */
-  where: (drafts: number, inSavedSessions: number): string => {
-    if (inSavedSessions === 0) return `Review to submit or delete ${drafts === 1 ? 'it' : 'them'}.`;
-    if (drafts === 0) return `${inSavedSessions === 1 ? 'It’s' : 'They’re'} under Saved Sessions on this screen.`;
-    return `${inSavedSessions} ${inSavedSessions === 1 ? 'is' : 'are'} under Saved Sessions on this screen; Review opens the other ${drafts}.`;
+  expired: expiryExpiredLine,
+  expiring: expiryExpiringLine,
+  alsoExpiring: expiryAlsoExpiringLine,
+  where: expiryWhereLine,
+  /** The whole banner: both age cohorts (expired first), then where each source is. */
+  message: (counts: { expired: number; expiring: number; drafts: number; inSavedSessions: number }): string => {
+    const age =
+      counts.expired > 0
+        ? counts.expiring > 0
+          ? `${expiryExpiredLine(counts.expired)} ${expiryAlsoExpiringLine(counts.expiring)}`
+          : expiryExpiredLine(counts.expired)
+        : expiryExpiringLine(counts.expiring);
+    return `${age} ${expiryWhereLine(counts.drafts, counts.inSavedSessions)}`;
   },
   review: 'Review',
 } as const;

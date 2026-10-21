@@ -773,6 +773,10 @@ export default function RecordingDetailScreen() {
     });
   }, [id, recording]);
 
+  // Set once the recording is deleted from here: nothing is left to save or
+  // discard, so the SOAP edit guard below must not intercept the navigation
+  // that follows (Keep editing would strand the vet on a deleted recording).
+  const recordingDeletedRef = useRef(false);
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!id) return;
@@ -843,6 +847,7 @@ export default function RecordingDetailScreen() {
           patientId: recording?.patientId ?? null,
         });
       }
+      recordingDeletedRef.current = true;
       router.navigate('/recordings');
     },
     onError: (error: Error) => {
@@ -987,6 +992,10 @@ export default function RecordingDetailScreen() {
   }, []);
 
   usePreventRemove(soapEditDirty || soapSaving, ({ data }) => {
+    if (recordingDeletedRef.current) {
+      navigation.dispatch(data.action);
+      return;
+    }
     if (soapSavingRef.current) {
       alertSoapStillSaving();
       return;

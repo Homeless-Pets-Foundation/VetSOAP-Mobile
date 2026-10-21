@@ -7151,25 +7151,50 @@ function RecordingSession() {
   // unmount) re-sweeps for each user instead of silently skipping everyone
   // after the first.
   const evictionSweptUserRef = useRef<string | null>(null);
+  /** Counts cover BOTH cohorts (≥30d expired and ≥23d expiring), all in recordings. */
   const [expiryNotice, setExpiryNotice] = useState<{
-    expired: boolean;
+    expiredCount: number;
+    expiringCount: number;
     /** Drafts (one recording each) — reached via Recordings › Not Submitted. */
     draftCount: number;
     /** Recordings (slots with audio) inside saved sessions — listed on this screen. */
     savedSessionRecordingCount: number;
   } | null>(null);
+  const expiryNoticeRef = useRef(expiryNotice);
+  expiryNoticeRef.current = expiryNotice;
+  // While a notice is up, re-check what it counts whenever that may have
+  // changed: on every return to this tab (Review → submit/delete drafts
+  // elsewhere) and whenever the saved-session list changes here. Otherwise the
+  // banner kept a stale count, or claimed recordings were under Saved Sessions
+  // after the last one was deleted. No notice → no re-checks.
+  const [expiryRecheck, setExpiryRecheck] = useState(0);
+  const expiryRecheckSweptRef = useRef(0);
   useEffect(() => {
-    // Every scope change starts clean: on a shared tablet this tab outlives a
-    // user switch, and the previous vet's notice must never show for the next.
-    setExpiryNotice(null);
+    return navigation.addListener('focus', () => {
+      if (expiryNoticeRef.current) setExpiryRecheck((n) => n + 1);
+    });
+  }, [navigation]);
+  useEffect(() => {
+    if (expiryNoticeRef.current) setExpiryRecheck((n) => n + 1);
+  }, [stashCount]);
+  useEffect(() => {
     if (!user?.id) {
-      // Signed out: the next sign-in (even the same vet) sweeps again, since
-      // the notice was just cleared.
+      // Signed out: clear, and let the next sign-in (even the same vet) sweep
+      // again.
+      setExpiryNotice(null);
       evictionSweptUserRef.current = null;
       return;
     }
-    if (evictionSweptUserRef.current === user.id) return;
+    const isRecheck = evictionSweptUserRef.current === user.id;
+    if (isRecheck && expiryRecheck === expiryRecheckSweptRef.current) return;
+    if (!isRecheck) {
+      // A new scope starts clean: on a shared tablet this tab outlives a user
+      // switch, and the previous vet's notice must never show for the next.
+      // A re-check keeps the current notice up until its result replaces it.
+      setExpiryNotice(null);
+    }
     evictionSweptUserRef.current = user.id;
+    expiryRecheckSweptRef.current = expiryRecheck;
     const online = isConnected !== false;
     let cancelled = false;
     const cancelWork = scheduleNonUrgentWork('thirty_day_eviction', async (isExpired) => {
@@ -7225,18 +7250,15 @@ function RecordingSession() {
         // copy, and its Delete removed every expired draft (server row
         // included) and every expired stash in one tap. The ≥23-day heads-up
         // rule 13 promises was a __DEV__ console.log only; it now shows too.
+        // Both cohorts in one notice: an expired recording must not hide the
+        // 23–29-day ones (or the saved sessions they live in) for the session.
         if (!isScopeValid()) return;
-        if (totalExpired > 0) {
+        if (totalExpired + totalExpiring > 0) {
           setExpiryNotice({
-            expired: true,
-            draftCount: expiredDraftCount,
-            savedSessionRecordingCount: expiredSessionRecordings,
-          });
-        } else if (totalExpiring > 0) {
-          setExpiryNotice({
-            expired: false,
-            draftCount: expiringDraftCount,
-            savedSessionRecordingCount: expiringSessionRecordings,
+            expiredCount: totalExpired,
+            expiringCount: totalExpiring,
+            draftCount: expiredDraftCount + expiringDraftCount,
+            savedSessionRecordingCount: expiredSessionRecordings + expiringSessionRecordings,
           });
         } else {
           setExpiryNotice(null);
@@ -7249,8 +7271,8 @@ function RecordingSession() {
       cancelled = true;
       cancelWork();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per user; isConnected read via closure at mount
-  }, [user?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per user, plus re-checks while a notice is up; isConnected read via closure
+  }, [user?.id, expiryRecheck]);
 
   // Effect: ask once per device whether to exempt Captivet from Android battery
   // optimization. Samsung One UI app-sleep kills the app mid-recording, and that
@@ -7810,19 +7832,13 @@ function RecordingSession() {
         {expiryNotice ? (
           <View className="mx-5 mb-2">
             <Banner
-              variant={expiryNotice.expired ? 'warning' : 'info'}
-              message={`${
-                expiryNotice.expired
-                  ? RECORD_EXPIRY_COPY.expired(
-                      expiryNotice.draftCount + expiryNotice.savedSessionRecordingCount
-                    )
-                  : RECORD_EXPIRY_COPY.expiring(
-                      expiryNotice.draftCount + expiryNotice.savedSessionRecordingCount
-                    )
-              } ${RECORD_EXPIRY_COPY.where(
-                expiryNotice.draftCount,
-                expiryNotice.savedSessionRecordingCount
-              )}`}
+              variant={expiryNotice.expiredCount > 0 ? 'warning' : 'info'}
+              message={RECORD_EXPIRY_COPY.message({
+                expired: expiryNotice.expiredCount,
+                expiring: expiryNotice.expiringCount,
+                drafts: expiryNotice.draftCount,
+                inSavedSessions: expiryNotice.savedSessionRecordingCount,
+              })}
               cta={
                 expiryNotice.draftCount > 0
                   ? {

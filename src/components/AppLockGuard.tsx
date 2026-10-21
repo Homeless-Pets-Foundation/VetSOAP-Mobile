@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useContext } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -116,7 +116,10 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   // True once the signed-in tree has been shown. From then on a lock is an
   // overlay above the mounted tree, never a replacement for it.
   const [hasRevealed, setHasRevealed] = useState(false);
-  const [recordingLive, setRecordingLive] = useState(() => recordingActivity.isActive());
+  // Owned = a session holds the recorder (recording OR paused); capturing =
+  // audio is actually being recorded. The lock screen tells them apart.
+  const [recorderOwned, setRecorderOwned] = useState(() => recordingActivity.isActive());
+  const [capturing, setCapturing] = useState(() => recordingActivity.isCapturing());
   const colors = useThemeColors();
   const backgroundedAtRef = useRef<number | null>(null);
   const isAuthenticatingRef = useRef(false);
@@ -150,7 +153,8 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
     if (isReady && isLocked) AccessibilityInfo.announceForAccessibility('App locked');
   }, [isReady, isLocked]);
 
-  useEffect(() => recordingActivity.subscribe(setRecordingLive), []);
+  useEffect(() => recordingActivity.subscribe(setRecorderOwned), []);
+  useEffect(() => recordingActivity.subscribeCapturing(setCapturing), []);
 
   const attemptUnlock = useCallback(async () => {
     if (isAuthenticatingRef.current) return;
@@ -340,7 +344,10 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
   }, []);
 
   // Publish the lock for modal surfaces (ui/Sheet) that draw above the overlay.
-  useEffect(() => {
+  // Layout effect, not a passive one: a passive effect runs after the locked
+  // frame paints, leaving an open Sheet's Modal above the lock screen for that
+  // frame. Updates from a layout effect re-render the Sheets before paint.
+  useLayoutEffect(() => {
     appLockState.setLocked(isLocked && hasRevealed);
   }, [isLocked, hasRevealed]);
   useEffect(() => () => appLockState.setLocked(false), []);
@@ -402,9 +409,9 @@ export function AppLockGuard({ children }: AppLockGuardProps) {
       </Text>
       {/* w-full: a shrink-wrapped multi-word label in this centered column
           loses its tail under Android Bold text (CLAUDE.md > UI Gotchas). */}
-      {recordingLive && hasRevealed ? (
+      {recorderOwned && hasRevealed ? (
         <Text className="w-full text-body-sm font-semibold text-status-danger text-center mb-4">
-          {APP_LOCK_COPY.recordingContinues}
+          {capturing ? APP_LOCK_COPY.recordingContinues : APP_LOCK_COPY.recordingPaused}
         </Text>
       ) : null}
       {unlockHint && (

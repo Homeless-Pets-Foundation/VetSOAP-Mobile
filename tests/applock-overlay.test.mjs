@@ -74,3 +74,41 @@ test('appLockState notifies subscribers once per change and survives a throwing 
   appLockState.setLocked(true);
   assert.deepEqual(seen, [true, false]);
 });
+
+test('the lock is published before the locked frame paints, and Sheets vanish without sliding', async () => {
+  const src = await read('src/components/AppLockGuard.tsx');
+  assert.match(
+    src,
+    /useLayoutEffect\(\(\) => \{\s*appLockState\.setLocked\(isLocked && hasRevealed\);/,
+    'a passive effect leaves an open Sheet Modal above the lock for a frame',
+  );
+  const sheet = await read('src/components/ui/Sheet.tsx');
+  assert.match(sheet, /animationType=\{appLocked \? 'none' : 'slide'\}/);
+});
+
+test('the lock screen never says a paused session is still recording', async () => {
+  const src = await read('src/components/AppLockGuard.tsx');
+  assert.match(src, /capturing \? APP_LOCK_COPY\.recordingContinues : APP_LOCK_COPY\.recordingPaused/);
+  assert.match(src, /recordingActivity\.subscribeCapturing\(setCapturing\)/);
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  assert.match(
+    record,
+    /const shouldStayAwake = recorder\.state === 'recording';\s*recordingActivity\.setCapturing\(shouldStayAwake\);/,
+    'capture flag follows the actual recorder state, not recorder ownership',
+  );
+});
+
+test('recordingActivity keeps capture separate from ownership', async () => {
+  const { recordingActivity } = await loadTsModule('src/lib/recordingActivity.ts');
+  const captures = [];
+  const owned = [];
+  recordingActivity.subscribeCapturing((v) => captures.push(v));
+  recordingActivity.subscribe((v) => owned.push(v));
+  recordingActivity.setActive(true); // recording
+  recordingActivity.setCapturing(true);
+  recordingActivity.setCapturing(false); // paused: still owned
+  assert.equal(recordingActivity.isActive(), true);
+  assert.equal(recordingActivity.isCapturing(), false);
+  assert.deepEqual(captures, [true, false]);
+  assert.deepEqual(owned, [true]);
+});

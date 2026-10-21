@@ -39,17 +39,31 @@ AppState.addEventListener('change', (state) => {
   }
 });
 
-/** Force-clear any pending clipboard data. Called on sign-out. */
+/**
+ * Clear our pending copy now. Called on sign-out. Compare-and-clear like the
+ * timer: since a copy now survives a trip to another app, the clipboard may
+ * hold something the vet copied there, which sign-out must not wipe. If the
+ * clipboard can't be read, clear anyway — sign-out is the boundary before the
+ * next user of a shared tablet.
+ */
 export function clearClipboard(): void {
   if (clearTimer) {
     clearTimeout(clearTimer);
     clearTimer = null;
   }
   clearDueOnForeground = false;
-  if (pendingText !== null) {
-    Clipboard.setStringAsync('').catch(() => {});
-    pendingText = null;
-  }
+  const text = pendingText;
+  pendingText = null;
+  if (text === null) return;
+  (async () => {
+    let current: string | null = text;
+    try {
+      current = await Clipboard.getStringAsync();
+    } catch {
+      // Unreadable: treat it as still ours.
+    }
+    if (current === text) await Clipboard.setStringAsync('');
+  })().catch(() => {});
 }
 
 /**

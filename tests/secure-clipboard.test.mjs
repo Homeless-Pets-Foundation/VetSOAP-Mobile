@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTsModule } from './helpers/loadTs.mjs';
 
-async function setup() {
+async function setup({ unreadable = false } = {}) {
   const clipboard = { value: '', reads: 0, writes: [] };
   const appState = { currentState: 'active', listeners: [] };
   const timers = [];
@@ -23,6 +23,7 @@ async function setup() {
         },
         getStringAsync: async () => {
           clipboard.reads += 1;
+          if (unreadable) throw new Error('clipboard unavailable');
           return clipboard.value;
         },
       },
@@ -106,13 +107,33 @@ test('text the user copied elsewhere afterwards is never wiped', async () => {
   assert.equal(clipboard.value, 'something from the PIMS');
 });
 
-test('clearClipboard (sign-out) clears immediately and cancels any deferred clear', async () => {
+test('clearClipboard (sign-out) clears our copy and cancels any deferred clear', async () => {
   const { mod, clipboard, setAppState, fireTimers } = await setup();
   await mod.copyWithAutoClear('SOAP note');
   mod.clearClipboard();
+  await new Promise((r) => setImmediate(r));
   assert.equal(clipboard.value, '');
   clipboard.value = 'next user copy';
   await fireTimers();
   await setAppState('active');
   assert.equal(clipboard.value, 'next user copy');
+});
+
+test('sign-out never wipes something the user copied in another app', async () => {
+  const { mod, clipboard, setAppState } = await setup();
+  await mod.copyWithAutoClear('SOAP note');
+  await setAppState('background');
+  clipboard.value = 'copied in the PIMS';
+  await setAppState('active');
+  mod.clearClipboard();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(clipboard.value, 'copied in the PIMS');
+});
+
+test('sign-out clears anyway when the clipboard cannot be read', async () => {
+  const { mod, clipboard } = await setup({ unreadable: true });
+  await mod.copyWithAutoClear('SOAP note');
+  mod.clearClipboard();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(clipboard.value, '');
 });

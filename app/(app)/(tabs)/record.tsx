@@ -1329,6 +1329,7 @@ function RecordingSession() {
       timers.clear();
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
       recordingDimmer.stop();
+      recordingActivity.setCapturing(false);
     };
   }, []);
 
@@ -1794,6 +1795,7 @@ function RecordingSession() {
 
   useEffect(() => {
     const shouldStayAwake = recorder.state === 'recording';
+    recordingActivity.setCapturing(shouldStayAwake);
     if (!shouldStayAwake) {
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
       recordingDimmer.stop();
@@ -1805,6 +1807,7 @@ function RecordingSession() {
     return () => {
       deactivateKeepAwake(RECORDING_KEEP_AWAKE_TAG).catch(() => {});
       recordingDimmer.stop();
+      recordingActivity.setCapturing(false);
     };
   }, [recorder.state]);
 

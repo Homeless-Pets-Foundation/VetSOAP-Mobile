@@ -478,6 +478,8 @@ export const APP_LOCK_COPY = {
     'Could not reach the biometric sensor. Try again, or sign out — saved recordings are kept.',
   /** Shown on the lock screen while a recorder is live underneath it. */
   recordingContinues: 'Recording continues while locked. Unlock to finish it.',
+  /** Shown instead when the session underneath is paused (not capturing). */
+  recordingPaused: 'A recording is paused. Unlock to resume or finish it.',
 } as const;
 
 export const RECORDER_TRANSITION_COPY = {

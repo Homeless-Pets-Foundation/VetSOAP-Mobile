@@ -52,7 +52,8 @@ export function Sheet({
     <Modal
       visible={visible && !appLocked}
       transparent
-      animationType="slide"
+      // Hidden by the lock: vanish at once rather than slide out over it.
+      animationType={appLocked ? 'none' : 'slide'}
       onRequestClose={close}
       statusBarTranslucent
     >

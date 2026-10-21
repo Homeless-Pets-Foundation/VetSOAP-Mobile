@@ -6966,7 +6966,9 @@ function RecordingSession() {
   useEffect(() => {
     if (showSavedSessions !== '1') return;
     setForceShowStashList(true);
-    router.replace('/(tabs)/record' as any);
+    // setParams, not replace: clearing the param must not navigate (a
+    // navigation could fire the blur below and re-hide the list at once).
+    router.setParams({ showSavedSessions: undefined });
   }, [showSavedSessions, router]);
   useEffect(() => {
     const unsubscribe = navigation.addListener('blur', () => setForceShowStashList(false));

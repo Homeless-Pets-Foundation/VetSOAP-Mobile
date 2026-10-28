@@ -35,6 +35,7 @@ interface MetadataReviewCardProps {
   /** Gates only the ambiguous null-extraction inference, never a real blob. */
   recordFirstEnabled?: boolean;
   saving?: boolean;
+  compact?: boolean;
   /** Whole-review confirm with no field changes. */
   onConfirm?: () => void;
   /** Deliberate `review: 'dismissed'` — "Keep current details". */
@@ -89,6 +90,7 @@ export function MetadataReviewCard({
   mode,
   recordFirstEnabled = false,
   saving = false,
+  compact = false,
   onConfirm,
   onDismiss,
   onSave,
@@ -201,7 +203,7 @@ export function MetadataReviewCard({
         : METADATA_REVIEW_COPY.addTitle;
   const body =
     mode === 'review' && !suggestionOnlyReview
-      ? METADATA_REVIEW_COPY.body
+      ? appliedRowFields.length > 0 ? METADATA_REVIEW_COPY.body : METADATA_REVIEW_COPY.reviewBody
       : mode === 'edit'
         ? METADATA_REVIEW_COPY.editBody
         : showNoExtraction
@@ -210,7 +212,13 @@ export function MetadataReviewCard({
 
   return (
     <>
-      <Card className="mx-5 mb-4 border-brand-100 dark:border-border-default">
+      {compact ? (
+        <View className="mx-5 mb-2 self-start">
+          <Button variant="ghost" size="sm" onPress={() => setSheetOpen(true)} disabled={saving}>
+            {METADATA_REVIEW_COPY.editDetails}
+          </Button>
+        </View>
+      ) : <Card className="mx-5 mb-4 border-brand-100 dark:border-border-default">
         <View className="flex-row items-start">
           <View className="mr-2 mt-0.5">
             <Sparkles color={colors.brand500} size={18} />
@@ -346,7 +354,7 @@ export function MetadataReviewCard({
             </View>
           </View>
         </View>
-      </Card>
+      </Card>}
 
       <Sheet
         visible={sheetOpen}

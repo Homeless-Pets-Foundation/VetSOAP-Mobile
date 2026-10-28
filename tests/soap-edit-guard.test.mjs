@@ -6,10 +6,140 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
+import ts from 'typescript';
 import { loadTsModule } from './helpers/loadTs.mjs';
 
 const read = (p) => readFile(new URL(`../${p}`, import.meta.url), 'utf8');
 const DETAIL = 'app/(app)/(tabs)/recordings/[id].tsx';
+
+// Execute the real TSX with native views stubbed; hook state survives explicit rerenders.
+async function soapHarness() {
+  const instances = new Map();
+  let hooks;
+  let cursor;
+  let effects;
+  const react = {
+    createElement: (type, props, ...children) => ({ type, key: props?.key, props: { ...props, children } }),
+    Fragment: 'Fragment',
+    useState(initial) {
+      const store = hooks;
+      const index = cursor++;
+      if (index >= store.length) store.push(typeof initial === 'function' ? initial() : initial);
+      return [store[index], (next) => { store[index] = typeof next === 'function' ? next(store[index]) : next; }];
+    },
+    useRef: (initial) => react.useState(() => ({ current: initial }))[0],
+    useEffect(callback, dependencies) {
+      const store = hooks;
+      const index = cursor++;
+      const previous = store[index];
+      if (!previous || dependencies.some((value, i) => !Object.is(value, previous.dependencies[i]))) {
+        effects.push(() => {
+          previous?.cleanup?.();
+          store[index] = { dependencies, cleanup: callback() };
+        });
+      }
+    },
+    useCallback: (callback) => callback,
+  };
+  const dirty = await loadTsModule('src/lib/soapEditDirty.ts');
+  const strings = await loadTsModule('src/constants/strings.ts');
+  const mocks = {
+    react,
+    'react-native': { View: 'View', Pressable: 'Pressable' },
+    './ui/Text': { Text: 'Text', TextInput: 'TextInput' },
+    'react-native-reanimated': {
+      default: { View: 'Animated.View', Text: 'Animated.Text' },
+      useAnimatedStyle: () => ({}), useSharedValue: (value) => react.useRef({ value }).current,
+      withTiming: (value) => value, FadeIn: { duration: () => undefined },
+    },
+    'expo-haptics': {},
+    '@tanstack/react-query': { useQueryClient: () => ({}) },
+    '../lib/secureClipboard': {},
+    'lucide-react-native': {},
+    './MarkdownText': { MarkdownText: 'MarkdownText' },
+    '../constants/strings': strings,
+    '../lib/analytics': {},
+    '../api/soapNotes': {},
+    './ui/Button': { Button: 'Button' },
+    './ui/CopiedToast': { CopiedToast: 'CopiedToast' },
+    '../hooks/useThemeColors': { useThemeColors: () => ({}) },
+    './ui/styles': { CLIP_SAFE: {}, clipSafe: (value) => value },
+    '../lib/soapEditDirty': dirty,
+  };
+  const module = { exports: {} };
+  const compiled = ts.transpileModule(await read('src/components/SoapNoteView.tsx'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true },
+  }).outputText;
+  vm.runInNewContext(compiled, {
+    module, exports: module.exports, setTimeout, clearTimeout,
+    require: (name) => { assert.ok(name in mocks, `Unexpected native dependency: ${name}`); return mocks[name]; },
+  });
+  function render(component, props, identity) {
+    if (!instances.has(identity)) instances.set(identity, []);
+    hooks = instances.get(identity);
+    cursor = 0;
+    effects = [];
+    const result = component(props);
+    for (const effect of effects) effect();
+    return result;
+  }
+  function nodes(tree, predicate) {
+    if (Array.isArray(tree)) return tree.flatMap((child) => nodes(child, predicate));
+    if (!tree || typeof tree !== 'object') return [];
+    return [...(predicate(tree) ? [tree] : []), ...nodes(tree.props?.children, predicate)];
+  }
+  const note = {
+    id: 'note-1',
+    ...Object.fromEntries(['subjective', 'objective', 'assessment', 'plan'].map((key) =>
+      [key, { content: `${key} saved text`, isEdited: false, editedAt: null }])),
+  };
+  const view = (value = note) => render(module.exports.SoapNoteView, { soapNote: value, recordingId: 'recording-1', canEdit: true }, `note:${value.id}`);
+  const sections = (tree) => nodes(tree, (node) => node.props?.sectionKey);
+  return { note, view, sections, nodes, render };
+}
+
+test('Subjective starts open; sections expand independently and reset for a different note', async () => {
+  const h = await soapHarness();
+  let sections = h.sections(h.view());
+  assert.deepEqual(sections.filter((section) => section.props.isExpanded).map((section) => section.key), ['subjective']);
+  sections.find((section) => section.key === 'objective').props.onToggle();
+  sections = h.sections(h.view());
+  sections.find((section) => section.key === 'plan').props.onToggle();
+  sections = h.sections(h.view());
+  assert.deepEqual(sections.filter((section) => section.props.isExpanded).map((section) => section.key), ['subjective', 'objective', 'plan']);
+  const refreshed = h.sections(h.view({ ...h.note }));
+  assert.equal(refreshed[0].type, sections[0].type, 'refetch preserves section component identity');
+  assert.equal(refreshed[0].key, sections[0].key);
+  const another = h.sections(h.view({ ...h.note, id: 'note-2' }));
+  assert.deepEqual(another.filter((section) => section.props.isExpanded).map((section) => section.key), ['subjective']);
+});
+
+test('collapsing a section and refetching the same note retain its unsaved text', async () => {
+  const h = await soapHarness();
+  let section = h.sections(h.view())[0];
+  const renderSection = () => h.render(section.type, section.props, `section:${section.key}`);
+  let tree = renderSection();
+  h.nodes(tree, (node) => node.props?.accessibilityLabel === 'Edit Subjective section')[0].props.onPress();
+  tree = renderSection();
+  h.nodes(tree, (node) => node.type === 'TextInput')[0].props.onChangeText('Unsaved clinical edit');
+  section.props.onToggle();
+  section = h.sections(h.view())[0];
+  assert.equal(h.nodes(renderSection(), (node) => node.type === 'TextInput').length, 0);
+  section.props.onToggle();
+  section = h.sections(h.view({ ...h.note, subjective: { ...h.note.subjective, content: 'Refetched saved text' } }))[0];
+  assert.equal(h.nodes(renderSection(), (node) => node.type === 'TextInput')[0].props.value, 'Unsaved clinical edit');
+});
+
+test('transcript switching and a failed background refresh keep the same SOAP view mounted', async () => {
+  const detail = await read(DETAIL);
+  assert.match(detail, /activeNoteTab === 'transcript' && hasTranscript \? <TranscriptView[^\n]* : null\}/);
+  assert.match(detail, /<View style=\{\{ display: activeNoteTab === 'soap' \? 'flex' : 'none' \}\}>/);
+  assert.match(detail, /isSoapNoteLoading && !soapNote \? \(/);
+  assert.match(detail, /isSoapNoteError && !soapNote \? \(/);
+  assert.match(detail, /<SoapNoteView\s+key=\{soapNote\.id\}/);
+  assert.doesNotMatch(detail, /key=\{soapNote\.(updatedAt|subjective)/);
+});
 
 test('a section is dirty only while editing AND changed from the saved text', async () => {
   const { isSoapSectionDirty } = await loadTsModule('src/lib/soapEditDirty.ts');

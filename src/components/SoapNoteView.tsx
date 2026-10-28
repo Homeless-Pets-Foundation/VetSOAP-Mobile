@@ -13,7 +13,7 @@ import { copyWithAutoClear } from '../lib/secureClipboard';
 import { Copy, Pencil, Save, X, MessageCircle, Stethoscope, ClipboardList, ListChecks, type LucideIcon } from 'lucide-react-native';
 import { MarkdownText, toPlainText } from './MarkdownText';
 import type { SoapNote } from '../types';
-import { SOAP_SECTION_ACTIONS } from '../constants/strings';
+import { SOAP_SECTION_ACTIONS, EXPORT_COPY } from '../constants/strings';
 import { trackEvent } from '../lib/analytics';
 import { soapNotesApi, type SoapNoteSection } from '../api/soapNotes';
 import { Button } from './ui/Button';
@@ -326,7 +326,7 @@ export function SoapNoteView({
   const handleSectionSaving = useCallback((sectionKey: string, saving: boolean) => {
     savingTrackerRef.current.set(sectionKey, saving);
   }, []);
-  const [expandedSection, setExpandedSection] = useState<string | null>('subjective');
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({ subjective: true });
   const [showCopiedAll, setShowCopiedAll] = useState(false);
   const copyAllTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -378,6 +378,9 @@ export function SoapNoteView({
         </Button>
       </View>
 
+      {soapNote.isExported === true ? (
+        <Text className="text-caption text-brand-600 mb-2">{EXPORT_COPY.markedStatus}</Text>
+      ) : null}
       {SECTIONS.map(({ key, label, accent, Icon }) => {
         const section = soapNote[key];
         if (!section) return null;
@@ -392,9 +395,9 @@ export function SoapNoteView({
             content={section.content}
             isEdited={section.isEdited}
             editedAt={section.editedAt}
-            isExpanded={expandedSection === key}
+            isExpanded={!!expandedSections[key]}
             onToggle={() =>
-              setExpandedSection((prev) => (prev === key ? null : key))
+              setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }))
             }
             recordingId={recordingId}
             soapNoteId={soapNote.id}

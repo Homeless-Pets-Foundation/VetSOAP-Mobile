@@ -914,7 +914,9 @@ function RecordingSession() {
   const recorder = useAudioRecorder();
   const colors = useThemeColors();
   const { width: screenWidth, height: windowHeight } = useWindowDimensions();
-  const { templates, defaultTemplate, isLoading: templatesLoading } = useTemplates();
+  const { templates, defaultTemplate, isLoading: templatesLoading, error: templatesError,
+    refetch: refetchTemplates, isFetching: templatesRetrying } = useTemplates();
+  const handleRetryTemplates = useCallback(() => { refetchTemplates().catch(() => {}); }, [refetchTemplates]);
   const [preferredTemplateId, setPreferredTemplateId] = useState<string | null | undefined>(undefined);
   const [defaultTemplateSavingId, setDefaultTemplateSavingId] = useState<string | null>(null);
   const effectiveDefaultTemplate = useMemo(() => {
@@ -7570,6 +7572,9 @@ function RecordingSession() {
           isFinishSaving={finishingDraftSlotId === item.id}
           templates={templates}
           templatesLoading={templatesLoading}
+          templatesError={!!templatesError}
+          templatesRetrying={templatesRetrying}
+          onRetryTemplates={handleRetryTemplates}
           defaultTemplateId={effectiveDefaultTemplate?.id ?? null}
           onSetDefaultTemplate={handleSetDefaultTemplate}
           defaultTemplateSaving={defaultTemplateSavingId === item.formData.templateId}
@@ -7611,6 +7616,9 @@ function RecordingSession() {
       recorderBusy,
       templates,
       templatesLoading,
+      templatesError,
+      templatesRetrying,
+      handleRetryTemplates,
       effectiveDefaultTemplate?.id,
       handleSetDefaultTemplate,
       defaultTemplateSavingId,
@@ -7671,6 +7679,9 @@ function RecordingSession() {
       reconcilingSlotId,
       templates,
       templatesLoading,
+      templatesError,
+      templatesRetrying,
+      handleRetryTemplates,
       defaultTemplateId: effectiveDefaultTemplate?.id ?? null,
       defaultTemplateSavingId,
       screenWidth,
@@ -7704,6 +7715,9 @@ function RecordingSession() {
       reconcilingSlotId,
       templates,
       templatesLoading,
+      templatesError,
+      templatesRetrying,
+      handleRetryTemplates,
       effectiveDefaultTemplate?.id,
       defaultTemplateSavingId,
       screenWidth,

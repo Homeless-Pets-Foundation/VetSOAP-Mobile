@@ -84,6 +84,9 @@ interface PatientSlotCardProps {
   isFinishSaving: boolean;
   templates: Template[];
   templatesLoading: boolean;
+  templatesError: boolean;
+  templatesRetrying: boolean;
+  onRetryTemplates: () => void;
   defaultTemplateId?: string | null;
   onSetDefaultTemplate?: (templateId: string) => void | Promise<void>;
   defaultTemplateSaving?: boolean;
@@ -156,6 +159,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
   isFinishSaving,
   templates,
   templatesLoading,
+  templatesError,
+  templatesRetrying,
+  onRetryTemplates,
   defaultTemplateId,
   onSetDefaultTemplate,
   defaultTemplateSaving,
@@ -342,6 +348,9 @@ export const PatientSlotCard = React.memo(function PatientSlotCard({
       onUpdate={handleUpdateForm}
       templates={templates}
       templatesLoading={templatesLoading}
+      templatesError={templatesError}
+      templatesRetrying={templatesRetrying}
+      onRetryTemplates={onRetryTemplates}
       defaultTemplateId={defaultTemplateId}
       onSetDefaultTemplate={onSetDefaultTemplate}
       defaultTemplateSaving={defaultTemplateSaving}

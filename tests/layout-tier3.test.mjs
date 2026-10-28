@@ -13,6 +13,13 @@ const read = (path) => readFile(new URL(path, root), 'utf8');
 const stripComments = (source) =>
   source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
+test('microphone gate keeps recovery and the permission action in a growing scroll container', async () => {
+  const record = await read('app/(app)/(tabs)/record.tsx');
+  const gate = record.slice(record.indexOf('function PermissionGate('), record.indexOf('function showRecordPermissionAlert('));
+  assert.match(gate, /<ScrollView[^>]*contentContainerStyle=\{\{ flexGrow: 1 \}\}>[\s\S]*<DurableRecoveryBanner\s*\/>[\s\S]*accessibilityLabel="Continue to microphone permission prompt"[\s\S]*<\/ScrollView>/);
+  assert.doesNotMatch(gate, /className="flex-1 justify-center/);
+});
+
 test('recordings list groups rows by date and hides the badge on completed rows', async () => {
   const list = stripComments(await read('app/(app)/(tabs)/recordings/index.tsx'));
   assert.match(list, /<SectionList/);

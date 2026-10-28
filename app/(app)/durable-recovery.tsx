@@ -1,8 +1,12 @@
-import React, { useCallback, useState } from 'react';
-import { ScrollView, View, Alert } from 'react-native';
+import { RecoveryAudioPreview } from '../../src/components/RecoveryAudioPreview';
+import { useAppLocked } from '../../src/hooks/useAppLocked';
+import { recordingActivity } from '../../src/lib/recordingActivity';
+import { RECOVERY_PREVIEW_COPY } from '../../src/constants/strings';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ScrollView, View, Alert, AppState } from 'react-native';
 import { Text } from '../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { ChevronLeft, FileClock } from 'lucide-react-native';
 import { useAuthUser } from '../../src/hooks/useAuth';
 import { useThemeColors } from '../../src/hooks/useThemeColors';
@@ -112,6 +116,24 @@ export default function DurableRecoveryScreen() {
   const user = useAuthUser();
   const recoveries = useDurableRecoveries();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [recorderActive, setRecorderActive] = useState(recordingActivity.isActive);
+  const locked = useAppLocked();
+  const stopPreview = useCallback(() => setPreviewId(null), []);
+  useFocusEffect(useCallback(() => stopPreview, [stopPreview]));
+  useEffect(() => {
+    stopPreview();
+  }, [user?.id, locked, stopPreview]);
+  useEffect(() => {
+    const off = recordingActivity.subscribe((active) => {
+      setRecorderActive(active);
+      if (active) stopPreview();
+    });
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') stopPreview();
+    });
+    return () => { off(); subscription.remove(); };
+  }, [stopPreview]);
 
   const goBack = useCallback(() => {
     if (router.canGoBack()) router.back();
@@ -121,6 +143,7 @@ export default function DurableRecoveryScreen() {
   const handleRestore = useCallback(
     async (m: DurableRecordingManifest) => {
       if (!user?.id || busyId) return;
+      stopPreview();
       setBusyId(m.recordingId);
       try {
         // Synthesize a durable draft, then reuse the existing draft-resume path.
@@ -136,12 +159,13 @@ export default function DurableRecoveryScreen() {
         setBusyId(null);
       }
     },
-    [user?.id, busyId, router],
+    [user?.id, busyId, router, stopPreview],
   );
 
   const handleDiscard = useCallback(
     (m: DurableRecordingManifest) => {
       if (!user?.id) return;
+      stopPreview();
       Alert.alert(
         'Discard Recording?',
         'This permanently deletes the recovered recording. This cannot be undone.',
@@ -174,14 +198,14 @@ export default function DurableRecoveryScreen() {
         ],
       );
     },
-    [user?.id],
+    [user?.id, stopPreview],
   );
 
   return (
     <SafeAreaView className="flex-1 bg-surface" edges={['top', 'bottom']}>
       <View className="flex-row items-center gap-2 px-4 py-3">
         <IconButton label="Go back" onPress={goBack} icon={<ChevronLeft size={24} color={colors.contentBody} />} />
-        <Text className="text-display font-semibold text-content-primary">Recovered Recordings</Text>
+        <Text className="text-display font-semibold text-content-primary flex-1">Recovered Recordings</Text>
       </View>
       <ScrollView contentContainerClassName="px-4 pb-8 gap-3">
         <Text className="text-content-tertiary mb-2">
@@ -200,7 +224,7 @@ export default function DurableRecoveryScreen() {
             <Card key={m.recordingId} className="p-4 gap-2">
               <View className="flex-row items-center gap-2">
                 <FileClock size={18} color={colors.contentTertiary} />
-                <Text className="text-content-primary font-medium">Unsaved recording · {formatDuration(m.durationMs)}</Text>
+                <Text className="text-content-primary font-medium flex-1">Unsaved recording · {formatDuration(m.durationMs)}</Text>
               </View>
               <Text className="text-content-tertiary text-body-sm">Recorded {formatSavedAt(m.updatedAt)}</Text>
               {editPending && (
@@ -208,8 +232,15 @@ export default function DurableRecoveryScreen() {
                   Edit not yet applied — re-apply your edit before submitting, or submit the original audio.
                 </Text>
               )}
-              <View className="flex-row gap-2 mt-1">
-                <Button variant="primary" onPress={() => handleRestore(m)} loading={busy} className="flex-1">
+              {previewId === m.recordingId && m.userId === user?.id && !locked && !recorderActive && !busy ? (
+                <RecoveryAudioPreview key={`${user.id}:${m.recordingId}`} offer={m} userId={user.id} onStop={stopPreview} />
+              ) : (
+                <Button variant="secondary" size="sm" disabled={!!busyId || recorderActive || locked || m.userId !== user?.id}
+                  onPress={() => setPreviewId(m.recordingId)}>{RECOVERY_PREVIEW_COPY.listen}</Button>
+              )}
+              {recorderActive ? <Text className="text-body-sm text-content-tertiary">{RECOVERY_PREVIEW_COPY.busy}</Text> : null}
+              <View className="gap-2 mt-1">
+                <Button variant="primary" onPress={() => handleRestore(m)} loading={busy}>
                   {editPending ? 'Re-edit' : 'Review & Submit'}
                 </Button>
                 <Button variant="dangerGhost" onPress={() => handleDiscard(m)} disabled={busy}>

@@ -17,14 +17,21 @@ export interface UseAudioPlaybackReturn {
   pause: () => void;
   toggle: () => void;
   seekTo: (seconds: number) => Promise<number>;
-  loadSource: (uri: string) => Promise<void>;
+  loadSource: (uri: string, signal?: AbortSignal) => Promise<void>;
   /** Current playback rate (1 = normal). */
   playbackRate: number;
   /** Set playback rate with high-quality pitch correction; persists across source swaps. */
   setPlaybackRate: (rate: number) => void;
 }
 
-export function useAudioPlayback(): UseAudioPlaybackReturn {
+export function useAudioPlayback(canUseAudio: () => boolean = () => true): UseAudioPlaybackReturn {
+  const mountedRef = useRef(true);
+  const canUseAudioRef = useRef(canUseAudio);
+  canUseAudioRef.current = canUseAudio;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const player = useAudioPlayer(null, { updateInterval: 100 });
   const audioModeSetRef = useRef(false);
 
@@ -153,22 +160,25 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
   ]);
 
   const ensurePlaybackMode = useCallback(async () => {
+    if (!mountedRef.current || !canUseAudioRef.current()) return;
     if (audioModeSetRef.current) return;
     try {
       await setAudioModeAsync({
         allowsRecording: false,
         playsInSilentMode: true,
       });
-      audioModeSetRef.current = true;
+      if (mountedRef.current && canUseAudioRef.current()) audioModeSetRef.current = true;
     } catch {
       // Best-effort — playback may still work
     }
   }, []);
 
   const loadSource = useCallback(
-    async (uri: string) => {
+    async (uri: string, signal?: AbortSignal) => {
+      if (signal?.aborted || !mountedRef.current || !canUseAudioRef.current()) return;
       resetPlaybackStateForNewSource();
       await ensurePlaybackMode();
+      if (signal?.aborted || !mountedRef.current || !canUseAudioRef.current()) return;
       try {
         player.replace({ uri });
         // replace() resets the native rate — re-apply for multi-part recordings.
@@ -198,9 +208,10 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
   );
 
   const play = useCallback(() => {
-    if (!isLoaded) return;
+    if (!isLoaded || !mountedRef.current || !canUseAudioRef.current()) return;
     ensurePlaybackMode()
       .then(async () => {
+        if ( !mountedRef.current || !canUseAudioRef.current()) return;
         try {
           // Auto-rewind from EOF: expo-audio leaves currentTime at duration after natural
           // end-of-clip, and a subsequent play() just sits there. Reset to start so the
@@ -212,7 +223,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
             currentTimeRef.current = 0;
             lastStatusTimeSV.value = 0;
           }
-          player.play();
+          if (mountedRef.current && canUseAudioRef.current()) player.play();
         } catch (error) {
           if (__DEV__) console.error('[Playback] play failed:', error);
         }

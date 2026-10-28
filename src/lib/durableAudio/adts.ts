@@ -58,6 +58,8 @@ export interface AdtsParseOptions {
    * absolute completeFrameBytes back. Defaults to 0 (byte-0 parse).
    */
   baseOffset?: number;
+  /** Stop after this many complete frames; leave the remaining bytes unexamined. */
+  maxFrames?: number;
 }
 
 const ADTS_HEADER_MIN = 7;
@@ -116,6 +118,7 @@ export function framesToDurationMs(frameCount: number, sampleRate: number): numb
  */
 export function parseAdts(buf: Uint8Array, options: AdtsParseOptions = {}): AdtsParseResult {
   const baseOffset = options.baseOffset ?? 0;
+  const maxFrames = Math.max(0, Math.floor(options.maxFrames ?? Infinity));
   let pos = 0;
   let frameCount = 0;
   let lockedRateIndex = -1;
@@ -124,7 +127,7 @@ export function parseAdts(buf: Uint8Array, options: AdtsParseOptions = {}): Adts
   let truncatedFinal = false;
   let malformed = false;
 
-  while (pos < buf.length) {
+  while (pos < buf.length && frameCount < maxFrames) {
     const header = readHeader(buf, pos);
     if (!header) {
       // Not a valid frame boundary. If we have fewer than a header's worth of

@@ -508,9 +508,9 @@ export default function RecordingsListScreen() {
     <SafeAreaView className="screen items-center">
       <View style={{ flex: 1, width: '100%', maxWidth: CONTENT_MAX_WIDTH }}>
       <View className="px-5 pt-5 pb-0">
-        <View className="flex-row items-center justify-between mb-4">
+        <View className="flex-row flex-wrap items-center justify-between mb-4">
           <Text
-            className="text-display font-bold text-content-primary flex-1"
+            className="text-display font-bold text-content-primary flex-1 min-w-[180px]"
             accessibilityRole="header"
           >
             Recordings
@@ -525,7 +525,7 @@ export default function RecordingsListScreen() {
             accessibilityRole="link"
             accessibilityLabel={ATTENTION_FEED_COPY.openScreenAccessibilityLabel}
             hitSlop={10}
-            className="flex-row items-center ml-3"
+            className="flex-row items-center"
             style={{ minHeight: 44 }}
           >
             <AlertCircle color={colors.brand500} size={iconSm} style={{ marginRight: 4, flexShrink: 0 }} />

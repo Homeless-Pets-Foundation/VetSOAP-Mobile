@@ -142,3 +142,10 @@ test('devices: icon-only revoke with a full-name a11y label, distinguishing titl
   // The confirm Alert keeps the FULL name.
   assert.match(devices, /const label = device\.deviceName \|\| formatDeviceTypeLabel\(device\.deviceType\);/);
 });
+
+
+test('recordings header wraps the attention link before splitting the title on narrow phones', async () => {
+  const source = await read('app/(app)/(tabs)/recordings/index.tsx');
+  assert.match(source, /flex-row flex-wrap items-center justify-between mb-4/);
+  assert.match(source, /text-display font-bold text-content-primary flex-1 min-w-\[180px\]/);
+});

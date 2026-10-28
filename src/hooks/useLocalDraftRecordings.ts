@@ -1,3 +1,4 @@
+import { withPromiseTimeout } from '../lib/promiseTimeout';
 import { useCallback, useEffect, useMemo } from 'react';
 import { AppState } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -100,6 +101,7 @@ export interface UseLocalDraftRecordingsResult {
    */
   savedSessionDraftMap: Record<string, string>;
   isLoading: boolean;
+  isError: boolean;
   isRefetching: boolean;
   isStale: boolean;
   refreshLocalDrafts: (opts?: { forceReconcile?: boolean }) => void;
@@ -159,6 +161,7 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
 
   const query = useQuery({
     queryKey: ['local-drafts', userId],
+    networkMode: 'always',
     enabled: !!userId,
     staleTime: LOCAL_DRAFTS_STALE_MS,
     gcTime: 10 * 60_000,
@@ -167,7 +170,7 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
       const drafts = await measurePhase(
         'local_draft_list',
         { source: 'query' },
-        () => draftStorage.listDraftsForUser(userId),
+        () => withPromiseTimeout(draftStorage.listDraftsForUserStrict(userId), 10_000, 'Local draft read timed out'),
         { warningThresholdMs: 10_000 },
       );
       reconcileInBackground(false);
@@ -182,6 +185,7 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
   // still governs any destructive action.
   const savedSessionQuery = useQuery({
     queryKey: ['local-drafts', userId, 'saved-sessions'],
+    networkMode: 'always',
     enabled: !!userId,
     staleTime: LOCAL_DRAFTS_STALE_MS,
     gcTime: 10 * 60_000,
@@ -221,6 +225,7 @@ export function useLocalDraftRecordings(): UseLocalDraftRecordingsResult {
     draftResumeMap,
     savedSessionDraftMap,
     isLoading: query.isLoading,
+    isError: query.isError,
     isRefetching: query.isRefetching,
     isStale: query.isStale,
     refreshLocalDrafts,

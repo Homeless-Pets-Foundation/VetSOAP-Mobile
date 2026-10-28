@@ -55,7 +55,7 @@ test('every /api/recordings query forwards the signal', async () => {
 
   // Records tab: the infinite list and the drafts list.
   assert.match(records, /queryFn: \(\{ pageParam = 1, signal \}\) =>\s*\n\s*recordingsApi\.list\(\{\s*\n\s*signal,/);
-  assert.match(records, /queryFn: \(\{ signal \}\) =>\s*\n\s*recordingsApi\.list\(\{\s*\n\s*signal,/);
+  assert.match(records, /queryFn: \(\{ signal, pageParam = 1 \}\) =>\s*\n\s*recordingsApi\.list\(\{\s*\n\s*signal,/);
 
   // Attention feed: the single largest response the app requests.
   assert.match(attention, /queryFn: \(\{ signal \}\) => fetchAttentionPage\(signal\)/);

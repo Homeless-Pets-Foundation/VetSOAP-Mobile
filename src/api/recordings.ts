@@ -302,6 +302,8 @@ export interface UploadProgressEvent {
 }
 
 export interface ListRecordingsParams {
+  activityFrom?: string;
+  activityBefore?: string;
   page?: number;
   limit?: number;
   sortBy?: string;

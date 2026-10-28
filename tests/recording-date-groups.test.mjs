@@ -69,7 +69,7 @@ test('dateGroupKeyFor walks calendar days, so DST cannot shift the boundaries', 
   assert.equal(dateGroupKeyFor(yesterday2330, afterSpringForward), 'yesterday');
 });
 
-test('groupRecordingsByDate forces pinned just-submitted rows into Today', async () => {
+test('groupRecordingsByDate separates pinned just-submitted rows from date groups', async () => {
   const { groupRecordingsByDate } = await load();
   const iso = (ms) => new Date(ms).toISOString();
   // A resumed three-day-old draft: no submittedAt, so the createdAt fallback
@@ -84,7 +84,7 @@ test('groupRecordingsByDate forces pinned just-submitted rows into Today', async
   assert.deepEqual(
     JSON.parse(JSON.stringify(pinnedSections.map((s) => ({ key: s.key, ids: s.data.map((r) => r.id) })))),
     [
-      { key: 'today', ids: ['resumed'] },
+      { key: 'just_submitted', ids: ['resumed'] },
       { key: 'earlier', ids: ['older'] },
     ]
   );

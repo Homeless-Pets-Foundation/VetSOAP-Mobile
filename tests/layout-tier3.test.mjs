@@ -19,7 +19,7 @@ test('recordings list groups rows by date and hides the badge on completed rows'
   assert.doesNotMatch(list, /<FlatList/);
   // submittedIds are passed so the pinned just-submitted rows are grouped into
   // "Today" instead of being scattered by their own timestamps.
-  assert.match(list, /groupRecordingsByDate\(displayRecordings, Date\.now\(\), submittedIds\)/);
+  assert.match(list, /groupRecordingsByDate\(displayRecordings, Date\.now\(\), submittedIds, sortOrder\)/);
   assert.match(list, /stickySectionHeadersEnabled=\{false\}/);
   assert.match(list, /hideStatusBadge=\{item\.status === 'completed'\}/);
   const header = list.slice(list.indexOf('renderSectionHeader='), list.indexOf('contentContainerStyle='));

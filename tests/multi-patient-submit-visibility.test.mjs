@@ -136,7 +136,7 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   assert.match(list, /ATTENTION_FEED_COPY\.sectionTitle/);
   assert.match(list, /recordingMatchesStatusFilter\(recording, selectedStatusFilter\)/);
   assert.match(list, /recordingMatchesSearch\(recording, debouncedSearch\)/);
-  assert.match(list, /sortBy: 'submittedAt'/);
+  assert.match(list, /sortBy: 'activityAt'/);
   assert.match(list, /sortRecordingsBySubmittedAt/);
   assert.match(list, /useQueries\(\{\s*queries: submittedIds\.map/);
   assert.match(list, /recordingsApi\.get\(id\)/);
@@ -147,7 +147,7 @@ test('Submit All routes submitted ids and recordings list pins/highlights them',
   // fetch once on mount (Codex P2 round 7).
   assert.match(list, /for \(const query of submittedRecordingQueries\)[\s\S]*submittedIdSet\.has\(recording\.id\) && !map\.has\(recording\.id\)/);
   assert.match(list, /const pinSubmitted = \(items: Recording\[\]\): Recording\[\] =>/);
-  assert.match(list, /\}, \[debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById\]\)/);
+  assert.match(list, /\}, \[debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById, sortOrder, bounds\]\)/);
   assert.match(list, /highlighted=\{submittedIdSet\.has\(item\.id\)\}/);
   // WP9: the banner shows per-recording rows (patient name + live status)
   // instead of the constant "N of N submitted" + raw UUID list.

@@ -1,3 +1,6 @@
+import { RecordingDatesSheet } from '../../../../src/components/RecordingDatesSheet';
+import { Button } from '../../../../src/components/ui/Button';
+import { activityBounds, matchesActivityRange, localDateKey, type DateFilter } from '../../../../src/lib/recordingHistory';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Alert,
@@ -12,7 +15,7 @@ import { Text, TextInput } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useIsFocused, useFocusEffect } from '@react-navigation/native';
-import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueries } from '@tanstack/react-query';
 import { Search, Mic, X, AlertCircle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { recordingsApi } from '../../../../src/api/recordings';
@@ -42,7 +45,7 @@ import {
   type RecordingDateSection,
 } from '../../../../src/lib/recordingDateGroups';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
-import { ATTENTION_FEED_COPY, RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY } from '../../../../src/constants/strings';
+import { ATTENTION_FEED_COPY, RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY, RECORDING_HISTORY_COPY as HISTORY_COPY } from '../../../../src/constants/strings';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
@@ -89,7 +92,7 @@ function recordingMatchesStatusFilter(recording: Recording, selectedStatusFilter
 function recordingMatchesSearch(recording: Recording, searchQuery: string): boolean {
   const query = searchQuery.trim().toLowerCase();
   if (!query) return true;
-  return [recording.patientName, recording.clientName].some((value) =>
+  return [recording.patientName, recording.clientName, recording.pimsPatientId].some((value) =>
     value?.toLowerCase().includes(query)
   );
 }
@@ -110,6 +113,24 @@ export default function RecordingsListScreen() {
   /** Bumped on focus so the date grouping re-evaluates "today" after midnight. */
   const [nowTick, setNowTick] = useState(0);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<StatusFilterValue>('all');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [dateFilter, setDateFilter] = useState<DateFilter>({ preset: 'all' });
+  const [datesOpen, setDatesOpen] = useState(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh calendar boundaries on focus/day rollover
+  const historyNow = useMemo(() => Date.now(), [nowTick]);
+  const bounds = useMemo(() => activityBounds(dateFilter, historyNow), [dateFilter, historyNow]);
+  useEffect(() => {
+    setSearch(''); setDebouncedSearch(''); setSelectedStatusFilter('all');
+    setSortOrder('desc'); setDateFilter({ preset: 'all' }); setDatesOpen(false);
+  }, [user?.id]);
+  useEffect(() => {
+    let day = localDateKey(new Date());
+    const timer = setInterval(() => {
+      const next = localDateKey(new Date());
+      if (day !== next) { day = next; setNowTick((tick) => tick + 1); }
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, []);
   // `?status=draft` (the Record tab's 30-day Review, attention links) opens the
   // list on Not Submitted. One-shot: applied, then cleared in place (setParams,
   // not a navigation), and dropped when the vet leaves the TAB — this screen
@@ -163,7 +184,7 @@ export default function RecordingsListScreen() {
     isFetchingNextPage,
     isStale,
   } = useInfiniteQuery({
-    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', 'submittedAt-desc'],
+    queryKey: ['recordings', 'list', debouncedSearch, serverStatusFilter ?? 'all', `activityAt-${sortOrder}`, bounds.activityFrom, bounds.activityBefore, user?.id],
     // Survives into the persisted offline snapshot (WP28).
     gcTime: PERSIST_GC_TIME_MS,
     queryFn: ({ pageParam = 1, signal }) =>
@@ -172,8 +193,9 @@ export default function RecordingsListScreen() {
         search: debouncedSearch || undefined,
         page: pageParam,
         limit: PAGE_SIZE,
-        sortBy: 'submittedAt',
-        sortOrder: 'desc',
+        sortBy: 'activityAt',
+        sortOrder,
+        ...bounds,
         ...(serverStatusFilter ? { status: serverStatusFilter } : {}),
       }),
     initialPageParam: 1,
@@ -200,8 +222,8 @@ export default function RecordingsListScreen() {
   });
 
   const recordings = useMemo(
-    () => sortRecordingsBySubmittedAt(data?.pages.flatMap((page) => page.data) ?? [], 'desc'),
-    [data]
+    () => sortRecordingsBySubmittedAt(data?.pages.flatMap((page) => page.data) ?? [], sortOrder),
+    [data, sortOrder]
   );
   const listedRecordingIds = useMemo(() => new Set(recordings.map((r) => r.id)), [recordings]);
   const submittedRecordingQueries = useQueries({
@@ -257,24 +279,35 @@ export default function RecordingsListScreen() {
     refetch: refetchDrafts,
     isRefetching: isDraftRefetching,
     isStale: isDraftStale,
-  } = useQuery({
-    queryKey: ['recordings', 'drafts', 'list', debouncedSearch, 'desc'],
-    queryFn: ({ signal }) =>
+    fetchNextPage: fetchNextDraftPage,
+    hasNextPage: hasNextDraftPage,
+    isFetchingNextPage: isFetchingNextDraftPage,
+  } = useInfiniteQuery({
+    queryKey: ['recordings', 'drafts', 'list', debouncedSearch, `activityAt-${sortOrder}`, bounds.activityFrom, bounds.activityBefore, user?.id],
+    queryFn: ({ signal, pageParam = 1 }) =>
       recordingsApi.list({
         signal,
         search: debouncedSearch || undefined,
         status: 'draft',
-        page: 1,
+        page: pageParam,
         limit: PAGE_SIZE,
-        sortBy: 'createdAt',
-        sortOrder: 'desc',
+        sortBy: 'activityAt',
+        sortOrder,
+        ...bounds,
       }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => {
+      const pagination = lastPage.pagination;
+      return pagination && pagination.page < pagination.totalPages ? pagination.page + 1 : undefined;
+    },
     enabled: shouldLoadDrafts,
     subscribed: isTabFocused,
   });
 
   const {
     localDrafts,
+    isLoading: isLocalDraftLoading,
+    isError: isLocalDraftError,
     draftResumeMap,
     savedSessionDraftMap,
     refreshLocalDrafts,
@@ -286,8 +319,8 @@ export default function RecordingsListScreen() {
     areLocalDraftsStaleRef.current = areLocalDraftsStale;
   }, [areLocalDraftsStale]);
 
-  const recordingsRetryKey = [debouncedSearch || 'none', serverStatusFilter ?? 'all'].join(':');
-  const draftsRetryKey = [debouncedSearch || 'none', 'draft'].join(':');
+  const recordingsRetryKey = [debouncedSearch || 'none', serverStatusFilter ?? 'all', sortOrder, bounds.activityFrom, bounds.activityBefore].join(':');
+  const draftsRetryKey = [debouncedSearch || 'none', 'draft', sortOrder, bounds.activityFrom, bounds.activityBefore].join(':');
 
   useRetryableInitialLoadError({
     screen: 'records',
@@ -311,22 +344,22 @@ export default function RecordingsListScreen() {
   });
   const filteredLocalDrafts = useMemo(() => {
     const query = debouncedSearch.trim().toLowerCase();
-    if (!query) return localDrafts;
-    return localDrafts.filter((draft) =>
-      [draft.formData.patientName, draft.formData.clientName]
-        .some((value) => value?.toLowerCase().includes(query))
-    );
-  }, [localDrafts, debouncedSearch]);
+    return localDrafts.filter((draft) => {
+      if (query && ![draft.formData.patientName, draft.formData.clientName, draft.formData.pimsPatientId]
+        .some((value) => value?.toLowerCase().includes(query))) return false;
+      return matchesActivityRange({ submittedAt: null, createdAt: draft.savedAt } as Recording, bounds);
+    });
+  }, [localDrafts, debouncedSearch, bounds]);
   const mergedDrafts = useMemo(() => {
     if (!user) return [];
     return mergeDraftRecordings(
       filteredLocalDrafts,
-      draftData?.data ?? [],
+      draftData?.pages.flatMap((page) => page.data) ?? [],
       user.id,
       user.organizationId,
-      'desc'
+      sortOrder
     );
-  }, [draftData?.data, filteredLocalDrafts, user]);
+  }, [draftData, filteredLocalDrafts, user, sortOrder]);
   const displayRecordings = useMemo(() => {
     const pinSubmitted = (items: Recording[]): Recording[] => {
       if (submittedIds.length === 0 || selectedStatusFilter === 'draft') return items;
@@ -335,14 +368,15 @@ export default function RecordingsListScreen() {
         .filter((recording): recording is Recording =>
           !!recording &&
           recordingMatchesStatusFilter(recording, selectedStatusFilter) &&
-          recordingMatchesSearch(recording, debouncedSearch)
+          recordingMatchesSearch(recording, debouncedSearch) &&
+          matchesActivityRange(recording, bounds)
         );
       if (pinned.length === 0) return items;
       const rest = items.filter((recording) => !submittedIdSet.has(recording.id));
       return [...pinned, ...rest];
     };
 
-    if (selectedStatusFilter === 'draft') return mergedDrafts;
+    if (selectedStatusFilter === 'draft') return sortRecordingsBySubmittedAt(mergedDrafts, sortOrder);
     if (selectedStatusFilter === 'all') {
       const combined = new Map<string, (typeof recordings)[number]>();
 
@@ -353,21 +387,16 @@ export default function RecordingsListScreen() {
         combined.set(recording.id, recording);
       }
 
-      return pinSubmitted(sortRecordingsBySubmittedAt(Array.from(combined.values()), 'desc'));
+      return pinSubmitted(sortRecordingsBySubmittedAt(Array.from(combined.values()), sortOrder));
     }
     return pinSubmitted(recordings);
-  }, [debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById]);
-  // Date groups (Today / Yesterday / This week / Earlier) are a pure
-  // post-process over the already-sorted rows, so pagination is unaffected: a
-  // new page just grows "Earlier". `nowTick` is bumped on focus so a tab left
-  // open across midnight regroups instead of filing today under "Yesterday".
+  }, [debouncedSearch, mergedDrafts, recordings, selectedStatusFilter, submittedIds, submittedIdSet, submittedRecordingsById, sortOrder, bounds]);
+  // Regroup sorted rows on focus/day rollover, with fresh submissions in their own section.
   const dateSections = useMemo(
-    // `submittedIds` are the rows pinSubmitted put at the top; they are forced
-    // into "Today" so grouping cannot file the highlighted row several sections
-    // below the banner that names it.
-    () => groupRecordingsByDate(displayRecordings, Date.now(), submittedIds),
+    // Keep highlighted submissions separate from the ordinary date groups.
+    () => groupRecordingsByDate(displayRecordings, Date.now(), submittedIds, sortOrder),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nowTick is the midnight/refocus trigger
-    [displayRecordings, nowTick, submittedIds]
+    [displayRecordings, nowTick, submittedIds, sortOrder]
   );
   const keyExtractor = useCallback((item: { id: string }) => item.id, []);
   const handleRefresh = useCallback(() => {
@@ -426,7 +455,11 @@ export default function RecordingsListScreen() {
     if (shouldLoadRecordings && hasNextPage && !isFetchingNextPage) {
       fetchNextPage().catch(() => {});
     }
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage, shouldLoadRecordings]);
+    if (shouldLoadDrafts && hasNextDraftPage && !isFetchingNextDraftPage) {
+      fetchNextDraftPage().catch(() => {});
+    }
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage, shouldLoadRecordings,
+    fetchNextDraftPage, hasNextDraftPage, isFetchingNextDraftPage, shouldLoadDrafts]);
 
   const handleRecordPress = useCallback(() => {
     if (!canRecordAppointments(user?.role)) {
@@ -439,12 +472,14 @@ export default function RecordingsListScreen() {
   }, [router, user?.role]);
 
   const isListLoading = selectedStatusFilter === 'draft'
-    ? isDraftLoading
+    ? isDraftLoading || isLocalDraftLoading
     : selectedStatusFilter === 'all'
-      ? isLoading || isDraftLoading
+      ? isLoading || isDraftLoading || isLocalDraftLoading
       : isLoading;
-  const isListError = selectedStatusFilter === 'draft' ? isDraftError : isError;
-  const listError = selectedStatusFilter === 'draft' ? draftError : error;
+  const isListError = !canLoadServerData ||
+    (shouldLoadRecordings && isError) || (shouldLoadDrafts && (isDraftError || isLocalDraftError));
+  const partialResults = displayRecordings.length > 0 && isListError;
+  const listError = (shouldLoadRecordings && error) || (shouldLoadDrafts && draftError) || null;
   const isListRefetching = selectedStatusFilter === 'draft'
     ? isDraftRefetching
     : selectedStatusFilter === 'all'
@@ -539,8 +574,24 @@ export default function RecordingsListScreen() {
             className="w-full"
             fieldClassName={selectedStatusFilter !== 'all' ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}
           />
+          <View className="flex-row flex-wrap gap-2">
+            <Select options={[{ label: HISTORY_COPY.newest, value: 'desc' }, { label: HISTORY_COPY.oldest, value: 'asc' }]}
+              value={sortOrder} onValueChange={setSortOrder} sheetTitle="Order recordings" accessibilityLabel="Order recordings" className="grow" />
+            <Button variant="secondary" onPress={() => setDatesOpen(true)}>{HISTORY_COPY.dates}</Button>
+          </View>
+          {dateFilter.preset !== 'all' ? (
+            <View>
+              <Text className="text-body-sm text-content-secondary">{dateFilter.preset === 'custom'
+                ? `${dateFilter.from} – ${dateFilter.through}` : HISTORY_COPY.presets[dateFilter.preset]}</Text>
+              <Button variant="ghost" size="sm" onPress={() => setDateFilter({ preset: 'all' })}>{HISTORY_COPY.clear}</Button>
+            </View>
+          ) : null}
         </View>
       </View>
+      {partialResults ? <View className="px-5 mb-2">
+        <Text accessibilityRole="alert" className="text-body-sm text-status-warning">{HISTORY_COPY.partial}</Text>
+        <Button variant="ghost" size="sm" onPress={handleRefresh}>Retry</Button>
+      </View> : null}
 
       <SectionList
         sections={dateSections}
@@ -573,7 +624,7 @@ export default function RecordingsListScreen() {
         windowSize={7}
         initialNumToRender={8}
         ListFooterComponent={
-          shouldLoadRecordings && isFetchingNextPage ? (
+          (shouldLoadRecordings && isFetchingNextPage) || (shouldLoadDrafts && isFetchingNextDraftPage) ? (
             <View className="py-4 items-center">
               <ActivityIndicator size="small" color={colors.brand500} />
             </View>
@@ -624,7 +675,7 @@ export default function RecordingsListScreen() {
               icon={Search}
               iconColor={colors.danger600}
               iconSize={iconLg}
-              description="Could not load recordings."
+              description={HISTORY_COPY.unavailable}
               details={
                 listError ? (
                   <Text className="text-caption text-content-tertiary text-center px-4" selectable>
@@ -642,7 +693,7 @@ export default function RecordingsListScreen() {
             (() => {
               // True empty (no search/filter) gets warm brand-toned copy; a
               // filtered/search miss keeps the neutral Search affordance.
-              const isTrueEmpty = !debouncedSearch && selectedStatusFilter === 'all';
+              const isTrueEmpty = !debouncedSearch && selectedStatusFilter === 'all' && dateFilter.preset === 'all';
               return (
                 <EmptyState
                   icon={isTrueEmpty ? Mic : Search}
@@ -661,6 +712,8 @@ export default function RecordingsListScreen() {
         }
       />
       </View>
+      <RecordingDatesSheet visible={datesOpen} value={dateFilter} onClose={() => setDatesOpen(false)}
+        onApply={(filter) => { setDateFilter(filter); setDatesOpen(false); }} />
     </SafeAreaView>
   );
 }

@@ -112,7 +112,7 @@ export function sortRecordingsBySubmittedAt(
     sortOrder === 'asc'
       ? getSubmittedAtMs(a) - getSubmittedAtMs(b)
       : getSubmittedAtMs(b) - getSubmittedAtMs(a)
-  ));
+  ) || a.id.localeCompare(b.id));
 }
 
 export function mergeDraftRecordings(

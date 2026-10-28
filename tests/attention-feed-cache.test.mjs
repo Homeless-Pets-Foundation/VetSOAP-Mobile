@@ -310,7 +310,7 @@ test('the attention page is excluded from disk persistence', async () => {
   // ...and the post-review-removal list key persists its DEFAULT variant only.
   assert.match(
     persistence,
-    /\['recordings', 'list', search, status, sort\]/
+    /queryKey\[4\] === 'activityAt-desc'/
   );
   assert.doesNotMatch(persistence, /queryKey\[4\] === 'any'/);
 });

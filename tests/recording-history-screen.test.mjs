@@ -30,6 +30,7 @@ async function screenHarness({ regular = [], serverDrafts = [], localDrafts = []
   const active = {};
   const calls = [];
   const pending = [];
+  const binding = { deviceRegistrationPending: false, deviceRegistrationBlock: null };
   let cursor = 0;
   let effects = [];
   let changed = false;
@@ -90,7 +91,7 @@ async function screenHarness({ regular = [], serverDrafts = [], localDrafts = []
     const source = config.queryKey[1] === 'drafts' ? 'drafts' : 'regular';
     const key = JSON.stringify(config.queryKey);
     if (!states.has(key)) {
-      const state = { data: undefined, isLoading: false, isError: false, isStale: false,
+      const state = { data: undefined, isLoading: false, isPending: false, isPaused: false, isError: false, isStale: false,
         isRefetching: false, isFetchingNextPage: false, hasNextPage: false, error: null };
       state.refetch = async () => {};
       state.fetchNextPage = () => {
@@ -129,7 +130,7 @@ async function screenHarness({ regular = [], serverDrafts = [], localDrafts = []
     'components/ui/Button': { Button: 'Button' }, 'components/ui/Text': { Text: 'Text', TextInput: 'TextInput' },
     'api/recordings': { recordingsApi: { list: listApi } }, 'lib/recordingHistory': history,
     'lib/draftRecordings': drafts, 'lib/draftLocation': location, 'lib/recordingPermissions': permissions,
-    'hooks/useAuth': { useAuthUser: () => user, useAuthDeviceRegistration: () => ({}) },
+    'hooks/useAuth': { useAuthUser: () => user, useAuthDeviceRegistration: () => binding },
     'hooks/useLocalDraftRecordings': { useLocalDraftRecordings: () => local },
     'hooks/useRetryableInitialLoadError': { useRetryableInitialLoadError() {} },
     'hooks/useResponsive': { useResponsive: () => ({ iconSm: 20, iconLg: 48 }) },
@@ -169,7 +170,7 @@ async function screenHarness({ regular = [], serverDrafts = [], localDrafts = []
   }
   render();
   return {
-    render, configs, active, calls, local, load,
+    render, configs, active, calls, local, binding, load,
     find: (type) => nodes(tree, (node) => node.type === type)[0],
     list: () => nodes(tree, (node) => node.type === 'SectionList')[0],
     controls: () => nodes(tree, (node) => node.type === 'Select'),
@@ -223,6 +224,7 @@ test('range/search/status queries forward complete filters, page, and cancellati
   }
   h.controls().find((node) => node.props.sheetTitle === 'Filter by status').props.onValueChange('completed'); h.render();
   assert.equal(h.configs.drafts.enabled, false);
+  assert.equal(h.configs.drafts.subscribed, false, 'disabled sources release their query subscription');
   assert.equal(h.configs.regular.queryKey[3], 'completed');
   assert.ok(h.configs.regular.queryKey.includes(h.calls[0].activityFrom));
   controller.abort();
@@ -301,6 +303,55 @@ test('pending or unreadable local/server sources cannot produce an authoritative
   assert.notEqual(h.list().props.ListEmptyComponent.type, 'EmptyState');
   h.local.isLoading = false; h.local.isError = true; h.render();
   assert.equal(h.list().props.ListEmptyComponent.props.description, strings.RECORDING_HISTORY_COPY.unavailable);
+});
+
+test('paused initial history requests show offline guidance instead of an empty result', async () => {
+  for (const selected of ['all', 'draft', 'completed']) {
+    const h = await screenHarness();
+    h.controls().find((node) => node.props.sheetTitle === 'Filter by status').props.onValueChange(selected); h.render();
+    for (const source of ['regular', 'drafts']) {
+      h.active[source].isPending = true;
+      h.active[source].isPaused = true;
+    }
+    h.render();
+    assert.equal(h.list().props.ListEmptyComponent.props.description, strings.ACCOUNT_LOAD_ERROR_COPY.offline);
+    assert.equal(h.list().props.ListEmptyComponent.props.title, undefined);
+    assert.ok(Object.values(h.active).every((state) => !state.isLoading && !state.isError));
+  }
+});
+
+test('a missing server answer remains unknown and pending online requests remain loading', async () => {
+  const h = await screenHarness();
+  assert.equal(h.list().props.ListEmptyComponent.props.description, strings.RECORDING_HISTORY_COPY.unavailable);
+  h.active.regular.isPending = true; h.render();
+  assert.notEqual(h.list().props.ListEmptyComponent.type, 'EmptyState');
+});
+
+test('device binding pending stays loading while blocked binding gives registration guidance', async () => {
+  const h = await screenHarness();
+  h.binding.deviceRegistrationPending = true; h.render();
+  assert.notEqual(h.list().props.ListEmptyComponent.type, 'EmptyState');
+  assert.equal(h.configs.regular.enabled, false);
+  assert.equal(h.configs.regular.subscribed, false);
+  assert.equal(h.configs.drafts.subscribed, false);
+  h.binding.deviceRegistrationBlock = { existingDevices: [], capacity: null }; h.render();
+  assert.equal(h.list().props.ListEmptyComponent.props.description, strings.DEVICE_REGISTRATION_BANNER_COPY.body);
+});
+
+test('cached rows remain visible with offline, loading, or binding notices', async () => {
+  const h = await screenHarness({ regular: [recording('cached', 'completed', 6)] });
+  await Promise.all([h.load('regular'), h.load('drafts')]); h.render();
+  assert.equal(h.alerts().length, 0);
+  h.active.regular.isPaused = true; h.render();
+  assert.equal(h.alerts()[0].props.children[0], strings.ACCOUNT_LOAD_ERROR_COPY.offline);
+  assert.equal(h.list().props.sections.flatMap((section) => section.data).length, 1);
+  h.active.regular.isPaused = false; h.active.drafts.data = undefined; h.active.drafts.isPending = true; h.render();
+  assert.equal(h.alerts()[0].props.children[0], strings.SUBMITTED_BANNER_COPY.loadingRow);
+  h.binding.deviceRegistrationPending = true; h.render();
+  assert.equal(h.alerts()[0].props.children[0], strings.DEVICE_REGISTRATION_BANNER_COPY.body);
+  h.binding.deviceRegistrationBlock = { existingDevices: [], capacity: null }; h.render();
+  assert.equal(h.alerts()[0].props.children[0], strings.DEVICE_REGISTRATION_BANNER_COPY.body);
+  assert.equal(h.list().props.sections.flatMap((section) => section.data).length, 1);
 });
 
 test('persistence keeps only the default history variant and retires outgoing account restores', async () => {

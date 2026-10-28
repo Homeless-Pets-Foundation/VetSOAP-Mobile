@@ -45,7 +45,7 @@ import {
   type RecordingDateSection,
 } from '../../../../src/lib/recordingDateGroups';
 import { StatusBadge } from '../../../../src/components/StatusBadge';
-import { ATTENTION_FEED_COPY, RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY, RECORDING_HISTORY_COPY as HISTORY_COPY } from '../../../../src/constants/strings';
+import { ACCOUNT_LOAD_ERROR_COPY, ATTENTION_FEED_COPY, DEVICE_REGISTRATION_BANNER_COPY, RECORDINGS_LIST_COPY, SUBMITTED_BANNER_COPY, RECORDING_HISTORY_COPY as HISTORY_COPY } from '../../../../src/constants/strings';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { measurePhase } from '../../../../src/lib/monitoring';
 import type { Recording } from '../../../../src/types';
@@ -176,6 +176,8 @@ export default function RecordingsListScreen() {
     data,
     error,
     isLoading,
+    isPending,
+    isPaused,
     isError,
     refetch,
     isRefetching,
@@ -203,7 +205,7 @@ export default function RecordingsListScreen() {
     // Unsubscribed while another tab is showing: invalidation marks it stale
     // instead of re-pulling every loaded page behind that tab, and refocusing
     // refetches it once.
-    subscribed: isTabFocused,
+    subscribed: isTabFocused && shouldLoadRecordings,
     getNextPageParam: (lastPage) => {
       if (!lastPage.pagination) return undefined;
       const { page, totalPages } = lastPage.pagination;
@@ -275,6 +277,8 @@ export default function RecordingsListScreen() {
     data: draftData,
     error: draftError,
     isLoading: isDraftLoading,
+    isPending: isDraftPending,
+    isPaused: isDraftPaused,
     isError: isDraftError,
     refetch: refetchDrafts,
     isRefetching: isDraftRefetching,
@@ -301,7 +305,7 @@ export default function RecordingsListScreen() {
       return pagination && pagination.page < pagination.totalPages ? pagination.page + 1 : undefined;
     },
     enabled: shouldLoadDrafts,
-    subscribed: isTabFocused,
+    subscribed: isTabFocused && shouldLoadDrafts,
   });
 
   const {
@@ -471,14 +475,21 @@ export default function RecordingsListScreen() {
     router.push('/record');
   }, [router, user?.role]);
 
-  const isListLoading = selectedStatusFilter === 'draft'
-    ? isDraftLoading || isLocalDraftLoading
-    : selectedStatusFilter === 'all'
-      ? isLoading || isDraftLoading || isLocalDraftLoading
-      : isLoading;
-  const isListError = !canLoadServerData ||
-    (shouldLoadRecordings && isError) || (shouldLoadDrafts && (isDraftError || isLocalDraftError));
-  const partialResults = displayRecordings.length > 0 && isListError;
+  const registrationLoading = !!user && deviceRegistrationPending && !deviceRegistrationBlock;
+  const isListPaused = (shouldLoadRecordings && isPaused) || (shouldLoadDrafts && isDraftPaused);
+  const isListLoading = registrationLoading ||
+    (shouldLoadRecordings && (isLoading || (isPending && !isPaused))) ||
+    (shouldLoadDrafts && (isDraftLoading || (isDraftPending && !isDraftPaused) || isLocalDraftLoading));
+  const missingServerData = (shouldLoadRecordings && data === undefined) ||
+    (shouldLoadDrafts && draftData === undefined);
+  const isListError = (!canLoadServerData && !registrationLoading) || isListPaused ||
+    (shouldLoadRecordings && isError) || (shouldLoadDrafts && (isDraftError || isLocalDraftError)) ||
+    (!isListLoading && missingServerData);
+  const partialResults = displayRecordings.length > 0 && (isListError || isListLoading);
+  const listNotice = deviceRegistrationPending || deviceRegistrationBlock
+    ? DEVICE_REGISTRATION_BANNER_COPY.body
+    : isListPaused ? ACCOUNT_LOAD_ERROR_COPY.offline
+      : isListError ? HISTORY_COPY.partial : SUBMITTED_BANNER_COPY.loadingRow;
   const listError = (shouldLoadRecordings && error) || (shouldLoadDrafts && draftError) || null;
   const isListRefetching = selectedStatusFilter === 'draft'
     ? isDraftRefetching
@@ -589,8 +600,8 @@ export default function RecordingsListScreen() {
         </View>
       </View>
       {partialResults ? <View className="px-5 mb-2">
-        <Text accessibilityRole="alert" className="text-body-sm text-status-warning">{HISTORY_COPY.partial}</Text>
-        <Button variant="ghost" size="sm" onPress={handleRefresh}>Retry</Button>
+        <Text accessibilityRole="alert" className="text-body-sm text-status-warning">{listNotice}</Text>
+        {isListError ? <Button variant="ghost" size="sm" onPress={handleRefresh}>Retry</Button> : null}
       </View> : null}
 
       <SectionList
@@ -675,7 +686,8 @@ export default function RecordingsListScreen() {
               icon={Search}
               iconColor={colors.danger600}
               iconSize={iconLg}
-              description={HISTORY_COPY.unavailable}
+              description={deviceRegistrationBlock ? DEVICE_REGISTRATION_BANNER_COPY.body
+                : isListPaused ? ACCOUNT_LOAD_ERROR_COPY.offline : HISTORY_COPY.unavailable}
               details={
                 listError ? (
                   <Text className="text-caption text-content-tertiary text-center px-4" selectable>

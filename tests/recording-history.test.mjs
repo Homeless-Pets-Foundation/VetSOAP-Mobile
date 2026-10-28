@@ -107,3 +107,23 @@ test('matching uses an inclusive start, exclusive end, and the displayed submiss
   assert.equal(matchesActivityRange({ createdAt: bounds.activityFrom }, { activityFrom: bounds.activityFrom }), false);
   assert.equal(matchesActivityRange({ createdAt: bounds.activityFrom }, { activityBefore: bounds.activityBefore }), false);
 });
+
+
+test('midnight DST transitions do not carry a missing midnight into other calendar days', async () => {
+  const timezone = process.env.TZ;
+  process.env.TZ = 'America/Sao_Paulo';
+  try {
+    assert.deepEqual(plain(custom('2018-11-04')), {
+      activityFrom: '2018-11-04T03:00:00.000Z', activityBefore: '2018-11-05T02:00:00.000Z',
+    });
+    const reference = Date.parse('2018-11-04T15:00:00Z');
+    assert.deepEqual(plain(activityBounds({ preset: 'yesterday' }, reference)), {
+      activityFrom: '2018-11-03T03:00:00.000Z', activityBefore: '2018-11-04T03:00:00.000Z',
+    });
+    assert.deepEqual(plain(activityBounds({ preset: 'last7' }, reference)), {
+      activityFrom: '2018-10-29T03:00:00.000Z', activityBefore: '2018-11-05T02:00:00.000Z',
+    });
+    const { dateGroupKeyFor } = await loadTsModule('src/lib/recordingDateGroups.ts');
+    assert.equal(dateGroupKeyFor(Date.parse('2018-11-03T03:30:00Z'), reference), 'yesterday');
+  } finally { process.env.TZ = timezone; }
+});

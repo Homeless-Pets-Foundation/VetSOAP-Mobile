@@ -46,9 +46,12 @@ export function activityBounds(filter: DateFilter, nowMs: number): ActivityBound
     } else if (filter.preset === 'last7') {
       from.setDate(from.getDate() - 6);
     }
+    from.setHours(0, 0, 0, 0);
   }
   // Calendar days preserve local midnight across 23-hour and 25-hour days.
   through.setDate(through.getDate() + 1);
+  // A skipped midnight must not carry 01:00 into the following day.
+  through.setHours(0, 0, 0, 0);
   return { activityFrom: from.toISOString(), activityBefore: through.toISOString() };
 }
 

@@ -55,8 +55,8 @@ export function getSubmittedAtMs(recording: Recording): number {
  */
 function startOfDayBefore(nowMs: number, daysBack: number): number {
   const day = new Date(nowMs);
-  day.setHours(0, 0, 0, 0);
   day.setDate(day.getDate() - daysBack);
+  day.setHours(0, 0, 0, 0);
   return day.getTime();
 }
 

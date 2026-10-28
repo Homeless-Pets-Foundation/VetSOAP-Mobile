@@ -1,3 +1,4 @@
+import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
@@ -276,6 +277,7 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
 
   return (
     <ScreenContainer>
+      <View className="px-5 pt-3"><DurableRecoveryBanner /></View>
       <View className="flex-1 justify-center items-center px-6">
         <View
           className="bg-brand-50 dark:bg-surface-sunken rounded-full justify-center items-center mb-6"
@@ -7780,6 +7782,8 @@ function RecordingSession() {
             )}
           </View>
         </View>
+
+        <View className="px-5"><DurableRecoveryBanner /></View>
 
         {/* Stashed Sessions */}
         {showStashList && (

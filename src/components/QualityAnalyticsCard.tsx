@@ -36,6 +36,13 @@ interface QualityAnalyticsCardProps {
 
 type QualityScope = 'org' | 'me';
 
+const ROLE_LABELS = new Map([
+  ['owner', 'Owner'],
+  ['admin', 'Administrator'],
+  ['veterinarian', 'Veterinarian'],
+  ['support_staff', 'Support staff'],
+]);
+
 function formatDuration(totalSeconds: number): string {
   if (totalSeconds <= 0) return '0 min';
   const minutes = Math.round(totalSeconds / 60);
@@ -268,6 +275,8 @@ function ProviderRow({
   const issueCount =
     provider.failedUploadAttempts + provider.silentAudioEvents + provider.missingMetadataCount;
   const issues = `${issueCount} issue${issueCount === 1 ? '' : 's'}`;
+  const roleLabel = ROLE_LABELS.get(provider.role) ??
+    (provider.role.replace(/_/g, ' ').trim() || QUALITY_ANALYTICS_COPY.unlabeledGroup);
 
   return (
     <View className="border-t border-border-default py-3">
@@ -281,9 +290,9 @@ function ProviderRow({
           </View>
         }
         title={provider.fullName}
-        headline={`${provider.role} · ${formatLastRecordingAt(provider.lastRecordingAt)} · ${issues}`}
+        headline={`${roleLabel} · ${formatLastRecordingAt(provider.lastRecordingAt)} · ${issues}`}
         badge={`${provider.completedRecordings} rec`}
-        accessibilityLabel={`${provider.fullName}. ${provider.role}. ${provider.completedRecordings} rec. ${issues}`}
+        accessibilityLabel={`${provider.fullName}. ${roleLabel}. ${provider.completedRecordings} rec. ${issues}`}
       >
         <MetricGrid item={provider} />
       </Collapsible>

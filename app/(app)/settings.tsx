@@ -1,3 +1,4 @@
+import { useDurableRecoveries } from '../../src/hooks/useDurableRecoveries';
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Alert, ScrollView, Linking, Pressable } from 'react-native';
 import { Text } from '../../src/components/ui/Text';
@@ -86,6 +87,7 @@ export default function SettingsScreen() {
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricType, setBiometricType] = useState('Biometric');
   const [recoveryCount, setRecoveryCount] = useState(0);
+  const durableRecoveries = useDurableRecoveries();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [armedPreflightHang, setArmedPreflightHang] =
     useState<NativePreflightOperation | null>(() =>
@@ -172,7 +174,7 @@ export default function SettingsScreen() {
         ) {
           Alert.alert(
             'Recovery Save Failed',
-            'The app could not save a recovery copy of the local recordings. Local storage may be full or unavailable. Stay signed in and try again, or sign out and permanently delete the local recordings on this tablet.',
+            'The app could not save a recovery copy of the local recordings. Local storage may be full or unavailable. Stay signed in and try again, or sign out and permanently delete the local recordings on this device.',
             [
               { text: 'Stay Signed In', style: 'cancel' },
               { text: 'Retry', onPress: () => runSignOut('required') },
@@ -182,7 +184,7 @@ export default function SettingsScreen() {
                 onPress: () => {
                   Alert.alert(
                     'Delete Local Recordings?',
-                    'This signs out without saving a recovery copy. Any unsent local recordings for this support staff account may be permanently removed from this tablet.',
+                    'This signs out without saving a recovery copy. Any unsent local recordings for this support staff account may be permanently removed from this device.',
                     [
                       { text: 'Cancel', style: 'cancel' },
                       {
@@ -257,7 +259,7 @@ export default function SettingsScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
         Alert.alert(
           'Recover Recordings First?',
-          `${count} local recording${count === 1 ? '' : 's'} from this account may still be on this tablet. Signing out will save a recovery copy for an owner, administrator, or veterinarian on this device.`,
+          `${count} local recording${count === 1 ? '' : 's'} from this account may still be on this device. Signing out will save a recovery copy for an owner, administrator, or veterinarian on this device.`,
           [
             { text: 'Stay Signed In', style: 'cancel' },
             {
@@ -464,18 +466,29 @@ export default function SettingsScreen() {
             className="mb-5"
           />
 
+          <SectionHeading>LOCAL RECOVERY</SectionHeading>
+          <ListItem
+            onPress={() => router.push('/durable-recovery' as never)}
+            accessibilityLabel="Recovered recordings"
+            title="Recovered recordings"
+            subtitle={durableRecoveries.length > 0
+              ? `${durableRecoveries.length} recovered recording${durableRecoveries.length === 1 ? '' : 's'} on this device`
+              : 'Review unsaved recordings recovered after an interruption'}
+            leading={<FileClock color={colors.brand500} size={iconSm} />}
+            trailing={<ChevronRight color={colors.contentTertiary} size={iconSm} />}
+            className="mb-3"
+          />
           {canRecordAppointments(user?.role) ? (
             <>
-              <SectionHeading>LOCAL RECOVERY</SectionHeading>
               <ListItem
                 onPress={() => {
                   router.push('/recording-recovery' as never);
                 }}
-                accessibilityLabel="Recover local recordings on this tablet"
-                title="Recover Local Recordings"
+                accessibilityLabel="Staff sign-out recovery"
+                title="Staff sign-out recovery"
                 subtitle={
                   recoveryCount > 0
-                    ? `${recoveryCount} recovery item${recoveryCount === 1 ? '' : 's'} saved on this tablet`
+                    ? `${recoveryCount} recovery item${recoveryCount === 1 ? '' : 's'} saved on this device`
                     : 'Recover recordings protected during support staff sign-out'
                 }
                 leading={<FileClock color={colors.brand500} size={iconSm} />}

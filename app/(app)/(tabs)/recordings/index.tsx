@@ -493,10 +493,10 @@ export default function RecordingsListScreen() {
           </Pressable>
         </View>
 
-        <View className="flex-row items-center gap-2 mb-4">
+        <View className="gap-3 mb-4">
           {/* Search */}
           <View
-            className={`flex-1 flex-row items-center bg-surface-raised border rounded-input px-3 ${
+            className={`w-full flex-row items-center bg-surface-raised border rounded-input px-3 ${
               isFocused ? 'border-brand-500' : 'border-border-strong'
             }`}
           >
@@ -536,9 +536,7 @@ export default function RecordingsListScreen() {
             placeholder="Status"
             accessibilityLabel={`Filter recordings by status. Current filter ${activeStatusFilterLabel}`}
             sheetTitle="Filter by status"
-            // Was a fixed w-[150px], which left the search field too narrow for
-            // its own placeholder. It now sizes to its label with a floor.
-            className="shrink-0 min-w-[112px]"
+            className="w-full"
             fieldClassName={selectedStatusFilter !== 'all' ? 'border-brand-500 bg-brand-50 dark:bg-surface-sunken' : ''}
           />
         </View>

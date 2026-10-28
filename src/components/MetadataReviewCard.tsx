@@ -10,7 +10,7 @@ import {
   shouldShowNoExtractionEmptyState,
 } from '../lib/recordFirstObservability';
 import { metadataAttentionReasons } from '../lib/attentionFeed';
-import { buildMetadataFormSeed } from '../lib/recordingMetadataSync';
+import { buildMetadataFormSeed, hasSavedPatientDetails } from '../lib/recordingMetadataSync';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
@@ -136,7 +136,7 @@ export function MetadataReviewCard({
   // B5 — null-extraction empty state ("AI couldn't read these").
   const showNoExtraction = shouldShowNoExtractionEmptyState(recording);
   const hasAnyFormValue = Object.values(form).some((value) => value.trim().length > 0);
-  const suggestionOnlyReview = mode === 'review' && appliedRowFields.length === 0;
+  const suggestionOnlyReview = mode === 'review' && !hasSavedPatientDetails(recording);
 
   const hasMetadataObject = signals.hasMetadataObject;
   // A blank patient name with nothing applied is the `metadata_missing` state:
@@ -195,7 +195,7 @@ export function MetadataReviewCard({
 
   const title =
     mode === 'review' && !suggestionOnlyReview
-      ? METADATA_REVIEW_COPY.title
+      ? appliedRowFields.length > 0 ? METADATA_REVIEW_COPY.title : METADATA_REVIEW_COPY.reviewTitle
       : mode === 'edit'
         ? METADATA_REVIEW_COPY.editTitle
         : METADATA_REVIEW_COPY.addTitle;

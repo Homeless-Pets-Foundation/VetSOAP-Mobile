@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, View } from 'react-native';
+import { Alert, Platform, View } from 'react-native';
 import { Download } from 'lucide-react-native';
 import { Text } from './ui/Text';
 import { Button } from './ui/Button';
@@ -301,8 +301,8 @@ export function RecordingAudioDownload({
         {disabled
           ? AUDIO_DOWNLOAD_COPY.disabledWhileRecording
           : phase === 'selecting'
-            ? AUDIO_DOWNLOAD_COPY.choosingFolder
-            : AUDIO_DOWNLOAD_COPY.storageNotice}
+            ? (Platform.OS === 'android' ? AUDIO_DOWNLOAD_COPY.choosingFolderAndroid : AUDIO_DOWNLOAD_COPY.choosingFolderIos)
+            : (Platform.OS === 'android' ? AUDIO_DOWNLOAD_COPY.storageNoticeAndroid : AUDIO_DOWNLOAD_COPY.storageNoticeIos)}
       </Text>
     </View>
   );

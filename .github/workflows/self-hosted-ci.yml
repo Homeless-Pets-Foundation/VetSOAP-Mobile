@@ -346,11 +346,14 @@ jobs:
       - name: Type-check ExpoModulesCore-free Swift
         run: ./scripts/ci.sh swift
 
-  audit-ios-simulator:
-    name: Audit unsigned iOS simulator build (verification only)
+  audit-ios-picker-probe:
+    name: Audit native iOS picker smoke (verification only)
     needs: confirm-pr-head
     runs-on: [self-hosted, local-ci, macOS, ARM64]
-    timeout-minutes: 75
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
     env:
       APP_VARIANT: local-test
       NODE_ENV: production
@@ -359,9 +362,7 @@ jobs:
       EXPO_PUBLIC_API_URL: https://fixture.invalid
       EXPO_PUBLIC_SUPABASE_URL: https://fixture.supabase.co
       EXPO_PUBLIC_SUPABASE_ANON_KEY: synthetic-local-only
-      EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: synthetic-captivet-audit.apps.googleusercontent.com
-      EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: synthetic-captivet-audit.apps.googleusercontent.com
-      EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME: com.googleusercontent.apps.synthetic-captivet-audit
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout confirmed verification head
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -374,54 +375,19 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - name: Build current product for the simulator without signing
-        env:
-          CONFIRMED_SHA: ${{ needs.confirm-pr-head.outputs.head-sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CONFIRMED_SHA"
-          git diff --exit-code 70095f9951c5e5686106c4d44634d55c255836b7 -- app src modules plugins assets package.json package-lock.json app.config.ts
-          build_dir="$(mktemp -d "$RUNNER_TEMP/captivet-audit-ios.XXXXXX")"
-          echo "AUDIT_IOS_DIR=$build_dir" >> "$GITHUB_ENV"
-          derived_dir="$RUNNER_TOOL_CACHE/captivet-audit-ios-70095f9-arm64"
-          echo "AUDIT_IOS_DERIVED=$derived_dir" >> "$GITHUB_ENV"
-          test "$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')" -gt 20971520
-          xcodebuild -version
-          sysctl -n hw.memsize
-          pod --version
-          npm ci --include=dev
-          printf '\nmodule.exports.resolver.useWatchman = false;\n' >> metro.config.js
-          npx expo export:embed --entry-file node_modules/expo-router/entry.js --platform ios --dev false --max-workers 2 --bundle-output "$build_dir/preflight.jsbundle" --assets-dest "$build_dir/preflight-assets" 2>&1 | tee "$build_dir/bundle-preflight.log"
-          npx expo prebuild --platform ios --no-install 2>&1 | tee "$build_dir/prebuild.log"
-          (cd ios && pod install) 2>&1 | tee "$build_dir/pods.log"
-          grep -F 'RNDateTimePicker (8.6.0)' ios/Podfile.lock
-          cp ios/Podfile.lock "$build_dir/Podfile.lock"
-          workspaces=(ios/*.xcworkspace)
-          test "${#workspaces[@]}" -eq 1
-          workspace="${workspaces[0]}"
-          scheme="$(basename "$workspace" .xcworkspace)"
-          xcodebuild -list -workspace "$workspace" -json > "$build_dir/schemes.json"
-          EXTRA_PACKAGER_ARGS='--max-workers 2' xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived_dir" -jobs 2 ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee "$build_dir/build.log"
-          apps=("$derived_dir/Build/Products/Release-iphonesimulator/"*.app)
-          test "${#apps[@]}" -eq 1
-          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "${apps[0]}/Info.plist")" = com.captivet.mobile.local
-          tar -czf "$build_dir/captivet-audit-ios-simulator.tar.gz" -C "$(dirname "${apps[0]}")" "$(basename "${apps[0]}")"
-          shasum -a 256 "$build_dir/captivet-audit-ios-simulator.tar.gz" > "$build_dir/artifact.sha256"
-          echo 'AUDIT_IOS_BUILD_SUCCEEDED=1' >> "$GITHUB_ENV"
-      - name: Save simulator application and build evidence
+      - name: Verify native registration and render the picker on a new simulator
+        run: bash ci/run-audit-ios-picker-probe.sh
+      - name: Save native picker evidence
         if: always() && env.AUDIT_IOS_DIR != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: captivet-audit-ios-simulator
+          name: captivet-audit-ios-picker-probe
           path: |
             ${{ env.AUDIT_IOS_DIR }}/*.log
             ${{ env.AUDIT_IOS_DIR }}/*.json
-            ${{ env.AUDIT_IOS_DIR }}/*.tar.gz
-            ${{ env.AUDIT_IOS_DIR }}/artifact.sha256
-            ${{ env.AUDIT_IOS_DIR }}/Podfile.lock
+            ${{ env.AUDIT_IOS_DIR }}/*.png
+            ${{ env.AUDIT_IOS_DIR }}/*.txt
           retention-days: 7
-      - name: Remove only this successful build's derived data
-        if: success() && env.AUDIT_IOS_BUILD_SUCCEEDED == '1'
-        shell: bash
-        run: rm -rf "$AUDIT_IOS_DERIVED"
+      - name: Remove only the probe copies of the simulator application
+        if: always() && env.AUDIT_IOS_DIR != ''
+        run: rm -rf "$AUDIT_IOS_DIR/app" "$AUDIT_IOS_DIR/source" "$AUDIT_IOS_DIR/native-app.zip"

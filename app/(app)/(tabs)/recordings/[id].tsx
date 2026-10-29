@@ -1,5 +1,5 @@
 import { Collapsible } from '../../../../src/components/ui/Collapsible';
-import React, { useCallback, useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useLayoutEffect, useRef } from 'react';
 import {
   View,
   ScrollView,
@@ -960,10 +960,11 @@ export default function RecordingDetailScreen() {
   // Unsaved SOAP section edit (UX-H5). SoapNoteView reports only dirty
   // TRANSITIONS, so this re-renders when the guard arms/disarms, not per key.
   // Every way off this screen goes through the same confirm:
-  //  - a navigation REMOVAL (stack pop, iOS swipe, default Android back, and
+  //  - a navigation REMOVAL (stack pop, default Android back, and
   //    router.back/replace from goBack) — usePreventRemove;
   //  - the screen's own back control and its attention-route BackHandler —
   //    gated explicitly, since they route by name rather than trusting history.
+  // Native iOS swipes stay disabled while either guard is armed.
   // `discardingEditsRef` lets a confirmed discard through without a second
   // prompt from usePreventRemove; it re-arms whenever the screen regains focus.
   // A save already IN FLIGHT is different: Discard can't recall a sent
@@ -978,6 +979,11 @@ export default function RecordingDetailScreen() {
   const soapSavingRef = useRef(false);
   soapSavingRef.current = soapSaving;
   const discardingEditsRef = useRef(false);
+
+  useLayoutEffect(() => {
+    // iOS can finish an interactive pop before the removal confirmation resolves.
+    navigation.setOptions({ gestureEnabled: !soapEditDirty && !soapSaving });
+  }, [navigation, soapEditDirty, soapSaving]);
 
   const alertSoapStillSaving = useCallback(() => {
     Alert.alert(SOAP_EDIT_DISCARD_COPY.savingTitle, SOAP_EDIT_DISCARD_COPY.savingBody);

@@ -185,6 +185,31 @@ test('the detail screen guards navigation removal with usePreventRemove', async 
   assert.match(src, /navigation\.dispatch\(data\.action\)/);
 });
 
+test('native swipes stay disabled while SOAP edits or saves are pending and re-enable afterward', async () => {
+  const source = await read(DETAIL);
+  const file = ts.createSourceFile(DETAIL, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let effect;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(file) === 'useLayoutEffect' &&
+        node.arguments[0]?.getText(file).includes('gestureEnabled')) effect = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  assert.ok(effect, 'native gesture protection must update before paint');
+  assert.equal(effect.arguments[1].getText(file), '[navigation, soapEditDirty, soapSaving]');
+  const compiled = ts.transpileModule(`(${effect.arguments[0].getText(file)})();`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  for (const [soapEditDirty, soapSaving] of [[false, false], [true, false], [false, true], [true, true], [false, false]]) {
+    let calls = 0;
+    vm.runInNewContext(compiled, { soapEditDirty, soapSaving, navigation: { setOptions(options) {
+      calls += 1;
+      assert.equal(options.gestureEnabled, !soapEditDirty && !soapSaving);
+    } } });
+    assert.equal(calls, 1);
+  }
+});
+
 test('the explicit back control and the attention BackHandler go through the same confirm', async () => {
   const src = await read(DETAIL);
   assert.doesNotMatch(src, /onPress=\{goBack\}/, 'every back button uses guardedGoBack');

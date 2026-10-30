@@ -80,15 +80,12 @@ function isPersistableListVariant(queryKey: readonly unknown[]): boolean {
     return false;
   }
   if (root === 'recordings' && sub === 'list') {
-    // ['recordings', 'list', search, status, sort] — the dead `review` slot was
-    // removed with the unsupported reviewStatus filter, so the sort token now
-    // sits at index 4. Do NOT re-add an index-4 check: it would inspect
-    // 'submittedAt-desc' as a review value and stop persisting the DEFAULT page.
-    return !queryKey[2] && (queryKey[3] === 'all' || queryKey[3] == null);
+    // Persist only the default history variant; filtered pages are not an offline snapshot.
+    return !queryKey[2] && (queryKey[3] === 'all' || queryKey[3] == null) &&
+      (queryKey[4] === 'activityAt-desc') && !queryKey[5] && !queryKey[6];
   }
   if (root === 'recordings' && sub === 'drafts') {
-    // ['recordings', 'drafts', 'list', search, sort]
-    return !queryKey[3];
+    return !queryKey[3] && queryKey[4] === 'activityAt-desc' && !queryKey[5] && !queryKey[6];
   }
   return true;
 }

@@ -10,6 +10,7 @@ Agreed decisions:
 - Keep Subjective open initially; allow several SOAP sections to remain open.
 - Use native date pickers for custom ranges.
 - Order and filter by the date currently displayed: submission date, falling back to creation/saved date.
+- TalkBack gesture/speech acceptance is excluded at the user's request on October 29. Accessibility labels, layout and font-scaling checks remain required.
 
 Preserve existing recordings, recovery offers, drafts, metadata validation, permission gates and unsaved-edit protections. Keep the work focused on the audit findings.
 
@@ -213,7 +214,7 @@ Run:
 - Local Android and iOS builds after adding the picker.
 - Current-head required CI checks before merging.
 
-Device acceptance uses synthetic data in the separate local-test app. Cover audited Pixel’s 1.15 font scale/Bold text, a 320 dp phone layout, supported larger text, dark mode, tablet rotation, TalkBack, Android Back and iOS back gestures. Keep production recovery untouched. Save new screenshots outside Git and reference them from implementation notes.
+Device acceptance uses synthetic data in the separate local-test app. Cover audited Pixel’s 1.15 font scale/Bold text, a 320 dp phone layout, supported larger text, dark mode, tablet rotation, Android Back and iOS back gestures. Keep production recovery untouched. Save new screenshots outside Git and reference them from implementation notes.
 
 ## 5. Rollout and completion
 

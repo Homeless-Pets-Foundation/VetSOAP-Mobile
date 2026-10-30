@@ -8,7 +8,7 @@ import { RECORDINGS_LIST_COPY } from '../constants/strings';
  * Pure and RN-free so the day boundaries are executable under test; `nowMs` is
  * injected rather than read from `Date.now()`.
  */
-export type RecordingDateGroupKey = 'today' | 'yesterday' | 'this_week' | 'earlier';
+export type RecordingDateGroupKey = 'just_submitted' | 'today' | 'yesterday' | 'this_week' | 'earlier';
 
 export interface RecordingDateSection {
   key: RecordingDateGroupKey;
@@ -18,6 +18,7 @@ export interface RecordingDateSection {
 
 
 const GROUP_TITLES: Record<RecordingDateGroupKey, string> = {
+  just_submitted: 'Just submitted',
   today: RECORDINGS_LIST_COPY.dateGroupToday,
   yesterday: RECORDINGS_LIST_COPY.dateGroupYesterday,
   this_week: RECORDINGS_LIST_COPY.dateGroupThisWeek,
@@ -54,8 +55,8 @@ export function getSubmittedAtMs(recording: Recording): number {
  */
 function startOfDayBefore(nowMs: number, daysBack: number): number {
   const day = new Date(nowMs);
-  day.setHours(0, 0, 0, 0);
   day.setDate(day.getDate() - daysBack);
+  day.setHours(0, 0, 0, 0);
   return day.getTime();
 }
 
@@ -78,7 +79,7 @@ export function dateGroupKeyFor(ms: number, nowMs: number): RecordingDateGroupKe
  * Empty groups are omitted so no header sits over blank space.
  *
  * `pinnedIds` are rows the caller just submitted and pinned to the top, and
- * they are forced into "Today" regardless of their timestamps. Without that,
+ * they render in a separate "Just submitted" section. Without that,
  * grouping silently undoes the pin: `submittedAt` is optional and is null for a
  * merged local draft, so a resumed three-day-old draft submitted moments ago
  * falls back to its `createdAt` and lands in "This week" — several sections
@@ -87,19 +88,22 @@ export function dateGroupKeyFor(ms: number, nowMs: number): RecordingDateGroupKe
 export function groupRecordingsByDate(
   recordings: Recording[],
   nowMs: number,
-  pinnedIds: readonly string[] = []
+  pinnedIds: readonly string[] = [],
+  sortOrder: 'asc' | 'desc' = 'desc'
 ): RecordingDateSection[] {
   const pinned = new Set(pinnedIds);
   const buckets = new Map<RecordingDateGroupKey, Recording[]>();
   for (const recording of recordings) {
     const key = pinned.has(recording.id)
-      ? 'today'
+      ? 'just_submitted'
       : dateGroupKeyFor(getSubmittedAtMs(recording), nowMs);
     const bucket = buckets.get(key);
     if (bucket) bucket.push(recording);
     else buckets.set(key, [recording]);
   }
-  return (['today', 'yesterday', 'this_week', 'earlier'] as const)
+  const order: RecordingDateGroupKey[] = ['today', 'yesterday', 'this_week', 'earlier'];
+  if (sortOrder === 'asc') order.reverse();
+  return (['just_submitted', ...order] as const)
     .filter((key) => (buckets.get(key)?.length ?? 0) > 0)
     .map((key) => ({ key, title: GROUP_TITLES[key], data: buckets.get(key) as Recording[] }));
 }

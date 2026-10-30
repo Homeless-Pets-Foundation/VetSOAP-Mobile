@@ -26,7 +26,7 @@ test('recordings list groups rows by date and hides the badge on completed rows'
   assert.doesNotMatch(list, /<FlatList/);
   // submittedIds are passed so the pinned just-submitted rows are grouped into
   // "Today" instead of being scattered by their own timestamps.
-  assert.match(list, /groupRecordingsByDate\(displayRecordings, Date\.now\(\), submittedIds\)/);
+  assert.match(list, /groupRecordingsByDate\(displayRecordings, Date\.now\(\), submittedIds, sortOrder\)/);
   assert.match(list, /stickySectionHeadersEnabled=\{false\}/);
   assert.match(list, /hideStatusBadge=\{item\.status === 'completed'\}/);
   const header = list.slice(list.indexOf('renderSectionHeader='), list.indexOf('contentContainerStyle='));
@@ -148,4 +148,11 @@ test('devices: icon-only revoke with a full-name a11y label, distinguishing titl
   assert.match(row, /splitDeviceName\(device\.deviceName, typeLabel\)/);
   // The confirm Alert keeps the FULL name.
   assert.match(devices, /const label = device\.deviceName \|\| formatDeviceTypeLabel\(device\.deviceType\);/);
+});
+
+
+test('recordings header wraps the attention link before splitting the title on narrow phones', async () => {
+  const source = await read('app/(app)/(tabs)/recordings/index.tsx');
+  assert.match(source, /flex-row flex-wrap items-center justify-between mb-4/);
+  assert.match(source, /text-display font-bold text-content-primary flex-1 min-w-\[180px\]/);
 });

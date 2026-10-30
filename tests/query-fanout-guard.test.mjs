@@ -55,7 +55,7 @@ test('every /api/recordings query forwards the signal', async () => {
 
   // Records tab: the infinite list and the drafts list.
   assert.match(records, /queryFn: \(\{ pageParam = 1, signal \}\) =>\s*\n\s*recordingsApi\.list\(\{\s*\n\s*signal,/);
-  assert.match(records, /queryFn: \(\{ signal \}\) =>\s*\n\s*recordingsApi\.list\(\{\s*\n\s*signal,/);
+  assert.match(records, /queryFn: \(\{ signal, pageParam = 1 \}\) =>\s*\n\s*recordingsApi\.list\(\{\s*\n\s*signal,/);
 
   // Attention feed: the single largest response the app requests.
   assert.match(attention, /queryFn: \(\{ signal \}\) => fetchAttentionPage\(signal\)/);
@@ -184,7 +184,8 @@ test('a blurred tab does not keep its recordings lists active', async () => {
   const attention = await read('src/hooks/useAttentionFeed.ts');
 
   assert.match(home, /\],\s*\/\/[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*subscribed: isTabFocused,\s*\}\);/);
-  assert.equal((recordings.match(/subscribed: isTabFocused,/g) ?? []).length, 2);
+  assert.match(recordings, /subscribed: isTabFocused && shouldLoadRecordings,/);
+  assert.match(recordings, /subscribed: isTabFocused && shouldLoadDrafts,/);
   assert.match(attention, /enabled: canLoadServerData,\s*(?:\/\/[^\n]*\n\s*)*subscribed: focused,/);
 
   // Refocus resubscribes and starts the stale refetch itself; the focus effects

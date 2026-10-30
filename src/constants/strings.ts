@@ -579,6 +579,7 @@ export const CLIENT_EMAIL_COPY = {
 } as const;
 
 export const EXPORT_COPY = {
+  markedStatus: 'Marked exported',
   title: 'Export',
   copyAll: 'Copy All',
   shareText: 'Share Text',
@@ -813,6 +814,7 @@ export const MULTI_PATIENT_RECORD_FIRST_COPY = {
 export const METADATA_REVIEW_COPY = {
   title: 'AI filled these details',
   reviewTitle: 'Review patient details',
+  reviewBody: "Review the saved details and Captivet's suggestions below.",
   body: 'Review the details Captivet found in the recording.',
   editDetails: 'Edit Details',
   addTitle: 'Add patient details',
@@ -1100,4 +1102,29 @@ export const TEMPLATE_AVAILABILITY_COPY = {
   retry: 'Retry',
   noSelection: 'No template selected',
   unavailable: 'Selected template is unavailable. Your saved selection is kept.',
+} as const;
+
+
+export const RECOVERY_PREVIEW_COPY = {
+  listen: 'Listen to preview',
+  preparing: 'Preparing audio preview…',
+  duration: (seconds: number) => `Preview · up to ${seconds} seconds`,
+  failed: 'Could not play this preview. Your recovered recording is kept.',
+  retry: 'Retry preview',
+  play: 'Play preview',
+  pause: 'Pause preview',
+  stop: 'Stop preview',
+  busy: 'Finish the active recording before listening to a preview.',
+} as const;
+
+
+export const RECORDING_HISTORY_COPY = {
+  newest: 'Newest first', oldest: 'Oldest first', dates: 'Dates',
+  presets: { all: 'All dates', today: 'Today', yesterday: 'Yesterday', last7: 'Last 7 days', custom: 'Custom range' },
+  from: 'From', through: 'Through', apply: 'Apply', cancel: 'Cancel', clear: 'Clear date range',
+  invalidRange: 'Choose a valid From date on or before Through.',
+  pickerUnavailable: 'Date selection is unavailable in this app build. Update the app to choose a custom range.',
+  partial: 'Some recordings could not be loaded. Results may be incomplete.',
+  unavailable: 'Recording history could not be loaded. Try again; this server may need an update.',
+  justSubmitted: 'Just submitted',
 } as const;

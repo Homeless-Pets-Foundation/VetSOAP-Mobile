@@ -281,7 +281,7 @@ test('a read-only viewer still sees WHAT the feed flagged on the destination', (
   // Informational only — it must not introduce a mutation affordance.
   const noticeBlock = DETAIL.slice(
     DETAIL.indexOf('{showMetadataReadOnlyNotice && ('),
-    DETAIL.indexOf('{/* Patient Info */}')
+    DETAIL.indexOf('{/* Audio playback')
   );
   assert.ok(noticeBlock.length > 0, 'the read-only notice block renders');
   assert.doesNotMatch(noticeBlock, /onPress|MetadataReviewCard|Button/);

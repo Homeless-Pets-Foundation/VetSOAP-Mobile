@@ -14,17 +14,65 @@ const stripComments = (source) =>
 
 const DETAIL_PATH = 'app/(app)/(tabs)/recordings/[id].tsx';
 
-test('detail screen renders SOAP before tasks, export, and the tools row', async () => {
+test('completed detail puts identity and attention before SOAP, then tasks, export, audio, and tools', async () => {
   const detail = await read(DETAIL_PATH);
   const patientInfo = detail.indexOf('{/* Patient Info */}');
+  const metadata = detail.indexOf('{showMetadataReview && (');
   const soap = detail.indexOf('{/* SOAP Note */}');
   const tasks = detail.indexOf('<SuggestedTasksCard');
   const exportSheet = detail.indexOf('<ExportSheet');
+  const audio = detail.indexOf("{recording.status === 'completed' && recording.audioFileUrl");
   const tools = detail.indexOf('{/* Tools */}');
-  assert.ok(patientInfo > 0 && soap > patientInfo, 'Patient Info precedes SOAP');
+  assert.ok(patientInfo > 0 && metadata > patientInfo, 'identity precedes unresolved metadata attention');
+  assert.ok(soap > metadata, 'metadata attention precedes SOAP');
   assert.ok(tasks > soap, 'Suggested Tasks follow the SOAP note');
   assert.ok(exportSheet > tasks, 'Export follows Suggested Tasks');
-  assert.ok(tools > exportSheet, 'Tools row is last');
+  assert.ok(audio > exportSheet, 'completed audio follows export');
+  assert.ok(tools > audio, 'Tools row is last');
+});
+
+test('completed identity retains visible context and discloses secondary fields', async () => {
+  const detail = await read(DETAIL_PATH);
+  const identity = detail.slice(detail.indexOf('{/* Patient Info */}'), detail.indexOf('{showMetadataReview && ('));
+  const completed = identity.slice(0, identity.indexOf('\n        ) : ('));
+  const disclosure = completed.indexOf('<Collapsible');
+  assert.ok(disclosure > 0);
+  for (const field of ['recording.clientName', 'recording.species', 'recording.pimsPatientId', '{formattedDate}']) {
+    assert.ok(completed.indexOf(field) > 0 && completed.indexOf(field) < disclosure, `${field} stays visible`);
+  }
+  for (const field of ['recording.breed', 'recording.appointmentType']) {
+    assert.ok(completed.indexOf(field) > disclosure, `${field} lives in the disclosure`);
+  }
+  assert.match(detail, /const \[identityExpanded, setIdentityExpanded\] = useState\(false\)/);
+  assert.match(completed, /expanded=\{identityExpanded\}/);
+  assert.match(detail, /mode="edit"\s+compact=\{recording\.status === 'completed'\}/);
+});
+
+test('completed audio mounts on disclosure and keeps player permissions and cleanup', async () => {
+  const detail = await read(DETAIL_PATH);
+  const audio = detail.slice(detail.indexOf("{recording.status === 'completed' && recording.audioFileUrl"), detail.indexOf('{/* Tools */}'));
+  assert.match(detail, /const \[audioExpanded, setAudioExpanded\] = useState\(false\)/);
+  assert.match(audio, /recordingPermissions\.canPlayAudio \? \(/);
+  assert.match(audio, /<Collapsible[^>]*expanded=\{audioExpanded\}[\s\S]*?<RecordingAudioPlayer[\s\S]*?<\/Collapsible>/);
+  assert.match(audio, /canDownloadAudio=\{recordingPermissions\.canDownloadAudio\}/);
+  assert.match(detail, /recording\.audioFileUrl && recording\.status !== 'draft' && recording\.status !== 'completed'/);
+  const collapsible = await read('src/components/ui/Collapsible.tsx');
+  assert.match(collapsible, /\{expanded \? <View className=\{bodyClassName\}>\{children\}<\/View> : null\}/);
+  const player = await read('src/components/RecordingAudioPlayer.tsx');
+  assert.match(player, /recordingActivity\.isActive\(\)/);
+  assert.match(player, /if \(recordingActive\) \{/);
+  assert.match(player, /mountedRef\.current = false;/);
+});
+
+test('ordinary regeneration is in Tools while partial-note repair remains contextual', async () => {
+  const detail = await read(DETAIL_PATH);
+  const soap = detail.slice(detail.indexOf('{/* SOAP Note */}'), detail.indexOf('<SuggestedTasksCard'));
+  const tools = detail.slice(detail.indexOf('{/* Tools */}'));
+  assert.doesNotMatch(soap, /REGENERATE_SOAP_COPY\.button/);
+  assert.match(tools, /recording\.status === 'completed' && soapNote && recordingPermissions\.canEdit/);
+  assert.match(tools, /onPress=\{confirmRegenerate\}[\s\S]*?REGENERATE_SOAP_COPY\.button/);
+  assert.match(soap, /recording\.errorCode === 'PARTIAL_GENERATION'[\s\S]*?onPress=\{confirmRegenerate\}/);
+  assert.ok(soap.indexOf('PARTIAL_GENERATION') < soap.indexOf("{hasTranscript && ("));
 });
 
 test('every processing/state card still precedes the SOAP note', async () => {
@@ -61,8 +109,9 @@ test('audio-forbidden state is a one-line note under Patient Info, not a card', 
   const player = detail.indexOf('<RecordingAudioPlayer');
   const note = detail.indexOf('AUDIO_PLAYER_COPY.forbidden');
   assert.ok(note > patientInfo && note < player, 'note sits between Patient Info and the player');
-  const around = detail.slice(note - 400, note);
-  assert.doesNotMatch(around, /<Card/, 'the forbidden note is not a Card');
+  const completedIdentity = detail.slice(patientInfo, detail.indexOf('\n        ) : (', patientInfo));
+  assert.match(completedIdentity, /showAudioForbiddenNote \? <Text/);
+  assert.doesNotMatch(completedIdentity, /<Card/, 'completed identity does not add a forbidden-state Card');
   assert.match(detail, /const showAudioForbiddenNote =\s*!!recording\.audioFileUrl && recording\.status !== 'draft' && !recordingPermissions\.canPlayAudio/);
   // The player ternary keeps its shape (recording-permissions fence) with a null else.
   assert.match(detail, /recordingPermissions\.canPlayAudio \? \([\s\S]*?<RecordingAudioPlayer[\s\S]*?\/>\s*\) : null/);
@@ -111,6 +160,9 @@ test('tools row gates each chip on the same permission as the card it reveals', 
   const idEffect = detail.slice(detail.indexOf('setAccessRevoked(null);'), detail.indexOf('}, [id]);'));
   assert.match(idEffect, /setOpenTools\(new Set\(\)\)/);
   assert.match(idEffect, /setTasksExpanded\(false\)/);
+  assert.match(idEffect, /setIdentityExpanded\(false\)/);
+  assert.match(idEffect, /setAudioExpanded\(false\)/);
+  assert.match(idEffect, /setActiveNoteTab\('soap'\)/);
 });
 
 test('Consult AI is a direct link helper; the card component is gone', async () => {

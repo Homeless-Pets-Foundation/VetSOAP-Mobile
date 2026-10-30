@@ -1,4 +1,5 @@
-import React, { useCallback, useState, useEffect, useRef } from 'react';
+import { Collapsible } from '../../../../src/components/ui/Collapsible';
+import React, { useCallback, useState, useEffect, useLayoutEffect, useRef } from 'react';
 import {
   View,
   ScrollView,
@@ -179,6 +180,8 @@ export default function RecordingDetailScreen() {
   // unmount the first one's result.
   type DetailTool = 'email' | 'translate' | 'reprocess';
   const [tasksExpanded, setTasksExpanded] = useState(false);
+  const [identityExpanded, setIdentityExpanded] = useState(false);
+  const [audioExpanded, setAudioExpanded] = useState(false);
   const [openTools, setOpenTools] = useState<Set<DetailTool>>(() => new Set());
   const toggleTool = useCallback((tool: DetailTool) => {
     Haptics.selectionAsync().catch(() => {});
@@ -203,6 +206,9 @@ export default function RecordingDetailScreen() {
     pollingStartedAtRef.current = null;
     setOpenTools(new Set());
     setTasksExpanded(false);
+    setIdentityExpanded(false);
+    setAudioExpanded(false);
+    setActiveNoteTab('soap');
   }, [id]);
 
   // Completion celebration — fired ONCE on the prev !== 'completed' →
@@ -954,10 +960,11 @@ export default function RecordingDetailScreen() {
   // Unsaved SOAP section edit (UX-H5). SoapNoteView reports only dirty
   // TRANSITIONS, so this re-renders when the guard arms/disarms, not per key.
   // Every way off this screen goes through the same confirm:
-  //  - a navigation REMOVAL (stack pop, iOS swipe, default Android back, and
+  //  - a navigation REMOVAL (stack pop, default Android back, and
   //    router.back/replace from goBack) — usePreventRemove;
   //  - the screen's own back control and its attention-route BackHandler —
   //    gated explicitly, since they route by name rather than trusting history.
+  // Native iOS swipes stay disabled while either guard is armed.
   // `discardingEditsRef` lets a confirmed discard through without a second
   // prompt from usePreventRemove; it re-arms whenever the screen regains focus.
   // A save already IN FLIGHT is different: Discard can't recall a sent
@@ -972,6 +979,11 @@ export default function RecordingDetailScreen() {
   const soapSavingRef = useRef(false);
   soapSavingRef.current = soapSaving;
   const discardingEditsRef = useRef(false);
+
+  useLayoutEffect(() => {
+    // iOS can finish an interactive pop before the removal confirmation resolves.
+    navigation.setOptions({ gestureEnabled: !soapEditDirty && !soapSaving });
+  }, [navigation, soapEditDirty, soapSaving]);
 
   const alertSoapStillSaving = useCallback(() => {
     Alert.alert(SOAP_EDIT_DISCARD_COPY.savingTitle, SOAP_EDIT_DISCARD_COPY.savingBody);
@@ -1299,6 +1311,50 @@ export default function RecordingDetailScreen() {
           <StatusBadge status={recording.status} />
         </View>
 
+        {/* Patient Info */}
+        {recording.status === 'completed' ? (
+          <View className="mx-5 mt-3 mb-2">
+            <View className="flex-row flex-wrap">
+              {renderInfoField('clientName', 'Client', recording.clientName)}
+              {renderInfoField('species', 'Species', recording.species, 'pl-2')}
+              {recording.pimsPatientId ? renderInfoField(null, 'Patient ID', recording.pimsPatientId) : null}
+            </View>
+            <Text className="text-caption text-content-tertiary">{formattedDate}</Text>
+            <Collapsible title="More patient details" compact expanded={identityExpanded} onToggle={() => setIdentityExpanded((value) => !value)}>
+              <View className="flex-row flex-wrap">
+                {renderInfoField('breed', 'Breed', recording.breed)}
+                {renderInfoField('appointmentType', 'Type', recording.appointmentType, 'pl-2')}
+              </View>
+            </Collapsible>
+            {showAudioForbiddenNote ? <Text className="text-caption text-content-tertiary">{AUDIO_PLAYER_COPY.forbidden}</Text> : null}
+          </View>
+        ) : (
+        <Card className="m-5 mt-4">
+          <View className="flex-row flex-wrap">
+            {renderInfoField('patientName', 'Patient', recording.patientName)}
+            {/* pimsPatientId is vet-entered, never AI-filled → no sparkle (field null). */}
+            {renderInfoField(null, 'Patient ID', recording.pimsPatientId, 'pl-2')}
+            {renderInfoField('species', 'Species', recording.species)}
+            {renderInfoField('breed', 'Breed', recording.breed, 'pl-2')}
+            {renderInfoField('clientName', 'Client', recording.clientName)}
+            {renderInfoField('appointmentType', 'Type', recording.appointmentType, 'pl-2')}
+          </View>
+          <Text className="text-caption text-content-tertiary">{formattedDate}</Text>
+          {showAudioForbiddenNote ? (
+            <View className="flex-row items-center mt-3">
+              <View style={{ flexShrink: 0 }}>
+                <Lock color={colors.contentTertiary} size={14} />
+              </View>
+              {/* Sentence wraps freely — flex-1 gives it the row's width. */}
+              <Text className="flex-1 ml-2 text-caption text-content-tertiary">
+                {AUDIO_PLAYER_COPY.forbidden}
+              </Text>
+            </View>
+          ) : null}
+        </Card>
+
+        )}
+
         {showMetadataReview && (
           <View onLayout={(event) => registerFocusTarget('metadata', event.nativeEvent.layout.y)}>
             <MetadataReviewCard
@@ -1329,6 +1385,7 @@ export default function RecordingDetailScreen() {
           <MetadataReviewCard
             recording={recording}
             mode="edit"
+            compact={recording.status === 'completed'}
             recordFirstEnabled={recordFirstEnabled}
             saving={metadataMutation.isPending}
             onSave={handleSaveMetadata}
@@ -1364,35 +1421,10 @@ export default function RecordingDetailScreen() {
           </View>
         )}
 
-        {/* Patient Info */}
-        <Card className="m-5 mt-4">
-          <View className="flex-row flex-wrap">
-            {renderInfoField('patientName', 'Patient', recording.patientName)}
-            {/* pimsPatientId is vet-entered, never AI-filled → no sparkle (field null). */}
-            {renderInfoField(null, 'Patient ID', recording.pimsPatientId, 'pl-2')}
-            {renderInfoField('species', 'Species', recording.species)}
-            {renderInfoField('breed', 'Breed', recording.breed, 'pl-2')}
-            {renderInfoField('clientName', 'Client', recording.clientName)}
-            {renderInfoField('appointmentType', 'Type', recording.appointmentType, 'pl-2')}
-          </View>
-          <Text className="text-caption text-content-tertiary">{formattedDate}</Text>
-          {showAudioForbiddenNote ? (
-            <View className="flex-row items-center mt-3">
-              <View style={{ flexShrink: 0 }}>
-                <Lock color={colors.contentTertiary} size={14} />
-              </View>
-              {/* Sentence wraps freely — flex-1 gives it the row's width. */}
-              <Text className="flex-1 ml-2 text-caption text-content-tertiary">
-                {AUDIO_PLAYER_COPY.forbidden}
-              </Text>
-            </View>
-          ) : null}
-        </Card>
-
         {/* Audio playback — audioFileUrl exists from confirm-upload onward.
             Drafts are excluded (their audio is local; resume path owns it). The
             forbidden state is the note inside Patient Info above. */}
-        {recording.audioFileUrl && recording.status !== 'draft' && id && (
+        {recording.audioFileUrl && recording.status !== 'draft' && recording.status !== 'completed' && id && (
           recordingPermissions.canPlayAudio ? (
             <RecordingAudioPlayer
               recordingId={id}
@@ -1900,9 +1932,9 @@ export default function RecordingDetailScreen() {
                 ))}
               </View>
             )}
-            {activeNoteTab === 'transcript' && hasTranscript ? (
-              <TranscriptView transcript={recording.transcriptText ?? ''} />
-            ) : isSoapNoteLoading ? (
+            {activeNoteTab === 'transcript' && hasTranscript ? <TranscriptView transcript={recording.transcriptText ?? ''} /> : null}
+            <View style={{ display: activeNoteTab === 'soap' ? 'flex' : 'none' }}>
+            {isSoapNoteLoading && !soapNote ? (
               <View>
                 {[1, 2, 3, 4].map((i) => (
                   <View key={i} className="border border-border-default rounded-input mb-2 p-3">
@@ -1911,7 +1943,7 @@ export default function RecordingDetailScreen() {
                   </View>
                 ))}
               </View>
-            ) : isSoapNoteError ? (
+            ) : isSoapNoteError && !soapNote ? (
               <View className="py-5 items-center">
                 <Text className="text-body text-status-danger mb-3">
                   Failed to load SOAP note.
@@ -1922,20 +1954,8 @@ export default function RecordingDetailScreen() {
               </View>
             ) : soapNote ? (
               <View>
-                {recordingPermissions.canEdit && (
-                  <View className="items-start mb-4">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onPress={confirmRegenerate}
-                      loading={regenerateMutation.isPending}
-                      icon={<RotateCcw color={colors.contentBody} size={14} />}
-                    >
-                      {REGENERATE_SOAP_COPY.button}
-                    </Button>
-                  </View>
-                )}
                 <SoapNoteView
+                  key={soapNote.id}
                   soapNote={soapNote}
                   recordingId={id ?? undefined}
                   canEdit={recordingPermissions.canEdit}
@@ -1950,6 +1970,7 @@ export default function RecordingDetailScreen() {
                 </Text>
               </View>
             )}
+            </View>
 
           </View>
         )}
@@ -1972,12 +1993,33 @@ export default function RecordingDetailScreen() {
           </View>
         )}
 
+        {recording.status === 'completed' && recording.audioFileUrl && id && recordingPermissions.canPlayAudio ? (
+          <Card className="mx-5 mb-4">
+            <Collapsible title="Recording audio" expanded={audioExpanded} onToggle={() => setAudioExpanded((value) => !value)}>
+              <RecordingAudioPlayer
+                recordingId={id}
+                organizationId={recording.organizationId}
+                canDownloadAudio={recordingPermissions.canDownloadAudio}
+                initialDurationSeconds={recording.audioDurationSeconds}
+              />
+            </Collapsible>
+          </Card>
+        ) : null}
+
         {/* Tools */}
         {id && (
           <View className="px-5 mb-4">
             <Text className="text-caption uppercase text-content-tertiary mb-2">
               {RECORDING_TOOLS_COPY.heading}
             </Text>
+            {recording.status === 'completed' && soapNote && recordingPermissions.canEdit ? (
+              <View className="items-start mb-2">
+                <Button variant="secondary" size="sm" onPress={confirmRegenerate} loading={regenerateMutation.isPending}
+                  icon={<RotateCcw color={colors.contentBody} size={14} />}>
+                  {REGENERATE_SOAP_COPY.button}
+                </Button>
+              </View>
+            ) : null}
             <View className="flex-row flex-wrap gap-2">
               {recording.status === 'completed' && recordingPermissions.canExport && (
                 <Button

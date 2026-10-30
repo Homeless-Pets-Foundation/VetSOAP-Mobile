@@ -80,6 +80,18 @@ async function harness({ mark = async () => returnedNote, shareResult = true } =
     './attentionFeed': { validateAttentionListRow: () => null },
   }, { setTimeout: (callback) => { timers.push(callback); return timers.length; } });
   const calls = { mark: [], copy: 0, text: 0, pdf: 0, events: [] };
+  const sharing = await loadTsModule('src/lib/share.ts', {
+    'react-native': {
+      Share: {
+        sharedAction: 'sharedAction',
+        share: async () => {
+          calls.text++;
+          return { action: shareResult ? 'sharedAction' : 'dismissedAction' };
+        },
+      },
+    },
+    './fileOps': { safeDeleteFile() {} },
+  });
   let user = { id: 'user1', organizationId: 'org1' };
   const api = await loadTsx('src/components/ExportSheet.tsx', {
     react: h.react, 'react-native': { View: 'View' }, './ui/Text': { Text: 'Text' },
@@ -94,7 +106,7 @@ async function harness({ mark = async () => returnedNote, shareResult = true } =
     '../lib/secureClipboard': { copyWithAutoClear: async () => { calls.copy++; } },
     '../lib/soapPdf': { buildSoapPlainText: () => 'Synthetic SOAP', buildSoapHtml: () => '<p>Synthetic SOAP</p>' },
     '../lib/share': {
-      shareText: async () => { calls.text++; return shareResult; },
+      shareText: sharing.shareText,
       sharePdfHtml: async () => { calls.pdf++; return shareResult; },
     },
     './ui/Button': { Button: 'Button' }, './ui/Card': { Card: 'Card' }, './Toast': { Toast: 'Toast' },

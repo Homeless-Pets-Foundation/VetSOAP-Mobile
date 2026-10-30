@@ -1,3 +1,4 @@
+import { DurableRecoveryBanner } from '../../../src/components/DurableRecoveryBanner';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
@@ -276,29 +277,32 @@ function PermissionGate({ onGranted }: { onGranted: () => void }) {
 
   return (
     <ScreenContainer>
-      <View className="flex-1 justify-center items-center px-6">
-        <View
-          className="bg-brand-50 dark:bg-surface-sunken rounded-full justify-center items-center mb-6"
-          style={{ width: scale(96), height: scale(96) }}
-        >
-          <Mic color={colors.brand500} size={scale(40)} />
+      <ScrollView className="flex-1" contentContainerStyle={{ flexGrow: 1 }}>
+        <View className="px-5 pt-3"><DurableRecoveryBanner /></View>
+        <View className="grow justify-center items-center px-6 py-6">
+          <View
+            className="bg-brand-50 dark:bg-surface-sunken rounded-full justify-center items-center mb-6"
+            style={{ width: scale(96), height: scale(96) }}
+          >
+            <Mic color={colors.brand500} size={scale(40)} />
+          </View>
+          <Text className="text-display font-bold text-content-primary text-center mb-3">
+            Microphone Access
+          </Text>
+          <Text className="text-body text-content-tertiary text-center mb-8">
+            Captivet needs microphone permission to record veterinary appointments and generate SOAP notes.
+          </Text>
+          <Button
+            variant="primary"
+            size="lg"
+            onPress={handleRequest}
+            loading={requesting}
+            accessibilityLabel="Continue to microphone permission prompt"
+          >
+            Continue
+          </Button>
         </View>
-        <Text className="text-display font-bold text-content-primary text-center mb-3">
-          Microphone Access
-        </Text>
-        <Text className="text-body text-content-tertiary text-center mb-8">
-          Captivet needs microphone permission to record veterinary appointments and generate SOAP notes.
-        </Text>
-        <Button
-          variant="primary"
-          size="lg"
-          onPress={handleRequest}
-          loading={requesting}
-          accessibilityLabel="Continue to microphone permission prompt"
-        >
-          Continue
-        </Button>
-      </View>
+      </ScrollView>
     </ScreenContainer>
   );
 }
@@ -7780,6 +7784,8 @@ function RecordingSession() {
             )}
           </View>
         </View>
+
+        <View className="px-5"><DurableRecoveryBanner /></View>
 
         {/* Stashed Sessions */}
         {showStashList && (

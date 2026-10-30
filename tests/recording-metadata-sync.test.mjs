@@ -168,3 +168,15 @@ test('recordings list cache merge patches matching pages without dropping pagina
   assert.equal(merged.pages[1].data[0].clientName, 'Williams');
   assert.equal(merged.pages[1].data[0].breed, 'German Shepherd');
 });
+
+
+test('review guidance uses saved details, including PIMS ID, never applied AI fields', () => {
+  for (const fields of [
+    { patientName: 'Patient', aiExtractedMetadata: { appliedFields: [] } },
+    { pimsPatientId: ' P-100 ' },
+    { clientName: 'Client' },
+    { species: 'Canine' },
+  ]) assert.equal(SYNC.hasSavedPatientDetails(makeRecording(fields)), true);
+  assert.equal(SYNC.hasSavedPatientDetails(makeRecording({ patientName: '  ', pimsPatientId: '\t' })), false);
+  assert.equal(SYNC.hasSavedPatientDetails(makeRecording({ aiExtractedMetadata: { appliedFields: ['patientName'], fields: { patientName: { value: 'Suggested' } } } })), false);
+});

@@ -11,6 +11,12 @@ const METADATA_FIELDS: RecordingMetadataField[] = [
   'appointmentType',
 ];
 
+export function hasSavedPatientDetails(recording: Recording): boolean {
+  return [...METADATA_FIELDS, 'pimsPatientId' as const].some(
+    (field) => typeof recording[field] === 'string' && !!recording[field]?.trim()
+  );
+}
+
 function currentFieldValue(recording: Recording, field: RecordingMetadataField): string {
   const value = recording[field];
   return typeof value === 'string' ? value : '';

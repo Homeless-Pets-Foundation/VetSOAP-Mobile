@@ -204,7 +204,7 @@ export default function RecordingRecoveryScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     Alert.alert(
       'Delete Recovery Copy?',
-      'This permanently removes the recovery copy from this tablet. This cannot be undone.',
+      'This permanently removes the recovery copy from this device. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -268,7 +268,7 @@ export default function RecordingRecoveryScreen() {
           />
           <View className="flex-1">
             <Text className="text-display font-bold text-content-primary" accessibilityRole="header">
-              Local Recovery
+              Staff sign-out recovery
             </Text>
             <Text className="text-body-sm text-content-tertiary mt-0.5">
               {RECOVERY_COPY.subtitle}
@@ -286,7 +286,7 @@ export default function RecordingRecoveryScreen() {
             <View className="py-16 items-center">
               <ActivityIndicator size="large" color={colors.brand500} />
               <Text className="text-body-sm text-content-tertiary mt-3">
-                {scanning ? 'Scanning this tablet…' : 'Loading recovery items…'}
+                {scanning ? 'Scanning this device…' : 'Loading recovery items…'}
               </Text>
             </View>
           ) : sortedItems.length === 0 ? (

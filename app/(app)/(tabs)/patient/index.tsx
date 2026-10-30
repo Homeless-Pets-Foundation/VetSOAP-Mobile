@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { View, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, FlatList, RefreshControl, ActivityIndicator, Platform, Pressable } from 'react-native';
 import { Text, TextInput } from '../../../../src/components/ui/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query';
-import { Search, User } from 'lucide-react-native';
+import { Search, User, X } from 'lucide-react-native';
 import { patientsApi } from '../../../../src/api/patients';
 import { PERSIST_GC_TIME_MS } from '../../../../src/lib/queryPersistence';
 import { useResponsive } from '../../../../src/hooks/useResponsive';
@@ -108,7 +108,20 @@ export default function PatientListScreen() {
               placeholderTextColor={colors.contentTertiary}
               accessibilityLabel={PATIENT_LIST_COPY.searchAccessibilityLabel}
               className="flex-1 p-3 text-body text-content-primary"
+              returnKeyType="search"
+              clearButtonMode="while-editing"
             />
+            {/* Android has no clearButtonMode — provide an explicit clear-X. */}
+            {Platform.OS === 'android' && search.length > 0 && (
+              <Pressable
+                onPress={() => setSearch('')}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                hitSlop={10}
+              >
+                <X color={colors.contentTertiary} size={iconSm} />
+              </Pressable>
+            )}
           </View>
         </View>
 

@@ -457,9 +457,12 @@ export const AUDIO_PLAYER_COPY = {
 export const AUDIO_DOWNLOAD_COPY = {
   action: 'Download audio',
   cancel: 'Cancel download',
-  choosingFolder: 'Choose a folder in Files or Downloads.',
-  storageNotice:
-    'For device-only storage, choose On My iPhone/iPad or Downloads. Downloaded files live outside Captivet and remain after sign-out or app removal.',
+  choosingFolderAndroid: 'Choose a folder, such as Downloads.',
+  choosingFolderIos: 'Choose a folder in Files.',
+  storageNoticeAndroid:
+    'For device-only storage, choose a folder such as Downloads. Downloaded files live outside Captivet and remain after sign-out or app removal.',
+  storageNoticeIos:
+    'For device-only storage, choose On My iPhone/iPad in Files. Downloaded files live outside Captivet and remain after sign-out or app removal.',
   disabledWhileRecording: 'Finish the active recording before downloading audio.',
   progress: (part: number, count: number, downloaded: string, total: string): string =>
     `Downloading part ${part} of ${count} · ${downloaded} of ${total}`,
@@ -809,6 +812,7 @@ export const MULTI_PATIENT_RECORD_FIRST_COPY = {
 
 export const METADATA_REVIEW_COPY = {
   title: 'AI filled these details',
+  reviewTitle: 'Review patient details',
   body: 'Review the details Captivet found in the recording.',
   editDetails: 'Edit Details',
   addTitle: 'Add patient details',
@@ -1084,4 +1088,16 @@ export const SUPPORT_RECOVERY_BANNER_COPY = {
   unknownMessage: 'Could not check preserved support-staff recordings on this tablet.',
   cta: 'Open recovery',
   retry: 'Retry',
+} as const;
+
+
+export const TEMPLATE_AVAILABILITY_COPY = {
+  label: 'Template',
+  loading: 'Loading templates…',
+  empty: 'No templates available.',
+  failed: 'Could not load templates.',
+  refreshFailed: 'Could not refresh templates. Saved options are still available.',
+  retry: 'Retry',
+  noSelection: 'No template selected',
+  unavailable: 'Selected template is unavailable. Your saved selection is kept.',
 } as const;

@@ -486,7 +486,7 @@ test('settings and recovery screens use scoped recovery APIs and expose destruct
   const settings = await read('app/(app)/settings.tsx');
   const recovery = await read('app/(app)/recording-recovery.tsx');
 
-  assert.match(settings, /Recover Local Recordings/);
+  assert.match(settings, /Staff sign-out recovery/);
   assert.match(settings, /router\.push\('\/recording-recovery'/);
   assert.match(settings, /countItemsForUser\(user\)/);
   assert.match(settings, /countScopedUserRecoverableRecordings/);

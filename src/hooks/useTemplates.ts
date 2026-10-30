@@ -18,7 +18,9 @@ export function useTemplates() {
   return {
     templates: query.data ?? [],
     defaultTemplate,
-    isLoading: query.isLoading,
+    isLoading: query.isPending,
     error: query.error,
+    refetch: query.refetch,
+    isFetching: query.isFetching,
   };
 }

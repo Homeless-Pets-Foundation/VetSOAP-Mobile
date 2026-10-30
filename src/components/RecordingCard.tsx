@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { ChevronRight, CloudOff, Smartphone, Sparkles } from 'lucide-react-native';
 import { StatusBadge } from './StatusBadge';
 import type { Recording } from '../types';
-import { DRAFT_LOCATION_COPY, METADATA_REVIEW_COPY } from '../constants/strings';
+import { DRAFT_LOCATION_COPY, METADATA_REVIEW_COPY, EXPORT_COPY } from '../constants/strings';
 import { displayPatientName, isUntitledVisit } from '../lib/recordingDisplay';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { CLIP_SAFE, clipSafe } from './ui/styles';
@@ -157,7 +157,7 @@ export const RecordingCard = React.memo(function RecordingCard({
         }
       }}
       accessibilityRole="button"
-      accessibilityLabel={`${patientLabel}${clientLabel ? `, client ${clientLabel}` : ''}, ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}`}
+      accessibilityLabel={`${patientLabel}${clientLabel ? `, client ${clientLabel}` : ''}, ${formattedDate || 'unknown date'}, status ${recording.status}${accessibilityStatusSuffix}${recording.status === 'completed' && recording.isExported === true ? `, ${EXPORT_COPY.markedStatus}` : ''}`}
       // A nested Pressable (the patient-history link) is unreliable for screen
       // readers inside a parent Pressable — surface it as a custom action on
       // the card instead; the inner control is hidden from the a11y tree below.
@@ -234,6 +234,9 @@ export const RecordingCard = React.memo(function RecordingCard({
         <View className="flex-row items-center gap-2">
           <View className="items-end gap-1">
             {hideStatusBadge ? null : <StatusBadge status={recording.status} />}
+            {recording.status === 'completed' && recording.isExported === true ? (
+              <Text className="text-caption text-brand-600" numberOfLines={2}>{EXPORT_COPY.markedStatus}</Text>
+            ) : null}
             {showAiLabeledChip ? <AiLabeledChip /> : null}
             {isDraft ? <DraftLocationChip location={draftLocation} /> : null}
           </View>
@@ -245,6 +248,7 @@ export const RecordingCard = React.memo(function RecordingCard({
 }, (prev, next) =>
   prev.recording.id === next.recording.id &&
   prev.recording.status === next.recording.status &&
+  prev.recording.isExported === next.recording.isExported &&
   prev.recording.patientName === next.recording.patientName &&
   prev.recording.clientName === next.recording.clientName &&
   prev.recording.species === next.recording.species &&

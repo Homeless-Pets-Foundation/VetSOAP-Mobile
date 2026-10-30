@@ -9,6 +9,7 @@ import {
   MULTI_PATIENT_RECORD_FIRST_COPY,
   RECORD_FIRST_FORM_HINT,
   SPECIES_OTHER_COPY,
+  TEMPLATE_AVAILABILITY_COPY,
   TEMPLATE_DEFAULT_COPY,
 } from '../constants/strings';
 import { useThemeColors } from '../hooks/useThemeColors';
@@ -38,6 +39,9 @@ interface PatientFormProps {
   onUpdate: (field: keyof CreateRecording, value: string | boolean | undefined) => void;
   templates?: Template[];
   templatesLoading?: boolean;
+  templatesError?: boolean;
+  onRetryTemplates?: () => void;
+  templatesRetrying?: boolean;
   defaultTemplateId?: string | null;
   onSetDefaultTemplate?: (templateId: string) => void | Promise<void>;
   defaultTemplateSaving?: boolean;
@@ -53,6 +57,9 @@ export function PatientForm({
   onUpdate,
   templates,
   templatesLoading,
+  templatesError,
+  onRetryTemplates,
+  templatesRetrying,
   defaultTemplateId,
   onSetDefaultTemplate,
   defaultTemplateSaving,
@@ -89,21 +96,19 @@ export function PatientForm({
     }
   };
 
+  const hasTemplates = !!templates?.length;
+  const selectedTemplateAvailable = templates?.some((template) => template.id === formData.templateId);
+  const selectedTemplateUnavailable = !!formData.templateId && !selectedTemplateAvailable &&
+    !templatesLoading && (!templatesError || hasTemplates);
+
   return (
     <View>
       {/* Template Picker */}
-      {(templates && templates.length > 0 || templatesLoading) ? (
-        templatesLoading ? (
-          <View className="mb-3.5">
-            <Text className="text-body-sm font-medium text-content-body mb-1.5">
-              Template
-            </Text>
-            <ActivityIndicator size="small" color={colors.contentTertiary} />
-          </View>
-        ) : (
+      <View className="mb-3.5">
+        {hasTemplates ? (
           <>
             <SegmentedControl
-              label="Template"
+              label={TEMPLATE_AVAILABILITY_COPY.label}
               options={(templates ?? []).map((template) => ({
                 label: template.name,
                 value: template.id,
@@ -116,7 +121,7 @@ export function PatientForm({
               optionClassName="rounded-pill"
               accessibilityLabel="Template selection"
             />
-            {formData.templateId && onSetDefaultTemplate && (
+            {formData.templateId && selectedTemplateAvailable && onSetDefaultTemplate && (
               <View className="items-start -mt-1 mb-3.5">
                 <Button
                   variant={formData.templateId === defaultTemplateId ? 'ghost' : 'secondary'}
@@ -138,8 +143,46 @@ export function PatientForm({
               </View>
             )}
           </>
-        )
-      ) : null}
+        ) : (
+          <Text className="text-body-sm font-medium text-content-body mb-1.5">
+            {TEMPLATE_AVAILABILITY_COPY.label}
+          </Text>
+        )}
+        {templatesLoading && !hasTemplates ? (
+          <View className="flex-row items-center gap-2">
+            <ActivityIndicator size="small" color={colors.contentTertiary} />
+            <Text className="flex-1 text-body-sm text-content-tertiary">
+              {TEMPLATE_AVAILABILITY_COPY.loading}
+            </Text>
+          </View>
+        ) : templatesError ? (
+          <>
+            <Text className="text-body-sm text-status-danger" accessibilityRole="alert">
+              {hasTemplates ? TEMPLATE_AVAILABILITY_COPY.refreshFailed : TEMPLATE_AVAILABILITY_COPY.failed}
+            </Text>
+            {onRetryTemplates && (
+              <View className="items-start mt-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={!!templatesRetrying}
+                  onPress={onRetryTemplates}
+                >
+                  {TEMPLATE_AVAILABILITY_COPY.retry}
+                </Button>
+              </View>
+            )}
+          </>
+        ) : !hasTemplates ? (
+          <Text className="text-body-sm text-content-tertiary">{TEMPLATE_AVAILABILITY_COPY.empty}</Text>
+        ) : null}
+        {!formData.templateId && (
+          <Text className="text-body-sm text-content-tertiary mt-1">{TEMPLATE_AVAILABILITY_COPY.noSelection}</Text>
+        )}
+        {selectedTemplateUnavailable && (
+          <Text className="text-body-sm text-content-tertiary mt-1">{TEMPLATE_AVAILABILITY_COPY.unavailable}</Text>
+        )}
+      </View>
 
       <Text
         className="text-body-lg font-semibold text-content-primary mb-4"

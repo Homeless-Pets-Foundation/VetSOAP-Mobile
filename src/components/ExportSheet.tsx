@@ -1,4 +1,6 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import { useAuthUser } from '../hooks/useAuth';
+import { mergeRecordingIntoCachedLists, invalidateRecordingCaches } from '../lib/recordingQueryCache';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { Text } from './ui/Text';
 import { CheckCircle, ChevronDown, ChevronUp, Copy, FileText, Share2 } from 'lucide-react-native';
@@ -34,6 +36,14 @@ export function ExportSheet({
 }) {
   const colors = useThemeColors();
   const queryClient = useQueryClient();
+  const user = useAuthUser();
+  const scope = `${user?.id ?? ''}:${user?.organizationId ?? ''}`;
+  const scopeRef = useRef<string | null>(scope);
+  scopeRef.current = scope;
+  useEffect(() => {
+    scopeRef.current = scope;
+    return () => { scopeRef.current = null; };
+  }, [scope]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [showPims, setShowPims] = useState(false);
   // Success feedback is a transient toast (audit theme D); only errors stay
@@ -86,7 +96,15 @@ export function ExportSheet({
     setBusyAction(target);
     setErrorStatus(null);
     try {
-      await soapNotesApi.export(soapNote.id, { exportedTo: target });
+      const updatedNote = await soapNotesApi.export(soapNote.id, { exportedTo: target });
+      if (scopeRef.current !== scope || !user?.id || user.organizationId !== recording.organizationId) return;
+      queryClient.setQueryData(['soapNote', recording.id], updatedNote);
+      const latest = queryClient.getQueryData<Recording>(['recording', recording.id]) ?? recording;
+      const updatedRecording = { ...latest, isExported: updatedNote.isExported, exportedTo: updatedNote.exportedTo };
+      queryClient.setQueryData(['recording', recording.id], (current: Recording | undefined) =>
+        current ? { ...current, isExported: updatedNote.isExported, exportedTo: updatedNote.exportedTo } : updatedRecording);
+      mergeRecordingIntoCachedLists(queryClient, updatedRecording);
+      invalidateRecordingCaches(queryClient, 'metadata_update');
       trackEvent({ name: 'soap_exported', props: { target: 'pims', recording_id: recording.id } });
       queryClient.invalidateQueries({ queryKey: ['soapNote', recording.id] }).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ['recording', recording.id] }).catch(() => {});
@@ -95,7 +113,7 @@ export function ExportSheet({
     } finally {
       setBusyAction(null);
     }
-  }, [queryClient, recording.id, soapNote.id]);
+  }, [queryClient, recording, soapNote.id, scope, user?.id, user?.organizationId]);
 
   return (
     <Card className="mb-4">
@@ -105,7 +123,7 @@ export function ExportSheet({
         <Text className="text-body-lg font-semibold text-content-primary" style={CLIP_SAFE}>
           {clipSafe(EXPORT_COPY.title)}
         </Text>
-        {soapNote.isExported && (
+        {soapNote.isExported === true && (
           <View className="flex-row items-center rounded-full bg-brand-50 dark:bg-surface-sunken px-2 py-1">
             <CheckCircle color={colors.brand500} size={13} />
             <Text
@@ -114,7 +132,7 @@ export function ExportSheet({
               // Single token, so no numberOfLines (CLAUDE.md > UI Gotchas).
               style={CLIP_SAFE}
             >
-              {clipSafe('Exported')}
+              {clipSafe(EXPORT_COPY.markedStatus)}
             </Text>
           </View>
         )}
